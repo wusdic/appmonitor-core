@@ -1,0 +1,283 @@
+# =============================================================================
+# Behaviour Signature Library — PRIMITIVES (行为特征库 · 原子特征)
+# -----------------------------------------------------------------------------
+# Each entry maps a combination of raw/derived metrics to a human-meaningful
+# activity. These are data, not code: add/tune a signature by editing this file.
+# Metric names refer to the flat per-entity snapshot (raw + derived numerics).
+# op: gt|ge|lt|le|eq|ne|between|in|not_in|present ; soft: fuzzy band (optional)
+# =============================================================================
+
+# ---------------------------- Interactive usage ------------------------------
+- id: interactive_browse
+  label: "交互式网页浏览"
+  category: browse
+  severity: info
+  description: "GET 为主、路径多样、有思考停顿的人工浏览。"
+  all:
+    - {metric: http.requests, op: gt, value: 3, soft: 3}
+    - {metric: http.get_ratio, op: ge, value: 0.6, soft: 0.2}
+    - {metric: derived.path_entropy, op: ge, value: 0.4, soft: 0.3}
+  any:
+    - {metric: derived.think_time_s_avg, op: gt, value: 2}
+    - {metric: derived.req_per_session, op: between, value: [2, 60]}
+  none:
+    - {metric: derived.periodicity_score, op: gt, value: 0.75}
+
+- id: search_query
+  label: "站内检索/查询操作"
+  category: search
+  severity: info
+  description: "针对检索类路径的高频小响应请求。"
+  all:
+    - {metric: http.requests, op: gt, value: 5, soft: 4}
+    - {metric: http.get_ratio, op: ge, value: 0.5, soft: 0.2}
+    - {metric: http.resp_bytes_avg, op: lt, value: 20000, soft: 10000}
+    - {metric: derived.path_entropy, op: lt, value: 0.5, soft: 0.2}
+
+- id: form_submit_write
+  label: "表单提交/数据录入"
+  category: write
+  severity: low
+  description: "含较多写方法(POST/PUT/PATCH)的小负载交互，代表业务数据变更。"
+  all:
+    - {metric: http.write_ratio, op: ge, value: 0.3, soft: 0.15}
+    - {metric: http.requests, op: gt, value: 2, soft: 3}
+    - {metric: http.req_bytes_avg, op: lt, value: 50000, soft: 20000}
+    - {metric: http.resp_bytes_avg, op: lt, value: 100000, soft: 50000}
+  none:
+    - {metric: l4.bytes_up, op: gt, value: 500000}
+
+# ------------------------------- API / batch ---------------------------------
+- id: api_client
+  label: "API/程序化调用"
+  category: api
+  severity: info
+  description: "路径集中、节奏规律、少人工停顿的机器访问。"
+  all:
+    - {metric: http.requests, op: gt, value: 12, soft: 6}
+    - {metric: derived.path_entropy, op: lt, value: 0.35, soft: 0.2}
+    - {metric: http.resp_bytes_avg, op: lt, value: 200000}
+  any:
+    - {metric: derived.timing_regularity, op: ge, value: 0.6, soft: 0.2}
+    - {metric: derived.dest_concentration, op: ge, value: 0.7, soft: 0.2}
+
+- id: system_integration
+  label: "系统间集成/服务对接"
+  category: integration
+  severity: info
+  description: "面向单一后端、高成功率、稳定负载的接口对接流量。"
+  all:
+    - {metric: derived.dest_concentration, op: ge, value: 0.8, soft: 0.15}
+    - {metric: derived.http_success_rate, op: ge, value: 0.9, soft: 0.1}
+    - {metric: derived.timing_regularity, op: ge, value: 0.5, soft: 0.2}
+    - {metric: http.requests, op: gt, value: 8, soft: 4}
+    - {metric: http.post_ratio, op: ge, value: 0.25, soft: 0.2}
+  none:
+    - {metric: l4.bytes_up, op: gt, value: 800000}
+
+# ------------------------------ Authentication -------------------------------
+- id: auth_login
+  label: "登录/认证交互"
+  category: auth
+  severity: low
+  description: "针对认证端点的写请求（登录、令牌获取）。"
+  all:
+    - {metric: http.post_ratio, op: ge, value: 0.3, soft: 0.2}
+    - {metric: http.requests, op: between, value: [1, 30]}
+    - {metric: http.resp_bytes_avg, op: lt, value: 8000, soft: 6000}
+
+- id: auth_bruteforce
+  label: "认证爆破/凭据填充（疑似）"
+  category: auth
+  severity: high
+  description: "对认证端点的高频写请求且失败(4xx)比例偏高。"
+  all:
+    - {metric: http.post_ratio, op: ge, value: 0.5, soft: 0.2}
+    - {metric: http.requests, op: gt, value: 30, soft: 20}
+    - {metric: derived.http_error_rate, op: ge, value: 0.4, soft: 0.2}
+
+# -------------------------------- Transfer -----------------------------------
+- id: bulk_download
+  label: "批量下载/数据导出"
+  category: transfer
+  severity: medium
+  description: "下行字节量大、上下行严重不对称，代表大规模数据获取。"
+  all:
+    - {metric: l4.bytes_down, op: gt, value: 5000000, soft: 3000000}
+    - {metric: derived.upload_dominance, op: lt, value: 0.2, soft: 0.15}
+
+- id: bulk_upload
+  label: "批量上传/数据外发"
+  category: transfer
+  severity: high
+  description: "上行字节量异常大，代表大规模数据外传或备份外送。"
+  all:
+    - {metric: l4.bytes_up, op: gt, value: 3000000, soft: 2000000}
+    - {metric: derived.upload_dominance, op: gt, value: 3, soft: 2}
+  none:
+    - {metric: derived.timing_regularity, op: ge, value: 0.8}   # exclude scheduled backups
+
+- id: large_object_fetch
+  label: "大对象/文件下载"
+  category: transfer
+  severity: low
+  description: "单请求响应体很大的下载行为。"
+  all:
+    - {metric: http.resp_bytes_avg, op: gt, value: 1000000, soft: 800000}
+
+- id: streaming_media
+  label: "音视频流/长连接消费"
+  category: streaming
+  severity: info
+  description: "长时下行为主、连接持续时间长的流媒体特征。"
+  all:
+    - {metric: l4.flow_duration_ms_avg, op: gt, value: 20000, soft: 15000}
+    - {metric: derived.upload_dominance, op: lt, value: 0.3, soft: 0.2}
+    - {metric: l4.bytes_down, op: gt, value: 2000000, soft: 1500000}
+
+# ---------------------------- Recon / scanning -------------------------------
+- id: port_scan
+  label: "端口扫描/服务探测"
+  category: scan
+  severity: high
+  description: "短时间内触达大量目的端口、SYN 占比高、连接短。"
+  all:
+    - {metric: l4.distinct_dports, op: gt, value: 20, soft: 15}
+    - {metric: l4.syn_count, op: gt, value: 20, soft: 15}
+  any:
+    - {metric: l4.flow_duration_ms_avg, op: lt, value: 200}
+    - {metric: derived.http_error_rate, op: ge, value: 0.5}
+
+- id: host_sweep
+  label: "主机横向探测/资产枚举"
+  category: recon
+  severity: high
+  description: "对等体数量激增，代表横向扫描或资产枚举。"
+  all:
+    - {metric: l4.distinct_peers, op: gt, value: 30, soft: 20}
+    - {metric: derived.fanout, op: gt, value: 30, soft: 20}
+    - {metric: derived.peer_novelty, op: ge, value: 0.5, soft: 0.3}
+
+- id: web_path_fuzzing
+  label: "Web 路径遍历/目录爆破（疑似）"
+  category: scan
+  severity: high
+  description: "路径极其分散且 4xx 比例高，代表目录/接口枚举。"
+  all:
+    - {metric: http.distinct_paths, op: gt, value: 40, soft: 30}
+    - {metric: derived.path_entropy, op: ge, value: 0.7, soft: 0.2}
+    - {metric: derived.http_error_rate, op: ge, value: 0.4, soft: 0.2}
+
+# ---------------------------- Beaconing / tunnel -----------------------------
+- id: c2_beacon
+  label: "周期性心跳/信标（疑似 C2）"
+  category: beacon
+  severity: high
+  description: "请求节奏高度规律、目的地单一、负载小、低量的信标模式。"
+  all:
+    - {metric: derived.timing_regularity, op: ge, value: 0.8, soft: 0.15}
+    - {metric: derived.dest_concentration, op: ge, value: 0.85, soft: 0.1}
+    - {metric: http.resp_bytes_avg, op: lt, value: 3000, soft: 2000}
+    - {metric: http.requests, op: le, value: 10, soft: 5}
+  any:
+    - {metric: derived.periodicity_score, op: ge, value: 0.5}
+    - {metric: derived.timing_regularity, op: ge, value: 0.9}   # near-constant cadence
+  none:
+    - {metric: http.write_ratio, op: ge, value: 0.4}   # exclude write-heavy apps
+
+- id: dns_tunnel
+  label: "DNS 隧道/DNS 外传（疑似）"
+  category: tunnel
+  severity: critical
+  description: "查询名长且熵高、TXT 比例高、失败率高的 DNS 隐蔽信道。"
+  all:
+    - {metric: dns.avg_qname_len, op: gt, value: 40, soft: 20}
+    - {metric: derived.dns_dga_score, op: ge, value: 3.0, soft: 1.0}
+  any:
+    - {metric: dns.txt_ratio, op: ge, value: 0.3}
+    - {metric: dns.nxdomain_ratio, op: ge, value: 0.3}
+
+- id: dga_resolution
+  label: "疑似 DGA 域名解析"
+  category: tunnel
+  severity: high
+  description: "大量高熵、随机化域名解析，且 NXDOMAIN 偏高。"
+  all:
+    - {metric: derived.dns_name_entropy, op: ge, value: 0.75, soft: 0.15}
+    - {metric: dns.distinct_qnames, op: gt, value: 15, soft: 10}
+    - {metric: dns.nxdomain_ratio, op: ge, value: 0.25, soft: 0.2}
+
+# ------------------------------- Posture / health ----------------------------
+- id: weak_tls
+  label: "弱加密/过时 TLS 使用"
+  category: posture
+  severity: medium
+  description: "使用 TLS1.0/1.1 等弱版本握手。"
+  all:
+    - {metric: tls.weak_version_ratio, op: ge, value: 0.3, soft: 0.2}
+    - {metric: tls.handshakes, op: gt, value: 1}
+
+- id: service_degraded
+  label: "服务可达性下降/跨网不可达"
+  category: health
+  severity: medium
+  description: "主动探测丢包率高或可达性评分低（含跨网不可达场景）。"
+  any:
+    - {metric: probe.loss_ratio, op: ge, value: 0.3, soft: 0.2}
+    - {metric: probe.reachable, op: le, value: 0.5, soft: 0.3}
+
+- id: high_error_backend
+  label: "后端错误激增(5xx)"
+  category: health
+  severity: medium
+  description: "5xx 比例升高，代表后端故障或被冲击。"
+  all:
+    - {metric: derived.http_5xx_rate, op: ge, value: 0.1, soft: 0.1}
+    - {metric: http.requests, op: gt, value: 5}
+
+- id: tcp_health_poor
+  label: "链路质量差/重传高"
+  category: health
+  severity: low
+  description: "TCP 重传率高或 RTT 抖动大，代表链路或路径问题。"
+  any:
+    - {metric: l4.retransmit_rate, op: ge, value: 0.05, soft: 0.05}
+    - {metric: l4.rtt_ms_avg, op: gt, value: 300, soft: 200}
+
+# ------------------------------- Maintenance ---------------------------------
+- id: health_check
+  label: "健康探测/存活检查"
+  category: maintenance
+  severity: info
+  description: "极规律、极小负载、单一路径的探活请求。"
+  all:
+    - {metric: derived.timing_regularity, op: ge, value: 0.8, soft: 0.1}
+    - {metric: http.resp_bytes_avg, op: lt, value: 2000, soft: 1500}
+    - {metric: http.requests, op: between, value: [1, 60]}
+    - {metric: derived.path_entropy, op: lt, value: 0.2, soft: 0.15}
+  none:
+    - {metric: l4.bytes_up, op: gt, value: 500000}
+
+- id: backup_sync
+  label: "备份/数据同步作业"
+  category: sync
+  severity: info
+  description: "大流量、规律、目的单一的同步/备份作业。"
+  all:
+    - {metric: l3.bytes_total, op: gt, value: 10000000, soft: 5000000}
+    - {metric: derived.timing_regularity, op: ge, value: 0.6, soft: 0.2}
+    - {metric: derived.dest_concentration, op: ge, value: 0.7, soft: 0.2}
+
+- id: admin_operation
+  label: "管理/后台运维操作"
+  category: admin
+  severity: low
+  description: "写方法比例高、路径集中于管理端点的运维行为。"
+  all:
+    - {metric: http.write_ratio, op: ge, value: 0.4, soft: 0.2}
+    - {metric: derived.dest_concentration, op: ge, value: 0.6, soft: 0.2}
+    - {metric: http.requests, op: between, value: [4, 80]}
+    - {metric: http.distinct_paths, op: ge, value: 2}
+    - {metric: http.resp_bytes_avg, op: lt, value: 200000}
+  none:
+    - {metric: l4.bytes_up, op: gt, value: 800000}

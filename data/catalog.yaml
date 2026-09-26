@@ -1,0 +1,177 @@
+# =============================================================================
+# METRIC CATALOG — the enumerable content of the Raw (原始指标库) and
+# Derived (次生指标库) metric libraries. Loaded by the API and rendered in the
+# UI's "Metric Library" browser. Each entry documents WHERE the value comes
+# from (method) and HOW it is obtained, per the requirement.
+# method: passive_span | passive_flow | passive_log | active_probe |
+#         active_dns | active_tls | derived
+# =============================================================================
+raw:
+  # ---- L2/L3 network layer (engine: raw.l2l3, passive SPAN/flow) ----
+  - {name: l3.pkts_total, category: network, unit: packets, method: passive_span,
+     engine: raw.l2l3, desc: "每窗口总包数；来自镜像口/分光解码或流记录。"}
+  - {name: l3.bytes_total, category: network, unit: bytes, method: passive_span,
+     engine: raw.l2l3, desc: "每窗口总字节数（上下行合计）。"}
+  - {name: l3.proto.tcp_ratio, category: network, unit: ratio, method: passive_span,
+     engine: raw.l2l3, desc: "TCP 流占比；协议构成刻画。"}
+  - {name: l3.proto.udp_ratio, category: network, unit: ratio, method: passive_span,
+     engine: raw.l2l3, desc: "UDP 流占比。"}
+  - {name: l3.proto.icmp_ratio, category: network, unit: ratio, method: passive_span,
+     engine: raw.l2l3, desc: "ICMP 占比；探测/诊断活动线索。"}
+  - {name: l3.ipv6_ratio, category: network, unit: ratio, method: passive_span,
+     engine: raw.l2l3, desc: "IPv6 流量占比。"}
+  - {name: l3.ttl_min, category: network, unit: hops, method: passive_span,
+     engine: raw.l2l3, desc: "观测最小 TTL；操作系统指纹与跳数距离线索。"}
+  # ---- L4 transport (engine: raw.l4flow, passive SPAN/NetFlow) ----
+  - {name: l4.flows, category: transport, unit: flows, method: passive_flow,
+     engine: raw.l4flow, desc: "每窗口流数量。"}
+  - {name: l4.bytes_up, category: transport, unit: bytes, method: passive_flow,
+     engine: raw.l4flow, desc: "上行字节（实体→对端）。"}
+  - {name: l4.bytes_down, category: transport, unit: bytes, method: passive_flow,
+     engine: raw.l4flow, desc: "下行字节（对端→实体）。"}
+  - {name: l4.updown_ratio, category: transport, unit: ratio, method: passive_flow,
+     engine: raw.l4flow, desc: "上/下行字节比；上传主导 vs 下载主导。"}
+  - {name: l4.distinct_peers, category: transport, unit: peers, method: passive_flow,
+     engine: raw.l4flow, desc: "去重对端数；扇出/横向线索。"}
+  - {name: l4.distinct_dports, category: transport, unit: ports, method: passive_flow,
+     engine: raw.l4flow, desc: "去重目的端口数；端口扫描线索。"}
+  - {name: l4.syn_count, category: transport, unit: packets, method: passive_span,
+     engine: raw.l4flow, desc: "未完成握手的 SYN 数；扫描线索。"}
+  - {name: l4.retransmit_rate, category: transport, unit: ratio, method: passive_span,
+     engine: raw.l4flow, desc: "重传比例；链路质量。"}
+  - {name: l4.rtt_ms_avg, category: transport, unit: ms, method: passive_span,
+     engine: raw.l4flow, desc: "SYN/SYN-ACK 估算 RTT 均值。"}
+  - {name: l4.win_size_avg, category: transport, unit: bytes, method: passive_span,
+     engine: raw.l4flow, desc: "平均 TCP 窗口；栈指纹/吞吐线索。"}
+  - {name: l4.flow_duration_ms_avg, category: transport, unit: ms, method: passive_flow,
+     engine: raw.l4flow, desc: "平均流持续时间；长连接/短连接刻画。"}
+  # ---- HTTP application (engine: raw.http, passive SPAN or proxy logs) ----
+  - {name: http.requests, category: app_http, unit: req, method: passive_span,
+     engine: raw.http, desc: "HTTP 请求数（明文解码或反代日志）。"}
+  - {name: http.status_2xx, category: app_http, unit: req, method: passive_span,
+     engine: raw.http, desc: "2xx 成功计数。"}
+  - {name: http.status_3xx, category: app_http, unit: req, method: passive_span,
+     engine: raw.http, desc: "3xx 跳转计数。"}
+  - {name: http.status_4xx, category: app_http, unit: req, method: passive_span,
+     engine: raw.http, desc: "4xx 客户端错误计数。"}
+  - {name: http.status_5xx, category: app_http, unit: req, method: passive_span,
+     engine: raw.http, desc: "5xx 服务端错误计数。"}
+  - {name: http.latency_ms_avg, category: app_http, unit: ms, method: passive_span,
+     engine: raw.http, desc: "请求-响应时延均值。"}
+  - {name: http.req_bytes_avg, category: app_http, unit: bytes, method: passive_span,
+     engine: raw.http, desc: "平均请求体大小。"}
+  - {name: http.resp_bytes_avg, category: app_http, unit: bytes, method: passive_span,
+     engine: raw.http, desc: "平均响应体大小；下载/大对象线索。"}
+  - {name: http.distinct_paths, category: app_http, unit: paths, method: passive_span,
+     engine: raw.http, desc: "去重路径数；浏览广度/枚举线索。"}
+  - {name: http.get_ratio, category: app_http, unit: ratio, method: passive_span,
+     engine: raw.http, desc: "GET 占比。"}
+  - {name: http.post_ratio, category: app_http, unit: ratio, method: passive_span,
+     engine: raw.http, desc: "POST 占比。"}
+  - {name: http.write_ratio, category: app_http, unit: ratio, method: passive_span,
+     engine: raw.http, desc: "写方法(POST/PUT/PATCH/DELETE)占比。"}
+  - {name: http.methods, category: app_http, unit: dist, method: passive_span,
+     engine: raw.http, desc: "方法分布(Top-k)，类别型证据。"}
+  - {name: http.top_paths, category: app_http, unit: dist, method: passive_span,
+     engine: raw.http, desc: "热点路径分布(Top-k)。"}
+  - {name: http.user_agents, category: app_http, unit: dist, method: passive_span,
+     engine: raw.http, desc: "User-Agent 分布；客户端类型线索。"}
+  - {name: http.content_types, category: app_http, unit: dist, method: passive_span,
+     engine: raw.http, desc: "Content-Type 分布。"}
+  # ---- TLS metadata (engine: raw.tls, passive handshake decode) ----
+  - {name: tls.handshakes, category: app_tls, unit: handshakes, method: passive_span,
+     engine: raw.tls, desc: "TLS 握手计数（不解密）。"}
+  - {name: tls.distinct_sni, category: app_tls, unit: hosts, method: passive_span,
+     engine: raw.tls, desc: "去重 SNI 数；加密会话目的多样性。"}
+  - {name: tls.weak_version_ratio, category: app_tls, unit: ratio, method: passive_span,
+     engine: raw.tls, desc: "弱版本(TLS1.0/1.1/SSL3)握手占比。"}
+  - {name: tls.handshake_ms_avg, category: app_tls, unit: ms, method: passive_span,
+     engine: raw.tls, desc: "握手耗时均值。"}
+  - {name: tls.ja3_set, category: app_tls, unit: dist, method: passive_span,
+     engine: raw.tls, desc: "客户端 JA3 指纹集合；客户端软件识别。"}
+  - {name: tls.ja3s_set, category: app_tls, unit: dist, method: passive_span,
+     engine: raw.tls, desc: "服务端 JA3S 指纹集合。"}
+  - {name: tls.sni_set, category: app_tls, unit: dist, method: passive_span,
+     engine: raw.tls, desc: "SNI 目的集合(Top-k)。"}
+  - {name: tls.cipher_set, category: app_tls, unit: dist, method: passive_span,
+     engine: raw.tls, desc: "协商加密套件集合。"}
+  # ---- DNS (engine: raw.dns, passive port-53 decode or resolver logs) ----
+  - {name: dns.queries, category: app_dns, unit: queries, method: passive_span,
+     engine: raw.dns, desc: "DNS 查询数。"}
+  - {name: dns.distinct_qnames, category: app_dns, unit: names, method: passive_span,
+     engine: raw.dns, desc: "去重查询名数。"}
+  - {name: dns.nxdomain_ratio, category: app_dns, unit: ratio, method: passive_span,
+     engine: raw.dns, desc: "NXDOMAIN/SERVFAIL 比例；DGA/隧道线索。"}
+  - {name: dns.txt_ratio, category: app_dns, unit: ratio, method: passive_span,
+     engine: raw.dns, desc: "TXT 查询占比；DNS 外传线索。"}
+  - {name: dns.avg_qname_len, category: app_dns, unit: chars, method: passive_span,
+     engine: raw.dns, desc: "查询名平均长度；隧道线索。"}
+  - {name: dns.qname_set, category: app_dns, unit: dist, method: passive_span,
+     engine: raw.dns, desc: "查询名集合(Top-k)。"}
+  - {name: dns.qtype_set, category: app_dns, unit: dist, method: passive_span,
+     engine: raw.dns, desc: "查询类型分布。"}
+  # ---- Active probes (engine: raw.active_probe) ----
+  - {name: probe.reachable, category: active, unit: score, method: active_probe,
+     engine: raw.active_probe, desc: "可达性评分(0..1)；ICMP/TCP连接/HTTP探测综合。跨网不可达计为低分而非缺失。"}
+  - {name: probe.loss_ratio, category: active, unit: ratio, method: active_probe,
+     engine: raw.active_probe, desc: "探测丢失/超时比例。"}
+  - {name: probe.rtt_ms, category: active, unit: ms, method: active_probe,
+     engine: raw.active_probe, desc: "主动探测 RTT。"}
+  - {name: probe.open_ports, category: active, unit: ports, method: active_probe,
+     engine: raw.active_probe, desc: "TCP-connect 探测得到的开放端口数。"}
+  - {name: probe.hop_count, category: active, unit: hops, method: active_probe,
+     engine: raw.active_probe, desc: "traceroute 跳数；网络距离。"}
+  - {name: probe.state, category: active, unit: enum, method: active_probe,
+     engine: raw.active_probe, desc: "可达状态枚举: reachable/unreachable/timeout/filtered/degraded。"}
+
+derived:
+  - {name: "derived.<metric>.{sum,mean,p95,max,cv}", category: aggregate, unit: mixed,
+     method: derived, engine: derived.aggregation,
+     desc: "对任意原始指标的窗口聚合：总和/均值/95分位/峰值/变异系数。"}
+  - {name: derived.http_error_rate, category: quality, unit: ratio, method: derived,
+     engine: derived.ratio, desc: "4xx / 请求数。"}
+  - {name: derived.http_5xx_rate, category: quality, unit: ratio, method: derived,
+     engine: derived.ratio, desc: "5xx / 请求数；后端健康。"}
+  - {name: derived.http_success_rate, category: quality, unit: ratio, method: derived,
+     engine: derived.ratio, desc: "2xx / 请求数。"}
+  - {name: derived.upload_dominance, category: volume, unit: ratio, method: derived,
+     engine: derived.ratio, desc: "上行/下行；上传主导度（外发线索）。"}
+  - {name: derived.bytes_per_flow, category: volume, unit: bytes, method: derived,
+     engine: derived.ratio, desc: "字节/流；单流负载规模。"}
+  - {name: derived.req_per_peer, category: graph, unit: ratio, method: derived,
+     engine: derived.ratio, desc: "请求/对端；集中度。"}
+  - {name: derived.periodicity_score, category: timing, unit: score, method: derived,
+     engine: derived.periodicity, desc: "自相关周期性评分；自动化/信标识别。"}
+  - {name: derived.beacon_lag, category: timing, unit: ticks, method: derived,
+     engine: derived.periodicity, desc: "最强周期对应的滞后（周期长度）。"}
+  - {name: derived.timing_regularity, category: timing, unit: score, method: derived,
+     engine: derived.periodicity, desc: "节奏规律度(1-变异系数)。"}
+  - {name: derived.sni_entropy, category: dispersion, unit: score, method: derived,
+     engine: derived.entropy, desc: "SNI 目的分布熵；目的分散度。"}
+  - {name: derived.dns_name_entropy, category: dispersion, unit: score, method: derived,
+     engine: derived.entropy, desc: "查询名分布熵。"}
+  - {name: derived.path_entropy, category: dispersion, unit: score, method: derived,
+     engine: derived.entropy, desc: "访问路径分布熵；浏览 vs 枚举。"}
+  - {name: derived.dns_dga_score, category: dispersion, unit: score, method: derived,
+     engine: derived.entropy, desc: "域名字符熵(加权)；DGA/随机域名识别。"}
+  - {name: derived.ja3_diversity, category: dispersion, unit: count, method: derived,
+     engine: derived.entropy, desc: "JA3 指纹多样性。"}
+  - {name: derived.session_count, category: session, unit: sessions, method: derived,
+     engine: derived.session, desc: "重建会话数（按活动间隙切分）。"}
+  - {name: derived.req_per_session, category: session, unit: req, method: derived,
+     engine: derived.session, desc: "每会话请求数；会话深度。"}
+  - {name: derived.think_time_s_avg, category: session, unit: s, method: derived,
+     engine: derived.session, desc: "平均思考停顿；人机区分。"}
+  - {name: derived.activity_duty_cycle, category: session, unit: ratio, method: derived,
+     engine: derived.session, desc: "活动占空比。"}
+  - {name: derived.fanout, category: graph, unit: peers, method: derived,
+     engine: derived.graph, desc: "通信图扇出度。"}
+  - {name: derived.peer_novelty, category: graph, unit: ratio, method: derived,
+     engine: derived.graph, desc: "新对端占比(相对历史)；目的变化线索。"}
+  - {name: derived.new_peer_count, category: graph, unit: peers, method: derived,
+     engine: derived.graph, desc: "本窗口新增对端数。"}
+  - {name: derived.dest_concentration, category: graph, unit: ratio, method: derived,
+     engine: derived.graph, desc: "首要目的占比；集中度。"}
+  - {name: "derived.<metric>.{ewma,slope,changepoint}", category: trend, unit: mixed,
+     method: derived, engine: derived.trend,
+     desc: "对关键指标的 EWMA 平滑、斜率(趋势)与变点分(近段 vs 前段的稳健z)。"}

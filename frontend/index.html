@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AppMonitor Core · 业务系统画像平台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='none' stroke='%234da3ff' stroke-width='1.5'/%3E%3Ccircle cx='8' cy='8' r='2' fill='%234da3ff'/%3E%3C/svg%3E"/>
+<link rel="stylesheet" href="css/app.css"/>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◎</span>
+    <div>
+      <div class="title">AppMonitor Core</div>
+      <div class="subtitle">组织信息化业务系统画像平台 · 四库联动</div>
+    </div>
+  </div>
+  <div class="status" id="status">连接中…</div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button class="tab active" data-view="overview">总览</button>
+  <button class="tab" data-view="entities">实体画像</button>
+  <button class="tab" data-view="events">行为事件</button>
+  <button class="tab" data-view="signatures">行为特征库</button>
+  <button class="tab" data-view="catalog">指标库</button>
+  <button class="tab" data-view="engines">引擎拓扑</button>
+</nav>
+
+<main id="app">
+  <section class="view" id="view-overview"></section>
+  <section class="view hidden" id="view-entities"></section>
+  <section class="view hidden" id="view-events"></section>
+  <section class="view hidden" id="view-signatures"></section>
+  <section class="view hidden" id="view-catalog"></section>
+  <section class="view hidden" id="view-engines"></section>
+</main>
+
+<footer class="foot">
+  <span>被动流量 / 主动探测 → 原始指标库 → 次生指标库 → 行为库 → 行为特征库</span>
+  <span id="tickinfo"></span>
+</footer>
+
+<script src="js/api.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

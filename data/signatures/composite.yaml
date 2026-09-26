@@ -1,0 +1,48 @@
+# =============================================================================
+# Behaviour Signature Library — COMPOSITES (行为特征库 · 组合/时序特征)
+# -----------------------------------------------------------------------------
+# Composite rules correlate primitive matches over time into higher-level
+# activities. Consumed by signature.correlation.
+#   sequence: [catA, catB, ...]  -> ordered within window_s
+#   cooccur:  [catA, catB, ...]  -> all present within window_s (any order)
+# =============================================================================
+
+- id: staging_then_exfil
+  label: "认证后短时批量外发（数据外传模式）"
+  category: exfil
+  severity: high
+  window_s: 600
+  sequence: [auth, transfer]
+  description: "登录/认证之后短时间内出现大规模上行传输，符合数据外传链路。"
+
+- id: recon_then_scan
+  label: "资产枚举后端口扫描（侦察链）"
+  category: recon
+  severity: high
+  window_s: 600
+  sequence: [recon, scan]
+  description: "先横向枚举资产、随后集中端口扫描，符合攻击侦察链。"
+
+- id: beacon_with_tunnel
+  label: "信标与隐蔽信道并发（高可疑）"
+  category: c2
+  severity: critical
+  window_s: 900
+  cooccur: [beacon, tunnel]
+  description: "周期性信标与 DNS/隐蔽隧道同时出现，强 C2 迹象。"
+
+- id: scan_then_bruteforce
+  label: "扫描后认证爆破（入侵尝试链）"
+  category: intrusion
+  severity: critical
+  window_s: 900
+  sequence: [scan, auth]
+  description: "扫描探测后针对认证端点爆破，符合入侵尝试链路。"
+
+- id: admin_then_bulk
+  label: "运维操作后大批量数据搬运"
+  category: exfil
+  severity: high
+  window_s: 900
+  sequence: [admin, transfer]
+  description: "后台管理操作后紧随大规模数据传输，需关注权限滥用。"
