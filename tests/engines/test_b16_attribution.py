@@ -23,6 +23,7 @@ import math
 from typing import Dict, Optional, Sequence
 
 import numpy as np
+import pytest
 
 from helpers import DT, T0, add_obs_tick, make_store, put_model, run_engine
 
@@ -353,3 +354,25 @@ def test_e_consumes_excludes_self_normalised_z():
         assert bad not in src
     for need in ("feature.vec", "feature.sketch", "behavior.timing", "model.identity"):
         assert need in cons
+
+
+def test_typicality_is_calibrated_by_the_candidates_heldout_t99():
+    """The per-candidate chi2 typicality uses B15's held-out genuine T99: a
+    window at the entity's own T99 has p = P_TYPICAL whatever the raw chi2
+    says, a window 2x farther is atypical, and without a T99 the raw chi2_r
+    tail applies (eval: human workstations have T99 = 200-1100 in a 13-14-dim
+    LDA space whose chi2 99 % point is ~29)."""
+    from scipy.stats import chi2
+    r = 13
+    model = {"means": {"a": np.zeros(r).tolist()}, "stats": {"a": {"t99": 400.0}}}
+    z_at = np.zeros(r)
+    z_at[0] = math.sqrt(400.0)
+    assert AT.typicality(model, z_at, "a") == pytest.approx(AT.P_TYPICAL, rel=1e-6)
+    z_far = np.zeros(r)
+    z_far[0] = math.sqrt(800.0)
+    assert AT.typicality(model, z_far, "a") < AT.P_TYPICAL
+    z_mid = np.zeros(r)
+    z_mid[0] = math.sqrt(100.0)                       # raw chi2_13: p ~ 1e-15
+    assert AT.typicality(model, z_mid, "a") > 0.3
+    del model["stats"]
+    assert AT.typicality(model, z_mid, "a") == pytest.approx(chi2.sf(100.0, r), rel=1e-6)

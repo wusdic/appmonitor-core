@@ -100,6 +100,9 @@ Accessor signatures (pure; missing data gives the documented default):
     silence_eligible(p_hat, machine) -> bool
     slot_history(model, since=-inf) -> [(slot, a, volume, c48, c168)]  per-slot
                                                 activity kept by the engine (9 d; B29 replay)
+    offhours_replay(model, neutral_slots=(), since=-inf, W0=0.0, current=None) -> dict
+                                                the off-hours CUSUM re-run over the ledger with
+                                                the given slots made silent (B29 counterfactual)
     detector_state(model) -> dict               {W_off, s_sil, alarm, shift_explained}
     data_counts(model, at_ts=None) -> dict      decayed copies of the count arrays
     decay_factor(t_from, t_to) -> float
@@ -728,6 +731,52 @@ def slot_history(model: Mapping[str, Any], since: float = -math.inf
             out.append((int(j), float(r[1]), float(r[2]), int(r[3]), int(r[4])))
     out.sort()
     return out
+
+
+def offhours_replay(model: Mapping[str, Any], neutral_slots: Iterable[int] = (),
+                    since: float = -math.inf, W0: float = 0.0,
+                    current: Optional[Tuple[int, int, int, float]] = None,
+                    until: float = math.inf) -> Dict[str, Any]:
+    """Re-run B07's off-hours Bernoulli CUSUM (offhours_step, p_hat from
+    p_cell of the model as it is now) over the ledger slots ending in
+    [since, until], starting from W0, with the activity of `neutral_slots` set to 0 (a silent
+    slot: the counterfactual "this activity did not happen"; unobserved slots
+    stay unobserved). current = (slot, c48, c168, a) adds B07's provisional
+    step for the open slot when it is active and not neutralised.
+
+    Returns {'W': reported W (provisional step included), 'W_final': W after
+    the last finalised slot, 'W_max': max over the path, 'n': slots replayed,
+    'active_unusual': [slots with a = 1 at p_hat <= 0.3]} (the candidates B29
+    neutralises). Schedule-shift resets are not replayed; the caller compares
+    the factual replay with detector_state for fidelity. Pure."""
+    neutral = {int(j) for j in neutral_slots}
+    W = float(W0) if W0 == W0 else 0.0
+    w_max = W
+    n = 0
+    unusual: List[int] = []
+    led = ((model or {}).get("ledger") or {}).get("slots") or {}
+    for j, a, _vol, c48, c168 in slot_history(model, since):
+        r = led.get(j)
+        if r is not None and float(r[5]) > until:
+            break
+        p = p_cell(model, c48, c168)
+        if a == 1.0 and p == p and p <= SQ.RHYTHM_P0_MAX:
+            unusual.append(int(j))
+        if int(j) in neutral and a == a:
+            a = 0.0
+        W = offhours_step(W, a, p)
+        w_max = max(w_max, W)
+        n += 1
+    w_fin = W
+    if current is not None:
+        j, c48, c168, a = current
+        p = p_cell(model, int(c48), int(c168))
+        if a == 1.0 and int(j) not in neutral:
+            if p == p and p <= SQ.RHYTHM_P0_MAX:
+                unusual.append(int(j))
+            W = offhours_step(W, 1.0, p)
+            w_max = max(w_max, W)
+    return {"W": W, "W_final": w_fin, "W_max": w_max, "n": n, "active_unusual": unusual}
 
 
 def detector_state(model: Mapping[str, Any]) -> Dict[str, Any]:

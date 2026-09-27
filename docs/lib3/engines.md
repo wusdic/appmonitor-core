@@ -842,6 +842,7 @@ The common-mode flag never suppresses identity. When the entity has shared_ip, e
 
 **Integration notes (as built, docs/lib3/integration.md).**
 - The unknown CUSUM only climbs on full K-row windows (partial windows of a new or long-silent entity only let it decay): the chi² typicality is calibrated on B15's K-row windows, and a 1–2 row window (IQR 0, noisier median) failed it for enrolled entities on their first ticks.
+- The per-candidate typicality is calibrated by the candidate's held-out genuine T99 from B15 (d² × chi2_r⁻¹(0.99)/T99 before the chi2 tail), so p < 0.01 means farther than 99 % of the entity's own held-out windows; the raw chi2_r assumed a within-entity covariance of I, which WCCN gives only on average.
 
 ## B17 — EntityLinkEngine [new]
 
@@ -1101,6 +1102,7 @@ Degraded inputs (NaN score) give NaN p, never 1.
 **Integration notes (as built, docs/lib3/integration.md).**
 - Small-sample prior order: the entity's own rings of the OTHER dayparts at the same cadence (pooled, ≥ 64 entries), then pm[d], then the class-pooled ring. The first workday after a weekend warm-up, or the first night, is a new stratum for every detector, and several pm are only approximately calibrated.
 - A model.control version change is detected against the gate's own version (as B25), so a bare 0 → 2 change resets the rings.
+- Identity rings are stratified by (daypart, regime tercile, cadence class): B16's windows are K active ticks, so the identity score's null depends on the cadence like every other detector's (architecture §6). Key 'daypart|r<k>|<cc>'.
 
 ## B25 — FusionEngine [new]
 

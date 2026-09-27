@@ -489,6 +489,7 @@ class ChangepointEngine(Engine):
             run["boc"] = {"on": False, "onset": math.nan}
             run["daily"] = {"idx": [], "val": []}
             run["creep"] = {"groups": {}, "p": math.nan, "pm": math.nan, "on": False, "axes": []}
+            ChangepointEngine._clear_alarms(run, ("bocpd", "creep"))
 
     def _supported(self, store: Any, s: str, e: str, ctx: Context,
                    xk: np.ndarray) -> np.ndarray:
@@ -515,11 +516,28 @@ class ChangepointEngine(Engine):
 
     @staticmethod
     def _reset_charts(run: Dict[str, Any]) -> None:
-        """CUSUM / MCUSUM statistics and the natural-unit excess restart at 0."""
+        """CUSUM / MCUSUM statistics and the natural-unit excess restart at 0.
+
+        Their reported alarm restarts too: run['alarm'] is what an idle tick
+        re-emits (_idle_outputs), so a latch from before the restart (the end
+        of warm-up, a release, a rebase) must not be carried into the new
+        episode by an entity that is idle on its first ticks after it."""
         run["bank"] = m_cp.new_bank()
         run["mc"] = m_cp.new_mc()
         for k in run["excess"]:
             run["excess"][k] = np.zeros((2, m_cp.N_KEY))
+        ChangepointEngine._clear_alarms(run, ("cusum", "mcusum"))
+
+    @staticmethod
+    def _clear_alarms(run: Dict[str, Any], dets: Tuple[str, ...]) -> None:
+        alarm = run.get("alarm")
+        if not isinstance(alarm, dict):
+            return
+        for d in dets:
+            if d in alarm:
+                alarm[d] = 0
+        if not any(alarm.values()):
+            run["episode"] = {}
 
     # ------------------------------------------------------------ whitening
     def _whitener(self, store: Any, s: str, e: str, learn: Mapping[str, Any],

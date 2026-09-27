@@ -54,8 +54,9 @@ Per system and tick (docs/lib3/engines.md '## B16'):
      pi_j* >= 0.9, the CV confusion(e, j*) < 0.1 and j* is not in e's
      anonymity set. The own role class never counts as "another identity".
   7. Unknown CUSUM: +1 when max_j p_j < 0.01 (chi2 typicality of z under
-     each individual candidate), else -0.5; unknown_identity at 2: HIGH when
-     the class typicality p < 0.01 ('unlike anyone'; the system background
+     each individual candidate, its squared distance calibrated by the
+     candidate's held-out genuine T99 from B15: t99_scale), else -0.5;
+     unknown_identity at 2: HIGH when the class typicality p < 0.01 ('unlike anyone'; the system background
      stands in when the IP has no class), MEDIUM for 'same class, different
      individual', INFO for a young (not enrolled) IP.
   8. An entity with continuity.shared_ip (or entity_kind 'ip-class', B17)
@@ -90,7 +91,7 @@ from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
-from scipy.special import chdtrc
+from scipy.special import chdtrc, chdtri
 
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, EntityProfile, MetricKind, Severity
@@ -160,14 +161,34 @@ def chi2_p(q: float, k: int) -> float:
     return float(max(chdtrc(k, max(q, 0.0)), 1e-300))
 
 
+def t99_scale(model: Mapping[str, Any], cand: str, r: int) -> float:
+    """Factor that calibrates an entity's squared LDA distance before its chi2_r
+    tail: chi2_r's 99 % point over the entity's own held-out genuine 99 %
+    point T99 (B15's blocked CV), so p < P_TYPICAL <=> d2 > T99.
+
+    Why: the within-entity covariance is I only for the pooled (WCCN) average;
+    held-out genuine windows of one entity sit much farther from its mean
+    than chi2_r says (eval pack A: T99 = 200-1100 for workstations against a
+    chi2_14 99 % point of 29), so the raw chi2 tail called most of a
+    person's own windows 'unlike every known individual' while their self
+    posterior was > 0.98 (unknown_identity MEDIUM, 'same class, different
+    individual', on 13 of 19 enrolled humans in a clean week). 1 when B15
+    has no T99 for the candidate."""
+    t = MI.t99(model, cand)
+    if not (t == t and t > 0.0) or r < 1:
+        return 1.0
+    return float(chdtri(r, P_TYPICAL)) / t
+
+
 def typicality(model: Mapping[str, Any], z: np.ndarray, cand: str) -> float:
     """p of the window under a candidate's Gaussian in LDA space: an entity
-    (covariance I), a class key (diagonal class_var) or SYSTEM_KEY (the full
-    background Gaussian). NaN when the candidate is not in the model."""
+    (covariance I, the distance calibrated by its held-out T99: t99_scale),
+    a class key (diagonal class_var) or SYSTEM_KEY (the full background
+    Gaussian). NaN when the candidate is not in the model."""
     r = int(z.size)
     m = MI.entity_mean(model, cand)
     if m is not None and m.size == r:
-        return chi2_p(float(np.sum((z - m) ** 2)), r)
+        return chi2_p(float(np.sum((z - m) ** 2)) * t99_scale(model, cand, r), r)
     m = MI.class_mean(model, cand)
     if m is not None and m.size == r:
         v = np.maximum(np.asarray((model.get("class_var") or {}).get(cand, np.ones(r)),
@@ -574,7 +595,8 @@ class AttributionEngine(Engine):
 
         # ---- unknown CUSUM: typicality under each individual candidate
         ln2pi = z.size * math.log(2.0 * math.pi)            # d2 = -2 l_e(z) - r ln 2 pi
-        ps = [chi2_p(-2.0 * l_all[j] - ln2pi, z.size) for j in cands if j in l_all]
+        ps = [chi2_p((-2.0 * l_all[j] - ln2pi) * t99_scale(model, j, z.size), z.size)
+              for j in cands if j in l_all]
         p_max = max(ps) if ps else _NAN
         # the chi2 typicality is calibrated on full K-row windows (B15 fits on
         # them); a partial window (a new or long-silent entity's first active

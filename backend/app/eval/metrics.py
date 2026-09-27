@@ -414,6 +414,47 @@ def _norm_feature(name: Any) -> str:
     return s.split(".")[-1].strip().lower()
 
 
+def split_episodes(incidents: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """One record per open episode of each incident.
+
+    B27 reuses an incident's id when it reopens within 24 h (engines.md B27),
+    so its `opened` stays at the FIRST opening. A reopening is a new opening
+    (it notifies again), and a threat that reopens an incident closed hours
+    before its onset is detected by that reopening: scored on the original
+    `opened` it was invisible (eval pack A, 900-s warm-up: T5, T6b, T13 were
+    all reopenings of FP incidents closed before the scenario started).
+    Each episode keeps the id and gets `opened` = its (re)open time, the
+    history points of that episode (through its closing point) and
+    `episode` = (index, start, end) (end None while open)."""
+    out: List[Dict[str, Any]] = []
+    for inc in incidents:
+        h = RunView.history(inc)
+        if not inc.get("history") or len(h) < 2:
+            out.append(dict(inc))
+            continue
+        eps: List[List[Dict[str, Any]]] = [[]]
+        closed_prev = False
+        for p in h:
+            if closed_prev and p.get("status") != "closed":
+                eps.append([])
+            eps[-1].append(p)
+            closed_prev = p.get("status") == "closed"
+        if len(eps) == 1:
+            out.append(dict(inc))
+            continue
+        for k, ep in enumerate(eps):
+            d = dict(inc)
+            start = float(inc.get("opened", ep[0]["ts"])) if k == 0 else float(ep[0]["ts"])
+            ended = ep[-1].get("status") == "closed"
+            d["opened"] = start
+            d["history"] = ep
+            d["status"] = "closed" if ended else inc.get("status", "open")
+            d["severity"] = SEVERITIES[max(sev_rank(p.get("severity")) for p in ep)]
+            d["episode"] = [k, start, float(ep[-1]["ts"]) if ended else None]
+            out.append(d)
+    return out
+
+
 class RunView:
     """Indexes a RunResult (or an equivalent mapping) for the metric functions."""
 
@@ -427,7 +468,8 @@ class RunView:
         self.tick_ts = np.asarray(_get(run, "tick_ts", None) if _get(run, "tick_ts", None)
                                   is not None else [], dtype=float)
         self.truth: List[Dict[str, Any]] = [dict(r) for r in (_get(run, "truth", None) or [])]
-        self.incidents: List[Dict[str, Any]] = list(_get(run, "incidents", None) or [])
+        self.incidents: List[Dict[str, Any]] = split_episodes(
+            list(_get(run, "incidents", None) or []))
         self.events: List[Dict[str, Any]] = sorted(_get(run, "events", None) or [],
                                                    key=lambda e: float(e.get("ts", 0.0)))
         self.series: Dict[str, Dict[str, Any]] = dict(_get(run, "series", None) or {})
@@ -570,6 +612,13 @@ class RunView:
         return max([sev_rank(p.get("severity")) for p in RunView.history(inc)]
                    + [sev_rank(inc.get("severity"))])
 
+    @staticmethod
+    def _episode_span(inc: Mapping[str, Any]) -> Tuple[float, float]:
+        ep = inc.get("episode")
+        if not ep:
+            return -math.inf, math.inf
+        return float(ep[1]), (math.inf if ep[2] is None else float(ep[2]))
+
     def close_ts(self, inc: Mapping[str, Any]) -> Optional[float]:
         for p in self.history(inc):
             if p.get("status") == "closed":
@@ -582,6 +631,7 @@ class RunView:
         """Detectors / kinds an incident carries through p_by_detector (in
         evidence, explanation or its linked events) up to `until`."""
         out: Set[str] = set()
+        since, _ = self._episode_span(inc)        # this (re)opening's evidence only
         expl = inc.get("explanation") or {}
         for src in (expl.get("p_by_detector"), inc.get("p_by_detector")):
             if isinstance(src, Mapping):
@@ -589,7 +639,7 @@ class RunView:
         for ev in inc.get("evidence") or []:
             if not isinstance(ev, Mapping):
                 continue
-            if _f(ev.get("ts"), -math.inf) > until:
+            if not since <= _f(ev.get("ts"), since) <= until:
                 continue
             pbd = ev.get("p_by_detector")
             if isinstance(pbd, Mapping):
@@ -598,7 +648,7 @@ class RunView:
                 out |= {x.lower() for x in _strs(ev.get(fld))}
             out |= {str(a).lower() for a in ev.get("axes") or []}
         for ev in self.ev_by_incident.get(str(inc.get("id", "")), []):
-            if float(ev.get("ts", 0.0)) <= until:
+            if since <= float(ev.get("ts", 0.0)) <= until:
                 out |= {str(k).lower() for k in (ev.get("p_by_detector") or {})}
                 out |= {str(a).lower() for a in ev.get("axes") or []}
         return out
@@ -622,8 +672,9 @@ class RunView:
         return out
 
     def notifications(self, inc: Mapping[str, Any]) -> int:
+        lo, hi = self._episode_span(inc)
         evs = [e for e in self.ev_by_incident.get(str(inc.get("id", "")), [])
-               if e.get("kind") == "incident"]
+               if e.get("kind") == "incident" and lo <= float(e.get("ts", 0.0)) <= hi]
         if evs:
             return sum(1 for e in evs
                        if str((e.get("extra") or {}).get("state", "")).lower()
@@ -713,9 +764,9 @@ def _detect_on(view: RunView, row: Mapping[str, Any], keys: Set[str]) -> Dict[st
                 break
     out: Dict[str, Any] = {
         "detected": best is not None,
-        "n_incidents": len(cands),
+        "n_incidents": len({str(i.get("id", id(i))) for i in cands}),   # reopenings: once
         "max_severity": (SEVERITIES[max(view.max_severity(i) for i in cands)] if cands else None),
-        "incident_ids": [str(i.get("id")) for i in cands],
+        "incident_ids": sorted({str(i.get("id")) for i in cands}),
     }
     if best is not None:
         ts, inc, matched = best
@@ -817,7 +868,8 @@ def legit_outcome(view: RunView, idx: int) -> Dict[str, Any]:
         "entities": row_keys(row), "t_start": t0, "t_end": t1,
         "max_severity": SEVERITIES[max_sev] if max_sev >= 0 else None,
         "allowed": row.get("max_allowed_severity") or "info",
-        "n_incidents": len(incs), "n_class_incidents": len(class_incs),
+        "n_incidents": len({str(i.get("id", id(i))) for i in incs}),
+        "n_class_incidents": len({str(i.get("id", id(i))) for i in class_incs}),
         "class_max_severity": (SEVERITIES[max(view.max_severity(i) for i in class_incs)]
                                if class_incs else None),
         "member_max_severity": SEVERITIES[member_max] if member_max >= 0 else None,
@@ -851,6 +903,11 @@ def far_counts(view: RunView) -> Dict[str, Any]:
     counts = {s: 0 for s in ("low", "medium", "high", "critical")}
     groups: Dict[str, Dict[str, float]] = {}
     fps = []
+    # an incident counts once however often it reopened (B27 reuses the id
+    # within 24 h): the gate counts incidents, the reopenings are reported
+    # as n_reopened; its severity is the max over the counted episodes
+    per_id: Dict[str, Tuple[Mapping[str, Any], str, float, int]] = {}
+    n_reopened = 0
     for inc in view.incidents:
         k = _key(str(inc.get("system", "")), inc.get("entity", ""))
         if k not in view.control:
@@ -858,7 +915,15 @@ def far_counts(view: RunView) -> Dict[str, Any]:
         opened = float(inc.get("opened", 0.0))
         if opened < view.t0 or opened > view.t1 or _in_any(opened, view.exclusions.get(k, [])):
             continue
+        iid = str(inc.get("id", id(inc)))
         r = view.max_severity(inc)
+        if iid in per_id:
+            n_reopened += 1
+            first = per_id[iid]
+            per_id[iid] = (first[0], first[1], first[2], max(first[3], r))
+        else:
+            per_id[iid] = (inc, k, opened, r)
+    for inc, k, opened, r in per_id.values():
         g = groups.setdefault(_group(view, k), {"n_low": 0, "days": 0.0})
         for s in counts:
             if r >= SEV_RANK[s]:
@@ -873,6 +938,7 @@ def far_counts(view: RunView) -> Dict[str, Any]:
     return {
         "entity_days": total, "n_control": len(view.control), "dt": view.dt,
         "n_low": counts["low"], "n_medium": counts["medium"], "n_high": counts["high"],
+        "n_reopened": n_reopened,
         "n_critical": counts["critical"],
         "far_low": counts["low"] / total if total > 0 else None,
         "far_medium": counts["medium"] / total if total > 0 else None,

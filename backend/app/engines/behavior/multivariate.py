@@ -594,6 +594,13 @@ class MultivariateEngine(Engine):
             _archive(model["_arch"], now, zi)
             if not b05_failed and m_density.is_fitted(model):
                 written = self._score(ctx, s, e, model, zi, now, dt)
+            if not written and store.last_write_ts(s, e, WH) is not None:
+                # observed but no longer scorable (the density was reset by a
+                # rollback / rebase): behavior.wh is undefined, not silent
+                # (B14 reads it hourly; eval robustness: stale wh on the L6 /
+                # L8 newcomers after their model was reset). A cold entity
+                # that was never scored still writes nothing.
+                store.add_vec(s, e, WH, now, [_NAN], window_s=int(dt))
         ctrl = self._learn(ctx, lrn, s, e, model, now, dt)
         model = self._maybe_refit(ctx, s, e, model, now, dt, ctrl)
         store.put_model(s, e, DENSITY, model, version=model["version"], ts=now)

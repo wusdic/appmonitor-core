@@ -37,7 +37,7 @@ At (s, '__system__') the model holds only {"layout", "health"}: the rolling
 per-detector health state behind behavior.calib_health.
 
 Strata (Mondrian): daypart(4) x cadence class for every detector except
-identity, which uses (daypart, regime tercile) - see `stratum_for`. The regime
+identity, which uses (daypart, regime tercile, cadence class) - see `stratum_for`. The regime
 tercile is 0 settled (NORMAL / RETURNED / unknown), 1 in question (SUSPECT /
 DRIFTING / REJECTED), 2 re-learning (ACCEPTED), unless behavior.regime
 carries an explicit integer 'tercile' in 0..2 (`regime_tercile`).
@@ -74,6 +74,9 @@ Signatures (all pure; no store access):
     pooled_p(rings, score, u, min_n=64) -> (p, n)         # conformal over a union
     p_from_snapshot(model, detector, stratum, score, u,
                     pm=None, pooled=None, settled=None) -> float
+    issued_stratum(model, ts) -> (daypart, tercile, dt) | None   # B24 'pending' code
+    p_replay(model, detector, daypart, cc, score, u, tercile=0,
+             pm=None, class_rings=None) -> float   # B24's full prior order (B29)
     version(model) -> int
     describe(model) -> dict                               # portrait summary
     weight_mult(calib_health, detector) -> float          # B25 family weights
@@ -82,6 +85,7 @@ Signatures (all pure; no store access):
 """
 from __future__ import annotations
 
+import functools
 import math
 from collections import deque
 from collections.abc import Mapping      # not typing.Mapping: isinstance is on the hot path
@@ -89,7 +93,7 @@ from typing import Any, Dict, Iterable, Optional, Tuple, Union
 
 import numpy as np
 
-from . import calib, combine, evt
+from . import calib, combine, evt, timebins
 from .detectors import DETECTOR_INFO
 
 MODEL = "model.calib"
@@ -134,9 +138,9 @@ def as_ring(x: Any) -> Optional[calib.Ring]:
 
 
 def stratum_for(detector: str, daypart: str, cc: int, regime_tercile: int = 0) -> str:
-    """Stratum label of `detector`: 'daypart|cc', or 'daypart|r<k>' for identity."""
+    """Stratum label of `detector`: 'daypart|cc', or 'daypart|r<k>|cc' for identity."""
     if DETECTOR_INFO.get(detector, {}).get("strata") == "daypart_regime":
-        return calib.identity_stratum_key(daypart, regime_tercile)
+        return calib.identity_stratum_key(daypart, regime_tercile, cc)
     return calib.stratum_key(daypart, cc)
 
 
@@ -313,6 +317,70 @@ def p_from_snapshot(model: Optional[Mapping], detector: str, stratum: str, score
                 if sr is not None and len(sr) >= SMALL_N:
                     prior = p_value(sr, score, u)
     return p_value(r, score, u, prior)
+
+
+@functools.lru_cache(maxsize=1024)
+def _stratum_cached(detector: str, daypart: str, cc: int, tercile: int) -> str:
+    return stratum_for(detector, daypart, cc, tercile)
+
+
+def issued_stratum(model: Optional[Mapping], ts: float) -> Optional[Tuple[str, int, float]]:
+    """(daypart, regime tercile, dt) B24 recorded when it issued the p of tick
+    ts (model['pending'], kept <= 1 d), or None. The code is B24's
+    daypart index + 4 tercile + 12 dt_ms (timebins.DAYPARTS order)."""
+    if not isinstance(model, Mapping):
+        return None
+    pend = model.get("pending")
+    if not isinstance(pend, Mapping):
+        return None
+    code = pend.get(float(ts))
+    if code is None:
+        return None
+    c = int(code)
+    return timebins.DAYPARTS[c % 4], (c // 4) % 3, (c // 12) / 1000.0
+
+
+def p_replay(model: Optional[Mapping], detector: str, daypart: str, cc: int, score: float,
+             u: float, tercile: int = 0, pm: Optional[float] = None,
+             class_rings: Optional[Iterable[Any]] = None) -> float:
+    """B24's p of `score` for `detector` exactly as its scoring step chooses it
+    (calibration._score / _prior), from a model.calib snapshot:
+
+      |ring| >= 64: calib.p_from_ring (conformal + GPD tail);
+      else the logit blend with the first usable prior of
+        1. the entity's own rings of the OTHER dayparts at this cadence,
+           pooled (>= 64 entries; not for identity),
+        2. pm (behavior.pm[d] at that tick),
+        3. the class-pooled ring (class_rings: the members' rings of the same
+           key, the entity itself excluded; >= 64 entries),
+        4. identity only: the settled-regime (tercile 0) ring of the same
+           daypart (>= 64 entries).
+    Returned as issued (float32, floored). NaN score -> NaN.
+    """
+    s = _f(score)
+    if s != s:
+        return math.nan
+    is_id = DETECTOR_INFO.get(detector, {}).get("strata") == "daypart_regime"
+    st = _stratum_cached(detector, daypart, int(cc), int(tercile))
+    r = ring(model, detector, st)
+    n = 0 if r is None else len(r)
+    if n >= SMALL_N:
+        return issued(calib.p_from_ring(r, s, u))
+    prior = math.nan
+    if not is_id and cc:
+        own = [x for x in (ring(model, detector, _stratum_cached(detector, p, int(cc), 0))
+                           for p in timebins.DAYPARTS if p != daypart) if x is not None]
+        if own:
+            prior, _ = pooled_p(own, s, u)
+    if prior != prior:
+        prior = _valid_p(pm)
+    if prior != prior and class_rings is not None:
+        prior, _ = pooled_p(class_rings, s, u)
+    if prior != prior and is_id and int(tercile) != 0:
+        r0 = ring(model, detector, stratum_for(detector, daypart, cc, 0))
+        if r0 is not None and len(r0) >= SMALL_N:
+            prior = p_value(r0, s, u)
+    return issued(p_value(r, s, u, prior))
 
 
 def _valid_p(x: Any) -> float:

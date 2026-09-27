@@ -131,14 +131,22 @@ class PeriodicityEngine(Engine):
         dims = window_dims(span, int(mask.sum()))
 
         counts, step = regular_counts(ts, mat, dur, now, span)
-        lags, scores = autocorr_rows(counts)
-        b = int(np.argmax(scores))           # first (priority) target on ties
-        best_score = float(scores[b])
-        best_lag = float(lags[b]) * step if best_score > 0.0 else 0.0
-        src = names[b]
-        emit_window(ctx, system, entity, "derived.periodicity_score", best_score, dims, [src])
-        emit_window(ctx, system, entity, "derived.beacon_lag", best_lag, dims, [src])
-        n = 2
+        n = 0
+        # Fewer than MIN_TICKS bins (e.g. a 6-h span at 3600-s ticks holds
+        # 6): no autocorrelation can be estimated, so the score is undefined
+        # and is not emitted (B01 reads a stale window feature as NaN). A 0
+        # here would claim "not periodic" and teach the baselines of every
+        # hourly-cadence bucket a point mass at 0, which a later 900-s tick
+        # (a real estimate, typically 0.1-0.3) then hits at z >> 10.
+        if counts.shape[1] >= MIN_TICKS:
+            lags, scores = autocorr_rows(counts)
+            b = int(np.argmax(scores))           # first (priority) target on ties
+            best_score = float(scores[b])
+            best_lag = float(lags[b]) * step if best_score > 0.0 else 0.0
+            src = names[b]
+            emit_window(ctx, system, entity, "derived.periodicity_score", best_score, dims, [src])
+            emit_window(ctx, system, entity, "derived.beacon_lag", best_lag, dims, [src])
+            n = 2
         # regularity: the dominant (first busy) count's rate on active ticks
         if int(mask.sum()) >= 2:
             rate = mat[0, mask] / dur[mask]

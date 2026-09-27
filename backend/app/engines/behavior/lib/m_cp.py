@@ -47,6 +47,19 @@ Consumer API (all pure reads; NaN / None when B14 has not run):
   step_fn(params, which='cusum'|'mcusum') -> StepFn     (state, inputs) -> (state, score >= 1 alarms)
   neutralize(inputs, features) -> inputs                zr of the given feature indices -> 0
   replay_inputs(store, s, e, since, until) -> [(ts, {name: row})]
+  replay_rows(store, s, e, since, until, dt=None) -> [(ts, {x, phi, S, mc, adjacent})]
+      the bank's OWN inputs per tick (the key residuals after B14's own-support
+      mask, recovered from the state row's zr_prev block) for B29
+  replay_step(params) -> StepFn           exact B14 tick on replay_rows inputs
+      (adjacency gaps, per-tick phi, the recorded resets); score = max S/h,
+      state['mc_ratio'] = ||S_mc|| / h_mc
+  mark_resets(params, state0, rows, tol=1e-4) -> (rows, info)
+      annotate the ticks where B14 restarted / zeroed its charts (control
+      release / rebase, latch reset, end of warm-up) so a replay follows
+      them, and recover each tick's whitened MCUSUM input (mc_input)
+  mc_input(S_prev, S_new, k) -> w         inverse of one Crosier step
+  neutralize_key(x12, features, values=None) -> x12   key residuals of the
+      given feature indices (0..51) set to `values` (default 0), NaN kept
 Engine/test API: bank_h, mcusum_h, new_bank, bank_tick, new_mc, mc_whiten,
 mc_tick, peq, mcusum_p, siegmund_arl, whitener, audit_rate, state_row.
 """
@@ -592,6 +605,224 @@ def replay_inputs(store: Any, s: str, e: str, since: float, until: float
     cs = {float(a): C[i] for i, a in enumerate(tc)}
     return [(float(ts), {ZR: Z[i].astype(np.float64), CUSUM_STATE: cs.get(float(ts))})
             for i, ts in enumerate(t) if ts > since]
+
+
+def replay_rows(store: Any, s: str, e: str, since: float, until: float,
+                dt: Optional[float] = None,
+                dt_of: Optional[Callable[[float], float]] = None
+                ) -> List[Tuple[float, Dict[str, Any]]]:
+    """[(ts, {'x', 'phi', 'S', 'mc', 'adjacent'})] for since < ts <= until from
+    the behavior.cusum_state ring alone.
+
+    Why the state ring and not behavior.zr: B14 feeds the bank the key
+    residuals of the features its OWN baseline identifies at the bucket
+    (others NaN), and writes exactly that input as the row's zr_prev block
+    (bank['prev'] = x after the tick). The row therefore holds the true input
+    of its tick, float32-exact (zr itself is a float32 ring). 'adjacent'
+    follows B14: the previous row is at most 1.5 dt earlier, dt being the
+    cadence of the tick itself (dt_of(ts) when given, e.g. from B24's issued
+    stratum record, so a window reaching back over a cadence switch is
+    judged as B14 judged it; else `dt`, else B14's last cadence); the first
+    row is adjacent to the row at or before `since` when that one is close
+    enough."""
+    if dt is None:
+        run = ((get(store, s, e) or {}).get("run") or {})
+        dt = float(run.get("dt") or 900.0)
+    t, M = store.vec_range(s, e, CUSUM_STATE, -math.inf, float(until))
+    out: List[Tuple[float, Dict[str, Any]]] = []
+    prev_ts = -math.inf
+    for i, ts in enumerate(t):
+        ts = float(ts)
+        if ts > float(since):
+            r = split_state_row(M[i])
+            d_t = float(dt)
+            if dt_of is not None:
+                v = dt_of(ts)
+                if v is not None and v == v and v > 0:
+                    d_t = float(v)
+            out.append((ts, {"x": r["prev"], "phi": r["phi"], "S": r["S"], "mc": r["mc"],
+                             "adjacent": bool(ts - prev_ts <= 1.5 * d_t + 1e-6)}))
+        prev_ts = ts
+    return out
+
+
+def _replay_tick(state: Mapping[str, np.ndarray], inp: Mapping[str, Any], h: np.ndarray,
+                 h_mc: float, W: np.ndarray, Sig: np.ndarray) -> Dict[str, np.ndarray]:
+    mode = inp.get("mode") or ()
+    if "restart" in mode:                     # charts restarted before the tick (new_bank)
+        state = {"S": np.zeros(N_CHARTS), "mc": np.zeros(MC_D),
+                 "prev": np.full(N_KEY, np.nan), "phi": state["phi"]}
+    x = np.asarray(inp["x"], dtype=np.float64).reshape(-1)
+    phi = np.asarray(inp.get("phi", state["phi"]), dtype=np.float64)
+    prev = state["prev"] if inp.get("adjacent", True) else np.full(N_KEY, np.nan)
+    psi = prewhiten(x, prev, phi)
+    S = _f32(seq.cusum_step(state["S"], psi[CHART_FEAT] * CHART_SIDE, CHART_K))
+    mc = state["mc"]
+    if "w" in inp:
+        # the recorded whitened input of this tick (mark_resets recovers it
+        # from consecutive states: B14's whitener follows model.density
+        # refits and is not stored per tick); a counterfactual input moves
+        # it by the change of the whitened residual under today's whitener
+        w = inp["w"]
+        if w is not None:
+            w = np.asarray(w, dtype=np.float64)
+            psi_f = inp.get("psi")
+            if psi_f is not None and not np.array_equal(psi, psi_f, equal_nan=True):
+                d = (np.nan_to_num(mc_whiten(psi, W, Sig))
+                     - np.nan_to_num(mc_whiten(psi_f, W, Sig)))
+                w = w + d
+            mc, _ = seq.mcusum_step(mc, w, MC_K)
+            mc = _f32(mc)
+    else:
+        w = mc_whiten(psi, W, Sig)
+        if np.isfinite(w).any():
+            mc, _ = seq.mcusum_step(mc, w, MC_K)
+            mc = _f32(mc)
+    if "zero_S" in mode:                      # the bank latch reset zeroed its charts
+        S = np.zeros(N_CHARTS)
+    if "zero_mc" in mode:                     # the MCUSUM latch reset (independent)
+        mc = np.zeros(MC_D)
+    return {"S": S, "mc": np.asarray(mc, dtype=np.float64), "prev": x.copy(), "phi": phi}
+
+
+def replay_step(params: Mapping[str, Any]
+                ) -> Callable[[Dict[str, Any], Mapping[str, Any]], Tuple[Dict[str, Any], float]]:
+    """StepFn over replay_rows inputs: one B14 bank + MCUSUM tick (prewhitening
+    with the tick's recorded phi, no whitening across a gap, float32 state
+    rounding), honouring inp['mode']: a tuple of 'restart' (new bank before
+    the tick), 'zero_S' / 'zero_mc' (a latch reset after it), or 'resync'
+    (adopt the recorded state; mark_resets sets it only where nothing else
+    reproduces B14). Returns score = max_c S_c / h_c; the
+    MCUSUM ratio ||S_mc|| / h_mc is left in state['mc_ratio']."""
+    h = np.asarray(params["h"], dtype=np.float64)
+    h_mc = float(params["h_mc"])
+    W = np.asarray(params["W"], dtype=np.float64)
+    Sig = np.asarray(params["Sigma"], dtype=np.float64)
+
+    def step(state: Dict[str, Any], inp: Mapping[str, Any]) -> Tuple[Dict[str, Any], float]:
+        if "resync" in (inp.get("mode") or ()):
+            new = {"S": np.asarray(inp["S"], dtype=np.float64).copy(),
+                   "mc": np.asarray(inp["mc"], dtype=np.float64).copy(),
+                   "prev": np.asarray(inp["x"], dtype=np.float64).copy(),
+                   "phi": np.asarray(inp.get("phi", state["phi"]), dtype=np.float64)}
+        else:
+            new = _replay_tick(state, inp, h, h_mc, W, Sig)
+        new["mc_ratio"] = float(np.sqrt(np.sum(new["mc"] * new["mc"])) / h_mc)
+        return new, float(np.max(new["S"] / h))
+
+    return step
+
+
+def replay_state0(row_or_state: Any) -> Dict[str, np.ndarray]:
+    """replay_step state from a cusum_state row (or split_state_row dict)."""
+    r = split_state_row(row_or_state) if not isinstance(row_or_state, Mapping) \
+        else row_or_state
+    return {"S": np.asarray(r["S"], dtype=np.float64).copy(),
+            "mc": np.asarray(r["mc"], dtype=np.float64).copy(),
+            "prev": np.asarray(r["prev"], dtype=np.float64).copy(),
+            "phi": np.asarray(r["phi"], dtype=np.float64).copy(), "mc_ratio": 0.0}
+
+
+def mc_input(S_prev: np.ndarray, S_new: np.ndarray, k: float = MC_K) -> np.ndarray:
+    """The whitened input w of one Crosier step recovered from the states
+    before and after it: S' = (S + w)(1 - k/C), ||S'|| = C - k, so
+    S + w = S' (||S'|| + k) / ||S'||. When S' = 0 (C <= k) the input is only
+    known to lie in a ball; w = -S (C = 0) is returned. A NaN S restarts at 0
+    (seq.mcusum_step)."""
+    Sp = np.asarray(S_prev, dtype=np.float64)
+    if np.isnan(Sp).any():
+        Sp = np.zeros_like(Sp)
+    Sn = np.asarray(S_new, dtype=np.float64)
+    nrm = float(np.sqrt(np.sum(Sn * Sn)))
+    if not nrm > 0.0:
+        return -Sp
+    return Sn * (nrm + float(k)) / nrm - Sp
+
+
+def _close(a: np.ndarray, b: np.ndarray, tol: float) -> bool:
+    return bool(np.all(np.abs(np.asarray(a) - np.asarray(b)) <= tol * (1.0 + np.abs(b))))
+
+
+def mark_resets(params: Mapping[str, Any], state0: Mapping[str, Any],
+                rows: Sequence[Tuple[float, Mapping[str, Any]]], tol: float = 1e-4
+                ) -> Tuple[List[Tuple[float, Dict[str, Any]]], Dict[str, Any]]:
+    """Replay the recorded inputs and compare every tick with the recorded
+    state. Where plain replay does not reproduce B14, try a restart before
+    the tick (control release / rebase, end of warm-up: new_bank), then a
+    reset after it (latch reset: statistics zeroed), else adopt the recorded
+    state ('resync'). Returns (rows with 'mode' set, {'n_reset', 'n_resync',
+    'max_err'}) where max_err is the largest relative deviation of an
+    unannotated tick (0 for a bit-exact replay)."""
+    step = replay_step(params)
+    st = replay_state0(state0)
+    out: List[Tuple[float, Dict[str, Any]]] = []
+    n_reset = n_resync = 0
+    max_err = 0.0
+    prev_x = np.asarray(st["prev"], dtype=np.float64)
+    prev_mc = np.asarray(st["mc"], dtype=np.float64)
+    for ts, inp in rows:
+        d = dict(inp)
+        d.pop("mode", None)
+        # the MCUSUM's own whitened input, recovered from the recorded states
+        xx = np.asarray(d["x"], dtype=np.float64)
+        pv = prev_x if d.get("adjacent", True) else np.full(N_KEY, np.nan)
+        psi = prewhiten(xx, pv, np.asarray(d.get("phi", st["phi"]), dtype=np.float64))
+        d["psi"] = psi
+        d["w"] = (mc_input(prev_mc, d["mc"]) if np.isfinite(psi).any()
+                  and not np.array_equal(prev_mc, np.asarray(d["mc"], dtype=np.float64))
+                  else None)
+        prev_x, prev_mc = xx, np.asarray(d["mc"], dtype=np.float64)
+        cand, _ = step(st, d)
+        rec_S, rec_mc = np.asarray(d["S"]), np.asarray(d["mc"])
+        if _close(cand["S"], rec_S, tol) and _close(cand["mc"], rec_mc, tol):
+            with np.errstate(invalid="ignore", divide="ignore"):
+                err = float(np.max(np.abs(cand["S"] - rec_S) / (1.0 + np.abs(rec_S))))
+            max_err = max(max_err, err)
+            st = cand
+            out.append((ts, d))
+            continue
+        chosen = None
+        for mode in (("restart",), ("zero_S",), ("zero_mc",), ("zero_S", "zero_mc"),
+                     ("restart", "zero_S"), ("restart", "zero_mc")):
+            d2 = dict(d, mode=mode)
+            if "restart" in mode:
+                # a new bank: no previous residual to whiten against, and the
+                # MCUSUM restarted from 0, so its input is relative to 0
+                d2["psi"] = prewhiten(np.asarray(d["x"], dtype=np.float64),
+                                      np.full(N_KEY, np.nan),
+                                      np.asarray(d.get("phi", st["phi"]), dtype=np.float64))
+                if d.get("w") is not None:
+                    d2["w"] = mc_input(np.zeros(MC_D), d["mc"])
+            c2, _ = step(st, d2)
+            if _close(c2["S"], rec_S, tol) and _close(c2["mc"], rec_mc, tol):
+                chosen, st = d2, c2
+                n_reset += 1
+                break
+        if chosen is None:
+            chosen = dict(d, mode=("resync",))
+            st, _ = step(st, chosen)
+            n_resync += 1
+        out.append((ts, chosen))
+    return out, {"n_reset": n_reset, "n_resync": n_resync, "max_err": max_err}
+
+
+def neutralize_key(x12: Any, features: Sequence[int],
+                   values: Optional[Mapping[int, float]] = None) -> np.ndarray:
+    """Counterfactual bank input: the key residuals of the given FEATURE
+    indices (0..51; non-key features ignored) set to values[f] (default 0 =
+    the bucket median's residual). A masked (NaN) input stays NaN: B14 did not
+    chart it, so neutralising it changes nothing."""
+    x = np.array(x12, dtype=np.float64, copy=True).reshape(-1)
+    vals = values or {}
+    for f in features:
+        j = _KEY_POS.get(int(f))
+        if j is not None and math.isfinite(x[j]):
+            v = float(vals.get(int(f), 0.0))
+            x[j] = v if math.isfinite(v) else 0.0
+    return x
+
+
+_KEY_POS: Dict[int, int] = {int(f): j for j, f in enumerate(KEY_FEATURE_IDX)}
 
 
 # ============================================================ consumer reads

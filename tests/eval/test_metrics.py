@@ -420,3 +420,31 @@ def test_report_json_and_self_contained_html(tmp_path):
     assert "T1" in html and "False alarms" in html and "prefers-color-scheme" in html
     assert render_html(build_report(scores)).count("<table") >= 5
     assert not math.isnan(rep["summary"]["gates_pass"])
+
+
+def test_reopened_incident_is_a_new_opening_for_detection_but_one_far_incident():
+    """B27 reuses an incident's id when it reopens within 24 h, so `opened`
+    stays at the first opening. A threat that reopens an FP incident closed
+    before its onset is detected by that reopening (split_episodes); for
+    FAR the incident still counts once (with the max severity of its counted
+    episodes), the reopenings are reported as n_reopened."""
+    t_fp, ts = TICKS[4], TICKS[40]
+    hist = [{"ts": t_fp, "severity": "low", "status": "open", "axes": ["identity"], "kinds": []},
+            {"ts": t_fp + 4 * DT, "severity": "low", "status": "closed", "axes": ["identity"],
+             "kinds": []},
+            {"ts": ts + DT, "severity": "high", "status": "open", "axes": ["temporal"],
+             "kinds": ["alarm"]}]
+    run = make_run(truth=[truth("T5", ["10.20.1.11"], ts, ts + 8 * DT,
+                                expected_axes=["temporal"])],
+                   incidents=[inc("i1", "10.20.1.11", t_fp, "high", axes=("temporal",),
+                                  history=hist)])
+    o = M.score_run(run)["scenarios"][0]
+    assert o["detected"] and o["t_detect"] == ts + DT and o["n_incidents"] == 1
+    eps = M.split_episodes(run.incidents)
+    assert [e["opened"] for e in eps] == [t_fp, ts + DT]
+    assert eps[0]["status"] == "closed" and eps[0]["severity"] == "low"
+    # the same incident on a control entity: one FAR incident, one reopening
+    hist2 = [dict(h) for h in hist]
+    run2 = make_run(incidents=[inc("i2", "10.20.1.12", t_fp, "high", history=hist2)])
+    far = M.score_run(run2)["far"]
+    assert (far["n_low"], far["n_high"], far["n_reopened"]) == (1, 1, 1)

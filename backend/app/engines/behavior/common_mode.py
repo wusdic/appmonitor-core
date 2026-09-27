@@ -383,6 +383,16 @@ class CommonModeEngine(Engine):
                                   window_s=int(dt))
                 self._learn(ctx, lrn, s, e, now, dt)
         if not ents:
+            # nobody scored this tick: the aggregates are undefined, written
+            # as such so the series keep their cadence
+            empty = np.zeros((0, NG))
+            none = np.zeros(0, dtype=np.int64)
+            no = np.zeros(0, dtype=bool)
+            self._aggregates(ctx, s, SYSTEM_KEY, none, empty, no, now, dt,
+                             len(store.entities(s)), coherence=True)
+            for ck, mem in self._classes(store, s).items():
+                self._aggregates(ctx, s, ck, none, empty, no, now, dt, len(mem),
+                                 coherence=False)
             return 0
         n = len(ents)
         Zm = np.asarray(rows, dtype=np.float64)                  # [n, 52]
@@ -400,9 +410,12 @@ class CommonModeEngine(Engine):
         role_keys: List[str] = []
         for ck, mem in self._classes(store, s).items():
             idx = np.array(sorted(pos[m] for m in mem if m in pos), dtype=np.int64)
+            # every class key gets its aggregates each tick (undefined when
+            # no member is scored: see _aggregates), not only the classes
+            # with an active member
+            class_size[ck] = len(mem)
+            class_idx[ck] = idx
             if idx.size:
-                class_size[ck] = len(mem)
-                class_idx[ck] = idx
                 if class_kind(ck) == "role":
                     role_of[idx] = len(role_keys)
                     role_keys.append(ck)
@@ -545,10 +558,13 @@ class CommonModeEngine(Engine):
         nps = (fin & eligible[idx][:, None]).sum(axis=0)
         for j, g in enumerate(GROUP_NAMES):
             nf = int(nfs[j])
-            if nf == 0:
-                continue
             npool = int(nps[j])
-            up, down = float(ups[j]) / nf, float(downs[j]) / nf
+            # no member scored on this group this tick: the aggregate is
+            # undefined, written as such (L NaN, dir 0) rather than skipped,
+            # so the series keeps its cadence (contract: a produced series
+            # with an undefined value writes NaN, it does not go silent)
+            up = float(ups[j]) / nf if nf else _NAN
+            down = float(downs[j]) / nf if nf else _NAN
             med = _NAN
             if npool:
                 h = npool // 2

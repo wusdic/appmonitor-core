@@ -15,7 +15,7 @@ the same tick (producer before consumer):
              -> B02 peer_group -> B03 baseline -> B04 likelihood (behavior.z)
              -> B05 common_mode (reads z) -> B06 .. B18 detectors
              -> B23 feedback -> B24 calibration (behavior.p) -> B25 fusion
-             -> B26 risk -> B27 incident -> B28 governor -> [B29 explain]
+             -> B26 risk -> B27 incident -> B28 governor -> B29 explain
              -> B30 portrait
   signature  rule_match -> correlation
 
@@ -46,6 +46,7 @@ from ..engines.behavior.class_monitor import ClassMonitorEngine
 from ..engines.behavior.client_identity import ClientIdentityEngine
 from ..engines.behavior.common_mode import CommonModeEngine
 from ..engines.behavior.entity_link import EntityLinkEngine
+from ..engines.behavior.explain import ExplainEngine
 from ..engines.behavior.feature_vector import FeatureVectorEngine
 from ..engines.behavior.feedback import FeedbackEngine
 from ..engines.behavior.fusion import FusionEngine
@@ -89,8 +90,7 @@ DATA_DIR = os.environ.get(
     "APPMON_SIGNATURE_DIR",
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "signatures"))
 
-# Slot reserved for B29 explain (docs/lib3/engines.md B29): it runs right after
-# B28 governor. When the engine lands, add it to `_explain_engines()`.
+# B29 explain (docs/lib3/engines.md B29) runs right after B28 governor.
 EXPLAIN_SLOT_AFTER = "behavior.governor"
 
 
@@ -111,8 +111,9 @@ def limit_blas_threads(n: int = 1) -> None:
 
 
 def _explain_engines() -> list:
-    """B29 explain (P1, not yet implemented): the registry slot after B28."""
-    return []
+    """B29 explain: the registry slot after B28 (it reads the incidents B27
+    opened or escalated this tick and the regime B28 just wrote)."""
+    return [ExplainEngine()]
 
 
 def build_registry(sig_store: Optional[SignatureStore] = None, composite_rules=None, *,
@@ -165,7 +166,7 @@ def build_registry(sig_store: Optional[SignatureStore] = None, composite_rules=N
             RiskEngine(),                   # B26
             IncidentEngine(),               # B27
             GovernorEngine(),               # B28
-            *_explain_engines(),            # B29 slot
+            *_explain_engines(),            # B29 explain
             PortraitEngine())               # B30 (every tick; each key refreshes per 2 h at its own phase)
     # signature (行为特征库)
     reg.add(RuleMatchEngine(sig_store, min_confidence=0.6),

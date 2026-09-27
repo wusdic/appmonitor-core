@@ -221,3 +221,20 @@ def test_perf_steady_state_tick():
     assert all(m_density.get(store, S, e) is not None for e in ents)
     steady = float(np.mean(times[1:]))                              # tick 1 refits everyone
     assert steady < 0.25, f"mean tick {steady * 1e3:.1f} ms for {n_ent} entities"
+
+
+def test_reset_density_writes_undefined_wh_instead_of_going_silent():
+    """Once an entity has been scored, a tick it cannot score (the density was
+    reset, e.g. by a rollback) writes behavior.wh = NaN: the series stays on
+    its cadence (eval robustness gate: stale wh on the L6 / L8 newcomers)."""
+    rng = np.random.default_rng(2)
+    store = make_store()
+    eng = MultivariateEngine()
+    ts = feed(eng, store, null_rows(rng, 200))
+    t = ts[-1] + DT
+    feed(eng, store, null_rows(rng, 1), t0=t, training=False)
+    assert np.isfinite(float(store.vec_at(S, E, WH, t)[0]))
+    store.get_model(S, E, DENSITY)["fitted"] = False           # reset
+    t2 = t + DT
+    feed(eng, store, null_rows(rng, 1), t0=t2, training=False)
+    assert math.isnan(float(store.vec_at(S, E, WH, t2)[0]))

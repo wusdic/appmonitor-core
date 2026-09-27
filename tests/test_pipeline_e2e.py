@@ -24,7 +24,8 @@ V2_BEHAVIOR_ORDER = [
     "behavior.timing", "behavior.beacon", "behavior.budget", "behavior.changepoint",
     "behavior.identity_model", "behavior.attribution", "behavior.entity_link",
     "behavior.class_monitor", "behavior.feedback", "behavior.calibration", "behavior.fusion",
-    "behavior.risk", "behavior.incident", "behavior.governor", "behavior.portrait",
+    "behavior.risk", "behavior.incident", "behavior.governor", "behavior.explain",
+    "behavior.portrait",
 ]
 V1_ENGINES = {"behavior.anomaly", "behavior.drift", "behavior.fingerprint",
               "behavior.clustering"}

@@ -295,3 +295,27 @@ def test_cusum_state_ring_replays_bit_identically():
     for ts, inp in inputs:
         state, score = step(state, m_cp.neutralize(inp, [BYTES_UP]))
     assert score < 1.0
+
+
+def test_restart_at_end_of_warmup_clears_the_reported_alarm_of_an_idle_entity():
+    """The charts restart at S = 0 on the first live tick. An entity that is
+    idle on its first live ticks (no zr: a workstation at night) re-emits
+    run['alarm'] from _idle_outputs, so the latch of the warm-up must be
+    cleared with the charts, not carried into the live phase (eval pack B:
+    every control's cusum / mcusum acc_alarm was set from the first live
+    tick on and opened an incident)."""
+    store, eng = make_store(), ChangepointEngine()
+    rows = np.zeros((80, FEATURE_DIM))
+    rows[40:, BYTES_UP] = 4.0                           # a persistent warm-up shift
+    t = T0
+    for i, zr in enumerate(rows):
+        t = T0 + i * DT
+        feed(store, "e", t, zr)
+        run_engine(eng, store, t, training=True)
+    assert alarm(store, "e", t), "the warm-up shift should latch the bank"
+    for k in range(1, 4):                               # live, idle: no zr
+        t2 = t + k * DT
+        store.add_vec(S, "e", "feature.active", t2, np.zeros(1, np.float32), window_s=int(DT))
+        run_engine(eng, store, t2, training=False)
+        assert not alarm(store, "e", t2), k
+    assert m_cp.alarms(store, S, "e")["cusum"] == 0

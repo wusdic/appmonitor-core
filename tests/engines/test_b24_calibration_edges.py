@@ -244,13 +244,13 @@ def test_identity_uses_regime_strata_with_settled_fallback():
     for _ in range(90):
         regime("NORMAL")
         rig.step({E: {"identity": float(rng.exponential())}})
-    r0 = calib.identity_stratum_key("wd_day", 0)
+    r0 = calib.identity_stratum_key("wd_day", 0, 900)
     assert ring_n(rig, "identity", r0) >= 64
     regime("SUSPECT")
     x = 2.5
     ts = rig.step({E: {"identity": x}})
     m = rig.model()
-    assert m_calib.ring_size(m, "identity", calib.identity_stratum_key("wd_day", 1)) == 0
+    assert m_calib.ring_size(m, "identity", calib.identity_stratum_key("wd_day", 1, 900)) == 0
     u = m_calib.uniform(S, E, "identity", ts)
     settled = m_calib.p_value(m_calib.ring(m, "identity", r0), x, u)
     assert rig.p(E, "identity", ts) == pytest.approx(m_calib.issued(settled), rel=1e-6)
@@ -414,7 +414,7 @@ def test_perf_40_keys_31_detectors():
     for e in ents:                           # pre-populated mature rings with tails
         model = B24.new_model()
         for d in DETECTORS:
-            key = calib.ring_key(d, calib.identity_stratum_key("wd_day", 0)
+            key = calib.ring_key(d, calib.identity_stratum_key("wd_day", 0, 900)
                                  if d == "identity" else ST)
             r = calib.Ring(scores=rng.exponential(size=calib.RING_M),
                            ts=T0 - 1e5 + np.arange(calib.RING_M, dtype=float))
@@ -439,3 +439,25 @@ def test_perf_40_keys_31_detectors():
         assert n == 40 * 31
     per_tick = float(np.median(times[2:]))
     assert per_tick < 0.080, per_tick         # measured ~25-30 ms on a shared 4-core box
+
+
+def test_identity_rings_are_per_cadence_class():
+    """The identity score depends on the cadence (B16 windows are K active
+    ticks: 4 h at 3600 s, 1 h at 900 s), so its rings are stratified by
+    cadence class too. After 3600 s -> 900 s a 900-s identity score is not
+    judged against the (much tighter) 3600-s ring: the new stratum starts
+    empty and blends with pm (pi_self). Eval pack A: every workday identity
+    ring held only 3600-s scores ~1e-6..1e-3, the first 900-s score (0.02,
+    pi_self = 0.95) hit its GPD tail at p = 1e-38 and opened an incident on
+    every enrolled entity."""
+    rng = np.random.default_rng(4)
+    rig = Rig(daypart="wd_day", dt=3600.0)
+    for _ in range(200):
+        rig.step({E: {"identity": float(rng.uniform(1e-6, 1e-3))}},
+                 pm={E: {"identity": 0.9999}})
+    r3600 = calib.identity_stratum_key("wd_day", 0, 3600)
+    assert m_calib.ring_size(rig.model(), "identity", r3600) >= 64
+    ts = rig.step({E: {"identity": 0.0226}}, pm={E: {"identity": 0.95}}, dt=900.0)
+    assert m_calib.ring_size(rig.model(), "identity", calib.identity_stratum_key(
+        "wd_day", 0, 900)) == 0
+    assert rig.p(E, "identity", ts) == pytest.approx(0.95, rel=1e-6)

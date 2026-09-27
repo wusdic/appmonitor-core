@@ -385,13 +385,25 @@ def stratum_key(daypart: str, cc: int) -> str:
     return f"{dp}{_STRATUM_SEP}{c}"
 
 
-def identity_stratum_key(daypart: str, regime_tercile: int) -> str:
-    """Identity stratum 'daypart|r<k>' (k in 0..2)."""
+def identity_stratum_key(daypart: str, regime_tercile: int, cc: Optional[int] = None) -> str:
+    """Identity stratum 'daypart|r<k>|cc' (k in 0..2), or 'daypart|r<k>'
+    when no cadence class is given.
+
+    The identity score is cadence dependent like every other detector's
+    (B16 scores windows of K active ticks: 4 h of evidence at 3600-s ticks,
+    1 h at 900 s, 4 min at 60 s, so pi_self is far more certain at coarse
+    cadences), hence the cadence class joins daypart x regime tercile, as
+    architecture 6 requires of every conformal ring. B24 always passes cc."""
     dp = _check_part("daypart", daypart, _KEY_SEP + _STRATUM_SEP)
     k = _as_int(regime_tercile)
     if k is None or not 0 <= k <= 2:
         raise ValueError(f"identity_stratum_key: regime tercile {regime_tercile!r} not in 0..2")
-    return f"{dp}{_STRATUM_SEP}r{k}"
+    if cc is None:
+        return f"{dp}{_STRATUM_SEP}r{k}"
+    c = _as_int(cc)
+    if c is None or c <= 0:
+        raise ValueError(f"identity_stratum_key: cadence class {cc!r} must be a positive integer")
+    return f"{dp}{_STRATUM_SEP}r{k}{_STRATUM_SEP}{c}"
 
 
 def ring_key(detector: str, stratum: str) -> str:

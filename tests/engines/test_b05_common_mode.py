@@ -550,3 +550,37 @@ def test_perf_40_entities():
         times.append(time.perf_counter() - t0)
     med_ms = 1000 * float(np.median(times[5:]))
     assert med_ms < 25.0, med_ms                 # spec target 1 ms; generous CI bound
+
+
+def test_group_with_no_scored_member_is_written_as_undefined():
+    """A class whose scored members all have NaN on one group (e.g. no
+    transport exposure this tick) still gets a behavior.common.<g> point,
+    undefined (L NaN, n 0, dir 0), so the series keeps its cadence instead
+    of going silent (eval robustness gate: stale class:<id> series)."""
+    store = make_store()
+    ips = [f"10.0.12.{i}" for i in range(1, 5)]
+    idle = ["10.0.12.8", "10.0.12.9"]
+    put_classes(store, {"r1": ips, "r2": idle})
+    inactive(store, T0, idle)
+    zs = {}
+    for ip in ips:
+        z = zrow(volume=0.5)
+        z[GROUPS["transport"]] = np.nan
+        zs[ip] = z
+    tick(store, T0, zs)
+    run_engine(CommonModeEngine(), store, T0)
+    for key in ("class:r1", SYSTEM_KEY):
+        v = emit.read_dict(store, S, key, "behavior.common.transport", T0)
+        assert v, key
+        assert math.isnan(v["L"]) and v["n"] == 0 and v["n_scored"] == 0 and v["dir"] == 0
+        assert emit.read_dict(store, S, key, "behavior.common.volume", T0)["n_scored"] == 4
+    # a class none of whose members is scored this tick, and a system in
+    # which nobody is scored, are written as undefined too
+    v = emit.read_dict(store, S, "class:r2", "behavior.common.volume", T0)
+    assert v and v["n_scored"] == 0 and math.isnan(v["L"]) and v["n_members"] == 2
+    t1 = T0 + DT
+    inactive(store, t1, ips + idle)
+    run_engine(CommonModeEngine(), store, t1)
+    for key in ("class:r1", "class:r2", SYSTEM_KEY):
+        v = emit.read_dict(store, S, key, "behavior.common.volume", t1)
+        assert v and v["n_scored"] == 0 and v["dir"] == 0, key

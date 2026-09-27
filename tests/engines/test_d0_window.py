@@ -418,3 +418,21 @@ def test_perf_many_entities():
     per_entity_ms = (time.perf_counter() - t0) * 1000.0 / len(ents)
     # measured ≈ 1.8 ms per entity for all three at 900-s ticks; generous bound
     assert per_entity_ms < 6.0, per_entity_ms
+
+
+def test_periodicity_undefined_when_the_span_holds_too_few_ticks():
+    """A 6-h span at 3600-s ticks holds 6 grid points (< MIN_TICKS = 8): no
+    autocorrelation can be estimated, so no periodicity score / lag is
+    written (B01 reads the window feature as NaN), while regularity still
+    is. A written 0 taught every hourly-cadence baseline bucket a point mass
+    at 0 that the first 900-s estimate hit at z >> 10 (eval pack A)."""
+    st = make_store()
+    dt = 3600.0
+    rng = np.random.default_rng(5)
+    for i in range(24):
+        _tick(st, E, T0 + i * dt, True, value=float(rng.poisson(40)))
+    now = T0 + 23 * dt
+    run_engine(PeriodicityEngine(), st, now, dt=dt)
+    assert _d(st, "derived.periodicity_score", now) is None
+    assert _d(st, "derived.beacon_lag", now) is None
+    assert _d(st, "derived.timing_regularity", now) is not None

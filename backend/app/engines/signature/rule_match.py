@@ -39,7 +39,14 @@ class RuleMatchEngine(Engine):
                 continue
             names = self._metric_names(sigs)
             for entity in ctx.store.entities(system):
-                snap = ctx.store.snapshot(system, entity, names=names)
+                # fresh-only (written at this tick): a match answers "what is
+                # the entity doing right now". Without `now` the latest value
+                # of any age was used, so a host that uploaded once kept
+                # matching bulk_upload (HIGH) on every idle tick afterwards
+                # (eval: the nightly backup hosts matched on ~150 of 152 ticks,
+                # which zeroed their warm-up trust and made B26 / B28 treat
+                # them as attackers from the first live tick)
+                snap = ctx.store.snapshot(system, entity, now=ctx.now, names=names)
                 if not snap:
                     continue
                 for sig in sigs:

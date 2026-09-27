@@ -484,7 +484,7 @@ class CalibrationEngine(Engine):
         if admit and mature:
             cc = timebins.cadence_class(row.dt)
             keys = self._keys_for(calib.stratum_key(row.daypart, cc),
-                                  calib.identity_stratum_key(row.daypart, row.tercile))
+                                  calib.identity_stratum_key(row.daypart, row.tercile, cc))
             rings, refit = model[RINGS], model["refit"]
             ts = row.ts
             for i, x in enumerate(row.scores.tolist()):
@@ -620,7 +620,7 @@ class CalibrationEngine(Engine):
         dp, _ = self._daypart(store, s, e, now, dt)
         terc = m_calib.regime_tercile(_latest_value(store, s, e, REGIME))
         st = calib.stratum_key(dp, cc)
-        st_id = calib.identity_stratum_key(dp, terc)
+        st_id = calib.identity_stratum_key(dp, terc, cc)
         keys = self._keys_for(st, st_id)
         rings, refit = model[RINGS], model["refit"]
         pm = store.vec_at(s, e, PM, now)
@@ -687,7 +687,7 @@ class CalibrationEngine(Engine):
             if p == p:
                 return p
         if i == _ID_IDX and terc != 0:
-            r0 = rings.get(self._ring_key(d, calib.identity_stratum_key(dp, 0)))
+            r0 = rings.get(self._ring_key(d, calib.identity_stratum_key(dp, 0, cc)))
             if r0 is not None and len(r0) >= SMALL_N:
                 return m_calib.p_value(r0, x, u)
         return _NAN
