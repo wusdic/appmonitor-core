@@ -32,6 +32,8 @@ Storage. Every tick's quantity row goes to
     every row back into the bin of its own hour. A committed bin holds
     sum w x, sum w dt/3600 and the covered fraction of the hour; its value is
     the trust-weighted rate per full hour (valid with >= 30 min covered).
+    Commits are batched (4 due rows, or one waiting an hour): learning later
+    than D is allowed and the gate's per-call cost dominates at 60 s.
 
 Horizons (hours ending with the current local hour, which is partial):
 1 h, 8 h, day-to-date (from local midnight) and 7 d. Within an hour every
@@ -39,39 +41,55 @@ horizon sum only grows, so an alarm at any tick of the hour implies the
 end-of-hour value exceeds the phase threshold: the false-alarm budget is
 exactly that of 24 hourly evaluations per day, at any cadence (900 -> 60 s).
 
-Thresholds (refit round-robin, <= 1 quantity per entity per tick, each
-quantity every 6 h and at every new local day), from the committed ring over
-the 28 past local days (today excluded):
-  * window sums W[d, h] for each horizon, day d, local phase h;
-  * per (horizon, day_type, phase): median and robust scale (MAD, mean
-    absolute deviation when the MAD is 0, floors 2 % of the median and 1 %
-    of the absolute floor) of the same-phase, same-day_type history
-    (7 d: every day), falling back to all day types with < 4 samples;
+Thresholds (refit round-robin once per local day, and at once after a
+rollback / release / rebase or link seed; the day's fits are spread over
+12 h, least recently served entity first), from the committed ring over the
+28 past local days (today excluded):
+  * window sums W[d, h] for each horizon, day d, local phase h, taken as
+    L = log(W + unit), unit = 1 % of the absolute floor: budgets are
+    multiplicative, and a phase whose 8-h window is one busy lognormal hour
+    is far more skewed than one summing 24 hours; only in logs are the
+    standardised residuals of different phases exchangeable;
+  * per (horizon, day_type, phase): median and robust scale of L (MAD, mean
+    absolute deviation when the MAD is 0; >= 0.02, a 2 % relative spread)
+    over the same-phase, same-day_type history (7 d: every day), the median
+    falling back to all day types with < 4 samples and the scale to the
+    spread pooled over all days with < 10 (weekends), then smoothed over
+    +-2 local hours. Same-phase 7-d windows of consecutive days share 6
+    days, so their spread understates the scale: it is at least the robust
+    log scale of the rolling 24-h sums / sqrt(7), and the 7-d z_q at least
+    the normal quantile;
   * the standardised residuals of all phases and days are pooled, and a
     POT/GPD tail is fitted above u = their P98 with the PWM estimators
     (lib/evt). With ~13 exceedances, many from the same day, the raw PWM
     shape is too noisy for a 1e-5 quantile: xi is shrunk n/(n + 30) towards
-    0 and clipped to [0, 0.3], sigma = mean excess (1 - xi) >= 0.3 (a
+    0 and clipped to [0, 0.3], sigma = mean excess (1 - xi) >= 0.4 (a
     collapse onto one day's residuals cannot give a razor-thin tail). There
     is no upward drift term.
-  * z_q = median + scale * pot_quantile(u, xi, sigma, rate, q) with
-    q = 0.01 / (#Q #H 24): the family false-alarm rate is <= 0.01 per
-    entity-day.
+  * z_q = exp(median + scale * pot_quantile(u, xi, sigma, rate, q)) - unit
+    with q = 0.01 / (#Q #H 24): the family false-alarm rate is <= 0.01 per
+    entity-day (null runs, 630 entity-days with a diurnal / weekly profile
+    and hourly LogNormal(0.5) noise: 0.16 % alarm days; 0 in 84 at 900 s).
   * Fewer than 20 days of history: the peers' pooled GPD (median parameters
     of the mature class members, else of the mature system entities) with
-    the scale rescaled by the entity median (scale = |median| x peer CV);
-    phases without own samples take the peer median level. Without mature
-    peers, an entity with >= 7 days fits its own tail; younger ones stay
-    unscored (NaN).
+    the peers' log scales, i.e. their relative spread rescaled by the entity
+    median; phases without own samples take the peers' median level.
+    Without mature peers, an entity with >= 7 days fits its own tail;
+    younger ones stay unscored (NaN).
 Alarm on (Q, H) when B > z_q AND B - median > abs_floor_Q (config
 'budget_abs_floor', defaults below) AND, except for exfil, the common-mode
-guard passes: B / peer_median exceeds the P99 of its own history of that
-ratio (peers' committed windows at the same hours) AND B exceeds z_q
-rescaled by the peers' current level over their usual level at this phase.
-The second half is a strengthening of the spec's ratio guard: under a
-class-wide x2.5 day the ratio is at its usual level, so it alone would still
-pass 1 % of the class's hourly evaluations; rescaling the threshold by the
-common factor leaves only the entity's own null exceedances.
+guard passes. Peers are the class members (m_class, >= 3 in the system),
+else the system's entities; B / peer_median (current horizon sums of the
+peers, median over >= 2) must exceed the P99 of the entity's own history of
+that ratio (the peers' committed windows at the same hours) AND the level-q
+threshold of the log ratio (same-phase median / robust scale, POT quantile
+of the pooled residuals, like z_q). The second half strengthens the spec's
+P99 guard: under a class-wide x2.5 day B > z_q holds at every evaluation and
+the ratio keeps its null law, so the P99 alone passes 1 % of the hourly
+evaluations (measured with the P99 alone: 1 alarming entity in 48
+class-entity-days of a x2.5 surge, 2x the whole budget); the level-q ratio
+test passes at rate q (0 in the same runs). Without a ratio fit the
+threshold is instead rescaled by the peers' current over usual level.
 
 Actors: when model.link@(s, __system__).actors chains IPs, the members'
 horizon sums are added and evaluated against the thresholds of the member
@@ -142,7 +160,6 @@ AXES: Tuple[str, ...] = ("volume", "exfil", "breadth")
 AXIS_DETECTOR = {"volume": "budget_vol", "exfil": "budget_exfil", "breadth": "budget_breadth"}
 AXIS_Q = {ax: np.array([i for i, a in enumerate(Q_AXIS) if a == ax]) for ax in AXES}
 GUARDED = np.array([a != "exfil" for a in Q_AXIS])          # common-mode guard applies
-VOL_Q = AXIS_Q["volume"]
 ACT_Q = np.concatenate((AXIS_Q["exfil"], AXIS_Q["breadth"]))  # need R2's act.* series
 
 # absolute floors (natural units per horizon); ctx.config['budget_abs_floor'] overrides
@@ -150,8 +167,8 @@ ABS_FLOOR_DEFAULT: Dict[str, float] = {
     "bytes_up": 5e6, "bytes_down": 50e6, "writes": 200.0, "slots": 8.0,
     "up_novel": 20e6, "dns_label": 2e5, "objs": 500.0, "templates": 50.0, "dests": 50.0,
 }
-UNIT_FRAC = 0.01          # scale floor = 1 % of the absolute floor
-REL_FLOOR = 0.02          # scale floor = 2 % of |median|
+UNIT_FRAC = 0.01          # log offset: log(W + 1 % of the absolute floor)
+LOG_SCALE_MIN = 0.02      # scale floor: a 2 % relative spread
 
 # -------------------------------------------------------------- horizons
 H_NAMES: Tuple[str, ...] = ("1h", "8h", "day", "7d")
@@ -170,6 +187,8 @@ DAY_MIN_HOURS = 12                 # valid hours for a day to count as history
 MATURE_DAYS = 20                   # own tail from here on
 MIN_OWN_DAYS = 7                   # own (immature) tail when no mature peer exists
 MIN_PHASE_N = 4
+PHASE_SMOOTH = 2                   # scale: running median over +-2 local hours
+MIN_SCALE_N = 10                   # days of one day type for its own scale
 MIN_PHASE_N_YOUNG = 2
 MIN_POOL = 96                      # pooled residuals for an own tail
 MIN_POOL_IMMATURE = 48
@@ -177,7 +196,7 @@ TAIL_U_Q = 0.98
 TAIL_U_FALLBACK = 0.90
 XI_MAX = 0.3
 XI_SHRINK_N = 30.0
-SIGMA_MIN = 0.3                    # in robust-scale units
+SIGMA_MIN = 0.4                    # robust-scale units (a normal tail has ~0.38 above P98)
 Q_EVAL = 0.01 / (NQ * NH * 24)     # per (Q, H) hourly evaluation
 Z_NORMAL = NormalDist().inv_cdf(1.0 - Q_EVAL)   # 7-d sums are CLT-normal at least
 SQRT7 = math.sqrt(7.0)
@@ -185,12 +204,12 @@ PQ = np.linspace(0.0, TAIL_U_Q, 50)          # body quantile grid (last = u)
 RATIO_Q = 0.99
 RATIO_MIN_N = 48
 MIN_PEERS = 2
-LOGRATIO_SCALE_MIN = 0.05          # log units: ratios are never tighter than 5 %
+PEER_EXACT_MAX = 8                 # leave-self-out peer medians up to this set size
+LOGRATIO_SCALE_MIN = 0.05          # log units: peer ratios are never tighter than 5 %
 REFIT_S = 86400.0                  # every quantity is refitted once per local day
-FIT_SPREAD_S = 6 * 3600.0          # ... spread over the first hours of the day
+FIT_SPREAD_S = 12 * 3600.0         # ... spread over the first half of the day
 FIT_MIN_PER_TICK = 4
 COMMIT_BATCH = 4
-PEER_POOL_TTL_S = 3600.0
 FIT_MAX_PER_TICK = 64
 P_FLOOR = 1e-300
 PM_STORE_FLOOR = m_calib.P_ISSUED_FLOOR
@@ -344,6 +363,7 @@ def new_fit() -> Dict[str, Any]:
         "body": np.full((NQ, NH, PQ.size), nan),
         "rp99": np.full((NQ, NH), nan), "pmh": np.full((NQ, NH, 2, 24), nan),
         "rthr": np.full((NQ, NH, 2, 24), nan),        # log(B / peer median) threshold at q
+        "unit": np.full(NQ, nan),                     # offset of log(W + unit) at the fit
     }
 
 
@@ -487,55 +507,83 @@ def _robust(sub: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     return med, scale, n
 
 
-def phase_stats(W: np.ndarray, dtypes: np.ndarray, min_n: int, log_ratio: bool = False
+def phase_stats(L: np.ndarray, dtypes: np.ndarray, min_n: int
                 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Median and robust scale per (horizon, day_type, phase) of the history
-    windows (same day_type, else all days; 7 d always all days). Unfloored.
+    """Median and robust scale per (horizon, day_type, phase) of LOG history
+    windows log(W + unit) (or log ratios). Unfloored.
+
+    Why logs: budgets are multiplicative (a phase whose 8-h window is one
+    busy lognormal hour is far more skewed than a phase summing 24 hours),
+    and pooled standardised residuals are only exchangeable across phases if
+    the skew is gone; in logs a spread is a relative spread, so a young
+    entity can take its peers' scales as they are.
+
+    Median: same day_type with >= min_n samples, else all days (7 d: always
+    all days). Scale: a MAD needs days, not phases, so a day type with fewer
+    than MIN_SCALE_N days (weekends: ~6 of 20) takes the spread pooled over
+    all days of their deviations from their own day type's median; then a
+    running median over +-PHASE_SMOOTH neighbouring phases (clamped, not
+    circular: day-to-date restarts at midnight). Noisy per-phase scales give
+    the pooled residuals a t-like tail (measured: 1-h z_q ~ 15 instead of ~5).
 
     Same-phase 7-d windows of consecutive days share 6 of their 7 days, so
     their spread across 28 days reflects ~4 independent weeks and grossly
-    understates the scale. With the auxiliary rolling-24 h row (W[NH]),
-    the 7-d scale is at least sqrt(7) x the robust scale of the 24-h sums
-    about their day-type median (days are the independent units); for a
-    log ratio the relative scale shrinks instead: 24-h scale / sqrt(7)."""
-    aux = W[NH] if W.shape[0] > NH else None
-    W = W[:NH]
+    understates the scale. With the auxiliary rolling-24 h row (L[NH]), the
+    7-d log scale is at least the robust log scale of the 24-h sums about
+    their day-type median / sqrt(7) (days are the independent units)."""
+    aux = L[NH] if L.shape[0] > NH else None
+    L = L[:NH]
     med = np.full((NH, 2, 24), np.nan)
-    scale = np.full((NH, 2, 24), np.nan)
-    m_a, s_a, n_a = _robust(W)
+    own = np.full((NH, 2, 24), np.nan)
+    n_own = np.zeros((NH, 2, 24), dtype=np.int64)
+    m_a, s_a, n_a = _robust(L)
     ok_a = n_a >= min_n
     for t in (0, 1):
         sel = dtypes == t
         if sel.any():
-            m_t, s_t, n_t = _robust(W[:, sel, :])
+            m_t, s_t, n_t = _robust(L[:, sel, :])
             ok_t = n_t >= min_n
             ok_t[H_7D] = False
         else:
             m_t = s_t = np.full((NH, 24), np.nan)
+            n_t = np.zeros((NH, 24), dtype=np.int64)
             ok_t = np.zeros((NH, 24), dtype=bool)
         med[:, t] = np.where(ok_t, m_t, np.where(ok_a, m_a, np.nan))
-        scale[:, t] = np.where(ok_t, s_t, np.where(ok_a, s_a, np.nan))
+        own[:, t] = np.where(ok_t, s_t, np.where(ok_a, s_a, np.nan))
+        n_own[:, t] = np.where(ok_t, n_t, np.where(ok_a, n_a, 0))
+    pooled = _robust(L - med[:, dtypes, :])[1][:, None, :]
+    scale = np.where(n_own >= MIN_SCALE_N, own, pooled)
+    scale = np.where(np.isnan(med), np.nan, scale)
+    scale = np.where(np.isnan(scale), np.nan, _nanmed(scale[..., _SMOOTH_IDX], -2)[0])
     if aux is not None:
         m24 = np.full((2, 24), np.nan)
         for t in (0, 1):
             sel = dtypes == t
             if sel.any():
                 m24[t] = _nanmed(aux[sel], 0)[0]
-        m_all = _nanmed(aux, 0)[0]
-        m24 = np.where(np.isnan(m24), m_all, m24)
-        dev = aux - m24[dtypes]
-        s24 = 1.4826 * _nanmed(np.abs(dev - _nanmed(dev, 0)[0]), 0)[0]
-        s7 = s24 / SQRT7 if log_ratio else s24 * SQRT7
+        m24 = np.where(np.isnan(m24), _nanmed(aux, 0)[0], m24)
+        dev24 = aux - m24[dtypes]
+        s7 = 1.4826 * _nanmed(np.abs(dev24 - _nanmed(dev24, 0)[0]), 0)[0] / SQRT7
         with np.errstate(invalid="ignore"):
             scale[H_7D] = np.where(np.isnan(s7), scale[H_7D], np.fmax(scale[H_7D], s7))
     return med, scale
 
 
-def floor_scale(med: np.ndarray, scale: np.ndarray, unit: float) -> np.ndarray:
+_SMOOTH_IDX = np.clip(np.arange(24)[None, :] + np.arange(-PHASE_SMOOTH, PHASE_SMOOTH + 1)[:, None],
+                      0, 23)                      # (2k+1, 24) clamped neighbour phases
+
+
+def floor_scale(med: np.ndarray, scale: np.ndarray, floor: float = LOG_SCALE_MIN
+                ) -> np.ndarray:
+    """Log scales never below `floor` (a 2 % relative spread)."""
     with np.errstate(invalid="ignore"):
-        fl = np.maximum(REL_FLOOR * np.abs(med), unit)
-        out = np.where(np.isnan(scale), np.nan, np.maximum(scale, fl))
+        out = np.where(np.isnan(scale), np.nan, np.maximum(scale, floor))
     return np.where(np.isnan(med), np.nan, out)
+
+
+def log_windows(W: np.ndarray, unit: float) -> np.ndarray:
+    with np.errstate(invalid="ignore"):
+        return np.log(np.maximum(W, 0.0) + unit)
 
 
 def fit_tail(r: np.ndarray, min_pool: int) -> Optional[np.ndarray]:
@@ -740,7 +788,8 @@ def _link_sources(link: Any, e: str) -> List[str]:
     out = []
     for lk in items:
         if isinstance(lk, Mapping) and lk.get("to") == e and lk.get("from") \
-                and not lk.get("retracted") and lk.get("status") != "retracted":
+                and not (lk.get("retracted") or lk.get("status") == "retracted"
+                         or lk.get("state") == "retracted" or lk.get("active") is False):
             out.append(str(lk["from"]))
     return out
 
@@ -1131,8 +1180,26 @@ class BudgetEngine(Engine):
                 if isinstance(mod, dict) and mod.get("fmt") == FMT:
                     v, _ok = hourly_values(mod["state"], q, day0)
                     W[m] = window_sums(v)
-            c = self._pcache[ck] = {"day0": day0, "ts": now, "W": W}
+            c = self._pcache[ck] = {"day0": day0, "ts": now, "W": W, "pmed": None}
         return c["W"]
+
+    def _peer_median(self, s: str, pkey: str, q: int, e: str, peers: Sequence[str],
+                     Wp: Mapping[str, np.ndarray]) -> Optional[np.ndarray]:
+        """Median of the peers' history windows (NaN below MIN_PEERS). Exact
+        leave-self-out for small peer sets; above PEER_EXACT_MAX members the
+        all-member median is shared by the whole set (cached with the
+        windows; one member moves it by at most one order statistic)."""
+        others = [Wp[m] for m in peers if m in Wp]
+        if len(others) < MIN_PEERS:
+            return None
+        if len(Wp) <= PEER_EXACT_MAX:
+            pm, cnt = _nanmed(np.stack(others), 0)
+            return np.where(cnt >= MIN_PEERS, pm, np.nan)
+        c = self._pcache[(s, pkey, q)]
+        if c["pmed"] is None:
+            pm, cnt = _nanmed(np.stack(list(Wp.values())), 0)
+            c["pmed"] = np.where(cnt >= MIN_PEERS + 1, pm, np.nan)
+        return c["pmed"]
 
     # ------------------------------------------------------------------- fits
     def _fits(self, store: Any, s: str, recs: List[_Rec], tick: Dict[str, Any],
@@ -1155,7 +1222,8 @@ class BudgetEngine(Engine):
                    or not (0.0 <= now - fit["ts"][q] < REFIT_S)]
             if due:
                 due.sort(key=lambda q: fit["ts"][q])
-                work.append((float(fit["ts"][due[0]]), r.e, r, due[:per_ent]))
+                last = float(np.max(fit["ts"]))           # fairness: least recently served
+                work.append(((float(fit["ts"][due[0]]), last), r.e, r, due[:per_ent]))
                 total += len(due)
         work.sort(key=lambda w: (w[0], w[1]))
         n_fit = min(budget[0], max(FIT_MIN_PER_TICK,
@@ -1184,57 +1252,58 @@ class BudgetEngine(Engine):
         src, med, scale, tl = SRC_NONE, None, None, None
         pool = None
         if n_days < MIN_OWN_DAYS:
-            pool = self._peer_pool(store, s, r.pkey, sorted(set(r.peers) | {r.e}), q, now)
+            pool = self._pool(store, s, r.peers, q, unit)
             if pool is None:                              # nothing to score with yet
                 self._clear_fit(fit, q)
                 return
         W = window_sums(v)
+        L = log_windows(W, unit)
         if n_days >= MATURE_DAYS:
             src = SRC_OWN
-            med, scale = phase_stats(W, dtypes, MIN_PHASE_N)
-            scale = floor_scale(med, scale, unit)
-            tl = self._own_tail(W, med, scale, dtypes, MIN_POOL)
+            med, scale = phase_stats(L, dtypes, MIN_PHASE_N)
+            scale = floor_scale(med, scale)
+            tl = self._own_tail(L, med, scale, dtypes, MIN_POOL)
         if tl is None:
             if pool is None:
-                pool = self._peer_pool(store, s, r.pkey, sorted(set(r.peers) | {r.e}), q, now)
+                pool = self._pool(store, s, r.peers, q, unit)
             if pool is not None:
+                # peers' pooled tail; their log (= relative) scales are the
+                # entity's scales rescaled by its own median
                 src = SRC_PEER
-                m_own, s_own = phase_stats(W, dtypes, MIN_PHASE_N_YOUNG)
+                m_own, s_own = phase_stats(L, dtypes, MIN_PHASE_N_YOUNG)
                 med = np.where(np.isnan(m_own), pool["level"], m_own)
-                with np.errstate(invalid="ignore"):
-                    sc = np.abs(med) * pool["cv"]
-                # a zero median has no CV: the entity's own scale, else the peers'
-                sc = np.where(np.isnan(sc), s_own, sc)
-                scale = floor_scale(med, np.where(np.isnan(sc), pool["scale"], sc), unit)
+                scale = floor_scale(med, np.where(np.isnan(pool["scale"]), s_own,
+                                                  pool["scale"]))
                 tl = np.broadcast_to(pool["tail"], (NH, pool["tail"].shape[-1]))
             elif n_days >= MIN_OWN_DAYS:
                 src = SRC_OWN_IMMATURE
-                med, scale = phase_stats(W, dtypes, MIN_PHASE_N_YOUNG)
-                scale = floor_scale(med, scale, unit)
-                tl = self._own_tail(W, med, scale, dtypes, MIN_POOL_IMMATURE)
+                med, scale = phase_stats(L, dtypes, MIN_PHASE_N_YOUNG)
+                scale = floor_scale(med, scale)
+                tl = self._own_tail(L, med, scale, dtypes, MIN_POOL_IMMATURE)
         if tl is None or med is None:
             self._clear_fit(fit, q)
             return
-        fit["src"][q] = src
+        fit["src"][q], fit["unit"][q] = src, unit
         fit["med"][q], fit["scale"][q] = med, scale
         fit["tail"][q], fit["body"][q] = tl[:, :5], tl[:, 5:]
         fit["rp99"][q], fit["pmh"][q], fit["rthr"][q] = np.nan, np.nan, np.nan
         if GUARDED[q] and len(r.peers) >= MIN_PEERS:
             members = sorted(set(r.peers) | {r.e})
             Wp = self._peer_windows(store, s, r.pkey, members, q, day0, now)
-            others = [Wp[m] for m in r.peers if m in Wp]
-            if len(others) >= MIN_PEERS:
+            Pmed = self._peer_median(s, r.pkey, q, r.e, r.peers, Wp)
+            if Pmed is not None:
                 fit["rp99"][q], fit["pmh"][q], fit["rthr"][q] = self._guard_history(
-                    W, np.stack(others), dtypes, unit)
+                    W, Pmed, dtypes, unit)
 
     @staticmethod
-    def _own_tail(W: np.ndarray, med: np.ndarray, scale: np.ndarray, dtypes: np.ndarray,
+    def _own_tail(L: np.ndarray, med: np.ndarray, scale: np.ndarray, dtypes: np.ndarray,
                   min_pool: int) -> Optional[np.ndarray]:
-        """Per horizon: POT fit of the standardised residuals pooled over all
-        phases and days; None if any horizon lacks data (1 h / 8 h / day), so
-        a fit is all-or-nothing except the 7-d horizon (young history)."""
+        """Per horizon: POT fit of the standardised log residuals pooled over
+        all phases and days; None if any horizon lacks data (1 h / 8 h /
+        day), so a fit is all-or-nothing except the 7-d horizon (young
+        history)."""
         with np.errstate(invalid="ignore", divide="ignore"):
-            R = (W[:NH] - med[:, dtypes, :]) / scale[:, dtypes, :]
+            R = (L[:NH] - med[:, dtypes, :]) / scale[:, dtypes, :]
         out = np.full((NH, 5 + PQ.size), np.nan)
         for k in range(NH):
             t = fit_tail(R[k].ravel(), min_pool)
@@ -1251,34 +1320,23 @@ class BudgetEngine(Engine):
         for k in ("med", "scale", "tail", "body", "pmh", "rp99", "rthr"):
             fit[k][q] = np.nan
 
-    def _peer_pool(self, store: Any, s: str, pkey: str, peers: Sequence[str], q: int,
-                   now: float) -> Optional[Dict[str, np.ndarray]]:
-        """The mature peers' pooled tail, cached per (system, peer set, q) for
-        an hour (the peers refit every 6 h)."""
-        ck = (s, "pool:" + pkey, q)
-        c = self._pcache.get(ck)
-        if c is None or not (0.0 <= now - c["ts"] < PEER_POOL_TTL_S):
-            c = self._pcache[ck] = {"ts": now, "pool": self._pool(store, s, peers, q)}
-        return c["pool"]
-
     @staticmethod
-    def _pool(store: Any, s: str, peers: Sequence[str], q: int
+    def _pool(store: Any, s: str, peers: Sequence[str], q: int, unit: float
               ) -> Optional[Dict[str, np.ndarray]]:
-        """Pooled GPD of the mature peers (median parameters, z_q recomputed),
-        their median CV per phase and their median level per phase."""
-        tails, bodies, cvs, levels, scales = [], [], [], [], []
+        """Pooled GPD of the mature peers, the entity itself excluded (median
+        parameters, z_q recomputed), their median log level and log scale per
+        phase (fitted with the same unit). Only young entities (or a failed
+        own tail) ask, once a day."""
+        tails, bodies, levels, scales = [], [], [], []
         for m in peers:
             mod = store.get_model(s, m, MODEL)
             if not (isinstance(mod, dict) and mod.get("fmt") == FMT):
                 continue
             f = mod["fit"]
-            if int(f["src"][q]) != SRC_OWN:
+            if int(f["src"][q]) != SRC_OWN or f["unit"][q] != unit:
                 continue
             tails.append(f["tail"][q])
             bodies.append(f["body"][q])
-            with np.errstate(invalid="ignore", divide="ignore"):
-                med = f["med"][q]
-                cvs.append(np.where(np.abs(med) > 0, f["scale"][q] / np.abs(med), np.nan))
             levels.append(f["med"][q])
             scales.append(f["scale"][q])
         if not tails:
@@ -1291,25 +1349,22 @@ class BudgetEngine(Engine):
         body, _ = _nanmed(np.stack(bodies), 0)
         body = np.maximum.accumulate(np.where(np.isnan(body), -np.inf, body), axis=-1)
         body = np.where(np.isinf(body), np.nan, body)
-        cv, _ = _nanmed(np.stack(cvs), 0)
         level, _ = _nanmed(np.stack(levels), 0)
         scale, _ = _nanmed(np.stack(scales), 0)
-        return {"tail": np.concatenate((tail, body), axis=-1), "cv": cv, "level": level,
-                "scale": scale}
+        return {"tail": np.concatenate((tail, body), axis=-1), "level": level, "scale": scale}
 
     @staticmethod
-    def _guard_history(W: np.ndarray, Wp: np.ndarray, dtypes: np.ndarray, unit: float
+    def _guard_history(W: np.ndarray, Pmed: np.ndarray, dtypes: np.ndarray, unit: float
                        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """From the entity's and its peers' committed windows:
+        """From the entity's committed windows and its peers' median ones:
           rp99  P99 of the entity's own B / peer-median ratio per horizon (spec);
-          pmh   the peers' median level per (horizon, day_type, phase);
+          pmh   the peers' median level per (horizon, day_type, phase), in
+                natural units;
           rthr  the level-q threshold of log(B / peer median) per (horizon,
                 day_type, phase): same-phase median / robust scale of the log
                 ratio and the POT quantile of its pooled standardised
                 residuals. Under a class-wide shift the ratio keeps its null
                 law, so the guard passes at rate q, not 1 %."""
-        Pmed, cnt = _nanmed(Wp, 0)
-        Pmed = np.where(cnt >= MIN_PEERS, Pmed, np.nan)
         with np.errstate(invalid="ignore", divide="ignore"):
             ratio = (W + unit) / (Pmed + unit)
             lr = np.log(ratio)
@@ -1318,7 +1373,8 @@ class BudgetEngine(Engine):
             rk = ratio[k][np.isfinite(ratio[k])]
             if rk.size >= RATIO_MIN_N:
                 rp[k] = float(_sorted_quantile(np.sort(rk), RATIO_Q))
-        pmh, _ = phase_stats(Pmed, dtypes, MIN_PHASE_N)
+        pl, _ = phase_stats(log_windows(Pmed, unit), dtypes, MIN_PHASE_N)
+        pmh = np.exp(pl) - unit
         med_l, sc_l = phase_stats(lr, dtypes, MIN_PHASE_N)
         sc_l = floor_scale(med_l, sc_l, LOGRATIO_SCALE_MIN)
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -1355,12 +1411,14 @@ class BudgetEngine(Engine):
         dti, h = tick["dti"], tick["h"]
         floors = tick["floors"]
         Bt = B.T                                                   # (NQ, NH)
-        m = fit["med"][:, :, dti, h]
+        lm = fit["med"][:, :, dti, h]                             # log(W + unit) space
         sc = fit["scale"][:, :, dti, h]
         tl = fit["tail"]
+        unit = fit["unit"][:, None]
         with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
-            zthr = m + sc * tl[..., 4]
-            rz = (Bt - m) / sc
+            zthr = np.exp(lm + sc * tl[..., 4]) - unit             # natural units
+            m = np.exp(lm) - unit                                  # the usual level
+            rz = (np.log(np.maximum(Bt, 0.0) + unit) - lm) / sc
         p = tail_p(rz, tl, fit["body"])
         p[r.qnan] = np.nan
         with np.errstate(invalid="ignore"):
@@ -1506,8 +1564,8 @@ class BudgetEngine(Engine):
                 axes[d] = [ax]
         emit.write_scores(store, s, e, now, scores, pm=pms or None, axes=axes or None,
                           acc_alarm=accs or None, degraded=r.degraded or None, window_s=win)
-        store.add_derived(DerivedMetric(name=SERIES, value=_series_value(res), ts=now, system=s, entity=e,
-                                        window_s=win, kind=MetricKind.CATEGORICAL,
+        store.add_derived(DerivedMetric(name=SERIES, value=_series_value(res), ts=now, system=s,
+                                        entity=e, window_s=win, kind=MetricKind.CATEGORICAL,
                                         inputs=[NAT, "act.objs", "act.stream"]))
         fired = self._events(store, r, res, tick) if not tick["training"] else False
         model["live"]["last"] = {

@@ -7,13 +7,14 @@ forms of contract B / lib/m_template.
 Spec test mapping:
   (a) test_a_day_to_date_fires_by_14h_while_per_tick_z_small
   (b) test_b_object_enumeration_breadth_alarm
-  (c), (d) and actors: test_b13_budget_peer.py; cadence, rollback, perf:
+  (c): test_b13_budget_peer.py; (d), actors, young entities:
+  test_b13_budget_exfil.py; training, cadence, rollback, links, perf:
   test_b13_budget_edges.py.
 """
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pytest
@@ -229,6 +230,7 @@ def test_silent_entity_scores_zero_budget_without_alarm():
     assert math.isfinite(sc["budget_vol"])                 # own immature fit after 7 d
     assert acc(st, now) == {"budget_vol": 0, "budget_exfil": 0, "budget_breadth": 0}
     assert not events(st)
+    assert len(st.derived_series(S, E, SERIES)) <= 24        # newest points only
 
 
 def test_nan_input_degrades_only_that_axis_and_is_not_learned():
@@ -273,25 +275,6 @@ def test_b01_missing_or_failed_degrades_all_three():
     deg = emit.read_dict(st, S, E, emit.DEGRADED, now)
     assert set(deg) == {"budget_exfil", "budget_breadth"}
     assert deg["budget_exfil"] == "producer_error:raw.action_token"
-
-
-def test_training_mode_learns_but_never_alarms():
-    st, eng = make_store(), BudgetEngine()
-    feed = Feed(st)
-    dt = 3600.0
-    rng = np.random.default_rng(1)
-    for d in range(22):
-        for k in range(24):
-            now = T_MID + d * DAY + (k + 1) * dt
-            up = 2e6 * math.exp(0.3 * rng.normal()) * (20.0 if d == 21 else 1.0)
-            feed.tick(E, now, dt, up=up, active=True)
-            run_engine(eng, st, now, training=True, dt=dt)
-            assert not any(acc(st, now).values())
-    assert not events(st)
-    m = st.get_model(S, E, MODEL)
-    assert m["fit"]["src"][0] == 1                         # learned: own mature fit
-    row = budget_row(st, now)
-    assert row["bytes_up.day"][0] > row["bytes_up.day"][1]  # would have alarmed live
 
 
 def test_rerun_same_tick_is_idempotent():
