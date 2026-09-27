@@ -1,0 +1,532 @@
+"""model.cp accessors and pure changepoint step functions (owner: B14 ChangepointEngine).
+
+Why this module holds the maths and not only getters: the CUSUM bank and the
+Crosier MCUSUM are stateful, and three consumers must reproduce them exactly
+(B29 counterfactual replay, B28 onset audits, the unit tests that measure
+wall-clock false-alarm rates over thousands of simulated entity-days). So the
+step functions live here, pure and batch-vectorised (any leading batch
+shape), and B14 itself calls the very same code. No consumer ever mutates
+model.cp.
+
+Statistics (docs/lib3/engines.md B14):
+  * bank: 12 KEY_FEATURES x 2 sides x k in {0.25, 1.0} = 48 one-sided CUSUMs
+    on psi = clip(AR(1)-prewhitened zr, -3, 3); chart c = side*24 + kidx*12 + f
+    (side 0 upper, 1 lower). Each chart has ARL 2400 days (family 0.02 per
+    entity-day), h = seq.h_gauss(k, arl_ticks(2400, dt)) x the audit multiplier.
+  * mcusum: Crosier MCUSUM (k = 0.5) on the whitened 12-vector W psi
+    (W = chol(Sigma)^-1, missing dims imputed by conditional expectation),
+    h = seq.mcusum_h(12, arl_ticks(100, dt)).
+  * latch / onset / reset (shared by both): an alarm latches when a statistic
+    crosses h; tau-hat is the last tick at which the alarmed statistic was at
+    its zero level (0 for a CUSUM; the radial null equilibrium (d-1)/(2k) for
+    Crosier's statistic, which is never 0 in 12 dimensions). The statistics
+    reset after 2 (t_alarm - tau-hat) of clean time, a clean tick being one at
+    which no alarmed chart increased; any alarmed chart reaching a new peak
+    restarts the clean clock, so a persisting shift never resets.
+  * State values are rounded to float32 after every tick, so the
+    behavior.cusum_state ring (float32) replays bit-identically.
+
+behavior.cusum_state row layout (float32[84]):
+  [0:48] bank S, [48:60] MCUSUM state vector, [60:72] zr_prev (key features),
+  [72:84] phi used at that tick.
+
+Consumer API (all pure reads; NaN / None when B14 has not run):
+  get(store, s, e) -> dict | None                       the raw model.cp
+  onset(store, s, e) -> float                           latest behavior.cp.onset (NaN = no episode)
+  prob(store, s, e) -> float                            latest behavior.cp.prob, P(r <= 3 h)
+  alarms(store, s, e) -> {detector: 0|1}                latched accumulator alarms
+  descriptor(store, s, e) -> dict                       portrait summary (phi, h_mult, creep, episode)
+  replay_state(store, s, e, at_or_before) -> (ts, state) | None   snapshot from behavior.cusum_state
+  replay_params(store, s, e, dt=None) -> dict           h, W, Sigma, dt for step_fn
+  step_fn(params, which='cusum'|'mcusum') -> StepFn     (state, inputs) -> (state, score >= 1 alarms)
+  neutralize(inputs, features) -> inputs                zr of the given feature indices -> 0
+  replay_inputs(store, s, e, since, until) -> [(ts, {name: row})]
+Engine/test API: bank_h, mcusum_h, new_bank, bank_tick, new_mc, mc_whiten,
+mc_tick, peq, mcusum_p, siegmund_arl, whitener, audit_rate, state_row.
+"""
+from __future__ import annotations
+
+import math
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+
+import numpy as np
+
+from . import robustcov, seq
+from .features import FEATURE_DIM, FEATURE_GROUP, KEY_FEATURE_IDX, KEY_FEATURES
+
+MODEL = "model.cp"
+ZR = "behavior.zr"
+CP_PROB = "behavior.cp.prob"
+CP_ONSET = "behavior.cp.onset"
+CUSUM_STATE = "behavior.cusum_state"
+
+N_KEY = len(KEY_FEATURES)                  # 12
+KEY_IDX = np.asarray(KEY_FEATURE_IDX, dtype=np.intp)
+KEY_GROUPS: List[str] = [FEATURE_GROUP[n] for n in KEY_FEATURES]
+KS: Tuple[float, float] = (0.25, 1.0)
+N_CHARTS = 2 * len(KS) * N_KEY             # 48
+CHART_SIDE = np.repeat([1.0, -1.0], len(KS) * N_KEY)
+CHART_K = np.tile(np.repeat(np.asarray(KS), N_KEY), 2)
+CHART_FEAT = np.tile(np.arange(N_KEY), 2 * len(KS))
+for _a in (CHART_SIDE, CHART_K, CHART_FEAT):
+    _a.setflags(write=False)
+
+FAMILY_RATE = 0.02                         # bank false alarms per entity-day
+ARL_DAYS = N_CHARTS / FAMILY_RATE          # 2400 d per chart
+PSI_CLIP = seq.PSI_CLIP
+RHO2 = 2.0 * seq.SIEGMUND_RHO              # b = h + 1.166
+MC_K = seq.MCUSUM_K
+MC_D = N_KEY
+MC_ARL_DAYS = 100.0
+MC_ZERO = (MC_D - 1) / (2.0 * MC_K)        # radial equilibrium of Crosier's stat under the null
+HMULT_MAX = 1.5
+STATE_DIM = N_CHARTS + 3 * N_KEY           # 84
+AUDIT_BLOCK = 30
+AUDIT_ARL = 300.0                          # audit level: many alarms per bootstrap sample
+
+_H_CACHE: Dict[Tuple[str, float], Any] = {}
+
+
+def _f32(x: np.ndarray) -> np.ndarray:
+    """Round to float32 and back: live state == stored ring row, bit for bit."""
+    return np.asarray(x, dtype=np.float32).astype(np.float64)
+
+
+# ============================================================ thresholds
+def bank_h(dt: float) -> np.ndarray:
+    """Per-chart threshold h[48] at cadence dt (s) before the audit multiplier:
+    Siegmund h for ARL 2400 d, e.g. 19.4 / 5.35 at 900 s. Cached per dt."""
+    key = ("bank", float(dt))
+    h = _H_CACHE.get(key)
+    if h is None:
+        arl = seq.arl_ticks(ARL_DAYS, dt)
+        hk = {k: seq.h_gauss(k, arl) for k in KS}
+        h = np.array([hk[k] for k in CHART_K], dtype=np.float64)
+        h.setflags(write=False)
+        _H_CACHE[key] = h
+    return h
+
+
+def mcusum_h(dt: float) -> float:
+    """Crosier MCUSUM threshold for d = 12 at ARL 100 d (seq.MCUSUM_H table)."""
+    key = ("mc", float(dt))
+    h = _H_CACHE.get(key)
+    if h is None:
+        h = _H_CACHE[key] = seq.mcusum_h(MC_D, seq.arl_ticks(MC_ARL_DAYS, dt))
+    return float(h)
+
+
+def siegmund_arl(k: float, h: np.ndarray) -> np.ndarray:
+    """Zero-state ARL (ticks) of a N(0,1) CUSUM, (e^{2kb} - 2kb - 1)/(2k^2), b = h + 1.166."""
+    y = 2.0 * float(k) * (np.asarray(h, dtype=np.float64) + RHO2)
+    return (np.expm1(y) - y) / (2.0 * float(k) ** 2)
+
+
+def peq(S: np.ndarray, n_charts: int = N_CHARTS) -> np.ndarray:
+    """Per-chart equivalent p = min(1, 48 exp(-2k(S + 0.583)))."""
+    return seq.cusum_stationary_p(S, CHART_K, n_charts)
+
+
+def mcusum_p(stat: float, d: int = MC_D) -> float:
+    """Equivalent per-tick p of a Crosier statistic: 1/ARL(h = stat), inverting
+    the seq.MCUSUM_H row linearly in ln ARL (the inverse of seq.mcusum_h);
+    clipped to [1e-300, 1]. NaN -> NaN."""
+    stat = float(stat)
+    if math.isnan(stat):
+        return math.nan
+    row = seq.MCUSUM_H[min(max(int(d), 1), seq.MCUSUM_H.shape[0]) - 1]
+    g = np.log(np.asarray(seq.MCUSUM_ARL_GRID))
+    j = int(np.searchsorted(row, stat, side="right")) - 1
+    j = min(max(j, 0), row.size - 2)
+    slope = (g[j + 1] - g[j]) / (row[j + 1] - row[j])
+    ln_arl = g[j] + slope * (stat - row[j])
+    return float(min(1.0, max(seq.P_FLOOR, math.exp(-ln_arl))))
+
+
+# ============================================================ latch
+def _new_latch(batch: Tuple[int, ...], C: int) -> Dict[str, np.ndarray]:
+    return {
+        "on": np.zeros(batch, dtype=bool),
+        "t_alarm": np.full(batch, np.nan),
+        "onset": np.full(batch, np.nan),
+        "span": np.zeros(batch),
+        "alarmed": np.zeros(batch + (C,), dtype=bool),
+        "peak": np.zeros(batch + (C,)),
+        "clean": np.zeros(batch),
+    }
+
+
+def _latch_tick(L: Dict[str, np.ndarray], S: np.ndarray, S_old: np.ndarray, h: np.ndarray,
+                zts: np.ndarray, now: float, dt: float
+                ) -> Tuple[np.ndarray, np.ndarray]:
+    """Advance the alarm latch in place. S, S_old, h, zts: (..., C).
+    Returns (rise, reset): an alarm opened this tick / the episode ended
+    (the caller zeroes its statistics where reset)."""
+    over = S >= h
+    on = L["on"]
+    if not on.any() and not over.any():            # the null steady state: nothing to do
+        z = np.zeros_like(on)
+        return z, z
+    new = ~on & over.any(-1)
+    reset = np.zeros_like(on)
+    if on.any():
+        old = on.copy()
+        alarmed = L["alarmed"] | (over & old[..., None])
+        grew = (alarmed & (S > L["peak"])).any(-1)
+        incr = (alarmed & (S > S_old)).any(-1)
+        L["alarmed"] = alarmed
+        L["peak"] = np.where(alarmed, np.maximum(L["peak"], S), L["peak"])
+        L["clean"] = np.where(old & grew, 0.0, np.where(old & ~incr, L["clean"] + dt, L["clean"]))
+        reset = old & (L["clean"] >= 2.0 * L["span"])
+    if new.any():
+        ratio = np.where(over, S / np.where(h > 0, h, 1.0), -np.inf)
+        j = np.argmax(ratio, axis=-1)
+        tau = np.take_along_axis(zts, j[..., None], axis=-1)[..., 0]
+        tau = np.where(np.isfinite(tau), tau, now)
+        L["t_alarm"] = np.where(new, now, L["t_alarm"])
+        L["onset"] = np.where(new, tau, L["onset"])
+        L["span"] = np.where(new, np.maximum(now - tau, dt), L["span"])
+        L["alarmed"] = np.where(new[..., None], over, L["alarmed"])
+        L["peak"] = np.where(new[..., None], S, L["peak"])
+        L["clean"] = np.where(new, 0.0, L["clean"])
+        L["on"] = on | new
+    if reset.any():
+        L["on"] = L["on"] & ~reset
+        L["alarmed"] = np.where(reset[..., None], False, L["alarmed"])
+        L["peak"] = np.where(reset[..., None], 0.0, L["peak"])
+        L["clean"] = np.where(reset, 0.0, L["clean"])
+        L["t_alarm"] = np.where(reset, np.nan, L["t_alarm"])
+        L["onset"] = np.where(reset, np.nan, L["onset"])
+        L["span"] = np.where(reset, 0.0, L["span"])
+    return new, reset
+
+
+# ============================================================ CUSUM bank
+def new_bank(batch: Tuple[int, ...] = ()) -> Dict[str, Any]:
+    """Zero-state bank for a batch of entities / simulated series."""
+    b = tuple(batch)
+    return {
+        "S": np.zeros(b + (N_CHARTS,)),
+        "zts": np.full(b + (N_CHARTS,), np.nan),     # last tick each chart was 0
+        "prev": np.full(b + (N_KEY,), np.nan),       # zr_{t-1} of the key features
+        "latch": _new_latch(b, N_CHARTS),
+    }
+
+
+def prewhiten(x: np.ndarray, prev: np.ndarray, phi: np.ndarray) -> np.ndarray:
+    """psi = clip((x - phi prev)/sqrt(1 - phi^2), -3, 3); NaN prev -> x; NaN x -> NaN.
+    phi == 0 everywhere is the identity (bit-identical to seq.prewhiten), skipped."""
+    ph = np.asarray(phi, dtype=np.float64)
+    if not (ph > 0).any():
+        return np.clip(np.asarray(x, dtype=np.float64), -PSI_CLIP, PSI_CLIP)
+    return np.clip(seq.prewhiten(x, prev, ph), -PSI_CLIP, PSI_CLIP)
+
+
+def bank_tick(st: Dict[str, Any], x: np.ndarray, now: float, dt: float, phi: np.ndarray,
+              h: np.ndarray, adjacent: Any = True) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """One tick of the 48-chart bank (in place on st; returns (st, out)).
+
+    x: zr of the 12 key features (..., 12), NaN = unobserved (contributes 0,
+    no reset). phi: AR(1) coefficients (12,) or (..., 12) at THIS cadence.
+    h: thresholds (48,) or (..., 48) including the audit multiplier.
+    adjacent False (scalar or (...,)) drops zr_{t-1} (gap: no whitening).
+    out: psi, rise (alarm opened), reset (episode ended; S zeroed), on (latched).
+    """
+    x = np.asarray(x, dtype=np.float64)
+    prev = st["prev"]
+    if adjacent is not True:
+        prev = np.where(np.asarray(adjacent)[..., None], prev, np.nan)
+    psi = prewhiten(x, prev, phi)
+    S_old = st["S"]
+    S = _f32(seq.cusum_step(S_old, psi[..., CHART_FEAT] * CHART_SIDE, CHART_K))
+    zts = np.where(S <= 0.0, now, st["zts"])
+    rise, reset = _latch_tick(st["latch"], S, S_old, h, zts, now, dt)
+    if reset.any():
+        S = np.where(reset[..., None], 0.0, S)
+        zts = np.where(reset[..., None], now, zts)
+    st["S"], st["zts"], st["prev"] = S, zts, x.copy()
+    return st, {"psi": psi, "rise": rise, "reset": reset, "on": st["latch"]["on"]}
+
+
+# ============================================================ MCUSUM
+def new_mc(batch: Tuple[int, ...] = ()) -> Dict[str, Any]:
+    b = tuple(batch)
+    return {"S": np.zeros(b + (MC_D,)), "stat": np.zeros(b), "zts": np.full(b, np.nan),
+            "latch": _new_latch(b, 1)}
+
+
+def whitener(Sigma: Optional[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    """(Sigma_corr, W) for the key-feature correlation: Sigma is rescaled to
+    unit diagonal, eigen-floored, W = chol(Sigma)^-1. None / invalid -> (I, I)."""
+    eye = np.eye(MC_D)
+    if Sigma is None:
+        return eye, eye
+    A = np.asarray(Sigma, dtype=np.float64)
+    if A.shape != (MC_D, MC_D) or not np.isfinite(A).all():
+        return eye, eye
+    d = np.sqrt(np.clip(np.diag(A), 0.0, None))
+    if not (d > 0).all():
+        return eye, eye
+    C = robustcov.eigen_floor(A / np.outer(d, d))
+    try:
+        L = np.linalg.cholesky(C)
+    except np.linalg.LinAlgError:
+        return eye, eye
+    W = np.linalg.solve(L, eye)
+    return C, W
+
+
+def mc_whiten(psi: np.ndarray, W: np.ndarray, Sigma: np.ndarray) -> np.ndarray:
+    """W psi for one 12-vector; missing dims are imputed by their conditional
+    expectation first (so the whitened norm equals the observed-dims T^2).
+    All-NaN -> all-NaN (the caller skips the MCUSUM update)."""
+    psi = np.asarray(psi, dtype=np.float64)
+    obs = np.isfinite(psi)
+    if obs.all():
+        return W @ psi
+    if not obs.any():
+        return np.full(MC_D, np.nan)
+    return W @ robustcov.conditional_impute(psi, Sigma, obs)
+
+
+def mc_tick(st: Dict[str, Any], w: np.ndarray, now: float, dt: float, h: float
+            ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """One Crosier step on the whitened vector w (NaN entries count 0), with
+    the shared latch (zero level = MC_ZERO). In place; returns (st, out)."""
+    S_old = st["stat"]
+    S_vec, stat = seq.mcusum_step(st["S"], w, MC_K)
+    S_vec = _f32(S_vec)
+    stat = np.sqrt(np.sum(S_vec * S_vec, axis=-1))
+    zts = np.where(stat <= MC_ZERO, now, st["zts"])
+    hh = np.asarray(h, dtype=np.float64)
+    rise, reset = _latch_tick(st["latch"], stat[..., None], np.asarray(S_old)[..., None],
+                              np.broadcast_to(hh, np.shape(stat) + (1,)),
+                              np.asarray(zts)[..., None], now, dt)
+    if reset.any():
+        S_vec = np.where(reset[..., None], 0.0, S_vec)
+        stat = np.where(reset, 0.0, stat)
+        zts = np.where(reset, now, zts)
+    st["S"], st["stat"], st["zts"] = S_vec, stat, zts
+    return st, {"rise": rise, "reset": reset, "on": st["latch"]["on"]}
+
+
+# ============================================================ audit
+def lindley(y: np.ndarray) -> np.ndarray:
+    """Zero-state CUSUM path S_t = max(0, S_{t-1} + y_t) along axis 0 in closed
+    form: S_t = C_t - min(0, min_{s<=t} C_s), C = cumsum(y). NaN y counts 0."""
+    C = np.cumsum(np.where(np.isnan(y), 0.0, y), axis=0)
+    return C - np.minimum.accumulate(np.minimum(C, 0.0), axis=0)
+
+
+def _arl_emp(S: np.ndarray, h: float) -> Tuple[float, float]:
+    """(in-control ticks, alarms) of zero-state runs in Lindley paths S [T, ...]:
+    each excursion from 0 that reaches h is one alarm; the ticks from its first
+    crossing to the next zero are dropped (a real chart restarts at 0 there)."""
+    g = np.cumsum(S <= 1e-12, axis=0)                   # excursion id
+    m = np.maximum.accumulate(np.where(S >= h, g, -1), axis=0)
+    post = m == g
+    n_alarm = float(post[0].sum() + (post[1:] & ~post[:-1]).sum())
+    return float((~post).sum()), n_alarm
+
+
+def audit_rate(x: np.ndarray, gap: np.ndarray, phi: np.ndarray, dt: float, hmult: float,
+               rng: np.random.Generator, n_series: int = 8, block: int = AUDIT_BLOCK
+               ) -> Dict[str, float]:
+    """Realised bank false-alarm rate per entity-day on committed residuals.
+
+    x: committed zr key rows [N, 12] (ts order); gap[N]: True where row i does
+    not follow row i-1 (no whitening across it). Moving-block bootstrap
+    (blocks of 30 rows, n_series series of N rows) of psi; every chart is run
+    in closed form (lindley) at the audit level ARL 300, where alarms are
+    plentiful, and the realised / Siegmund ratio r_k is extrapolated to the
+    operating threshold as r_k^((h + 1.166)/(h_a + 1.166)) (an exponential-
+    tail misfit compounds linearly in b). Returns {'rate', 'r0.25', 'r1.0', 'n'}.
+    """
+    X = np.asarray(x, dtype=np.float64)
+    N = X.shape[0]
+    if N < 2 * block:
+        return {"rate": math.nan, "n": float(N)}
+    prev = np.vstack([np.full((1, N_KEY), np.nan), X[:-1]])
+    prev[np.asarray(gap, dtype=bool)] = np.nan
+    psi = prewhiten(X, prev, phi)
+    nb = int(math.ceil(N / block))
+    starts = rng.integers(0, N - block + 1, size=(n_series, nb))
+    idx = (starts[..., None] + np.arange(block)).reshape(n_series, -1)[:, :N]
+    boot = psi[idx.T]                                   # [N, n_series, 12]
+    h_op = bank_h(dt) * float(hmult)
+    rate = 0.0
+    out: Dict[str, float] = {"n": float(N)}
+    for k in KS:
+        h_a = seq.h_gauss(k, AUDIT_ARL)
+        up = lindley(boot - k)
+        lo = lindley(-boot - k)
+        t_up, a_up = _arl_emp(up, h_a)
+        t_lo, a_lo = _arl_emp(lo, h_a)
+        arl_emp = (t_up + t_lo) / max(a_up + a_lo, 0.5)
+        ratio = AUDIT_ARL / arl_emp
+        hk = float(h_op[np.flatnonzero(CHART_K == k)[0]])
+        mult = ratio ** ((hk + RHO2) / (h_a + RHO2))
+        # design rate of these 24 charts at the operating h, inflated by the misfit
+        rate += 2 * N_KEY / float(siegmund_arl(k, hk)) * mult * seq.SECONDS_PER_DAY / dt
+        out[f"r{k}"] = float(ratio)
+    out["rate"] = float(rate)
+    return out
+
+
+# ============================================================ ring row / replay
+def state_row(bank: Mapping[str, Any], mc: Mapping[str, Any], phi: np.ndarray) -> np.ndarray:
+    """behavior.cusum_state row (float32[84]) for one entity."""
+    return np.concatenate([np.asarray(bank["S"], dtype=np.float64).reshape(-1),
+                           np.asarray(mc["S"], dtype=np.float64).reshape(-1),
+                           np.asarray(bank["prev"], dtype=np.float64).reshape(-1),
+                           np.asarray(phi, dtype=np.float64).reshape(-1)]).astype(np.float32)
+
+
+def split_state_row(row: np.ndarray) -> Dict[str, np.ndarray]:
+    r = np.asarray(row, dtype=np.float64).reshape(-1)
+    return {"S": r[:N_CHARTS].copy(), "mc": r[N_CHARTS:N_CHARTS + MC_D].copy(),
+            "prev": r[N_CHARTS + MC_D:N_CHARTS + MC_D + N_KEY].copy(),
+            "phi": r[N_CHARTS + MC_D + N_KEY:STATE_DIM].copy()}
+
+
+def replay_state(store: Any, s: str, e: str, at_or_before: float
+                 ) -> Optional[Tuple[float, Dict[str, np.ndarray]]]:
+    """(ts, state) of the newest behavior.cusum_state row with ts <= at_or_before
+    (the ring keeps 6 h), or None."""
+    t, M = store.vec_range(s, e, CUSUM_STATE, -math.inf, float(at_or_before))
+    if not len(t):
+        return None
+    return float(t[-1]), split_state_row(M[-1])
+
+
+def get(store: Any, s: str, e: str) -> Optional[Dict[str, Any]]:
+    return store.get_model(s, e, MODEL)
+
+
+def replay_params(store: Any, s: str, e: str, dt: Optional[float] = None) -> Dict[str, Any]:
+    """Thresholds and whitening of (s, e) as B14 last used them. dt defaults to
+    the cadence of B14's last tick."""
+    m = get(store, s, e) or {}
+    run = m.get("run") or {}
+    dt = float(dt if dt is not None else run.get("dt") or 900.0)
+    wh = run.get("whiten") or {}
+    Sig = wh.get("Sigma")
+    W = wh.get("W")
+    if Sig is None or W is None:
+        Sig, W = whitener(None)
+    hm = float(run.get("hmult", 1.0) or 1.0)
+    return {"dt": dt, "h": bank_h(dt) * hm, "h_mc": mcusum_h(dt),
+            "Sigma": np.asarray(Sig, dtype=np.float64), "W": np.asarray(W, dtype=np.float64)}
+
+
+def _zr_of(inputs: Any) -> np.ndarray:
+    if isinstance(inputs, Mapping):
+        inputs = inputs.get(ZR)
+    return np.asarray(inputs, dtype=np.float64).reshape(-1)
+
+
+def step_fn(params: Mapping[str, Any], which: str = "cusum"
+            ) -> Callable[[Dict[str, np.ndarray], Any], Tuple[Dict[str, np.ndarray], float]]:
+    """StepFn for lib.replay: (state, inputs) -> (state, score). inputs is a zr
+    row (52 or 12 values) or {'behavior.zr': row, 'behavior.cusum_state': row};
+    the phi recorded in a cusum_state input is used when present (it is the
+    phi B14 applied at that tick). score = max_c S_c / h_c ('cusum') or
+    ||S_mc|| / h_mc ('mcusum'); >= 1 means the live chart alarmed. Consecutive
+    inputs are treated as adjacent ticks. Latch resets are not replayed."""
+    if which not in ("cusum", "mcusum"):
+        raise ValueError(f"m_cp.step_fn: unknown statistic {which!r}")
+    h = np.asarray(params["h"], dtype=np.float64)
+    h_mc = float(params["h_mc"])
+    W = np.asarray(params["W"], dtype=np.float64)
+    Sig = np.asarray(params["Sigma"], dtype=np.float64)
+
+    def step(state: Dict[str, np.ndarray], inputs: Any) -> Tuple[Dict[str, np.ndarray], float]:
+        zr = _zr_of(inputs)
+        x = zr[KEY_IDX] if zr.size == FEATURE_DIM else zr
+        phi = state["phi"]
+        if isinstance(inputs, Mapping) and inputs.get(CUSUM_STATE) is not None:
+            phi = split_state_row(inputs[CUSUM_STATE])["phi"]
+        psi = prewhiten(x, state["prev"], phi)
+        S = _f32(seq.cusum_step(state["S"], psi[CHART_FEAT] * CHART_SIDE, CHART_K))
+        w = mc_whiten(psi, W, Sig)
+        mc = state["mc"]
+        if np.isfinite(w).any():
+            mc, _ = seq.mcusum_step(mc, w, MC_K)
+            mc = _f32(mc)
+        new = {"S": S, "mc": mc, "prev": x.copy(), "phi": phi}
+        if which == "cusum":
+            return new, float(np.max(S / h))
+        return new, float(np.sqrt(np.sum(mc * mc)) / h_mc)
+
+    return step
+
+
+def neutralize(inputs: Any, features: Sequence[int]) -> Any:
+    """Counterfactual input: zr of the given feature indices (0..51) set to 0."""
+    idx = list(features)
+    if isinstance(inputs, Mapping):
+        out = dict(inputs)
+        zr = np.array(out[ZR], dtype=np.float64, copy=True)
+        zr[idx] = 0.0
+        out[ZR] = zr
+        return out
+    zr = np.array(inputs, dtype=np.float64, copy=True)
+    zr[idx] = 0.0
+    return zr
+
+
+def replay_inputs(store: Any, s: str, e: str, since: float, until: float
+                  ) -> List[Tuple[float, Dict[str, np.ndarray]]]:
+    """[(ts, {'behavior.zr': row, 'behavior.cusum_state': row|None})] for since < ts <= until."""
+    t, Z = store.vec_range(s, e, ZR, float(since), float(until))
+    tc, C = store.vec_range(s, e, CUSUM_STATE, float(since), float(until))
+    cs = {float(a): C[i] for i, a in enumerate(tc)}
+    return [(float(ts), {ZR: Z[i].astype(np.float64), CUSUM_STATE: cs.get(float(ts))})
+            for i, ts in enumerate(t) if ts > since]
+
+
+# ============================================================ consumer reads
+def _latest1(store: Any, s: str, e: str, name: str) -> float:
+    hit = store.vec_latest(s, e, name)
+    if hit is None:
+        return math.nan
+    return float(np.asarray(hit[1]).reshape(-1)[0])
+
+
+def onset(store: Any, s: str, e: str) -> float:
+    """tau-hat of the current change episode (latest behavior.cp.onset), NaN if none."""
+    return _latest1(store, s, e, CP_ONSET)
+
+
+def prob(store: Any, s: str, e: str) -> float:
+    """Latest BOCPD P(run length <= 3 h), NaN before the first closed hour."""
+    return _latest1(store, s, e, CP_PROB)
+
+
+def alarms(store: Any, s: str, e: str) -> Dict[str, int]:
+    """{cusum, mcusum, bocpd, creep: 0|1} latched state as of B14's last tick."""
+    m = get(store, s, e) or {}
+    run = m.get("run") or {}
+    return {k: int(bool(v)) for k, v in (run.get("alarm") or {}).items()}
+
+
+def descriptor(store: Any, s: str, e: str) -> Dict[str, Any]:
+    """Portrait summary: AR(1) phi per key feature, h multiplier from the
+    audit, the current episode and the latest creep verdicts (JSON-safe)."""
+    m = get(store, s, e)
+    if not m:
+        return {}
+    run = m.get("run") or {}
+    learn = m.get("learn") or {}
+    phi = np.asarray(learn.get("phi", np.zeros(N_KEY)), dtype=np.float64)
+    ep = run.get("episode") or {}
+    return {
+        "phi": {n: round(float(v), 3) for n, v in zip(KEY_FEATURES, phi)},
+        "h_mult": float(run.get("hmult", 1.0)),
+        "audit": dict(run.get("audit") or {}),
+        "alarms": alarms(store, s, e),
+        "onset": ep.get("onset"),
+        "axes": list(ep.get("axes") or []),
+        "creep": {g: dict(v) for g, v in ((run.get("creep") or {}).get("groups") or {}).items()},
+        "cp_prob": run.get("cp_prob"),
+    }
