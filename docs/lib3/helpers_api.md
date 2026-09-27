@@ -13,6 +13,16 @@ Every engine is written against the signatures below. The module docstrings hold
 - **Time.** Seconds are wall-clock UTC epochs. Thresholds come from ARLs in days through `seq.arl_ticks(arl_days, dt_s)`. Severity uses `combine.e_day(p, dt_s)`.
 - **Determinism.** Randomisation uses `combine.seeded_uniform(*keys)` (blake2b), never `random` or `hash()`, so replay is bit-identical.
 
+## 0.1 Series storage and multi-writer conventions (binding for every engine)
+
+- **Multi-owner per-tick outputs go through `lib/emit.py`.** `behavior.score` and `behavior.pm` are 31-dim vec rings aligned to `detectors.DETECTORS`; `behavior.axes`, `behavior.acc_alarm` and `behavior.degraded` are dict series. Many engines write them in the same tick, so they MUST use `emit.write_scores(store, s, e, ts, scores, pm=, axes=, acc_alarm=, degraded=)`, which merges through `store.upsert_vec` / `store.upsert_dict`. Columns nobody wrote stay NaN (= not scored). Only B24 writes `behavior.p` (`emit.write_pvalues`). Read with `emit.read_row / read_array / read_dict`.
+- **Single-owner scalar series** (e.g. `behavior.trust`, `trust_prov`, `quarantine`, `q_inst`, `q_all`, `e_day`, `evidence`, `risk`, `cp.prob`, `cp.onset`, `seq.class_llr`, `feature.active`) are **1-element float32 vec rings** written with `store.add_vec(s, e, name, ts, [v])` and read with `vec_at` / `vec_tail` / `vec_since`.
+- **Single-owner fixed-dim vectors** (`feature.vec`, `feature.nat`, `feature.sketch`, `behavior.z`, `zr`, `zi`, `pf`, `behavior.class.agg`, `behavior.embed.session`, `behavior.cusum_state`) are vec rings; register column names with `store.register_vector_names` where contract B promises virtual scalar views (`feature.vec` → `feature.<name>`).
+- **Single-owner dict series** (`feature.expo`, `feature.tctx`, `behavior.alarm`, `behavior.regime`, `behavior.rhythm`, `behavior.timing`, `behavior.budget`, `behavior.id`, `behavior.p_family`, `behavior.class`, `behavior.common.*`, `behavior.calib_health`) are derived points: `store.add_derived(DerivedMetric(name, value=dict, ts=now, ..., kind=MetricKind.CATEGORICAL))`.
+- **Model accessors.** Every engine that owns a model (contract C) also owns a pure accessor module `lib/m_<model>.py` (e.g. `m_baseline.predictive(...)`, `m_vocab.prob(...)`, `m_seq.loglik(...)`) that consumers call instead of reading model internals. Consumers never mutate another engine's model. `lib/m_class.py` (model.class, owner B02) exists already: `class_key(store, s, e)` gives the backoff key `'class:<rid>'` or None, `members`, `all_class_keys`, `class_members`, `role_name`.
+- **Timestamps.** Engines write outputs at `ctx.now`; `ctx.window_s` is the real Δt of this tick (cadence may be 60, 300, 900 or 3600 s and may change mid-run).
+- **Strict mode.** Tests run engines through `tests/helpers.run_engine(..., strict)`; never swallow exceptions inside `run`.
+
 ## features — FEATURE_SPEC v2 (impl)
 
 Constants:

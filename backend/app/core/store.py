@@ -29,7 +29,7 @@ import sys
 import threading
 from collections import defaultdict, deque
 from itertools import islice
-from typing import (Any, Deque, Dict, Iterable, Iterator, List, NamedTuple, Optional,
+from typing import (Any, Deque, Dict, Iterable, Iterator, List, Mapping, NamedTuple, Optional,
                     Sequence, Tuple, Union)
 
 import numpy as np
@@ -474,6 +474,40 @@ class MetricStore:
                 ring.drop_before(float(ts) - age)
             self._register_pseudo(system, entity)
             self._bump_write(key, float(ts))
+
+    def upsert_vec(self, system: str, entity: str, name: str, ts: float,
+                   cols: Mapping[int, float], dim: int,
+                   window_s: Optional[int] = None) -> None:
+        """Set some columns of the row at `ts`, leaving the others untouched.
+
+        Several engines own different slots of one shared vector in the same
+        tick (e.g. each detector writes its own column of behavior.score). If
+        the newest row already has this ts its other columns are kept;
+        otherwise a fresh all-NaN row is started ('not scored this tick')."""
+        with self._lock:
+            ring = self._vec.get(_k(system, entity, name))
+            if ring is not None and ring.n and ring.last_ts() == float(ts):
+                row = ring.data[ring._phys(ring.n - 1)].copy()
+            else:
+                row = np.full(int(dim), np.nan, dtype=np.float32)
+            for i, v in cols.items():
+                row[int(i)] = np.nan if v is None else v
+            self.add_vec(system, entity, name, ts, row, window_s=window_s)
+
+    def upsert_dict(self, system: str, entity: str, name: str, ts: float,
+                    items: Mapping[str, Any], window_s: int = 0) -> None:
+        """Merge `items` into the dict-valued derived point at `ts` (creating
+        it if the newest point is older). Same-tick multi-writer counterpart
+        of upsert_vec for dict series such as behavior.axes / acc_alarm."""
+        with self._lock:
+            last = self.latest_derived(system, entity, name)
+            if last is not None and last.ts == float(ts) and isinstance(last.value, dict):
+                last.value.update(items)
+                self._bump_write(_k(system, entity, name), float(ts))
+                return
+            self.add_derived(DerivedMetric(
+                name=name, value=dict(items), ts=float(ts), system=system, entity=entity,
+                window_s=int(window_s), kind=MetricKind.CATEGORICAL))
 
     def register_vector_names(self, vec_name: str, names: Sequence[str],
                               virtual_prefix: str) -> None:
