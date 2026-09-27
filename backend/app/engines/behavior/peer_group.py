@@ -99,6 +99,7 @@ from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import features as F
 from .lib import m_baseline as MB
 from .lib import m_client as MC
+from .lib import m_link
 from .lib import m_rhythm as MR
 from .lib import m_template as MT
 from .lib import m_timing as MTI
@@ -123,6 +124,7 @@ COLD_KEEP_S = 8 * 86400.0          # a cold record idle this long is dropped
 COLD_DIM_CAP = 256                 # values kept per dimension of a cold vocab
 J_INHERIT = 0.3
 RETIRE_RUNS = 3
+PRESENT_S = 7 * 86400.0            # an ineligible member seen this recently keeps its role alive
 NOISE_MAX = 0.30
 SUPER_LO, SUPER_HI = 0.4, 0.6
 D90_FLOOR = 0.15
@@ -518,6 +520,7 @@ class PeerGroupEngine(Engine):
     def __init__(self, **params: Any) -> None:
         super().__init__(**params)
         self._ip_cache: Tuple[Any, List[Tuple[str, List[Any], List[str], Any]]] = (None, [])
+        self._held_roles: Set[str] = set()
 
     # ----------------------------------------------------------------- run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
@@ -688,7 +691,7 @@ class PeerGroupEngine(Engine):
         sup = t["super"] if t["matched"] else ("machine" if d.A >= 0.5 else "human")
         a = {"role": role, "sub": None, "prob": round(float(t["prob"]), 4),
              "static": list(prev.get("static") or []), "pool": prev.get("pool"),
-             "super": sup, "provisional": True, "D": round(float(t["D"]), 4)}
+             "super": sup, "provisional": True, "D": round(float(t["D"]), 4), "A": _f(d.A)}
         a["class_path"] = f"{sup}/{role or 'unmatched'}"
         mc["assign"][d.key] = a
         self._entity_profile(ctx, mc, d.s, d.e, a, now)
@@ -716,6 +719,16 @@ class PeerGroupEngine(Engine):
                 if isinstance(ctl, Mapping) and ctl.get("frozen"):
                     continue
                 eligible.append((s, e, bm))
+        # roles whose members are only temporarily ineligible (quarantined,
+        # open incident, frozen) stay alive: such a member keeps its role, so
+        # its role must not retire under it. Without this, a system whose
+        # members all have open incidents dissolves every class after
+        # RETIRE_RUNS refits (and B03 / B18 lose their class tier mid-episode).
+        elig = {assign_key(s, e) for s, e, _ in eligible}
+        self._held_roles = {
+            str(a.get("role")) for k, a in new["assign"].items()
+            if k not in elig and a.get("role") not in (None, "", UNIQUE)
+            and self._present(store, k, now)}
         fallback_b = int(TB.tctx_from_config(now, ctx.config, ctx.window_s)["bin48"])
         descs = self._mature_descs(store, eligible, now, fallback_b)
         think = np.sort([d.comps["think"] for d in descs if math.isfinite(d.comps.get("think", _NAN))])
@@ -728,7 +741,7 @@ class PeerGroupEngine(Engine):
         if descs:
             self._cluster(ctx, new, descs, now, events)
         else:
-            self._age_roles(new, set())
+            self._age_roles(new, set(self._held_roles))
         # young entities: refresh their provisional typing against the new roles
         for key in young:
             prev = new["assign"].get(key) or {}
@@ -752,6 +765,13 @@ class PeerGroupEngine(Engine):
                 store.add_event(ev)
                 n += 1
         return new, n
+
+    @staticmethod
+    def _present(store, key: str, now: float) -> bool:
+        """The assigned entity was seen within PRESENT_S (not gone)."""
+        s, _, e = key.partition("|")
+        ls = store.last_seen(s, e)
+        return ls is not None and now - float(ls) <= PRESENT_S
 
     @staticmethod
     def _blocked(store) -> Set[Tuple[str, str]]:
@@ -868,7 +888,7 @@ class PeerGroupEngine(Engine):
         merged_into = {p: ids_i for kind, ids_i, pars, _ in lineage_ev if kind == "class_merge"
                        for p in pars}
         alive = set(ids)
-        self._age_roles(mc, alive)
+        self._age_roles(mc, alive | self._held_roles)
 
         # medoids, radii, soft membership
         med_idx: List[int] = []
@@ -969,7 +989,8 @@ class PeerGroupEngine(Engine):
                 if sub is not None and sub not in mc["subs"]:
                     sub = None                  # held in a role whose subs moved on
             a.update(role=role, sub=sub, prob=round(prob, 4), super=sup,
-                     class_path=f"{sup}/{role}" + (f"/{sub}" if sub else ""))
+                     class_path=f"{sup}/{role}" + (f"/{sub}" if sub else ""),
+                     A=_f(d.A))            # per-IP automation index (portraits, R22.2)
             if pend is not None:
                 a["pend"] = pend
             assign[d.key] = a
@@ -1246,18 +1267,16 @@ def _ip(e: str) -> Optional[Any]:
 
 
 def _linkable(link: Any) -> Set[str]:
+    """Entities with an ACTIVE continuity link (either end) or in a
+    multi-member actor. Retracted links are skipped (integration note R21.2):
+    lib/m_link is the owner's accessor for model.link."""
     out: Set[str] = set()
     if not isinstance(link, Mapping):
         return out
-    links = link.get("links")
-    for lk in (links.values() if isinstance(links, Mapping) else links or ()):
-        if isinstance(lk, Mapping):
-            for k in ("from", "to"):
-                if lk.get(k):
-                    out.add(str(lk[k]))
-    actors = link.get("actors")
-    for act in (actors.values() if isinstance(actors, Mapping) else actors or ()):
-        mem = act.get("members") if isinstance(act, Mapping) else act
+    for lk in m_link.links(link, active_only=True):
+        out.update(str(lk[k]) for k in ("from", "to") if lk.get(k))
+    for act in m_link.actors(link):
+        mem = act.get("members")
         if isinstance(mem, (list, tuple, set)) and len(mem) > 1:
             out.update(str(x) for x in mem)
     return out

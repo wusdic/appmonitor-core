@@ -156,6 +156,7 @@ BLOCKS: Dict[str, Tuple[int, ...]] = {
 }
 
 MODALITIES = ("gauss", "vocab", "rhythm", "seq", "client", "timing")
+VOCAB_N = 20.0                  # vocab LLR x min(n_tok, VOCAB_N) / VOCAB_N
 LLR_CAP = 4.0                    # nats per modality per window (B16)
 MIN_CAL = 20                     # samples of EACH label before a fit replaces (1, 0)
 DEFAULT_CALIB = (1.0, 0.0)
@@ -812,18 +813,30 @@ def _rhythm_ll(model: Any, cells: Sequence[Tuple[int, int]]) -> float:
     return m_rhythm.loglik(model, [1.0] * len(cells), list(cells))
 
 
+def vocab_factor(data: ModalData) -> float:
+    """min(n_tok, 20) / 20 over the window's vocabulary tokens (engines.md
+    B16): a few tokens carry little vocabulary evidence."""
+    n_tok = sum(float(c) for vals in data.vocab.values() for c in vals.values())
+    return min(n_tok, VOCAB_N) / VOCAB_N
+
+
 def modality_logliks(store, s: str, cand: str, data: ModalData, now: float,
                      bg: Optional[Background] = None) -> Dict[str, float]:
     """Per-modality LLR (nats) of `data` under candidate `cand`'s own models
     against the background tiers; NaN = no evidence for that modality (no
-    data, or no model at any tier). `cand` may be an entity or a class key."""
+    data, or no model at any tier). `cand` may be an entity or a class key.
+
+    The vocab LLR already carries vocab_factor(data) (integration R20.1), so
+    B15's llr_calib['vocab'] is fitted on the same scaled LLR that B16 and
+    B17 calibrate."""
     bg = bg if bg is not None else Background(store, s, now)
     out = {m: _NAN for m in MODALITIES if m != "gauss"}
     if data.vocab:
         ent, cls, sys_ = m_vocab.backoff_models(store, s, cand)
         if ent is not None or cls is not None or sys_ is not None:
             out["vocab"] = (m_vocab.loglik_models(ent, cls, sys_, data.vocab, now)
-                            - m_vocab.loglik_models(None, None, bg.vocab_sys, data.vocab, now))
+                            - m_vocab.loglik_models(None, None, bg.vocab_sys, data.vocab, now)
+                            ) * vocab_factor(data)
     if data.cells:
         ll = _rhythm_ll(bg._model(m_rhythm.MODEL, cand), data.cells)
         pb = [bg.rhythm_p(*c) for c in data.cells]

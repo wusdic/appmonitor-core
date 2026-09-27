@@ -422,6 +422,10 @@ class _StaleChecker:
     is not flagged between refits."""
 
     PREFIXES = ("feature.", "behavior.")
+    # written only on some ticks BY CONTRACT, so a gap is not staleness:
+    # behavior.alarm only on alarm ticks (B25), behavior.regime on non-normal
+    # ticks, transitions and an hourly heartbeat (B28)
+    SPARSE = frozenset({"behavior.alarm", "behavior.regime"})
 
     def __init__(self) -> None:
         self.found: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
@@ -431,7 +435,7 @@ class _StaleChecker:
         out = [("vec", v) for v in vecs if v.startswith(self.PREFIXES)]
         vec_cols = {v: set(store.vec_columns(v) or ()) for v in vecs}
         for n in store.derived_names(s, e):
-            if not n.startswith(self.PREFIXES):
+            if not n.startswith(self.PREFIXES) or n in self.SPARSE:
                 continue
             if any(n.startswith(v + ".") for v in vecs):
                 continue                          # virtual column view of a vector
@@ -442,9 +446,16 @@ class _StaleChecker:
         return out
 
     def check(self, store: MetricStore, now: float, dt: float) -> None:
+        try:
+            from ..engines.behavior.lib import m_class
+        except Exception:  # pragma: no cover - lib is present in every checkout
+            m_class = None
         for s in store.systems():
+            # a class key that no longer exists (dissolved role, empty pool)
+            # legitimately stops being written
+            live = set(m_class.all_class_keys(store, s)) if m_class is not None else None
             keys = store.entities(s) + [p for p in store.pseudo_entities(s)
-                                        if p.startswith("class:")]
+                                        if p.startswith("class:") and (live is None or p in live)]
             for e in keys:
                 names = self._names(store, s, e)
                 if not names:
@@ -682,7 +693,7 @@ class _Collector:
             m = self.store.get_model(s, e, M_BASELINE)
             if m is not None:
                 out["models"][k] = {"version": _jsonable(self.store.model_version(s, e, M_BASELINE)),
-                                    "model": _jsonable(m, max_depth=6)}
+                                    "model": _baseline_snapshot(m)}
         return out
 
     # -- final -----------------------------------------------------------------
@@ -692,6 +703,22 @@ class _Collector:
                 self.events[ev.id] = ev
         for inc in self.store.incidents():
             self.incidents[inc.id] = inc
+
+
+def _baseline_snapshot(m: Any) -> Any:
+    """What the poisoning gate reads of a model.baseline (integration note
+    R7.5): the anchors' plain-data summaries (Anchor._asdict: per-bucket mean,
+    sd15, W; what m_baseline.anchor_summary accepts), the golden stats and the
+    version fields; gate journals and held rows are left out, which keeps a
+    snapshot ~10x smaller."""
+    if not isinstance(m, dict):
+        return _jsonable(m, max_depth=6)
+    keep = ("fmt", "tier", "version", "branch", "n_eff", "allow_drift", "golden")
+    out = {k: _jsonable(m[k], max_depth=6) for k in keep if k in m}
+    for k in ("current", "reference"):
+        if k in m:
+            out[k] = _jsonable(m[k], max_depth=4)
+    return out
 
 
 def _f(v: Any) -> float:

@@ -122,6 +122,9 @@ Accessor signatures (store / model may be empty: hyperprior defaults):
     profile_many(store, s, ents, models, tctx) -> (median[n, 52], sd[n, 52])  vec space
   model
     n_eff(model | anchor) -> float;  maturity(model) -> dict;  hl_days(model) -> ndarray
+    n_eff_by_bucket(model | anchor, anchor='current') -> float[48]  rows per bin48 bucket
+    own_support(model, tctx, anchor='current') -> (W[52], expo_min)  the entity's own
+                                  (no backoff) rows / exposure at tctx's bucket
     held(model) -> [ts];  last_commit_ts(model) -> float;  version(model) -> int
     golden(model) -> ndarray[48, L] | None;  has_golden(model) -> bool
     anchor_summary(model, anchor, feature) -> (mean, sigma15)   data-weighted over
@@ -1598,7 +1601,11 @@ def loglik(pred: Pred, nat: Sequence[float], dt_s: float) -> np.ndarray:
 
 
 def _inverse_tx(y: np.ndarray, dt_s: float) -> np.ndarray:
-    """t-family values back to natural units (per-dt bytes, ms, shares, ...)."""
+    """t-family values back to natural units (per-dt bytes, ms, shares, ...).
+
+    `y[..., j]` is the j-th t-family column (the NIG block, in NIG order):
+    _TX_SETS holds positions inside that block, not feature indices. Use
+    _inverse_tx_full for a full 52-column array."""
     out = np.array(y, dtype=np.float64, copy=True)
     with np.errstate(all="ignore"):
         for code, pos in _TX_SETS.items():
@@ -1614,6 +1621,14 @@ def _inverse_tx(y: np.ndarray, dt_s: float) -> np.ndarray:
             elif code == TX_LOGIT:
                 v = sp.expit(v)
             out[..., pos] = v                  # TX_ID, TX_CLR: identity
+    return out
+
+
+def _inverse_tx_full(X: np.ndarray, dt_s: float) -> np.ndarray:
+    """Full [..., 52] array: the NIG columns back to natural units, every
+    other column unchanged."""
+    out = np.array(X, dtype=np.float64, copy=True)
+    out[..., NIG] = _inverse_tx(out[..., NIG], dt_s)
     return out
 
 
@@ -1637,17 +1652,16 @@ def quantiles(pred: Pred, qs: Sequence[float], dt_s: float = 900.0,
     if nat is not None:
         x = np.asarray(nat, dtype=np.float64).reshape(-1)[RATIO_N_IDX]
         n = np.where(np.isfinite(x) & (x > 0.0), x, n)
-    for j, f in enumerate(RAT):
-        a, b = pred.p[f] * pred.c[f], (1.0 - pred.p[f]) * pred.c[f]
-        if a > 0.0 and b > 0.0 and np.isfinite(a + b):
-            for i, qq in enumerate(q):
-                out[i, f] = float(bayes.bb_ppf(float(qq), float(n[j]), float(a), float(b))) / n[j]
+    # one call for every (q, ratio feature): bb_ppf groups the quantiles that
+    # share (n, a, b) into one pmf pass, and returns NaN where a, b are invalid
+    a = pred.p[RAT] * pred.c[RAT]
+    b = (1.0 - pred.p[RAT]) * pred.c[RAT]
+    out[:, RAT] = np.asarray(bayes.bb_ppf(q[:, None], n[None, :], a[None, :], b[None, :]),
+                             dtype=np.float64).reshape(q.size, RAT.size) / n[None, :]
     with np.errstate(all="ignore"):
         t = sp.stdtrit(pred.df[NIG][None, :], np.clip(q, 0.0, 1.0)[:, None])
         y = pred.loc[NIG][None, :] + pred.scale[NIG][None, :] * t
-    full = np.full((q.size, NF), np.nan)
-    full[:, NIG] = y
-    out[:, NIG] = _inverse_tx(full, dt_s)[:, NIG]
+    out[:, NIG] = _inverse_tx(y, dt_s)
     return out
 
 
@@ -1657,9 +1671,7 @@ def mean_nat(pred: Pred, dt_s: float = 900.0) -> np.ndarray:
     transforms)."""
     out = np.array(pred.mean, dtype=np.float64, copy=True)
     out[CNT] = pred.mu[CNT] * dt_s / 60.0
-    full = np.full(NF, np.nan)
-    full[NIG] = pred.loc[NIG]
-    out[NIG] = _inverse_tx(full, dt_s)[NIG]
+    out[NIG] = _inverse_tx(pred.loc[NIG], dt_s)
     return out
 
 
@@ -1763,6 +1775,31 @@ def n_eff(x: Any, key: str = "current") -> float:
 def hl_days(model: Any) -> np.ndarray:
     anc = _anchor_of(model)
     return (anc.hl if anc is not None else np.full(NF, HL_DEFAULT_DAYS * DAY)) / DAY
+
+
+def n_eff_by_bucket(x: Any, anchor: str = "current", T: Optional[float] = None) -> np.ndarray:
+    """float[48]: decayed committed active rows per bin48 bucket (the
+    exposure-weight row count of the flows channel, i.e. of every active
+    row) of a model.baseline or an Anchor; zeros when empty (B30, R22.1)."""
+    anc = _anchor_of(x, anchor)
+    St = true_stats(anc, T)
+    if St is None:
+        return np.zeros(48)
+    return np.maximum(St[:, FULL.W_EXPO], 0.0)
+
+
+def own_support(model: Any, tctx: Mapping[str, Any], anchor: str = "current",
+                T: Optional[float] = None) -> Tuple[np.ndarray, float]:
+    """The entity's OWN evidence at tctx's bin48 bucket (no backoff):
+    (W[52] decayed committed rows per feature, weighted exposure minutes of
+    the bucket). Zeros for an empty / missing anchor. Consumers that treat a
+    residual as N(0, 1) against the entity's own model (B14's charts) use it
+    to tell an identified bucket from a pure backoff / hyperprior one."""
+    anc = _anchor_of(model, anchor)
+    if anc is None or anc.empty:
+        return np.zeros(NF), 0.0
+    E = _anchor_E(anc, int(tctx["bin48"]), T)[0]
+    return np.maximum(E[FULL.W], 0.0), float(max(E[FULL.EXPO], 0.0))
 
 
 def version(model: Any) -> int:
@@ -1911,7 +1948,7 @@ def descriptors(model: Any, names: Optional[Sequence[str]] = None,
     if St is None:
         return out
     M = _mean(_params(St, _H1))
-    Mn = _inverse_tx(M, dt_s)
+    Mn = _inverse_tx_full(M, dt_s)
     for name in names:
         f = F.FEATURE_INDEX[name]
         v = M[:, f] * dt_s / 60.0 if FAMILY[f] == FAM_NB else Mn[:, f]

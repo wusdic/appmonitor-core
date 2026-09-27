@@ -131,7 +131,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import (BehaviorEvent, DerivedMetric, EntityProfile, Incident, MetricKind,
                               Severity)
-from .lib import combine, emit, gating, m_class, m_cp, m_feedback, seq
+from .lib import combine, emit, gating, m_class, m_cp, m_feedback, m_link, seq
 from .lib import m_governor as MG
 from .lib.classkeys import CLASS_PREFIX, is_class
 from .lib.detectors import ACC_DETECTORS, DETECTOR_INDEX, DETECTOR_INFO, arl_days
@@ -460,7 +460,7 @@ def episode_groups(axes: Set[str]) -> List[str]:
 class _Sys:
     """Per-system reads shared by every key of one tick (one indexed query each)."""
     __slots__ = ("s", "events", "matches", "incidents", "members", "class_of", "fb", "fb_ver",
-                 "first")
+                 "first", "retracted")
 
     def __init__(self, store: Any, s: str, now: float, lo: float) -> None:
         self.s = s
@@ -480,6 +480,10 @@ class _Sys:
         self.fb = m_feedback.get(store)
         self.fb_ver = self.fb.get("version") if self.fb else None
         self.first: Optional[float] = None       # the system's earliest first_seen (lazy)
+        # retracted continuity links by their seeded end (B17, integration R21.0)
+        self.retracted: Dict[str, List[Dict[str, Any]]] = {}
+        for lk in m_link.retractions(m_link.get(store, s), since=now - ROLLBACK_MAX_DEPTH_S):
+            self.retracted.setdefault(str(lk["to"]), []).append(lk)
 
 
 class _Obs:
@@ -558,6 +562,8 @@ class GovernorEngine(Engine):
             self._labels(store, sc, e, model, ob, now, dt, frontier)
             self._machine(store, sc, e, model, ob, now, dt, frontier)
             prov, trust = self._trust(model, ob, dt, sc, e)
+        if sc.retracted.get(e):
+            self._link_retractions(store, s, e, model, sc.retracted[e], now)
         q = self._quarantine(model, sc, e)
         if not ctx.training:
             self._orphan_release(store, s, e, model, q, now, frontier)
@@ -608,6 +614,7 @@ class GovernorEngine(Engine):
             p = np.asarray(prow, dtype=np.float64)[_ACC_IDX]
             ok = (p >= 0.0) & (p <= 1.0)                     # False for NaN
             if ok.any():
+                # vectorised lib/detectors.acc_level (the scale B27 shares)
                 L = -np.log(np.maximum(p[ok], 1e-300)) / self._ln_arl(dt)[ok]
                 mx = float(L.max())
                 if not ob.acc_max >= mx:
@@ -665,6 +672,7 @@ class GovernorEngine(Engine):
     def _training(self, model: Dict[str, Any], now: float) -> None:
         """Warm-up: no regime decisions, no events; a leftover episode is
         dropped silently and the key starts live in NORMAL."""
+        model["train_end"] = now
         if model["regime"] != MG.NORMAL:
             model["episode"] = None
             _set_state(model, MG.NORMAL, now, reason="training")
@@ -1189,6 +1197,16 @@ class GovernorEngine(Engine):
             ep["pending_rollback"] = None
             return
         target = max(tau - dt, now - ROLLBACK_MAX_DEPTH_S + dt)
+        # Warm-up rows are trusted by definition (ctx.training => trust = 1,
+        # section 3): a rollback never reaches into them. Without this floor an
+        # onset estimated at the start of the data (a chart that accumulated
+        # while the model was still being learnt) erases the whole model.
+        floor = _f(model.get("train_end"))
+        if floor == floor and target < floor:
+            target = floor
+            if not target < frontier:
+                ep["pending_rollback"] = None
+                return
         done = _f(ep.get("rollback_to"))
         if done == done and done <= target:
             ep["pending_rollback"] = None
@@ -1205,6 +1223,44 @@ class GovernorEngine(Engine):
         model["rollbacks"] = int(model.get("rollbacks", 0)) + 1
         self._event(store, s, e, model, now, MG.ROLLBACK, extra={"rollback_to": target,
                                                                   "onset": tau})
+
+    def _link_retractions(self, store: Any, s: str, e: str, model: Dict[str, Any],
+                          links: Sequence[Mapping], now: float) -> None:
+        """B17 retracted a continuity link A -> e: undo the seed. model.control
+        {rollback_to: t_link, release: [t_link, now]} makes every learner
+        restore its state before the seed (lib/gating barriers put the seed at
+        t_link) and recommit e's own rows at once with their trust_prov
+        (integration note R21.0; B17 test (c) shows equality with an unseeded
+        twin). No quarantine is needed: nothing waits for a verdict. Done once
+        per link; deferred (not dropped) while a rollback of this tick or the
+        last hour is pending, because gating applies a release immediately but
+        rate-limits the rollback, which would leave the rows after t_link held."""
+        done = model.setdefault("retract_done", [])
+        for lk in links:
+            tau = _f(lk.get("rollback_to"))
+            if tau != tau:
+                tau = _f(lk.get("ts", lk.get("t_link")))
+            key = f"{lk.get('from')}>{lk.get('to')}@{_enc(tau)}"
+            if key in done or tau != tau:
+                continue
+            if now - tau > ROLLBACK_MAX_DEPTH_S:
+                done.append(key)
+                continue
+            last = _f(model.get("last_rollback_ts"))
+            ctl = store.get_model(s, e, MG.CONTROL)
+            if (last == last and now - last < ROLLBACK_MIN_INTERVAL_S) or \
+                    (isinstance(ctl, Mapping) and _f(ctl.get("ts")) == now):
+                continue                                  # retried on a later tick
+            self._control(store, s, e, model, now, rollback_to=tau, release=[tau, now])
+            model["last_rollback_ts"] = now
+            model["last_rollback_to"] = tau
+            model["rollbacks"] = int(model.get("rollbacks", 0)) + 1
+            done.append(key)
+            del done[:-64]
+            self._event(store, s, e, model, now, MG.ROLLBACK,
+                        extra={"rollback_to": tau, "release": [tau, now],
+                               "reason": "link_retracted", "from": lk.get("from")})
+            return                                        # one directive per tick
 
     def _close_episode(self, model: Dict[str, Any], now: float, final: str) -> None:
         ep = model.get("episode")
@@ -1366,7 +1422,8 @@ def new_model(now: float) -> Dict[str, Any]:
             "episode": None, "version": 0, "branch": 0, "rollbacks": 0,
             "last_rollback_ts": None, "last_rollback_to": None, "label_queue": None,
             "class_accept": None, "base": new_base(None), "q_floor": None, "last_q": 0,
-            "fb_version": None, "fb_mark": None, "regime_ts": None, "n": 0}
+            "fb_version": None, "fb_mark": None, "regime_ts": None, "n": 0,
+            "train_end": None}
 
 
 def _set_state(model: Dict[str, Any], state: str, now: float, reason: str) -> None:

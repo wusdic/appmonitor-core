@@ -124,17 +124,6 @@ def _calibration_healthy(prof: EntityProfile) -> bool:
     return True
 
 
-def read_feature_matrix(store, system: str, entity: str, window: int = 240):
-    """LEGACY shim for the v1 engines (baseline/fingerprint/anomaly/drift v1,
-    deleted at integration): (rows, ts) from the feature.vec ring, NaN -> 0
-    because those engines assume dense rows. lib-3 engines read the ring."""
-    ts, M = store.vec_tail(system, entity, VEC, window)
-    if not len(ts):
-        return [], []
-    rows = np.nan_to_num(M.astype(np.float64), nan=0.0).tolist()
-    return rows, [float(t) for t in ts]
-
-
 class FeatureVectorEngine(Engine):
     name = "behavior.feature_vector"
     layer = "behavior"

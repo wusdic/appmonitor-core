@@ -327,52 +327,13 @@ def _js(x: float) -> Optional[float]:
 
 
 # ============================================================ model_state
-def _t_back_code(name: str) -> int:
-    """Inverse of the t-family observation transform (m_baseline's TX codes):
-    0 identity, 1 exp, 2 expm1, 3 expit, 4 bytes expm1(y) dt/60."""
-    kind, tx = FEATURE_KIND[name], VEC_TX.get(name)
-    if kind == "bytes":
-        return 4
-    if kind == "avg":
-        return 0 if tx == "identity" else 2 if tx == "log1p" else 1
-    if kind in ("bounded", "ratio"):
-        return 3
-    if kind in ("window", "gauge"):
-        return 2 if tx == "log1p" else 1 if tx == "log" else 0
-    return 0                                            # clr: log-ratio units
-
-
-_T_BACK = np.array([_t_back_code(FEATURE_NAMES_V2[f]) for f in _NIG.tolist()])
-
-
 def state_quantiles(pred: MB.Pred, qs: Sequence[float], dt_s: float) -> np.ndarray:
     """Predictive quantiles [len(qs), 52] in natural units for an exposure of
-    dt_s (m_baseline.quantiles semantics): counts per dt (NB ppf), ratios as
-    fractions at the expected trials of their exposure feature (BB ppf, one
-    pmf pass per feature for all qs), t features as the inverse transform of
-    loc + scale t_df^-1(q) (monotone, so quantiles carry over).
-
-    Formed here rather than by m_baseline.quantiles, which (a) evaluates
-    bb_ppf once per (q, feature), 3x the passes (~4 ms per entity), and (b)
-    currently applies its t-family inverse transforms to NIG-block positions
-    of the full 52-column row (reported to its owner)."""
-    q = np.clip(np.asarray(qs, dtype=np.float64).reshape(-1), 0.0, 1.0)[:, None]
-    e = float(dt_s) / 60.0
-    out = np.full((q.shape[0], NF), np.nan)
-    cnt = MB.CNT
-    out[:, cnt] = bayes.nb_ppf(q, (pred.mu[cnt] * e)[None, :], pred.r[cnt][None, :])
-    rat = MB.RAT
-    n = pred.mu[MB.RATIO_N_IDX] * e
-    n = np.where(np.isfinite(n) & (n >= 1.0), np.round(n), 1.0)
-    a, b = pred.p[rat] * pred.c[rat], (1.0 - pred.p[rat]) * pred.c[rat]
-    out[:, rat] = np.asarray(bayes.bb_ppf(q, n[None, :], a[None, :], b[None, :])) / n[None, :]
-    with np.errstate(all="ignore"):
-        y = pred.loc[_NIG][None, :] + pred.scale[_NIG][None, :] * sp.stdtrit(
-            pred.df[_NIG][None, :], q)
-        v = np.select([_T_BACK == 1, _T_BACK == 2, _T_BACK == 3, _T_BACK == 4],
-                      [np.exp(y), np.expm1(y), sp.expit(y), np.expm1(y) * dt_s / 60.0], y)
-    out[:, _NIG] = v
-    return out
+    dt_s: counts per dt, ratios as fractions at the expected trials of their
+    exposure feature, t features as the inverse transform of loc + scale
+    t_df^-1(q). Delegates to m_baseline.quantiles (its t-family inverse
+    transform was fixed and its ratio path vectorised at integration)."""
+    return MB.quantiles(pred, qs, dt_s=dt_s)
 
 
 # ================================================================ engine

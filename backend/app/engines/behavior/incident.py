@@ -36,9 +36,9 @@ Close (never on risk):
       (verdict other than 'unsure') -> labelled;
   (d) quiet -> timeout: no alarm or finding for max(8 ticks, 2 h), every
       accumulator < h/4 and e_day(q_inst) >= 1 on the last 4 q_inst rows.
-      Accumulator level L = S/h: exact for cusum / mcusum (lib/m_cp.level);
-      for the other accumulators L ~ ln(1/p) / ln(ARL_ticks) from the
-      calibrated p (the exponential tail P(S >= x) ~ e^(-theta x) of a
+      Accumulator level L ~ ln(1/p) / ln(ARL_ticks) from the calibrated p
+      of every accumulator, cusum / mcusum included (lib/detectors.acc_level,
+      shared with B28: the exponential tail P(S >= x) ~ e^(-theta x) of a
       CUSUM with theta h ~ ln ARL), and L >= 1 while acc_alarm is set.
       NaN (unscored) q_inst or p neither confirm nor block; (d) is skipped
       on a tick where fusion failed (contract M).
@@ -86,7 +86,7 @@ learned from traffic, so there is nothing to gate or roll back.
 
 Store: reads behavior.alarm, behavior.p_family, behavior.e_day,
 behavior.q_inst, behavior.risk, behavior.p, behavior.acc_alarm,
-behavior.regime, behavior.z (pattern features), model.cp (m_cp.level),
+behavior.regime, behavior.z (pattern features),
 store.events / matches / labels / incidents, model.feedback (m_feedback),
 model.link, model.class (m_class); writes store incidents (entity and
 class), BehaviorEvent kind='incident', event incident_id / status updates.
@@ -101,10 +101,10 @@ import numpy as np
 
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, Incident, Severity
-from .lib import emit, m_class, m_cp, m_feedback
+from .lib import emit, m_class, m_feedback
 from .lib.classkeys import CLASS_PREFIX, SYSTEM_KEY, class_kind, is_class
 from .lib.detectors import (ACC_DETECTORS, DETECTOR_INDEX, DETECTORS, FAMILY_DEFAULT_AXES,
-                            arl_days)
+                            acc_level)
 
 ALARM = "behavior.alarm"
 P_FAMILY = "behavior.p_family"
@@ -166,7 +166,6 @@ DISCRETE_KINDS = frozenset({
     "class_adoption_risky", "schedule_shift", "beacon", "budget_exceeded", "baseline_creep",
 })
 _REGIME_CLOSE = {"returned": "returned", "accepted": "accepted"}
-_CP_LEVEL = ("cusum", "mcusum")
 _ACC_IDX = [(d, DETECTOR_INDEX[d]) for d in ACC_DETECTORS]
 _NAN = math.nan
 
@@ -208,17 +207,9 @@ def canonical_axes(axes: Any) -> Set[str]:
 
 
 def acc_level_from_p(p: float, detector: str, dt_s: float) -> float:
-    """Approximate S/h of an accumulator from its calibrated p: a CUSUM's
-    stationary tail is P(S >= x) ~ exp(-theta x) with theta h ~ ln ARL
-    (ARL in ticks from the detector's wall-clock budget), so S/h ~
-    ln(1/p) / ln(ARL). NaN p -> NaN (unknown, not quiet and not loud)."""
-    if not (p == p) or dt_s <= 0:
-        return _NAN
-    arl = arl_days(detector) * DAY / dt_s
-    if arl <= 1.0:
-        return _NAN
-    pv = min(1.0, max(1e-300, float(p)))
-    return -math.log(pv) / math.log(arl)
+    """Approximate S/h of an accumulator from its calibrated p (the shared
+    lib/detectors.acc_level scale, also used by B28)."""
+    return acc_level(p, detector, dt_s)
 
 
 class TokenBucket:
@@ -1085,14 +1076,13 @@ class IncidentEngine(Engine):
         acc = emit.read_dict(store, s, k, ACC_ALARM, now)
         if any(_f(v) >= 0.5 for v in acc.values()):
             return False
-        lvl = m_cp.level(store, s, k)
-        if any(_f(lvl.get(d)) >= ACC_QUIET_LEVEL for d in _CP_LEVEL):
-            return False
+        # every accumulator, cusum / mcusum included, on the calibrated-p scale
+        # (integration R13.2 / R14.4: m_cp.level, the raw max S/h over 48
+        # charts, is >= h/4 on ~88 % of null ticks, so '< h/4' on it would
+        # almost never let a quiet close happen)
         row = store.vec_at(s, k, P, now)
         if row is not None:
             for d, i in _ACC_IDX:
-                if d in _CP_LEVEL and math.isfinite(_f(lvl.get(d))):
-                    continue
                 if acc_level_from_p(float(row[i]), d, dt) >= ACC_QUIET_LEVEL:
                     return False
         return True

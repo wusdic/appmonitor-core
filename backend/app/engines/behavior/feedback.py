@@ -51,6 +51,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile, Incident, Label
 from .lib import m_class
 from .lib import m_feedback as FB
+from .lib import m_governor as MG
 from .lib.classkeys import ORG, SYSTEM_KEY, is_class
 from .lib.combine import seeded_uniform
 from .lib.detectors import DETECTORS, FAMILIES, family_of
@@ -785,7 +786,14 @@ class FeedbackEngine(Engine):
         cases = model["_cases"]
         q = model["queue"]
         keep = []
+        gov = None                     # governor label queue {(s, e): record}, read lazily
         for it in q:
+            if it.get("source") == "governor":
+                if gov is None:
+                    gov = {(r["system"], r["entity"]): r for r in MG.label_queue(store)}
+                if (it.get("system"), it.get("entity")) in gov:
+                    keep.append(it)                               # still held DRIFTING
+                continue
             iid = it.get("incident_id")
             c = cases.get("inc:" + str(iid))
             if c is not None and c.get("verdict"):
@@ -799,10 +807,26 @@ class FeedbackEngine(Engine):
             st["queue_ts"] = now
             model["queue"] = keep
             return changed
-        queued = {it["incident_id"] for it in keep}
+        queued = {it["incident_id"] for it in keep if it.get("incident_id") is not None}
 
         if st.get("held_ts") is None or now - st["held_ts"] >= HELD_SCAN_S:
             st["held_ts"] = now
+            # keys B28 has held DRIFTING > 14 d (m_governor.label_queue): B28
+            # cannot write model.feedback, so B23 queues them (integration R14.3)
+            have = {(it.get("system"), it.get("entity")) for it in keep
+                    if it.get("source") == "governor"}
+            if gov is None:
+                gov = {(r["system"], r["entity"]): r for r in MG.label_queue(store)}
+            for (gs, ge), r in sorted(gov.items()):
+                if (gs, ge) in have:
+                    continue
+                keep.append({"incident_id": None, "system": gs, "entity": ge,
+                             "reason": "held", "source": "governor", "risk": 0.0,
+                             "p_malicious": 0.5, "e_day": None,
+                             "opened": _f(r.get("since")), "added": now,
+                             "severity": "info", "status": "drifting",
+                             "type": r.get("type"), "p_legit": r.get("p_legit")})
+                changed = True
             for inc in store.incidents(status=("open", "acked")):
                 if inc.id in queued or now - float(inc.opened) <= HELD_S:
                     continue

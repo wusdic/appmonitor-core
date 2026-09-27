@@ -88,7 +88,7 @@ from .lib import m_class
 from .lib import timebins as TB
 from .lib.classkeys import CLASS_PREFIX, ORG, POOL_PREFIX, STATIC_PREFIX, SYSTEM_KEY
 
-# legacy: anomaly.py (v1) imports this list; profile.seasonal is filled for it
+# profile.seasonal curves (24 hourly predictive means of the current day type)
 SEASONAL_FEATURES = ["http_requests", "bytes_up", "flows", "dns_queries", "duty_cycle"]
 
 LEARNER_CUR = "baseline.current"

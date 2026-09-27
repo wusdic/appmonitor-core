@@ -718,6 +718,9 @@ class FusionEngine(Engine):
 
         S_prev = _f(st.get("S"))
         S_prev = S_prev if S_prev == S_prev else 0.0
+        if st.get("warm") and not ctx.training:
+            S_prev = 0.0        # warm-up evidence (cold rings, models being learnt) ends here
+        st["warm"] = bool(ctx.training)
         h = sc.h_base * float(st.get("h_mult", 1.0))
         win = int(dt)
         if row is None:                              # fused before, unscored now

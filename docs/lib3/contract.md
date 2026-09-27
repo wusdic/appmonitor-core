@@ -50,6 +50,9 @@ Raw (lib-1):
 Derived (lib-2):
 - Existing names.
 - Instant metrics are emitted only when fresh, plus derived.<ratio>.n and derived.<entropy>_n.
+  - derived.<entropy>_n is the total mass of the source set INCLUDING '__other__' (the true request / query / handshake count, R1's full sets); the entropy itself is computed over the named entries only ('__other__' is a remainder, not a category). B01's bounded gate (n ≥ 5) and B04 read this n.
+  - derived.<ratio>.n is the ratio's trial count (dns_fail_rate: dns.queries).
+  - Graph peers (new_peer_count, peer_novelty, dest_concentration) are TLS / DNS names at eTLD+1 plus l4.peer_set buckets (/24, /64 or host); '__other__' is never a peer.
 - Window metrics carry dims {span_s, n_active}.
 
 Behavior (lib-3). All vector series are float32 rings created with store.add_vec.
@@ -70,9 +73,9 @@ Behavior (lib-3). All vector series are float32 rings created with store.add_vec
 - behavior.id {posterior_self, best_other{}, p_unknown, cusum_other, cusum_new}.
 - behavior.seq.class_llr.
 - behavior.embed.session[16] (P2).
-- behavior.common.<group> at '__system__' and at 'class:<id>'.
+- behavior.common.<group> at '__system__' and at 'class:<id>' (role, static and pool classes), group ∈ {volume, transport, app_error, probe}: dict {L (leave-one-out common loading, median), n (pool size), n_scored, n_members, frac_up, frac_down, dir ∈ {-1, 0, 1}, dt, run (consecutive ticks in the same direction)}. B18 and B25 read it at ts = now (B05 runs before them).
 - behavior.common.flag at each real entity, {group: 0|1}.
-- behavior.class {agg[52], active_frac, coherence} at 'class:<id>'.
+- behavior.class {active_frac, coherence, ...} at 'class:<id>' (dict) and behavior.class.agg[52] (float32 vec ring, B18's aggregate row and its reference learner's replay clock), plus behavior.class.new_ext.
 - behavior.calib_health at '__system__', {d: {ks, rate_ratio, weight_mult}}.
 - ops.engine_health at '__system__'.
 
@@ -81,9 +84,13 @@ Retention (store.set_retention(prefix, max_points, max_age_s); pruning on append
 | Series | max_age |
 |---|---|
 | raw scalars | 6 h |
+| D0 grid inputs http.requests, l4.flows, dns.queries, act.events (raw) | 24 h (D0 and D2 spans) |
+| D0 trend targets l4.bytes_up, l4.distinct_peers, http.latency_ms_avg, probe.rtt_ms (raw) | 13 h (12 h trend span + 1 h) |
 | raw categorical sets, act.stream, act.rare_events, client.* | 1 h |
-| derived.* | 2 h (6 h for the D0 inputs http.requests, l4.flows, dns.queries) |
-| feature.nat, expo, active, tctx; behavior.trust, trust_prov, quarantine, regime, risk, q_inst, q_all, evidence, alarm | 8 d (needed for rollback and rebase replay) |
+| derived.* | 2 h |
+| feature.nat, expo, active, tctx; behavior.trust, trust_prov, quarantine, regime, risk, q_inst, q_all, e_day, evidence, alarm; behavior.calib_health | 8 d (needed for rollback and rebase replay) |
+| behavior.class.agg | 9 d (B18's reference commits 24 h late and replays 8 d) |
+| behavior.budget | 1 d and at most 24 points (36 entries per point) |
 | feature.vec, feature.sketch, behavior.score, pm, p, p_family, axes | 1 d |
 | behavior.z, zr, zi, pf, cusum_state | 6 h |
 | events | 30 d |
@@ -91,26 +98,30 @@ Retention (store.set_retention(prefix, max_points, max_age_s); pruning on append
 | labels | never pruned |
 | profile versions | last 12 |
 
+These rules are the store's DEFAULT_RETENTION (core/store.py); engines no longer need to set them.
+
+Scalar rings. behavior.risk (entity, class:<id>, __system__) is a 1-element float32 vec ring like trust / q_all / e_day (helpers_api §0.1); read it with vec_at / vec_tail / vec_since (store.timeline lists a risk point when it enters a new 10-point band). profile.extra.risk.tier names are lowercase: 'low', 'medium', 'high', 'critical'.
+
 C. Models (put_model(system, entity, name, obj, version) / get_model / model_version)
 
 Each model has exactly one owner engine.
 - model.template@(s, __system__): R2.
-- model.baseline@(s, e): B03. Fields {current{stats[B,F,k], hl}, reference{...}, golden, n_eff, version, branch, held[ts], allow_drift}.
-- model.baseline@(s, class:<rid>) holds the pooled member predictive; model.baseline also exists at @(s, __system__) and @(__org__, __org__).
-- model.class@(__org__, __org__): B02. Fields {assign{'sys|ip': {role, sub, prob, static[], pool, super}}, roles{rid: {name, members, medoid, lineage, version}}, subs{}, statics{}, pools{}}.
+- model.baseline@(s, e): B03. Fields {fmt, tier='entity', current: Anchor, reference: Anchor, gate, gate_ref (GateState), golden {stats, snaps}, ref_elig, n_eff, version, branch, held [CommitRow], allow_drift}. Anchor stats are stored per family (k = 6 count, 4 ratio, 3 t; see lib/m_baseline); consumers use the m_baseline accessors. There is no slope_log field: B28 takes a ramp slope from B14's baseline_creep event, else its own Sen slope.
+- model.baseline@(s, class:<rid>) holds the pooled member predictive; model.baseline also exists at @(s, __system__) and @(__org__, __org__). Tier models: {fmt, tier ∈ {class, system, org}, ts, version, stats[48, L], E, h, kappa, kappa_cls, members, n_eff}, recomputed hourly from the members' current anchors.
+- model.class@(__org__, __org__): B02. Fields {assign{'sys|ip': {role, sub, prob, static[], pool, super, class_path, A, provisional?, pend?, D?}}, roles{rid: {name, members, medoid, lineage, version, super, A, d90, ...}}, subs{}, statics{}, pools{}, version, _state (B02 private)}. Copy-on-write: every assignment change is a new dict with version + 1 (consumers cache on id + version).
 - model.groups@(s, __system__): B06.
 - model.density@(s, e|class:<rid>): B06. Fields {mu, U_k, lam, n, k, chol_cache}.
 - model.rhythm@(s, e|class): B07.
 - model.vocab@(s, e|class:<rid>|__system__): B08.
-- model.client@(s, e|__system__): B09.
+- model.client@(s, e|__system__): B09. The __system__ model also carries the class tiers 'classes' {'class:<rid>': {c, N, members}} (contract C has no class key for model.client), the UA / JA3 co-occurrence table 'cooc' {'family/major': {ja3n: c}} with 'ua_N', and the live rollout tables 'acq' {token: {entity: ts}} and 'known' {entity: ts}.
 - model.seq@(s, e|class:<rid>|__system__): B10. Fields {ppm, session_gap, entropy_rate}.
 - model.timing@(s, e): B11.
 - model.beacon@(s, e): B12.
 - model.budget@(s, e): B13.
 - model.cp@(s, e): B14.
-- model.identity@(s, __system__): B15. Fields {pca, W, means, class_means, llr_calib{m: (a, b)}, confusion, anonymity_sets}.
+- model.identity@(s, __system__): B15. Fields {fmt, version, fitted_ts, entities, roles, pca, W, means, class_means, class_var, bg, llr_calib{m: (a, b)}, llr_n, confusion, anonymity_sets, stats{e: {recall1, recallK, eer_hard, t99, separability, near, n_windows, confusable_with}}, classes, distinctive, modality_share} (lib/m_identity docstring). EER_hard is the max pairwise EER over the 3 nearest impostors. Collection runs every tick; the fit every 96 ticks or 24 h.
 - model.idwin@(s, __system__): B15.
-- model.link@(s, __system__): B17. Fields {links, actors, version}.
+- model.link@(s, __system__): B17. Fields {links: [{id, from, to, ts, conf, status, retracted, retracted_ts, rollback_to, reason, ...}], actors: [{id, members, links, first_ts, last_ts}], version, shared (private), pending (private)} (lib/m_link). A retracted link keeps its record; B28 answers it with model.control {rollback_to: t_link, release: [t_link, now]} on the seeded entity.
 - model.classagg@(s, class:<id>): B18.
 - P2 models: model.mixture@(s, e) (B19), model.session@(s, e) (B20), model.xsys@(__org__, __org__) (B21), model.embed@(s, __system__) (B22).
 - model.feedback@(__org__, __org__): B23. Fields {family_w, detector_prec, policies, allowlist, alpha_mult, accept[(s, e, ts)], freeze[(s, e, ts)], queue[]}.
@@ -144,8 +155,11 @@ D. MetricStore API additions (backward compatible)
 E. Schema additions
 
 - BehaviorEvent gains: id, status ∈ {open, suppressed, acked, closed}, p_value, e_day, axes, p_by_detector, dedupe_key, incident_id, model_version, window.
+- Novelty events (first_seen, rare_access) carry extra {dim, value, tier ∈ {entity, class, system}, bits, idf, adopted, discount, flags {sensitive, admin, external, upload_dominant, new_external_domain, low_prevalence}} with the flags also as top-level keys; B05 (system-tier exclusion, read at t-1) and B26 (weight, repeat key, stage) read them.
 - Label(id, system, entity, target_type ∈ {event, incident, entity, class}, target_id, verdict ∈ {tp, fp, expected_change, benign_known, unsure}, scope ∈ {this, pattern, entity, class, system}, t0, t1, ttl_s, analyst, note, ts).
 - Incident(id, system, entity (may be class:<id>), entities, kinds, axes, status, opened, last_seen, severity, e_day_min, risk, evidence, explanation, narrative, campaign_id, parent_id, close_reason ∈ {returned, accepted, labelled, timeout}).
+  - A common-mode child is status 'suppressed' with parent_id set (and an evidence entry state 'suppressed_common'); there is no separate 'suppressed_common' status.
+  - The quiet close (no alarm or finding for max(8 ticks, 2 h), every accumulator below h/4 on the calibrated-p scale, q_inst quiet) uses close_reason 'timeout'. Nothing is closed by age.
 - EntityProfile.separability = clip(1 − 2·EER_hard, 0, 1).
 - EntityProfile.stable = n_eff ≥ 96 and calibration healthy.
 
@@ -159,7 +173,7 @@ F. Event kinds
 - Classes: new_entity_matched, new_entity_unmatched, class_transition, class_split, class_merge, peer_outlier.
 - Coherent shifts: system_shift, coherent_shift, class_shift, class_adoption_risky.
 - Temporal and cumulative: schedule_shift, beacon, budget_exceeded, baseline_creep.
-- regime: state ∈ {suspect, drifting, returned, accepted, rejected, rollback}; type ∈ {intensity, shape, categorical, rhythm, ramp, identity, new_entity}.
+- regime: state ∈ {suspect, drifting, returned, accepted, rejected, rollback}; type ∈ {intensity, shape, categorical, rhythm, ramp, identity, new_entity, c2, exfil}.
 - pipeline_degraded.
 - The legacy kinds anomaly, drift and sequence are no longer emitted. See api_ui_spec for the compatibility projection.
 
@@ -197,7 +211,8 @@ I. Context and config
   - ip_classes [{name, cidrs, systems, criticality}];
   - dhcp_scopes; sensitive_patterns; org_domains;
   - alert_budget {entity_per_hour: 3, system_per_day: 20};
-  - strict (bool); daypart_day_hours (8–20); D_min_s (600).
+  - strict (bool); daypart_day_hours (8–20); D_min_s (600);
+  - budget_abs_floor {Q: natural units per horizon} (B13; each key overrides the engine default: bytes_up 5 MB, bytes_down 50 MB, writes 200, slots 8, up_novel 20 MB, dns_label 200 KB, objs 500, templates 50, dests 50).
 
 J. Detector registry (lib/detectors.py)
 

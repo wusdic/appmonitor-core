@@ -15,6 +15,8 @@ paths.
 """
 from __future__ import annotations
 
+import math
+
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -161,6 +163,23 @@ def detectors_of(owner: str) -> List[str]:
 def new_score_vector() -> np.ndarray:
     """A fresh behavior.score / pm / p row: float64[31] of NaN (NaN = unscored)."""
     return np.full(N_DETECTORS, np.nan)
+
+
+def acc_level(p: float, detector: str, dt_s: float) -> float:
+    """Shared accumulator level L ~ S/h from the detector's CALIBRATED p
+    (integration: B27's quiet test and B28's SUSPECT / trust tests use the
+    same scale). A CUSUM's stationary tail is P(S >= x) ~ exp(-theta x) with
+    theta h ~ ln ARL (ARL in ticks from the detector's wall-clock budget), so
+    L = ln(1/p) / ln(ARL_ticks); L >= 1 is the alarm level. The raw
+    m_cp.level (max S/h over B14's 48 charts) is NOT this scale: on a null it
+    sits >= 1/4 on most ticks. NaN p (or ARL <= 1 tick) -> NaN."""
+    if not (p == p) or not dt_s > 0:
+        return math.nan
+    arl = arl_days(detector) * 86400.0 / float(dt_s)
+    if arl <= 1.0:
+        return math.nan
+    pv = min(1.0, max(1e-300, float(p)))
+    return -math.log(pv) / math.log(arl)
 
 
 def arl_days(detector: str) -> float:

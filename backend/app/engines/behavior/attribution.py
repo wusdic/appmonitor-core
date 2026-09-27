@@ -114,7 +114,7 @@ ACTIVE = "feature.active"
 K = MI.K_WIN                           # active ticks per window (4)
 MODALITIES = MI.MODALITIES
 CAP = MI.LLR_CAP                       # nats per modality per window
-VOCAB_N = 20.0                         # vocab LLR x min(n_tok, 20)/20
+VOCAB_N = MI.VOCAB_N                    # vocab LLR x min(n_tok, 20)/20 (lib/m_identity)
 N_TOP = 5                              # other entities by LDA score
 UNKNOWN_PRIOR = 0.05
 SELF_PRIOR = 0.5
@@ -194,86 +194,11 @@ def evidence(calib: Mapping[str, Tuple[float, float]], llr: Mapping[str, float])
 
 
 # ============================================================ fast window vector
-def _col_median(X: np.ndarray) -> np.ndarray:
-    """nanmedian over axis 0 for a few rows, bit-identical to np.nanmedian
-    (masked-array path): the two middle finite values summed and halved."""
-    S = np.sort(X, axis=0)                     # NaN sorts last
-    n = np.sum(~np.isnan(X), axis=0)
-    h = n // 2
-    lo = np.where(n % 2 == 1, h, h - 1)
-    cols = np.arange(X.shape[1])
-    ok = n > 0
-    out = np.full(X.shape[1], np.nan)
-    if ok.any():
-        a = S[np.clip(lo, 0, None), cols]
-        b = S[h.clip(0, X.shape[0] - 1), cols]
-        out[ok] = (a[ok] + b[ok]) / 2.0
-    return out
-
-
-def _col_percentiles(X: np.ndarray, qs: Sequence[float]) -> List[np.ndarray]:
-    """nanpercentile (method 'linear') over axis 0 at each q, bit-identical to
-    numpy's per-column _nanquantile_1d: virtual index n q + (1 - q) - 1 on the
-    sorted finite values, interpolated with numpy's _lerp (one sort for all q)."""
-    S = np.sort(X, axis=0)                     # NaN sorts last
-    n = np.sum(~np.isnan(X), axis=0)
-    ok = n > 0
-    top = np.maximum(n - 1, 0)
-    cols = np.arange(X.shape[1])
-    res = []
-    for q in qs:
-        out = np.full(X.shape[1], np.nan)
-        if ok.any():
-            v = n * q + (1.0 - q) - 1.0
-            i0 = np.floor(v)
-            g = v - i0
-            i0 = np.clip(i0.astype(np.intp), 0, top)
-            i1 = np.minimum(i0 + 1, top)
-            a, b = S[i0, cols], S[i1, cols]
-            d = b - a
-            with np.errstate(invalid="ignore"):
-                r = np.where(g >= 0.5, b - d * (1.0 - g), a + d * g)
-            out[ok] = r[ok]
-        res.append(out)
-    return res
-
-
-def _nanmean0(X: np.ndarray) -> np.ndarray:
-    """np.nanmean over axis 0 by its own recipe (NaN -> 0, add.reduce, divide
-    by the finite count), without its warning machinery; all-NaN -> NaN."""
-    miss = np.isnan(X)
-    cnt = np.sum(~miss, axis=0, dtype=np.intp)
-    tot = np.sum(np.where(miss, 0.0, X), axis=0)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return np.true_divide(tot, cnt)
-
-
-_MED_COLS = list(range(MI.T_VEC.start, MI.T_VEC.stop)) + list(range(MI.T_TIM.start,
-                                                                     MI.T_TIM.stop))
-_IQR_COLS = [MI.T_VEC.start + i for i in MI.IQR_IDX]
-
-
 def window_vector(rows: Any) -> np.ndarray:
-    """m_identity.window_vector (B15's representation), exact to the bit,
-    without numpy's masked-array nanmedian / apply_along_axis nanpercentile
-    (~1.7 ms -> ~0.1 ms for 4 rows; tested for equality)."""
-    R = np.asarray(rows, dtype=np.float64).reshape(-1, MI.TICK_DIM)
-    out = np.full(MI.RAW_DIM, np.nan)
-    if not R.shape[0]:
-        return out.astype(np.float32)
-    med = _col_median(R[:, _MED_COLS])        # vec and timing medians in one sort
-    out[MI.W_MED] = med[:MI.VEC_DIM]
-    out[MI.W_TIM] = med[MI.VEC_DIM:]
-    q25, q75 = _col_percentiles(R[:, _IQR_COLS], (0.25, 0.75))
-    out[MI.W_IQR] = q75 - q25
-    out[MI.W_SK] = _nanmean0(R[:, MI.T_SK])
-    clk = R[:, MI.T_CLK]
-    sc = _nanmean0(clk[:, :2])
-    nrm = math.hypot(sc[0], sc[1]) if np.all(np.isfinite(sc)) else _NAN
-    if nrm > 1e-9:
-        out[143:145] = sc / nrm
-    out[145] = _nanmean0(clk[:, 2:3])[0]
-    return out.astype(np.float32)
+    """B15's representation: lib/m_identity.window_vector (integration R20.0:
+    B15 moved to the one-sort quantile path, bit-identical to B16's former
+    local copy and as fast, so B15 / B16 / B17 share one implementation)."""
+    return MI.window_vector(rows)
 
 
 def _is_active(store: Any, s: str, e: str, ts: float) -> bool:

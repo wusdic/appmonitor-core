@@ -111,7 +111,8 @@ SLOT_S = 900.0                 # one row per 15-minute slot (cadence invariant)
 REFIT_TICKS, REFIT_S = 16, 4 * 3600.0
 GROUPS_TICKS, GROUPS_S = 32, 8 * 3600.0
 N_FIT_MIN = 32                 # complete rows needed for an own fit
-EAGER_N = 64                   # below this n_eff every new commit refits
+EAGER_N = 64                   # below this n_eff refits are eager ...
+EAGER_PERIOD_S = 3600.0        # ... at most once per hour of wall clock
 COL_MIN_FRAC = 0.5             # a column is modelled if finite in >= 50 % of rows
 ROW_MIN_OBS = 0.5              # a row is used if it observes >= 50 % of the modelled set
 SCREEN_Q = 0.999               # outlier screen of the EM path
@@ -655,9 +656,16 @@ class MultivariateEngine(Engine):
                int(model["_gate"].version))
         if sig == model["_sig"] and not ctrl:
             return model
-        eager = not model.get("fitted") or float(model.get("n", 0.0)) < EAGER_N
-        if not (ctrl or eager or self.entity_due((s, e, "fit"), now,
-                                                 min(self.refit_ticks * dt, self.refit_s))):
+        # first fit as soon as possible; while young (n < EAGER_N) at most one
+        # refit per EAGER_PERIOD_S of wall clock (integration perf: a refit on
+        # every commit made B06 the costliest warm-up engine, ~17 ms/tick at
+        # 20 entities, for models that change little between two commits)
+        first = not model.get("fitted")
+        young = float(model.get("n", 0.0)) < EAGER_N
+        if not (ctrl or first
+                or (young and self.entity_due((s, e, "young"), now, max(dt, EAGER_PERIOD_S)))
+                or self.entity_due((s, e, "fit"), now,
+                                   min(self.refit_ticks * dt, self.refit_s))):
             return model
         return self._refit(ctx, s, e, model, now, sig)
 

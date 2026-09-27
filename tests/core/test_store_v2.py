@@ -384,15 +384,17 @@ def test_health_and_last_write():
 def test_default_retention_table():
     st = make_store()
     n = 40                                                     # 10 h at 900 s
-    add_raw_series(st, S, E, "http.requests", list(range(n)))
+    add_raw_series(st, S, E, "http.status_4xx", list(range(n)))
+    add_raw_series(st, S, E, "http.requests", list(range(n)))   # D0 input: 24 h
     add_raw_series(st, S, E, "tls.sni_set", [{"a.com": 1}] * n)
     from helpers import add_derived_series
     add_derived_series(st, S, E, "derived.error_rate", [0.1] * n)
     add_derived_series(st, S, E, "feature.legacy", [1.0] * n)  # no rule: max_points only
     set_trust(st, S, E, [T0 + i * DT for i in range(n)], 1.0)
     span = lambda ser: ser[-1].ts - ser[0].ts
-    assert span(st.raw_series(S, E, "http.requests")) <= 6 * H
-    assert len(st.raw_series(S, E, "http.requests")) == 25
+    assert span(st.raw_series(S, E, "http.status_4xx")) <= 6 * H
+    assert len(st.raw_series(S, E, "http.status_4xx")) == 25
+    assert len(st.raw_series(S, E, "http.requests")) == n
     assert span(st.raw_series(S, E, "tls.sni_set")) <= 1 * H
     assert span(st.derived_series(S, E, "derived.error_rate")) <= 2 * H
     assert len(st.derived_series(S, E, "feature.legacy")) == n
@@ -404,10 +406,10 @@ def test_default_retention_table():
 
 def test_set_retention_overrides_and_max_points():
     st = make_store()
-    add_raw_series(st, S, E, "l4.flows", list(range(10)))
+    add_raw_series(st, S, E, "l4.syn_count", list(range(10)))
     st.set_retention("l4.", max_points=3)
-    st.add_raw(RawMetric("l4.flows", 99, T0 + 10 * DT, S, E))
-    assert [m.value for m in st.raw_series(S, E, "l4.flows")] == [8, 9, 99]
+    st.add_raw(RawMetric("l4.syn_count", 99, T0 + 10 * DT, S, E))
+    assert [m.value for m in st.raw_series(S, E, "l4.syn_count")] == [8, 9, 99]
     st.set_retention("behavior.foo", max_age_s=DT)
     from helpers import add_derived_series
     add_derived_series(st, S, E, "behavior.foo", [1, 2, 3, 4])

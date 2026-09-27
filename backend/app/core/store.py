@@ -92,8 +92,24 @@ DEFAULT_RETENTION: Dict[str, Tuple[Optional[int], Optional[float]]] = {
     "behavior.zi": (None, 6 * HOUR),
     "behavior.pf": (None, 6 * HOUR),
     "behavior.cusum_state": (None, 6 * HOUR),
+    # integration (engine_integration_notes): rules the engines used to set
+    # themselves, now part of contract B's table
+    "http.requests": (None, 24 * HOUR),         # D0 grid inputs (D0 / D2: 24 h)
+    "l4.flows": (None, 24 * HOUR),
+    "dns.queries": (None, 24 * HOUR),
+    "act.events": (None, 24 * HOUR),
+    "l4.bytes_up": (None, 13 * HOUR),           # D0 trend targets (12 h span + 1 h)
+    "l4.distinct_peers": (None, 13 * HOUR),
+    "http.latency_ms_avg": (None, 13 * HOUR),
+    "probe.rtt_ms": (None, 13 * HOUR),
+    "behavior.e_day": (None, 8 * DAY),          # as q_all (B25)
+    "behavior.budget": (24, 1 * DAY),           # 36 entries per point (B13)
+    "behavior.class.agg": (None, 9 * DAY),      # B18 reference replay clock (24 h + 8 d)
+    "behavior.calib_health": (None, 8 * DAY),   # B24
 }
 RAW_SCALAR_MAX_AGE = 6 * HOUR
+# timeline(): a vec-ring risk point is listed when it enters a new 10-point band
+RISK_TIMELINE_BAND = 10.0
 RAW_SET_MAX_AGE = 1 * HOUR
 EVENT_MAX_AGE = 30 * DAY
 INCIDENT_MAX_AGE = 90 * DAY
@@ -1087,6 +1103,20 @@ class MetricStore:
             for pv in self.profile_versions(system, entity):
                 if since is None or pv.ts >= since:
                     items.append({"ts": pv.ts, "type": "profile_version", "item": pv})
+            # behavior.risk is a 1-element float32 vec ring (helpers_api 0.1,
+            # B26); a derived deque (older writers / tests) is read as well
+            ts_r, M_r = self.vec_since(system, entity, "behavior.risk",
+                                       -math.inf if since is None else since)
+            prev_band: Optional[float] = None
+            for t, v in zip(ts_r.tolist(), M_r[:, 0].tolist() if len(ts_r) else ()):
+                if v != v:
+                    continue
+                band = math.floor(v / RISK_TIMELINE_BAND)
+                if band != prev_band:
+                    items.append({"ts": t, "type": "risk", "item": DerivedMetric(
+                        name="behavior.risk", value=float(v), ts=float(t), system=system,
+                        entity=entity, window_s=0)})
+                    prev_band = band
             dq = self._derived.get(_k(system, entity, "behavior.risk"))
             if dq:
                 prev: Any = None

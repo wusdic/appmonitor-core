@@ -6,12 +6,16 @@ breaks it.
 """
 from __future__ import annotations
 
+import math
 import os
-from typing import List, Optional
+from typing import Optional
 
+import numpy as np
 import yaml
 from fastapi import APIRouter, HTTPException, Query
 
+from ..engines.behavior.lib.detectors import DETECTORS
+from ..engines.behavior.lib.features import FEATURE_NAMES_V2
 from ..pipeline.build import Runtime
 from .serialize import to_jsonable
 
@@ -96,18 +100,67 @@ def systems():
     return {"systems": r.store.systems()}
 
 
+# --------------------------------------------------------------------------- #
+# lib-3 v2 read helpers (minimal projection until the full API v2 lands)
+# --------------------------------------------------------------------------- #
+DRIFT_DETECTORS = ("cusum", "mcusum", "bocpd", "creep")
+
+
+def _latest_vec(store, system: str, entity: str, name: str):
+    """(ts, row) of the newest row of a vec ring, or (None, None)."""
+    ts, M = store.vec_tail(system, entity, name, 1)
+    if not len(ts):
+        return None, None
+    return float(ts[-1]), np.asarray(M[-1], dtype=np.float64)
+
+
+def _latest_scalar(store, system: str, entity: str, name: str) -> float:
+    _, row = _latest_vec(store, system, entity, name)
+    if row is not None and row.size:
+        return float(row[0])
+    d = store.latest_derived(system, entity, name)
+    try:
+        return float(d.value) if d is not None else math.nan
+    except (TypeError, ValueError):
+        return math.nan
+
+
+def _evidence_score(p: float) -> float:
+    """-log10 of a p-value / expected-count mapped to [0, 1] (1e-6 -> 1)."""
+    if not (p == p) or p <= 0.0:
+        return 0.0 if not (p == p) else 1.0
+    return float(min(1.0, max(0.0, -math.log10(min(p, 1.0)) / 6.0)))
+
+
+def _anomaly_score(store, system: str, entity: str) -> float:
+    """From behavior.e_day (expected equally extreme null ticks per entity-day,
+    architecture section 4), else q_all (meta-calibrated p of the fusion)."""
+    e_day = _latest_scalar(store, system, entity, "behavior.e_day")
+    if e_day == e_day:
+        return _evidence_score(e_day)
+    return _evidence_score(_latest_scalar(store, system, entity, "behavior.q_all"))
+
+
+def _drift_score(store, system: str, entity: str) -> float:
+    """The strongest change-family accumulator (B14 cusum / mcusum / bocpd /
+    creep): calibrated behavior.p where scored, else behavior.pm."""
+    for name in ("behavior.p", "behavior.pm"):
+        _, row = _latest_vec(store, system, entity, name)
+        if row is None or row.size != len(DETECTORS):
+            continue
+        ps = [row[DETECTORS.index(d)] for d in DRIFT_DETECTORS]
+        ps = [p for p in ps if p == p]
+        if ps:
+            return _evidence_score(min(ps))
+    return 0.0
+
+
 @router.get("/systems/{system}/entities")
-def system_entities(system: str, recent_s: float = 45.0):
+def system_entities(system: str):
     r = rt()
-    import time as _t
-    cutoff = _t.time() - recent_s          # only reflect the current state
     out = []
     for entity in r.store.entities(system):
         prof = r.store.profile(system, entity)
-        ev = [e for e in r.store.events(system=system, entity=entity, limit=40)
-              if e.ts >= cutoff]
-        latest_anom = next((e for e in ev if e.kind == "anomaly"), None)
-        latest_drift = next((e for e in ev if e.kind == "drift"), None)
         recent_match = r.store.matches(system=system, entity=entity, limit=1)
         out.append({
             "entity": entity,
@@ -116,13 +169,26 @@ def system_entities(system: str, recent_s: float = 45.0):
             "separability": prof.separability if prof else 0.0,
             "stable": prof.stable if prof else False,
             "sample_count": prof.sample_count if prof else 0,
-            "anomaly_score": latest_anom.score if latest_anom else 0.0,
-            "drift_score": latest_drift.score if latest_drift else 0.0,
+            "anomaly_score": round(_anomaly_score(r.store, system, entity), 4),
+            "drift_score": round(_drift_score(r.store, system, entity), 4),
+            "risk": _finite_or_none(_latest_scalar(r.store, system, entity, "behavior.risk")),
             "current_activity": recent_match[0].label if recent_match else "",
             "current_category": recent_match[0].category if recent_match else "",
         })
     out.sort(key=lambda x: max(x["anomaly_score"], x["drift_score"]), reverse=True)
     return {"system": system, "entities": out}
+
+
+def _finite_or_none(x: float):
+    return round(x, 4) if x == x and math.isfinite(x) else None
+
+
+def _num(v) -> float:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return x if math.isfinite(x) else 0.0
 
 
 @router.get("/systems/{system}/entities/{entity}")
@@ -131,17 +197,17 @@ def entity_detail(system: str, entity: str):
     prof = r.store.profile(system, entity)
     if not prof:
         raise HTTPException(404, "no profile yet")
+    names = list(prof.feature_names or FEATURE_NAMES_V2)
+    _, z = _latest_vec(r.store, system, entity, "behavior.z")
     features = []
-    stable_fp = prof.extra.get("stable_fingerprint", [])
-    for i, name in enumerate(prof.feature_names):
-        cur = prof.fingerprint[i] if i < len(prof.fingerprint) else 0.0
-        med = prof.baseline_median[i] if i < len(prof.baseline_median) else 0.0
-        mad = prof.baseline_mad[i] if i < len(prof.baseline_mad) else 0.0
-        z = (cur - med) / mad if mad > 1e-6 else 0.0
+    for i, name in enumerate(names):
+        cur = _num(prof.fingerprint[i]) if i < len(prof.fingerprint) else 0.0
+        med = _num(prof.baseline_median[i]) if i < len(prof.baseline_median) else 0.0
+        mad = _num(prof.baseline_mad[i]) if i < len(prof.baseline_mad) else 0.0
+        zi = _num(z[i]) if z is not None and i < z.size else 0.0
         features.append({"name": name, "current": round(cur, 3),
                          "baseline": round(med, 3), "spread": round(mad, 3),
-                         "z": round(z, 2),
-                         "stable": round(stable_fp[i], 3) if i < len(stable_fp) else 0.0})
+                         "z": round(zi, 2), "stable": round(med, 3)})
     return {
         "system": system, "entity": entity,
         "archetype": prof.archetype, "archetype_confidence": prof.archetype_confidence,

@@ -61,22 +61,20 @@ def add_derived_series(store: MetricStore, system: str, entity: str, name: str,
 
 
 def add_feature_rows(store: MetricStore, system: str, entity: str,
-                     rows: Iterable[Sequence[float]], names: Optional[List[str]] = None,
-                     t0: float = T0, dt: float = DT) -> List[float]:
-    """Write a feature matrix as `feature.<name>` series (the lib-3 contract)
-    and register the entity so store.entities() sees it."""
-    from app.engines.behavior.features import FEATURE_NAMES
-    names = names or FEATURE_NAMES
-    rows = [list(r) for r in rows]
+                     rows: Iterable[Sequence[float]], t0: float = T0, dt: float = DT,
+                     active: float = 1.0) -> List[float]:
+    """Write feature.nat rows (FEATURE_SPEC v2 natural units, 52 columns) and
+    the feature.active clock as B01 does (float32 vec rings; feature.<name>
+    scalars are virtual views, never stored), and register the entity."""
     ts = []
     for i, row in enumerate(rows):
         t = t0 + i * dt
-        for name, v in zip(names, row):
-            store.add_derived(DerivedMetric(name=f"feature.{name}", value=float(v), ts=t,
-                                            system=system, entity=entity, window_s=int(dt)))
+        store.add_vec(system, entity, "feature.nat", t, np.asarray(row, dtype=np.float32),
+                      window_s=int(dt))
+        store.add_vec(system, entity, "feature.active", t,
+                      np.array([active], dtype=np.float32), window_s=int(dt))
         ts.append(t)
-    # make the entity visible to engines iterating store.entities(system)
-    store.add_raw(RawMetric(name="l4.flows", value=1.0, ts=t0, system=system, entity=entity))
+    store.register_entity(system, entity)
     return ts
 
 

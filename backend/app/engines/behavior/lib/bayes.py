@@ -797,6 +797,25 @@ def bb_sf(k: float, n: float, a: float, b: float) -> float:
     return _out(np.where(bad, np.nan, out))
 
 
+def bb_parts(k: float, n: float, a: float, b: float) -> Tuple[float, float, float]:
+    """Scalar (P(K < k), P(K = k), P(K > k)) of BetaBinomial(n, a, b): the
+    exact small-side kernel behind bb_midp / bb_sf, for callers that need
+    P(X = x) as well (B04's randomised PIT). k, n rounded to the nearest
+    integer; n <= 0, k outside [0, n], a or b <= 0 or NaN -> (NaN, NaN, NaN).
+    ~5 us per call (the array bb_logpmf path costs ~150 us)."""
+    try:
+        kf, nf, af, bf = float(k), float(n), float(a), float(b)
+    except (TypeError, ValueError):
+        return (math.nan, math.nan, math.nan)
+    if not (math.isfinite(kf) and math.isfinite(nf) and af > 0.0 and bf > 0.0
+            and math.isfinite(af + bf)):
+        return (math.nan, math.nan, math.nan)
+    ki, ni = float(round(kf)), float(round(nf))
+    if ni < 1.0 or ki < 0.0 or ki > ni:
+        return (math.nan, math.nan, math.nan)
+    return _bb_parts1(ki, ni, af, bf)
+
+
 def bb_midp(k: float, n: float, a: float, b: float) -> Tuple[float, float]:
     """(u, p_two_sided) with u = P(K < k) + 0.5 P(K = k); n = 0 -> (NaN, NaN).
 

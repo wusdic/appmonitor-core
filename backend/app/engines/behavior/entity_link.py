@@ -125,7 +125,7 @@ N_CAND = 8                             # candidates A per new entity
 N_RIVALS = 5                           # nearest enrolled entities as alternatives
 K = MI.K_WIN
 CAP = MI.LLR_CAP
-VOCAB_N = 20.0
+VOCAB_N = MI.VOCAB_N                    # vocab LLR x min(n_tok, 20)/20 (lib/m_identity)
 BEHAV_MODS = ("gauss", "rhythm", "seq", "timing")
 CENTRE_TICKS = 16                      # ad hoc Gaussian centre: A's last 16 active ticks
 LOOKBACK_S = 86400.0                   # feature.vec retention
@@ -666,8 +666,6 @@ class EntityLinkEngine(Engine):
         if z is not None:
             rivals = [j for j, _ in MI.top_k(sc.idm, z, N_RIVALS, exclude=set(cands) | {b})]
         l_bg = MI.bg_loglik(sc.idm, z) if z is not None else _NAN
-        n_tok = sum(float(c) for vals in data.vocab.values() for c in vals.values())
-        f_voc = min(n_tok, VOCAB_N) / VOCAB_N
         L: Dict[str, float] = {}
         has: Dict[str, bool] = {}
         vocab: Dict[str, float] = {}
@@ -682,7 +680,8 @@ class EntityLinkEngine(Engine):
             parts = [sc.cal(m, llr.get(m, _NAN)) for m in BEHAV_MODS]
             has[j] = any(x == x for x in parts)
             L[j] = sum(_nz(x) for x in parts)
-            vocab[j] = sc.cal("vocab", llr.get("vocab", _NAN) * f_voc)
+            # modality_logliks' vocab LLR already carries min(n_tok, 20)/20
+            vocab[j] = sc.cal("vocab", llr.get("vocab", _NAN))
         for a in cands:
             if not has[a]:
                 wc[a] = (_NAN, vocab[a])

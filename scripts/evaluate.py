@@ -22,6 +22,9 @@ import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
+# single-threaded BLAS / OpenMP before numpy loads (integration R15.1 / R19.3)
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
 
 from app.eval.metrics import score_run  # noqa: E402

@@ -43,6 +43,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "strict": False,
     "daypart_day_hours": [8, 20],
     "D_min_s": 600,
+    # B13 absolute floors per quantity {Q: natural units per horizon}; keys
+    # override the engine's built-in defaults one by one (integration R12.2)
+    "budget_abs_floor": {},
 }
 
 

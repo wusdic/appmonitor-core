@@ -576,14 +576,18 @@ class CalibrationEngine(Engine):
             return 0                        # never scored: nothing to learn or calibrate
         model = _ensure_layout(model)
         gate = model["gate"]
-        seen = gate.applied.get("version")
+        # the gate's own version (as B25 does): applied['version'] is not
+        # recorded while model.control's version equals the default 0, so a
+        # later bare 0 -> 2 change would read as seen=None and skip the reset
+        seen = gate.version
         self._n_base = baseline_n_eff(store, s, e)
         self._reset_flag = False
         model, gate = learner.seed_from_link(
             store, s, e, model, gate, lambda src: self._other(store, s, src))
         model, gate = learner.step(store, s, e, model, gate, now, dt, training=ctx.training)
-        if seen is not None and gate.version != seen and not self._reset_flag:
+        if gate.version != seen and not self._reset_flag and model[RINGS]:
             _reset_rings(model)             # version change without rebase_from
+                                            # (nothing to reset on a first-seen version)
         # rows older than the score retention can never be fetched again, so a
         # longer journal (gating keeps 8 d) would only be copied every tick
         j = gate.journal
@@ -639,7 +643,7 @@ class CalibrationEngine(Engine):
                     refit[key] = 0
                 p = calib.p_from_ring(r, x, u)          # = m_calib.p_value without a prior
             else:
-                prior = self._prior(i, d, x, u, pm, pool, e, key, rings, dp, terc)
+                prior = self._prior(i, d, x, u, pm, pool, e, key, rings, dp, terc, cc)
                 p = m_calib.p_value(r, x, u, prior)
             out[d] = p if p >= P_ISSUED_FLOOR else P_ISSUED_FLOOR   # float32 ring
             sizes[d] = n
@@ -652,9 +656,27 @@ class CalibrationEngine(Engine):
         return len(out)
 
     def _prior(self, i: int, d: str, x: float, u: float, pm: Optional[np.ndarray],
-               pool: _PoolCache, e: str, key: str, rings: Mapping, dp: str, terc: int) -> float:
-        """Small-sample prior: pm[d], else the class-pooled ring, else (identity)
-        the settled-regime ring; NaN when none is usable (conformal p alone)."""
+               pool: _PoolCache, e: str, key: str, rings: Mapping, dp: str, terc: int,
+               cc: int = 0) -> float:
+        """Small-sample prior: the entity's own rings of the other dayparts at
+        this cadence (pooled, >= 64 entries), else pm[d], else the
+        class-pooled ring, else (identity) the settled-regime ring; NaN when
+        none is usable (conformal p alone).
+
+        The own-daypart pool comes first (integration): the first workday
+        after a weekend warm-up, or the first night, is a new stratum for
+        every detector, and several pm are only approximately calibrated
+        (timing's overdispersed G test, novelty's bits, the accumulators'
+        stationary tails); the entity's own null of the same score at the same
+        cadence is a better prior than any of them. A cadence switch still
+        falls through to pm (no ring of the new cadence exists)."""
+        if i != _ID_IDX and cc:
+            own = [r for r in (rings.get(self._ring_key(d, calib.stratum_key(p, cc)))
+                               for p in timebins.DAYPARTS if p != dp) if r is not None]
+            if own:
+                p, _ = m_calib.pooled_p(own, x, u)
+                if p == p:
+                    return p
         if pm is not None:
             v = float(pm[i])
             if 0.0 <= v <= 1.0:

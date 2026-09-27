@@ -460,3 +460,508 @@ Constants: `TTL_CLASSES`, `OS_FROM_TTL`, `WIN_CLASS_RANGE`.
 ## featcache — per-tick read cache (stub, optional)
 
 - `FeatCache(store, now)`, with `.reset(now)`, `.vec(s, e, name)` (fresh-only and read-only) and `.feature(s, e, feature, which='vec')`.
+
+## Model accessor modules `lib/m_*.py` (impl, integration index)
+
+Each model owner (contract C) publishes a pure accessor module; consumers call these instead of reading model internals (§0.1). The module docstrings hold the layouts and the maths; this index lists the public signatures as integrated (docs/lib3/integration.md). Notes that consumers rely on:
+
+- **m_baseline** (B03). Family per feature: count → NB, ratio → Beta-Binomial, everything else → Student-t on the FEATURE_SPEC transform. `retransmit_rate` and `probe_loss` are t family (their exposure cannot be recovered from feature.nat / expo). Stats layout per family: k = 6 (count), 4 (ratio), 3 (t). Checkpoints are float32 blocks. bin168 cells are location-only. Once a golden anchor exists the reference predictive IS golden (golden_offset is 0). `quantiles` / `mean_nat` return natural units for every family (the t-family inverse transform bug reported by B04 is fixed; the ratio path is one `bb_ppf` call). `own_support` (the entity's own evidence at a bucket, no backoff) gates B14's chart inputs; `n_eff_by_bucket` serves B30. B04 reads the ratio exposure n* as `nat[RATIO_N_IDX]` and t-family values through `values_from_nat`.
+- **m_class** (B02). Member lookups are indexed per (model object, version): model.class is copy-on-write (B02 puts a new dict with version + 1 on every assignment change), so `class_key` / `members` / `class_members` / `all_class_keys` no longer scan every assignment. `assign` also carries `class_path`, `provisional`, `pend`, `D` and the per-IP automation index `A` (B30 prefers it); `roles` carry `super`, `A`, `d90`, `desc`, `cluster`, `subs`, `absent`, `name_parts`; the private `_state` key belongs to B02.
+- **m_identity** (B15). `window_vector` is the one-sort quantile implementation shared by B15 / B16 / B17. `modality_logliks` applies the vocab factor `min(n_tok, 20)/20` itself (`vocab_factor`, `VOCAB_N`), so B15's `llr_calib['vocab']` is fitted on the same scaled LLR that B16 / B17 calibrate.
+- **m_link** (B17). Active links only unless asked (`links(model, active_only=True)`); `retractions(model, e, since)` feeds B28's rollback + release of a retracted seed; `aliases`, `actor_members`, `continuity`, `shared_ip` replace hand parsing of model.link.
+- **m_vocab** (B08). `dest_prevalence(store, s, name, now)` takes a destination NAME (eTLD+1 or /24, `m_template.dest_name_of`); B12 and B13 use it with R2's `m_template.dest_prevalence(did)` as the fallback when it is NaN.
+- **m_timing** (B11). State layout fmt 1, `STATE_DIM = 54`; consumers use `loglik(model, gaps)`, `descriptors(model, now)`, `recent(model)`, never the model dict.
+- **detectors.acc_level(p, detector, dt_s)**: the shared accumulator level ln(1/p) / ln(ARL_ticks) on the calibrated p (L ≥ 1 alarms). B27's quiet test and B28's SUSPECT / trust tests use it; `m_cp.level` (raw max S/h over 48 charts) is diagnostic only.
+- **bayes.bb_parts(k, n, a, b)**: scalar (P(K < k), P(K = k), P(K > k)) of a Beta-Binomial, for randomised PITs.
+
+#### m_baseline — B03 (model.baseline)
+
+Conjugate seasonal baseline maths and read accessors for model.baseline.
+
+- `anchor_predictive(anc, tctx, parent=None, anchor='current')`
+- `anchor_summary(model, anchor, feature)`
+- `bucket_means(anc, T=None)`
+- `commit(anc, row, w, cap=0.1, drift=0.0)`
+- `commit_many(ancs, rows, ws, caps, drifts)`
+- `descriptors(model, names=None, dt_s=900.0)`
+- `dump(anc, dtype=float32)`
+- `eb_kappa(children)`
+- `flush_many(ancs)`
+- `golden(model)`
+- `golden_offset(store, s, e)`
+- `has_golden(model)`
+- `held(model)`
+- `hl_days(model)`
+- `join(S, Ep, hp, kappa, loo=True)`
+- `last_commit_ts(model)`
+- `load(blob)`
+- `loglik(pred, nat, dt_s)`
+- `make_row(ts, nat, dt_s, tctx, drift=0.0, elig=True)`
+- `maturity(model)`
+- `mean_nat(pred, dt_s=900.0)`
+- `median_select(snaps)`
+- `merge(own, other, w)`
+- `midp(pred, nat, dt_s)`
+- `n_eff(x, key='current')`
+- `n_eff_by_bucket(x, anchor='current', T=None)`
+- `new_anchor(week=True, select=True, hl_days=14.0)`
+- `new_model()`
+- `observe(nat, dt_s)`
+- `on_rebase_current(anc, tau, until)`
+- `on_rebase_reference(anc, tau)`
+- `own_support(model, tctx, anchor='current', T=None)`
+- `parent_key(store, s, e)`
+- `predictive(store, s, e, tctx, anchor='current', tier='entity', loo=True, model=None)`
+- `predictive_set(store, s, e, tctx, model=None)`
+- `profile_many(store, s, ents, models, tctx)`
+- `quantiles(pred, qs, dt_s=900.0, nat=None)`
+- `queue(anc, row, w, cap=0.1, drift=0.0)`
+- `sd15(pred)`
+- `seasonal_curves(model, day_type, names)`
+- `tier_model(store, s, key)`
+- `true_cells(anc, T=None)`
+- `true_stats(anc, T=None)`
+- `values_from_nat(nat, dt_s)`
+- `vec_median_sd(pred)`
+- `version(model)`
+
+#### m_calib — B24 / B25 (model.calib)
+
+Read accessors for model.calib (owner: B24 CalibrationEngine; contract C).
+
+- `as_ring(x)`
+- `describe(model)`
+- `health_of(calib_health, detector)`
+- `issued(p)`
+- `p_from_snapshot(model, detector, stratum, score, u, pm=None, pooled=None, settled=None)`
+- `p_value(r, score, u, prior=nan)`
+- `pooled_p(rs, score, u, min_n=64)`
+- `quantile(model, detector, stratum, q)`
+- `regime_tercile(regime)`
+- `ring(model, detector, stratum)`
+- `ring_key_for(detector, daypart, cc, regime_tercile=0)`
+- `ring_size(model, detector, stratum)`
+- `rings(model)`
+- `score_at_p(model, detector, stratum, p)`
+- `stratum_for(detector, daypart, cc, regime_tercile=0)`
+- `tail(model, detector, stratum)`
+- `to_json(model)`
+- `uniform(system, entity, detector, ts)`
+- `version(model)`
+- `weight_mult(calib_health, detector)`
+
+#### m_class — B02 (model.class)
+
+Read accessors for model.class (owner: B02 peer_group; contract C, L).
+
+- `all_class_keys(store, system, min_members=2)`
+- `assignment(store, system, entity)`
+- `class_key(store, system, entity, min_members=3)`
+- `class_members(store, system, key)`
+- `get(store)`
+- `members(store, system, rid, min_prob=0.5)`
+- `role_id(store, system, entity)`
+- `role_name(store, rid)`
+- `version(store)`
+
+#### m_client — B09 (model.client)
+
+Read accessors and shared maths for model.client (owner: B09 ClientIdentityEngine;.
+
+- `backoff_models(store, system, entity)`
+- `class_tier(sys_model, class_key)`
+- `counts(model, now=None)`
+- `descriptors(model, k=5, now=None)`
+- `dominant(model, k=3, now=None)`
+- `factor(model, now=None)`
+- `get(store, system, key)`
+- `kind(model)`
+- `loglik(model, stack_counts_, sys_model=None, cls=None, now=None)`
+- `loglik_store(store, system, entity, stack_counts_, now=None)`
+- `p99_gap(model, token)`
+- `p_ja3n_given_ua(sys_model, ja3n, ua)`
+- `prob(store, system, entity, token, now=None)`
+- `recent(model)`
+- `rollout_share(sys_model, token, entity, now, members=None)`
+- `shares(model, now=None)`
+- `stack_counts(stack_set)`
+- `surprisal(store, system, entity, token, now=None)`
+- `total(model, now=None)`
+
+#### m_cp — B14 (model.cp)
+
+model.cp accessors and pure changepoint step functions (owner: B14 ChangepointEngine).
+
+- `alarms(store, s, e)`
+- `audit_rate(x, gap, phi, dt, hmult, rng, n_series=8, block=30)`
+- `bank_h(dt)`
+- `bank_tick(st, x, now, dt, phi, h, adjacent=True)`
+- `descriptor(store, s, e)`
+- `get(store, s, e)`
+- `level(store, s, e)`
+- `lindley(y)`
+- `mc_tick(st, w, now, dt, h)`
+- `mc_whiten(psi, W, Sigma)`
+- `mcusum_h(dt)`
+- `mcusum_p(stat, d=12)`
+- `mle_onset(y, ts, t_lo)`
+- `neutralize(inputs, features)`
+- `new_bank(batch=())`
+- `new_mc(batch=())`
+- `onset(store, s, e, at=None)`
+- `peq(S, n_charts=48)`
+- `prewhiten(x, prev, phi)`
+- `prob(store, s, e)`
+- `replay_inputs(store, s, e, since, until)`
+- `replay_params(store, s, e, dt=None)`
+- `replay_state(store, s, e, at_or_before)`
+- `siegmund_arl(k, h)`
+- `split_state_row(row)`
+- `state_row(bank, mc, phi)`
+- `step_fn(params, which='cusum')`
+- `whitener(Sigma)`
+
+#### m_density — B06 (model.density, model.groups)
+
+Read accessors and shared scoring maths for model.density / model.groups.
+
+- `assemble(mu, Sigma, cols, n, n_pred, box=(nan, nan), box_src=None, class_key=None, class_w=0.0, fitted_ts=nan, version=0)`
+- `axes_from_contrib(rbc, p, top=3, alpha=0.01)`
+- `contributions(store, s, e, z, top=5)`
+- `contributions_model(model, z)`
+- `describe(store, s, e)`
+- `descriptor(model)`
+- `get(store, s, e)`
+- `group_of(store, s)`
+- `groups(store, s, split_by_feature_group=False)`
+- `is_fitted(model)`
+- `loglik(store, s, e, z)`
+- `mean(store, s, e)`
+- `ranked(rbc, p, top=5, z=None)`
+- `score(store, s, e, z)`
+- `score_model(model, z)`
+- `sigma(store, s, e)`
+
+#### m_feedback — B23 (model.feedback)
+
+Read accessors for model.feedback (owner: B23 feedback; contract C).
+
+- `accepts(src, system, entity, since=None)`
+- `allowlist_values(store, system, entity, dim, now=None)`
+- `allowlisted(store, system, entity, dim, value, now=None)`
+- `alpha_mult(src, system)`
+- `build_tokens(kinds, axes, features, new)`
+- `describe(obj, store=None, dt_s=None)`
+- `event_new_tokens(ev)`
+- `explicit_evidence(obj, evidence_from=0)`
+- `family_weight(src, family)`
+- `family_weights(src)`
+- `freezes(src, system, entity, since=None)`
+- `get(src)`
+- `involved_families(case)`
+- `is_frozen(src, system, entity)`
+- `is_suppressed(store, incident_like, now=None)`
+- `isotonic_apply(iso, p)`
+- `jaccard(a, b)`
+- `label_queue(src, system=None)`
+- `latest_accept(src, system, entity, since=None)`
+- `latest_freeze(src, system, entity, since=None)`
+- `p_malicious(src, case)`
+- `pattern_tokens(obj, store=None)`
+- `precision(src, family, key=None)`
+- `risk_mult(src, family, key=None)`
+- `split_token(tok)`
+- `stack_vector(case)`
+- `stacker_prob(stacker, x)`
+- `stage_count(axes, kinds, categories=())`
+- `summary(src, system=None, entity=None)`
+- `suppression_match(store, incident_like, now=None)`
+- `surprise(p, dt_s)`
+- `surprise_e(e_day)`
+- `token_str(dim, value)`
+- `top_features(features, k=5, z_min=2.0)`
+- `z_features(store, system, entity, ts, opened=None)`
+
+#### m_governor — B28 (model.governor, model.control)
+
+model.governor / model.control accessors and the legitimate-change arithmetic.
+
+- `control(store, s, e)`
+- `decide(typ, x, duration_s, malicious, negative, ramp_blocked=False)`
+- `descriptor(store, s, e)`
+- `episodes(store, s, e, since=None)`
+- `get(store, s, e)`
+- `in_regime_window(store, s, e, ts, window_s=86400.0)`
+- `is_quarantined(store, s, e, at=None)`
+- `label_queue(store, system=None)`
+- `logodds(typ, terms, ramp_ok=False)`
+- `p_from_logodds(x)`
+- `prior(typ, ramp_ok=False)`
+- `regime(store, s, e)`
+- `regime_at(store, s, e, ts)`
+- `state(store, s, e)`
+- `t_type(typ)`
+- `terms_negative(terms)`
+- `time_evidence(typ, steps)`
+- `trust(store, s, e, at=None)`
+- `trust_prov(store, s, e, at=None)`
+- `version(store, s, e)`
+
+#### m_identity — B15 (model.identity, model.idwin)
+
+Read accessors and shared maths for model.identity / model.idwin (owner: B15.
+
+- `anonymity_set(model, e)`
+- `anonymity_sets(model)`
+- `augment(model, X, class_keys=None)`
+- `bg_loglik(model, z)`
+- `bhattacharyya_diag(m1, v1, m2, v2, floor=1e-06)`
+- `calibrate(model, m, llr, cap=4.0)`
+- `class_mean(model, ck)`
+- `class_stats(model, ck)`
+- `clock_features(tctx)`
+- `confusable_with(model, e)`
+- `confusion(model, e, j=None)`
+- `descriptors(model, e)`
+- `distinctive(model, e)`
+- `eer(genuine, impostor)`
+- `eer_hard(model, e)`
+- `entities(model)`
+- `entity_mean(model, e)`
+- `gauss_llr(model, z, cand)`
+- `gauss_loglik(model, z, cand)`
+- `get(store, s)`
+- `is_fitted(model)`
+- `llr_calib(model, m)`
+- `logistic_calibration(llr, label, ridge=0.001, iters=50, min_n=20)`
+- `mcq_log_odds(y_self, y_peer, prior, alpha0=50.0)`
+- `modality_llrs(store, s, cands, data, now, bg=None)`
+- `modality_logliks(store, s, cand, data, now, bg=None)`
+- `modality_share(model, e)`
+- `nearest(model, e)`
+- `scores(model, z)`
+- `separability(model, e)`
+- `stats(model, e)`
+- `t99(model, e)`
+- `tick_modal_data(store, s, e, ts, tctx=None, smap=None)`
+- `tick_row(store, s, e, ts, tctx=None, timing=None, depth=64)`
+- `to_natural(idx, v)`
+- `top_k(model, z, k=5, exclude=())`
+- `transform(model, x, class_key=None)`
+- `transform_many(model, X, class_keys=None)`
+- `union_find_sets(nodes, pairs)`
+- `version(model)`
+- `vocab_factor(data)`
+- `window_from_store(store, s, e, ts_list)`
+- `window_vector(rows)`
+
+#### m_link — B17 (model.link)
+
+Read accessors and shared maths for model.link (owner: B17 EntityLinkEngine;.
+
+- `actor_members(model, e)`
+- `actor_of(model, e)`
+- `actors(model)`
+- `aliases(model, e)`
+- `build_actors(lks, chain_s=86400.0)`
+- `chain(model, e)`
+- `conf(lo)`
+- `continuity(model, e)`
+- `continuity_id(model, e)`
+- `descriptors(model, e)`
+- `device_llr(shares_a, sys_shares, stacks_b, eps=0.05, rho=0.02)`
+- `empty()`
+- `entity_kind(model, e)`
+- `get(store, s)`
+- `is_retracted(lk)`
+- `lease_for(a, b, scopes=())`
+- `link_between(model, a, b, active_only=True)`
+- `linked_from(model, e)`
+- `linked_to(model, e)`
+- `links(model, active_only=True)`
+- `parse_scopes(cfg_scopes)`
+- `retractions(model, e=None, since=None)`
+- `scope_of(e, scopes)`
+- `seeds_for(model, e)`
+- `shared_ip(model, e)`
+- `time_prior(gap_s, lease_s=86400.0)`
+- `topology_prior(a, b, scopes=())`
+- `version(model)`
+
+#### m_rhythm — B07 (model.rhythm)
+
+Read accessors for model.rhythm (owner: B07 RhythmEngine; contract C, G, L).
+
+- `activity168(model)`
+- `activity48(model)`
+- `cell168(bin168, q)`
+- `cell48(bin48, q)`
+- `cell_stats(model, c48, c168=-1)`
+- `cells_of_slot(slot, calendar=None, healed=None)`
+- `cells_of_tctx(t)`
+- `class_fraction(class_model, tctx)`
+- `data_counts(model, at_ts=None)`
+- `day_info(day, calendar=None, healed=None)`
+- `decay_factor(t_from, t_to)`
+- `descriptors(model)`
+- `det_p(p_hat)`
+- `detector_state(model)`
+- `entropy168(model)`
+- `expected_volume(model, c48)`
+- `from_dict(d)`
+- `healed_days(system_model)`
+- `hourly48(model)`
+- `loglik(model, active_slots, tctx)`
+- `loglik_terms(model, active_slots, tctx)`
+- `machine_like(model)`
+- `mature168(model)`
+- `new_model(kind='entity')`
+- `new_state()`
+- `offhours_step(W, a, p_hat)`
+- `p_cell(model, c48, c168=-1)`
+- `p_expected(model, tctx)`
+- `prior_pi48(A, N)`
+- `profile168(model)`
+- `profile48(model)`
+- `shape168(model)`
+- `shape48(model)`
+- `silence_eligible(p_hat, machine)`
+- `silence_step(s, a, p_hat, machine)`
+- `slot_cells(slot, nonwork, regular)`
+- `slot_history(model, since=-inf)`
+- `to_dict(model)`
+- `window_cells(t0, t1, tz='Asia/Shanghai', calendar=None, healed=None)`
+
+#### m_seq — B10 (model.seq)
+
+Read accessors for model.seq (owner: B10 SequenceEngine; contract C) and the.
+
+- `backoff(store, system, entity)`
+- `describe(model, k=8)`
+- `dwell_moments(model, family)`
+- `dwell_params(model, family, tier=None)`
+- `dwell_sf(model, family, length, tier=None)`
+- `entropy_rate(model)`
+- `gap_bin_center_s(j)`
+- `gap_bins(gaps)`
+- `gap_hist(model)`
+- `gap_valley(hist, default=1800.0)`
+- `get(store, system, entity)`
+- `is_auth(family)`
+- `loglik(model, tokens, backoff=(), vocab_size=0, history=None)`
+- `maturity(model)`
+- `ppm(model)`
+- `ppm_cat(model)`
+- `session_excess(bits, mu, k=5.0)`
+- `session_gap(model, default=1800.0)`
+- `session_starts(ts, gap, last_ts=nan)`
+- `stream_symbols(store, system, entity, ts, smap=None)`
+- `top_ngrams(model, n=2, k=10)`
+- `vocab_size(store, system)`
+
+#### m_template — R2 (model.template, act.* reads)
+
+Read accessors and storage forms for R2's outputs: model.template and the act.* series.
+
+- `dest_entities(store, system, did, now=None)`
+- `dest_id_of(name)`
+- `dest_name(store, system, did)`
+- `dest_name_of(host)`
+- `dest_prevalence(store, system, did, now=None)`
+- `from_dict(d)`
+- `get(store, system)`
+- `new_model()`
+- `objs(store, system, entity, ts)`
+- `objs_hll(entry)`
+- `outcome_class(code)`
+- `rare_events(store, system, entity, ts)`
+- `seq_token(token, code)`
+- `stream_frac(store, system, entity, ts)`
+- `stream_rows(store, system, entity, ts)`
+- `stream_ticks(store, system, entity, since, until=None)`
+- `stream_window(store, system, entity, since, until=None)`
+- `system_entities(store, system, now=None)`
+- `template_key(token)`
+- `templater(store, system)`
+- `to_dict(model)`
+- `token_count(store, system, token)`
+- `token_id(store, system, token)`
+- `token_str(store, system, tid)`
+- `tokens_of(store, system, ids)`
+- `version(store, system)`
+- `vocab_size(store, system)`
+
+#### m_timing — B11 (model.timing)
+
+Read accessors and shared maths for model.timing (owner: B11 TimingEngine; contract C).
+
+- `as_float_list(x, nd=4)`
+- `b_from_moments(mean, var)`
+- `bin_index(gaps)`
+- `burstiness(model)`
+- `corr_from(cxx, cyy, cxy)`
+- `descriptors(model, now=None)`
+- `dispersion(model, daypart=None)`
+- `g_two_sample(p1, n1, p2, n2, min_count=0.5)`
+- `gaps_from_times(times, frac=1.0)`
+- `hist_probs(model)`
+- `is_empty(model)`
+- `jsd_bits(p, q)`
+- `loglik(model, gaps, alpha=1.0)`
+- `loglik_per_gap(model, gaps, alpha=1.0)`
+- `mass(model)`
+- `memory(model)`
+- `n_eff(model)`
+- `new_state()`
+- `period(model, now=None)`
+- `pmf(model, alpha=1.0)`
+- `quantile(model, q)`
+- `quantiles(model, qs)`
+- `recent(model)`
+- `state_of(model)`
+- `think_logpdf(model, gaps)`
+- `think_time(model)`
+
+#### m_vocab — B08 (model.vocab)
+
+Read accessors and shared maths for model.vocab (owner: B08 NoveltyEngine; contract C, L).
+
+- `adoption_records(store, system, class_key, since=None, min_members=1)`
+- `backoff_models(store, system, entity)`
+- `counts(model, dim, now=None)`
+- `descriptors(model, k=8, now=None)`
+- `dest_prevalence(store, system, name, now=None)`
+- `entry(model, dim, value, now=None)`
+- `factor(model, now=None)`
+- `family_distribution(src, system=None, entity=None, now=None)`
+- `first_seen_age(store, system, entity, dim, value, now)`
+- `first_seen_ts(store, system, entity, dim, value)`
+- `get(store, system, key)`
+- `idf(model, dim, value, extra_df=0.0)`
+- `kind(model)`
+- `llr_vs_system(store, system, entity, obs, now=None)`
+- `loglik(store, system, entity, obs, now=None)`
+- `loglik_models(ent, cls, sys, obs, now=None)`
+- `maturity(model, dim=None)`
+- `novelty_rate(model, dim=None)`
+- `prevalence(store, system, dim, value, now=None)`
+- `prevalence_n(store, system, dim, value)`
+- `prob(store, system, entity, dim, value, now=None)`
+- `split_key(key)`
+- `surprisal(store, system, entity, dim, value, now=None)`
+- `top_values(model, dim, k=10, now=None)`
+- `total(model, dim, now=None)`
+- `universe(dim, sys_model=None)`
+- `value_key(dim, value)`
+
+#### emit — shared writer of behavior.score / pm / axes / acc_alarm / degraded
+
+Shared write/read convention for detector outputs (contract B, J).
+
+- `ensure_registered(store)`
+- `read_array(store, system, entity, name, ts)`
+- `read_dict(store, system, entity, name, ts)`
+- `read_row(store, system, entity, name, ts)`
+- `scored_detectors(store, system, entity, ts)`
+- `write_pvalues(store, system, entity, ts, pvals, window_s=None)`
+- `write_scores(store, system, entity, ts, scores, pm=None, axes=None, acc_alarm=None, degraded=None, window_s=None)`

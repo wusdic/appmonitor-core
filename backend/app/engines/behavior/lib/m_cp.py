@@ -623,7 +623,10 @@ def onset(store: Any, s: str, e: str, at: Optional[float] = None) -> float:
 
 def level(store: Any, s: str, e: str) -> Dict[str, float]:
     """{cusum: max_c S_c / h_c, mcusum: ||S|| / h_mc} as of B14's last tick
-    (>= 1 alarms; B28 enters SUSPECT at >= 0.5). NaN when B14 has not run."""
+    (>= 1 alarms). NaN when B14 has not run. Diagnostic only: on a null the
+    max over 48 charts is >= 1/4 on ~88 % and >= 1/2 on ~15 % of ticks at
+    900 s, so B27's quiet test and B28's SUSPECT / trust tests use the
+    calibrated-p level lib/detectors.acc_level instead."""
     m = get(store, s, e)
     run = (m or {}).get("run") if isinstance(m, Mapping) else None
     if not run or not math.isfinite(float(run.get("dt", math.nan))):

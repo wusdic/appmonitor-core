@@ -94,6 +94,7 @@ from .lib import gating as G
 from .lib import m_class
 from .lib import m_feedback
 from .lib import m_template as MT
+from .lib import m_vocab as MV
 
 MODEL = "model.beacon"
 DETECTOR = "beacon"
@@ -452,12 +453,13 @@ class _Prevalence:
     """(share of the system's entities, number of entities) using a destination,
     memoised for one system tick.
 
-    Private on purpose: model.vocab@__system__ (B08) is the specified source
-    but exposes no prevalence accessor yet. R2's decayed distinct-entity
-    counts (m_template) are the same quantity; the entities holding a live
-    buffer for the destination (this engine) cover a missing or reset
-    model.template. The larger count wins (population whitelisting errs
-    towards silence). Switch `_lookup` when m_vocab grows an accessor."""
+    The share comes from model.vocab@__system__ (B08, the specified source)
+    through m_vocab.dest_prevalence on the destination's name; R2's decayed
+    distinct-entity counts (m_template) stand in while B08 has no system
+    model or does not know the name (NaN). The entity count is the larger of
+    R2's count and the entities holding a live buffer for the destination
+    (this engine), which covers a missing or reset model.template
+    (population whitelisting errs towards silence)."""
 
     def __init__(self, store: Any, system: str, now: float,
                  holders: Mapping[int, Set[str]]) -> None:
@@ -474,7 +476,12 @@ class _Prevalence:
     def _lookup(self, did: int) -> Tuple[float, float]:
         st, s, now = self.store, self.system, self.now
         n_ent = max(float(len(self.holders.get(did, ()))), MT.dest_entities(st, s, did, now))
-        share = MT.dest_prevalence(st, s, did, now)
+        share = _NAN
+        name = MT.dest_name(st, s, did)
+        if name:
+            share = MV.dest_prevalence(st, s, name, now)
+        if share != share:
+            share = MT.dest_prevalence(st, s, did, now)
         if share != share:
             if self._n_sys is None:
                 self._n_sys = max(MT.system_entities(st, s, now), float(len(st.entities(s))))

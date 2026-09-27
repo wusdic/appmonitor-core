@@ -72,6 +72,10 @@ SCALE_HL_S = 7 * 86400.0       # half-life of the vec-per-zr scale statistics
 SCALE_MIN_N = 8.0
 CORR_MIN_ROWS = 24
 
+# ---- chart inputs: the entity's own support at the bucket ------------------
+SUPPORT_MIN_EXPO_MIN = 60.0    # weighted exposure minutes of own committed rows
+SUPPORT_MIN_ROWS = 2.0         # decayed rows of the feature itself
+
 # ---- BOCPD ----------------------------------------------------------------
 HAZARD = 1.0 / 168.0           # per hour
 R_MAX = 336                    # hours; longer runs are merged at R_MAX
@@ -414,6 +418,13 @@ class ChangepointEngine(Engine):
             store, s, e, learn, gate, lambda a: self._other_learn(store, s, a))
         run = model["run"]
         self._apply_control(run, gate0, gate)
+        if run.get("training") and not ctx.training:
+            # End of warm-up: the charts ran against a model that was being
+            # learnt from those very rows (cold backoff, hyperprior buckets);
+            # their accumulated level is not evidence about live behaviour, so
+            # the live episode starts from S = 0 like after a release.
+            self._reset_charts(run)
+        run["training"] = bool(ctx.training)
         model["learn"], model["gate"], model["version"] = learn, gate.to_dict(), int(gate.version)
         model["ts"] = now
         # ---- hour / day bookkeeping happens with or without data
@@ -427,7 +438,7 @@ class ChangepointEngine(Engine):
             return model, False, closed_day
         # ---- detection
         x52 = np.asarray(zr_row, dtype=np.float64)
-        xk = x52[m_cp.KEY_IDX]
+        xk = self._supported(store, s, e, ctx, x52[m_cp.KEY_IDX])
         adjacent = now - float(run["last_ts"]) <= 1.5 * dt + 1e-6
         phi = phi_at(learn, dt)
         h = m_cp.bank_h(dt) * float(run["hmult"])
@@ -472,15 +483,43 @@ class ChangepointEngine(Engine):
         rebased = g1.applied.get("rebase_from") != g0.applied.get("rebase_from")
         if not (released or rebased):
             return
-        run["bank"] = m_cp.new_bank()
-        run["mc"] = m_cp.new_mc()
-        for k in run["excess"]:
-            run["excess"][k] = np.zeros((2, m_cp.N_KEY))
+        ChangepointEngine._reset_charts(run)
         if rebased:
             run["bocpd"] = bocpd_new()
             run["boc"] = {"on": False, "onset": math.nan}
             run["daily"] = {"idx": [], "val": []}
             run["creep"] = {"groups": {}, "p": math.nan, "pm": math.nan, "on": False, "axes": []}
+
+    def _supported(self, store: Any, s: str, e: str, ctx: Context,
+                   xk: np.ndarray) -> np.ndarray:
+        """Key residuals of features the entity's OWN baseline identifies at
+        this bucket; the others are NaN (a chart input of 0, no reset).
+
+        zr is exactly N(0, 1) only under a predictive fitted to the entity. In
+        a bucket it has no committed rows of (first workday after a weekend
+        warm-up, a new entity, a new hour of the day) the predictive is the
+        class / system / hyperprior backoff, whose residuals carry a
+        systematic offset (e.g. Beta(0.5, 0.5) for a 4xx rate gives z ~ -2 on
+        every quiet tick) that a CUSUM with k = 0.25 turns into an alarm
+        within hours. Such inputs say nothing about a change of THIS entity."""
+        if _m_baseline is None:
+            return xk
+        model = store.get_model(s, e, BASELINE)
+        if not isinstance(model, Mapping) or "current" not in model:
+            return xk                      # no B03 in this pipeline: support unknown
+        tc = timebins.tctx_from_config(float(ctx.now), ctx.config, float(ctx.window_s))
+        W, expo = _m_baseline.own_support(model, tc)
+        if expo < SUPPORT_MIN_EXPO_MIN:
+            return np.full_like(xk, np.nan)
+        return np.where(W[m_cp.KEY_IDX] >= SUPPORT_MIN_ROWS, xk, np.nan)
+
+    @staticmethod
+    def _reset_charts(run: Dict[str, Any]) -> None:
+        """CUSUM / MCUSUM statistics and the natural-unit excess restart at 0."""
+        run["bank"] = m_cp.new_bank()
+        run["mc"] = m_cp.new_mc()
+        for k in run["excess"]:
+            run["excess"][k] = np.zeros((2, m_cp.N_KEY))
 
     # ------------------------------------------------------------ whitening
     def _whitener(self, store: Any, s: str, e: str, learn: Mapping[str, Any],

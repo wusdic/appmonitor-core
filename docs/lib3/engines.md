@@ -129,6 +129,13 @@ Each engine: purpose, algorithm, store reads/writes, perf budget and the unit te
 - periodicity must report lag = 3600 s with score > 0.5.
 - An entity silent for more than 6 h gets no window metrics.
 
+**Integration notes (as built, docs/lib3/integration.md).**
+- Activity gate: all three engines skip an entity whose last_seen is more than 6 h old (for trend this is narrower than its 12 h span, so an entity silent > 6 h gets no window metrics).
+- Counters are rescaled to the current tick (v · dt_now / dt_tick): sum is the true total, mean the time-weighted rate per current tick; trend's EWMA uses a 1800 s half-life and reports its slope per current tick.
+- Trend changepoint: Welch z of the recent-half mean minus the prior-half mean, split at now − 6 h, variance floored (Poisson for counters, (1 % of level)² for gauges), clipped to ±10.
+- Periodicity: beacon_lag = 0 when the autocorrelation has no peak; act.events is a fourth count target; timing_regularity needs ≥ 2 active ticks.
+- Retention: the D0 inputs are kept 24 h and the trend targets 13 h (contract B; store defaults).
+
 ## D1 — RatioEngine/EntropyEngine/GraphEngine [upgrade]
 
 - **File:** `backend/app/engines/derived/{ratio,entropy,graph}.py`
@@ -156,6 +163,9 @@ Each engine: purpose, algorithm, store reads/writes, perf budget and the unit te
 (b) A zero denominator writes nothing.
 (c) graph: a peer seen at t0 and again at t0 + 31 d counts as new.
 
+**Integration notes (as built, docs/lib3/integration.md).**
+- derived.<entropy>_n is the total set mass including '__other__'; entropies are computed over the named entries only (contract B). Graph peers are eTLD+1 names plus l4.peer_set buckets.
+
 ## D2 — SessionEngine [upgrade]
 
 - **File:** `backend/app/engines/derived/session.py`
@@ -180,6 +190,9 @@ Each engine: purpose, algorithm, store reads/writes, perf budget and the unit te
 - duty must be 0.25 ± 0.02.
 - think_time must be ≈ 8 s on active ticks and absent on idle ticks.
 - The window metrics must be written on every tick.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- req_per_session is absent (not 0 / NaN) while no session has completed in the 24 h window; duty is time-weighted across cadence changes; session counts are not reweighted by stream_frac (only event counts are).
 
 ## B01 — FeatureVectorEngine [upgrade]
 
@@ -269,6 +282,10 @@ Runs when 16 ticks or 6 h have passed, whichever comes first. A light cold-start
 - Perturbing one member's statistics by 5% leaves the ids unchanged.
 - A new entity with a role-2 profile and 3 active ticks produces new_entity_matched with prob ≥ 0.8.
 
+**Integration notes (as built, docs/lib3/integration.md).**
+- Engine interval 1 with an internal refit stride (16 ticks or 6 h); the cold path runs every tick. HDBSCAN epsilon is applied as a post-merge (0.15 roles, 0.05 subs); d90 is floored at 0.15.
+- assign carries the per-IP automation index A (B30 prefers it); linked entities are read through lib/m_link (active links only).
+
 ## B03 — BaselineEngine [upgrade]
 
 - **File:** `backend/app/engines/behavior/baseline.py`
@@ -309,6 +326,10 @@ Runs when 16 ticks or 6 h have passed, whichever comes first. A light cold-start
 (d) Commits lag ctx.now by exactly D.
 (e) Rollback. Commit 100 clean rows, then 20 attack rows with trust 1, then set control.rollback_to = t100. The statistics must equal a fit on rows ≤ t100 within 1e-6, and the 20 rows must be held.
 (f) A new entity with no commits returns the class predictive mean.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- Accessor module lib/m_baseline (helpers_api index): float32 checkpoints; a band-day cap on the data mean; location-only bin168; retransmit_rate and probe_loss as t family; per-family stats layout (k = 6 / 4 / 3); reference = golden once one exists.
+- own_support(model, tctx) exposes the entity's own evidence at a bucket (B14 gates its charts on it); n_eff_by_bucket serves B30.
 
 ## B04 — LikelihoodEngine [new]
 
@@ -538,6 +559,9 @@ Events:
 (b) 80% of the class moves from chrome126 to chrome127 (new ja3n) in one day: only client_change INFO, and the client p > 0.01.
 (c) A UA copied from chrome126 with a Linux JA3 and TTL 64: I = 1 and client_impersonation.
 
+**Integration notes (as built, docs/lib3/integration.md).**
+- Concurrency C requires the two stacks to interleave; replacement is measured on the entity's active clock; p(ja3n | UA) is keyed 'family/major'; the per-token surprise is capped at 20 bits; counts are slot-equivalents (share · dt/900 · trust).
+
 ## B10 — SequenceEngine [upgrade]
 
 - **File:** `backend/app/engines/behavior/sequence.py`
@@ -604,6 +628,10 @@ Descriptors are written to behavior.timing for B15, B16 and B30.
 (b) A constant 0.8-s scraper gives B < −0.8 and timing p < 1e-3 against the human model.
 (c) A 37 s ± 0.3 s train over 2 h gives a period in 35–40 s with Rayleigh p < 1e-4.
 
+**Integration notes (as built, docs/lib3/integration.md).**
+- Unit test (a) reads: human sessions with LogNormal(ln 8 s, σ = 1) think time and minutes-long breaks give B in [0.2, 0.6] (a pure log-normal renewal with σ = 1 has B = 0.135). B and M use gaps < 30 min; the think-time fit uses gaps < session_gap.
+- The gating clock is feature.active (B01 runs before B11 in the registry).
+
 ## B12 — BeaconEngine [new]
 
 - **File:** `backend/app/engines/behavior/beacon.py`
@@ -634,6 +662,10 @@ score.beacon = −log10 p. Accumulator, axis c2. RITA-style dispersion values ar
 (b) A health check to svc.corp.local shared by 3 class members: no event.
 (c) Over 1000 Poisson-random destination streams: fewer than 0.5% have p < 1e-3 (validity of the MC table).
 (d) Log-normal human gaps with σ = 1: fewer than 0.5% have p < 1e-4.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- Renewal p at the least-favourable κ0 = 1.5 of a composite null (max'ed with the exact κ = 1 table p); size constancy is a population rank test; the Z²₂ band is anchored at the median interval.
+- Destination prevalence: m_vocab.dest_prevalence (B08) on the destination name, R2's decayed counts as the fallback.
 
 ## B13 — BudgetEngine [new]
 
@@ -668,6 +700,9 @@ Emit budget_exceeded with natural-unit text. Aggregate per actor when model.link
 (b) 2000 distinct /orders/view ids in 8 h against a usual 40: budget_breadth alarm.
 (c) The whole class at ×2.5 for a day: no budget_vol alarm (peer guard).
 (d) 3 MB per day to a novel external destination: below abs_floor, so no alarm, but the value is recorded for class aggregation in B18.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- Reads also dns.qname_set (DNS label bytes). The common-mode guard adds a level-q test on log(B / peer median); thresholds are computed in log space; default absolute floors (config budget_abs_floor, contract I) include bytes_up 5 MB.
 
 ## B14 — ChangepointEngine [upgrade]
 
@@ -707,6 +742,10 @@ All four are accumulators.
 (d) Alternate-tick 3σ: alarm within 10 ticks.
 (e) An entity ramping +0.2σ per day while the class is flat for 14 d: baseline_creep.
 (f) The current anchor poisoned +1σ while the reference is unchanged: the input zr still reflects the shift.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- Chart inputs are the key zr of features the entity's OWN baseline identifies at the bucket (m_baseline.own_support: ≥ 60 weighted minutes of own rows and ≥ 2 rows of the feature); other inputs are NaN (0 increment, no reset). Residuals against a pure backoff / hyperprior predictive carry a systematic offset (e.g. z ≈ −2 for a quiet 4xx rate under Beta(0.5, 0.5)) that would alarm within hours.
+- The CUSUM / MCUSUM statistics restart at 0 on the first live tick after warm-up (they ran against a model that was being learnt from those very rows).
 
 ## B15 — IdentityModelEngine [upgrade]
 
@@ -748,6 +787,9 @@ Emit low_identifiability (INFO) when EER_hard > 0.2.
 - recall@4 ≥ 0.95 and EER_hard < 0.05 for the 4 distinct entities.
 - The identical pair has EER_hard > 0.3, lists each other in confusable_with, and has separability < 0.4.
 - A static check asserts that consumes excludes behavior.z and behavior.zi.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- Reads also behavior.trust / trust_prov / quarantine, model.link, act.tokens, act.stream, act.stream_frac, client.stack_set, tls.sni_etld1_set, dns.qname_etld1_set and l4.dport_set (live modality calibration). Interval 1 (window collection) with the fit every 96 ticks or 24 h. EER_hard is the max pairwise EER over the 3 nearest impostors. model.identity fields: contract C.
 
 ## B16 — AttributionEngine [new]
 
@@ -834,6 +876,10 @@ Actor chains: links within 24 h form model.link.actors, which B13 uses.
 (c) A reactivates: link_retracted, and B's baseline equals its unseeded fit.
 (d) An IP with two personas on disjoint, overlapping stacks: shared_ip after 3 runs.
 
+**Integration notes (as built, docs/lib3/integration.md).**
+- behavior.zi is read only by the shared-IP test (linking is absolute). Shared-IP fit: PCA(≤ 4) + deterministic 2-component EM, first run at ≥ 64 rows. model.link fields: contract C; accessor lib/m_link.
+- A retracted link is undone by B28 (model.control rollback_to = t_link, release [t_link, now] on the seeded entity).
+
 ## B18 — ClassMonitorEngine [new]
 
 - **File:** `backend/app/engines/behavior/class_monitor.py`
@@ -876,6 +922,9 @@ Members are those with membership probability ≥ 0.5.
 (b) 4 of 6 members start uploading 30 KB per 15 min each to one new external SNI. Each member's p > 0.01, while class_novel p < 1e-6 gives a class incident ≥ MEDIUM within 4 ticks of the 3rd adopter.
 (c) A static CIDR class of 3 IPs gets its own model.classagg and portrait.
 (d) 6 of 8 members adopt an internal /v2/orders: class_novel p > 0.01.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- Perf: the exact m_baseline predictives cost ~0.4 ms per midp call, so budget ~1.5–2 ms per class-tick rather than 0.2 ms.
 
 ## B19 — MixtureEngine [new]
 
@@ -1041,6 +1090,10 @@ Degraded inputs (NaN score) give NaN p, never 1.
 (f) Entries after rollback_to are deleted.
 (g) NaN in gives NaN out.
 
+**Integration notes (as built, docs/lib3/integration.md).**
+- Small-sample prior order: the entity's own rings of the OTHER dayparts at the same cadence (pooled, ≥ 64 entries), then pm[d], then the class-pooled ring. The first workday after a weekend warm-up, or the first night, is a new stratum for every detector, and several pm are only approximately calibrated.
+- A model.control version change is detected against the gate's own version (as B25), so a bare 0 → 2 change resets the rings.
+
 ## B25 — FusionEngine [new]
 
 - **File:** `backend/app/engines/behavior/fusion.py`
@@ -1088,6 +1141,10 @@ Degraded inputs (NaN score) give NaN p, never 1.
 (e) Volume-only at e_day 1e-6 gives MEDIUM. Adding categorical at e_day 0.01 allows HIGH.
 (f) One family at e_day 1e-5 for a single tick with no corroboration gives MEDIUM.
 
+**Integration notes (as built, docs/lib3/integration.md).**
+- Unit test (c): the [0.015, 0.045] band is checked over replicates (a single 200 entity-day sample holds ~6 expected alarms).
+- The evidence CUSUM restarts at 0 on the first live tick after warm-up.
+
 ## B26 — RiskEngine [new]
 
 - **File:** `backend/app/engines/behavior/risk.py`
@@ -1121,6 +1178,9 @@ Class risk = max(the class pseudo-entity's own risk from its own detectors, mean
 (b) A null over 60 simulated days at Δt = 900 and at Δt = 60: risk < 30 on ≥ 99.99% of ticks, and mean L within [5, 10] at both.
 (c) 36 repeats of one event key contribute ≤ 2× a single one.
 (d) Risk halves after H with no new evidence.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- Warm-up evidence does not carry into live risk: the per-key state is cleared on the first live tick after training (the warm-up risk series stays in the store).
 
 ## B27 — IncidentEngine [new]
 
@@ -1160,6 +1220,9 @@ Emit BehaviorEvent(kind='incident', extra.state, e_day, axes, p_by_detector, inc
 (b) 5 of 8 class members alarm on the volume axis only: 1 class coherent_shift parent and 0 notifying entity incidents.
 (c) 3 entities with the same new SNI token within 1 h: 1 campaign.
 (d) After an attack ends with risk still ≥ 60, the incident closes within max(8 ticks, 2 h) when the accumulators have decayed.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- Every accumulator, cusum / mcusum included, is tested on the calibrated-p level lib/detectors.acc_level (shared with B28) in the quiet close; m_cp.level is diagnostic only.
 
 ## B28 — GovernorEngine [new]
 
@@ -1216,6 +1279,13 @@ A class-wide change accepts at class level after 24 h of concordance. Profile ve
 (e) Training on an empty store: trust = 1 on every warm-up tick, and on the first live tick a normal entity has trust > 0 (deadlock regression).
 (f) The incident closes when RETURNED even though risk ≥ 30.
 (g) A +15%/day ramp is never accepted; a +2%/day ramp is accepted after 1 d of stationarity.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- SUSPECT on an accumulator needs level ≥ h/2 AND e_day(p) · n_scored ≤ 0.1 (or its acc_alarm); REJECT needs evidence beyond the type prior; ACCEPT durations and the 14-day label queue are time in regime; the release starts at min(τ̂, q_floor); test (d) fits on rows ≤ τ̂ − Δt.
+- Regime types include c2 and exfil (contract F).
+- A rollback never reaches into warm-up rows (trusted by definition): rollback_to is floored at the last training tick. Without this floor an onset estimated at the start of the data erased the whole model and cascaded into REJECT / freeze of clean entities.
+- Link retractions (m_link.retractions) are answered with model.control {rollback_to: t_link, release: [t_link, now]} on the seeded entity, once per link, deferred while a rollback is rate-limited.
+- Label-queue keys (DRIFTING > 14 d, m_governor.label_queue) are queued by B23 as reason 'held', source 'governor'.
 
 ## B29 — ExplainEngine [new]
 

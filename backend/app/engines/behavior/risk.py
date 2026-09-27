@@ -444,6 +444,7 @@ class RiskEngine(Engine):
             weakref.WeakKeyDictionary()
         self._crit_cache: Tuple[Any, List[Tuple[Optional[Set[str]], List[Any], float, str]]] = \
             (None, [])
+        self._warm: Set[int] = set()        # stores whose last tick was a training tick
 
     # ------------------------------------------------------------------ run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
@@ -453,6 +454,16 @@ class RiskEngine(Engine):
         states = self._states.get(store)
         if states is None:
             states = self._states[store] = {}
+        if ctx.training:
+            self._warm.add(id(store))
+        elif id(store) in self._warm:
+            # First live tick after warm-up: the warm-up evidence was scored
+            # against models that were still being learnt from those very rows
+            # (cold backoff, uncalibrated rings). It is not evidence about the
+            # entity, so live risk starts from 0 (the risk series of the
+            # warm-up stays in the store).
+            self._warm.discard(id(store))
+            states.clear()
         fb = m_feedback.get(store)
         pi = {f: m_feedback.risk_mult(fb, f) for f in FAMILIES}
         degraded = store.engine_failed(FUSION_ENGINE, now)

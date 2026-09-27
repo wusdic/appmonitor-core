@@ -355,13 +355,17 @@ def _role_block(c: _SysCtx, e: str, vm: Optional[Mapping], timing: Mapping[str, 
     if br + lib > 0.0:
         parts["nonbrowser"] = lib / (br + lib)
     auto = float(np.mean(list(parts.values()))) if parts else None
+    src = "portrait" if auto is not None else None
+    a_b02 = (m_class.assignment(c.store, c.s, e) or {}).get("A")
+    if isinstance(a_b02, (int, float)) and math.isfinite(float(a_b02)):
+        auto, src = float(a_b02), "peer_group"   # B02's own index when published (R22.2)
     fam = MV.family_distribution(vm, now=c.now) if vm else {}
     cats: Dict[str, float] = {}
     for m in c.store.matches(c.s, e, since=c.now - CATS_WINDOW_S, limit=1000):
         cats[str(m.category)] = cats.get(str(m.category), 0.0) + 1.0
     tot = sum(cats.values())
     return {
-        "automation_index": auto, "automation_parts": parts,
+        "automation_index": auto, "automation_parts": parts, "automation_source": src,
         "activity_mix": [[_safe_family(f), v] for f, v in _top_items(fam, 6)],
         "categories_7d": {k: v / tot for k, v in sorted(cats.items())} if tot > 0 else {},
         "n_matches_7d": int(tot),
@@ -704,10 +708,8 @@ def _stability(store: Any, s: str, e: str, bm: Any, vm: Optional[Mapping],
     if sm is not None:
         mat["seq"] = m_seq.maturity(sm)
     neff = None
-    if anc is not None:
-        St = MB.true_stats(anc)
-        if St is not None:
-            neff = [round(float(x), 2) for x in St[:, MB.FULL.W[F.FEATURE_INDEX["flows"]]]]
+    if anc is not None and not anc.empty:
+        neff = [round(float(x), 2) for x in MB.n_eff_by_bucket(anc)]
     return {
         "regime": m_governor.descriptor(store, s, e),
         "baseline": MB.maturity(bm) if isinstance(bm, Mapping) and anc is not None else None,
@@ -766,9 +768,7 @@ def _workload_block(anc: Optional[Any], pa: Optional[np.ndarray], dt: float,
     if anc is None:
         return {}
     mean, sd15 = MB.bucket_means(anc)
-    St = MB.true_stats(anc)
-    w_data = np.maximum(St[:, MB.FULL.W[F.FEATURE_INDEX["flows"]]], 0.0) if St is not None \
-        else np.zeros(48)
+    w_data = MB.n_eff_by_bucket(anc)
     has = w_data >= HAS_DATA_W
     w_act = (pa if pa is not None else w_data) * has
     occ = np.r_[np.full(24, 5.0 / 7.0 / 24.0), np.full(24, 2.0 / 7.0 / 24.0)]
