@@ -103,7 +103,7 @@ GROUPS_TICKS, GROUPS_S = 32, 8 * 3600.0
 N_FIT_MIN = 32                 # complete rows needed for an own fit
 EAGER_N = 64                   # below this n_eff every new commit refits
 COL_MIN_FRAC = 0.5             # a column is modelled if finite in >= 50 % of rows
-ROW_KEEP_FRAC = 0.6            # ... and >= 60 % of rows complete on the modelled set
+ROW_MIN_OBS = 0.5              # a row is used if it observes >= 50 % of the modelled set
 CLASS_PRIOR_N = m_density.CLASS_PRIOR_N
 CLASS_ROWS = 672               # pooled member rows per class fit
 CLASS_MIN_MEMBERS = m_class.MIN_MEMBERS
@@ -211,26 +211,18 @@ class OwnFit(NamedTuple):
 
 
 def select_columns(X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """(cols, complete-row mask): columns finite in >= COL_MIN_FRAC of the rows
-    with MAD > 0 (no tie mass); the column missing most often (ties: the
-    later one) is dropped until >= ROW_KEEP_FRAC of the rows are complete."""
+    """(cols, usable-row mask): columns finite in >= COL_MIN_FRAC of the rows
+    (and in >= N_FIT_MIN rows) without tie mass; rows that observe at least
+    ROW_MIN_OBS of those columns."""
     m = X.shape[0]
     fin = np.isfinite(X)
     cand = np.flatnonzero(fin.sum(axis=0) >= max(N_FIT_MIN, COL_MIN_FRAC * m))
     if cand.size:
         cand = cand[~_tie_mass(np.where(fin[:, cand], X[:, cand], np.nan))]
-    need = max(N_FIT_MIN, int(math.ceil(ROW_KEEP_FRAC * m)))
-    cols = list(cand.tolist())
-    F = fin[:, cols]
-    while cols:
-        comp = F.all(axis=1)
-        if int(comp.sum()) >= need:
-            return np.asarray(cols, dtype=np.intp), comp
-        miss = (~F).sum(axis=0)
-        j = len(cols) - 1 - int(np.argmax(miss[::-1]))
-        del cols[j]
-        F = np.delete(F, j, axis=1)
-    return np.zeros(0, dtype=np.intp), np.zeros(m, dtype=bool)
+    if not cand.size:
+        return cand.astype(np.intp), np.zeros(m, dtype=bool)
+    rows = fin[:, cand].sum(axis=1) >= ROW_MIN_OBS * cand.size
+    return cand.astype(np.intp), rows
 
 
 def _tie_mass(A: np.ndarray) -> np.ndarray:
@@ -245,22 +237,66 @@ def _tie_mass(A: np.ndarray) -> np.ndarray:
     return (same & (i <= c - h)).any(axis=0)
 
 
+def em_complete(X: np.ndarray, w: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """One EM step for rows with missing entries: (completed rows, mean
+    conditional covariance). The first pass is a plain OAS of the winsorised,
+    column-mean-filled rows; each missingness pattern is then completed by its
+    conditional expectation x_m = mu_m - P_mm^-1 P_mo (x_o - mu_o) (P = Sigma^-1,
+    a |m| x |m| solve per pattern), and the conditional covariance P_mm^-1 is
+    averaged (weights w) so the fitted variance of often-missing columns is not
+    biased low by the imputation."""
+    Xw = robustcov.winsorize(X)
+    miss = ~np.isfinite(Xw)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        cm = np.nanmean(Xw, axis=0)
+    F = np.where(miss, np.where(np.isfinite(cm), cm, 0.0), Xw)
+    mu1, S1, _ = robustcov.oas(F, None if np.all(w == w[0]) else w)
+    P = np.linalg.inv(robustcov.eigen_floor(S1))
+    out = X.astype(np.float64, copy=True)
+    C = np.zeros((X.shape[1], X.shape[1]))
+    rows = np.flatnonzero(miss.any(axis=1))
+    if not rows.size:
+        return out, C
+    keys = np.packbits(miss[rows], axis=1)
+    _, inv = np.unique(keys, axis=0, return_inverse=True)
+    inv = inv.reshape(-1)
+    order = np.argsort(inv, kind="stable")
+    bounds = np.flatnonzero(np.diff(inv[order])) + 1
+    for grp in np.split(rows[order], bounds):
+        mm = miss[grp[0]]
+        m_i, o_i = np.flatnonzero(mm), np.flatnonzero(~mm)
+        Pmm = P[np.ix_(m_i, m_i)]
+        Cm = np.linalg.inv(Pmm)
+        d = X[np.ix_(grp, o_i)] - mu1[o_i]
+        out[np.ix_(grp, m_i)] = mu1[m_i] - (d @ P[np.ix_(o_i, m_i)]) @ Cm
+        C[np.ix_(m_i, m_i)] += float(w[grp].sum()) * Cm
+    return out, C / float(w.sum())
+
+
 def fit_rows(X: np.ndarray, w: np.ndarray, ts: Optional[np.ndarray] = None) -> Optional[OwnFit]:
-    """Robust fit (robustcov.c_step_oas: winsorise, OAS, C-steps, reweight,
-    eigen floor) on the complete rows of the selected columns; None when fewer
+    """Robust fit on the usable rows of the selected columns: rows with
+    missing entries are completed by one EM step (em_complete), then
+    robustcov.c_step_oas (winsorise, OAS, C-steps, reweight, eigen floor), plus
+    the mean conditional covariance of the imputed entries. None when fewer
     than N_FIT_MIN rows are usable."""
     X = np.asarray(X)
     w = np.asarray(w, dtype=np.float64)
     if X.shape[0] < N_FIT_MIN:
         return None
-    cols, comp = select_columns(X)
-    if not cols.size or int(comp.sum()) < N_FIT_MIN:
+    cols, rows = select_columns(X)
+    if not cols.size or int(rows.sum()) < N_FIT_MIN:
         return None
-    Xc = X[comp][:, cols].astype(np.float64)
-    wc = w[comp]
+    Xc = X[rows][:, cols].astype(np.float64)
+    wc = w[rows]
+    Cc = None
+    if not np.isfinite(Xc).all():
+        Xc, Cc = em_complete(Xc, wc)
     mu, S = robustcov.c_step_oas(Xc, None if np.all(wc == wc[0]) else wc)
+    if Cc is not None:
+        S = S + Cc
     n_eff = float(wc.sum() ** 2 / np.dot(wc, wc))
-    tsc = np.asarray(ts, dtype=np.float64)[comp] if ts is not None else np.zeros(Xc.shape[0])
+    tsc = np.asarray(ts, dtype=np.float64)[rows] if ts is not None else np.zeros(Xc.shape[0])
     return OwnFit(cols, mu, S, n_eff, Xc, wc, tsc)
 
 
