@@ -48,19 +48,25 @@ Per system and tick (docs/lib3/engines.md '## B17'):
   4. Resolve with a Hungarian one-to-one assignment over the pending new
      entities and their candidates. Link when LO >= 5, the margin over the
      runner-up (B's row and A's column) >= 2, B has >= MIN_TICKS active
-     ticks and the behavioural evidence (behaviour + vocab) is positive, so
-     device and topology priors alone can never link. conf = sigma(LO - 5).
+     ticks, the behavioural evidence (behaviour + vocab) is positive, so
+     device and topology priors alone can never link, and A is still silent
+     (last_seen(A) <= first_seen(B) + dt, not active now). conf = sigma(LO - 5).
+     A candidate's own continuity chain is never its rival (an IP-hopping
+     actor's previous address looks like its predecessor, which is the point).
      On link: model.link version + 1 (learners seed on the version increase),
      continuity for both ends, entity_resolution on B, identity_moved on A.
      If behaviour matches (LO without the device term >= 5, margin 2) but the
      device LR <= 0.1: possible_impersonation instead of a link.
-  5. Shared IP, every min(32 ticks, 8 h) per active entity: GaussianMixture
-     k = 1 vs 2 (diagonal, on PCA(<= 8) of the standardised last 96 active
-     zi rows). shared_ip when BIC(2) < BIC(1) - 10 on 3 consecutive runs, both
-     components (weight >= 0.15) co-occur in the same local hours (histogram
-     overlap >= 0.3), and two disjoint stacks (different ja3n AND UA) overlap
-     in client.stack_events (within 5 min, B09's concurrency rule) on >= 2
-     ticks of the lookback. Then entity_kind = 'ip-class'. Three negative runs
+  5. Shared IP, every min(32 ticks, 8 h) per active entity with >= 64 rows
+     (Engine.entity_due: a per-entity phase spreads the fits over the period):
+     Gaussian mixture k = 1 vs 2 (diagonal, on PCA(<= 4) of the centred last
+     96 active zi rows; EM here, deterministic and ~1-3 ms). shared_ip when
+     BIC(2) < BIC(1) - 10 on 3 consecutive runs, both components (weight >=
+     0.15) co-occur in the same local hours (histogram overlap >= 0.3), and
+     two disjoint stacks (different ja3n AND UA) overlap in
+     client.stack_events (within 5 min, B09's concurrency rule) on >= 2 ticks
+     of the lookback. Then entity_kind = 'ip-class' (shared_ip is INFO, and
+     B16 downgrades identity events of an ip-class). Three negative runs
      clear the flag.
   6. Actors: active links chained within 24 h (m_link.build_actors).
 
@@ -87,7 +93,6 @@ from __future__ import annotations
 
 import copy
 import math
-import warnings
 from collections import deque
 from collections.abc import Mapping
 from typing import Any, Deque, Dict, List, Optional, Sequence, Set, Tuple
@@ -129,7 +134,7 @@ RETRACT_OVERLAP_S = 3600.0             # "B is active": seen within the last hou
 PENDING_KEEP_S = NEW_S
 # shared IP
 SH_ROWS = 96
-SH_MIN_ROWS = 48
+SH_MIN_ROWS = 64
 SH_EVERY_TICKS = 32
 SH_EVERY_S = 8 * 3600.0
 SH_BIC_DELTA = 10.0
@@ -137,7 +142,7 @@ SH_RUNS = 3
 SH_CLEAR_RUNS = 3
 SH_MIN_WEIGHT = 0.15
 SH_HOUR_OVERLAP = 0.3
-SH_PCA = 8
+SH_PCA = 4
 SH_CLIP = 8.0
 SH_OVERLAP_TICKS = 2
 SH_OVERLAP_KEEP = 16
@@ -191,15 +196,49 @@ def _hour(store: Any, s: str, e: str, now: float) -> float:
 
 
 # ============================================================ shared-IP maths
-def mixture_test(Z: np.ndarray, hours: np.ndarray, seed: int = 0) -> Dict[str, float]:
-    """One shared-IP run on the zi rows Z[n, 52] (NaN allowed) with local
-    hours[n]: BIC(1) - BIC(2) of diagonal GMMs on PCA(<= 8) of the
-    standardised usable columns, the smaller component weight, and the local
-    hour-histogram overlap of the two components. NaN delta when the rows
-    cannot support a fit."""
-    from sklearn.exceptions import ConvergenceWarning
-    from sklearn.mixture import GaussianMixture
+def _gauss_ll_diag(Y: np.ndarray, mu: np.ndarray, var: np.ndarray) -> np.ndarray:
+    """Per-row log-density under a diagonal Gaussian."""
+    return -0.5 * (np.sum(np.log(2.0 * math.pi * var)) + np.sum((Y - mu) ** 2 / var, axis=1))
 
+
+def gmm2_diag(Y: np.ndarray, init: np.ndarray, iters: int = 100, tol: float = 1e-5,
+              reg: float = 1e-4) -> Tuple[float, np.ndarray, np.ndarray]:
+    """EM for a 2-component diagonal Gaussian mixture from a hard initial
+    split (bool[n]). Returns (log-likelihood, weights[2], labels[n]).
+    Deterministic, ~1 ms at 96 x 4 (sklearn's GaussianMixture costs ~25 ms
+    per fit at this size, mostly per-call overhead)."""
+    n = Y.shape[0]
+    R = np.stack([~init, init], axis=1).astype(np.float64)
+    ll_prev = -math.inf
+    ll = -math.inf
+    w = np.full(2, 0.5)
+    for _ in range(iters):
+        Nk = R.sum(axis=0) + 1e-12
+        w = Nk / n
+        mu = (R.T @ Y) / Nk[:, None]
+        var = np.maximum((R.T @ (Y * Y)) / Nk[:, None] - mu * mu, 0.0) + reg
+        lp = (np.log(w) - 0.5 * np.sum(np.log(2.0 * math.pi * var), axis=1)
+              - 0.5 * np.sum((Y[:, None, :] - mu[None]) ** 2 / var[None], axis=2))
+        m = lp.max(axis=1, keepdims=True)
+        lse = m[:, 0] + np.log(np.exp(lp - m).sum(axis=1))
+        ll = float(lse.sum())
+        R = np.exp(lp - lse[:, None])
+        if ll - ll_prev <= tol * abs(ll):
+            break
+        ll_prev = ll
+    return ll, w, np.argmax(R, axis=1)
+
+
+def mixture_test(Z: np.ndarray, hours: np.ndarray) -> Dict[str, float]:
+    """One shared-IP run on the zi rows Z[n, 52] (NaN allowed) with local
+    hours[n]: BIC(1) - BIC(2) of diagonal Gaussian mixtures on PCA(<= 4) of
+    the centred usable columns (NaN -> 0 = expected, clipped at +-8), the
+    smaller component weight, and the local hour-histogram overlap of the two
+    components. NaN delta when the rows cannot support a fit. Few PCs keep
+    the BIC penalty small (measured: two personas 3 sigma apart in 6 features
+    give delta >= 60 at 96 rows, unimodal rows <= -10). k = 2 is fitted by EM
+    from the median split of PC1 (the direction a persona split dominates),
+    so the test is deterministic and replayable."""
     out = {"delta": _NAN, "w_min": _NAN, "hour_overlap": _NAN, "d": 0}
     X = np.asarray(Z, dtype=np.float64)
     if X.ndim != 2 or X.shape[0] < SH_MIN_ROWS:
@@ -209,43 +248,49 @@ def mixture_test(Z: np.ndarray, hours: np.ndarray, seed: int = 0) -> Dict[str, f
     X = np.clip(np.where(fin, X, 0.0), -SH_CLIP, SH_CLIP)[:, keep]   # z scale: 0 = expected
     if X.shape[1] == 0:
         return out
-    sd = X.std(axis=0)
-    X = X[:, sd > 1e-6]
+    X = X[:, X.std(axis=0) > 1e-6]
     if X.shape[1] == 0:
         return out
-    X = (X - X.mean(axis=0)) / X.std(axis=0)
-    d = int(min(SH_PCA, X.shape[1], X.shape[0] - 1))
+    X = X - X.mean(axis=0)            # zi is already in z units: no rescaling, so a
+    n = X.shape[0]                    # persona split dominates PC1
+    d = int(min(SH_PCA, X.shape[1], n - 1))
     U, S, _ = np.linalg.svd(X, full_matrices=False)
     Y = U[:, :d] * S[:d]
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", ConvergenceWarning)
-        g1 = GaussianMixture(1, covariance_type="diag", random_state=seed, reg_covar=1e-4).fit(Y)
-        g2 = GaussianMixture(2, covariance_type="diag", random_state=seed, reg_covar=1e-4,
-                             n_init=2).fit(Y)
-    out["d"] = d
-    out["delta"] = float(g1.bic(Y) - g2.bic(Y))
-    out["w_min"] = float(np.min(g2.weights_))
-    lab = g2.predict(Y)
+    var1 = Y.var(axis=0) + 1e-4
+    ll1 = float(_gauss_ll_diag(Y, Y.mean(axis=0), var1).sum())
+    best = None
+    for c in range(d):                # PC1's median split; the next PC if it is degenerate
+        split = Y[:, c] > np.median(Y[:, c])
+        if split.any() and not split.all():
+            best = gmm2_diag(Y, split)
+            break
+    if best is None:
+        return out
+    ll2, w, lab = best
+    bic1 = -2.0 * ll1 + (2 * d) * math.log(n)
+    bic2 = -2.0 * ll2 + (4 * d + 1) * math.log(n)
+    out.update(d=d, delta=float(bic1 - bic2), w_min=float(np.min(w)))
     h = np.asarray(hours, dtype=np.float64)
     ok = np.isfinite(h)
     if ok.sum() >= 2:
         hb = np.floor(np.mod(h[ok], 24.0)).astype(int)
         hist = []
         for k in (0, 1):
-            c = np.bincount(hb[lab[ok] == k], minlength=24).astype(np.float64)
-            hist.append(c / c.sum() if c.sum() > 0 else c)
+            cnt = np.bincount(hb[lab[ok] == k], minlength=24).astype(np.float64)
+            hist.append(cnt / cnt.sum() if cnt.sum() > 0 else cnt)
         out["hour_overlap"] = float(np.minimum(hist[0], hist[1]).sum())
     return out
 
 
 def disjoint(tok_a: str, tok_b: str) -> bool:
-    """Two stacks of different devices: neither the TLS library (ja3n) nor
-    the UA (family/major) is shared (lib/stack token fields)."""
+    """Two stacks of different devices: neither the TLS library (ja3n; '-' =
+    no fingerprint, which ties nothing) nor the UA (family/major) is shared."""
     a, b = parse_stack_token(tok_a), parse_stack_token(tok_b)
     ja, jb = a.get("ja3n"), b.get("ja3n")
     ua = f"{a.get('ua_family')}/{a.get('ua_major')}"
     ub = f"{b.get('ua_family')}/{b.get('ua_major')}"
-    return bool(ja) and bool(jb) and ja != jb and ua != ub
+    ja_ok = ja != jb or ja == "-"          # an unknown fingerprint ties nothing together
+    return ja_ok and ua != ub
 
 
 def stacks_overlap(events: Any, tokens: Sequence[str]) -> bool:
@@ -287,6 +332,14 @@ class _Sys:
         self._fs: Dict[str, Optional[float]] = {}
         self._ls: Dict[str, Optional[float]] = {}
         self._sys_shares: Optional[Dict[str, float]] = None
+        self.model: Mapping[str, Any] = {}
+        self._aliases: Dict[str, Set[str]] = {}
+
+    def aliases(self, e: str) -> Set[str]:
+        """e's continuity chain under the model being built this tick."""
+        if e not in self._aliases:
+            self._aliases[e] = set(ML.aliases(self.model, e))
+        return self._aliases[e]
 
     @property
     def bg(self) -> MI.Background:
@@ -384,13 +437,17 @@ class EntityLinkEngine(Engine):
     def _system(self, ctx: Context, s: str, now: float, dt: float) -> int:
         store = ctx.store
         old = ML.get(store, s)
-        model = copy.deepcopy(old) if old is not None else ML.empty()
-        for k, v in ML.empty().items():
-            model.setdefault(k, copy.deepcopy(v))
+        # copy-on-write: links / pending are small and copied; shared-IP records
+        # (one per entity) are copied only when written (_own)
+        model = {**ML.empty(), **(old or {})}
+        model["links"] = [dict(lk) for lk in model["links"] or () if isinstance(lk, Mapping)]
+        model["pending"] = copy.deepcopy(dict(model["pending"] or {}))
+        model["shared"] = dict(model["shared"] or {})
         ents = store.entities(s)
         if not ents:
             return 0
         sc = _Sys(store, s, now, dt, ctx.config)
+        sc.model = model
         active = {e: _active(store, s, e, now) for e in ents}
         out: List[BehaviorEvent] = []
         touched: Set[str] = set()
@@ -470,6 +527,8 @@ class EntityLinkEngine(Engine):
                     dirty = True
                 continue
             cands = self._candidates(sc, b, fs, active, out_of)
+            if not cands and p is None:
+                continue                              # nobody silent to be: nothing to keep
             p = pend.setdefault(b, {"fs": fs, "rows": {}, "imp": [], "done": False})
             p.update(fs=fs, n=n_act, ts=now, done=n_act >= EVAL_TICKS)
             p["rows"] = self._evaluate(sc, b, wts, cands) if cands else {}
@@ -477,12 +536,11 @@ class EntityLinkEngine(Engine):
             dirty = True
         if evaluated:
             self._impersonation(sc, model, evaluated, out, touched)
-            self._resolve(sc, model, evaluated, out, touched)
+            self._resolve(sc, model, evaluated, active, out, touched)
         # bookkeeping: expire old / linked entries and the caches of finished entities
+        into = {str(lk["to"]) for lk in model["links"] if not ML.is_retracted(lk)}
         for b in list(pend):
-            fs = _f(pend[b].get("fs"))
-            if not (now - fs <= PENDING_KEEP_S) or b in {str(lk["to"]) for lk in model["links"]
-                                                           if not ML.is_retracted(lk)}:
+            if not (now - _f(pend[b].get("fs")) <= PENDING_KEEP_S) or b in into:
                 del pend[b]
                 dirty = True
         for key in [k for k in self._new if k[0] == s and (k[1] not in pend
@@ -629,7 +687,8 @@ class EntityLinkEngine(Engine):
             if not has[a]:
                 wc[a] = (_NAN, vocab[a])
                 continue
-            alt = [L[j] for j in L if j != a] + [0.0]
+            same = sc.aliases(a)                    # a's own chain is not a rival
+            alt = [L[j] for j in L if j != a and j not in same] + [0.0]
             wc[a] = (L[a] - _lse(alt), vocab[a])
 
     # ------------------------------------------------------------- decisions
@@ -667,7 +726,8 @@ class EntityLinkEngine(Engine):
                 window=(float(p["fs"]), sc.now)))
 
     def _resolve(self, sc: _Sys, model: Dict[str, Any], evaluated: List[str],
-                 out: List[BehaviorEvent], touched: Set[str]) -> None:
+                 active: Mapping[str, bool], out: List[BehaviorEvent], touched: Set[str]
+                 ) -> None:
         """Hungarian one-to-one over the pending new entities; links need LO >=
         5 and margin >= 2 over the runner-up of B's row and of A's column."""
         pend = model["pending"]
@@ -699,7 +759,7 @@ class EntityLinkEngine(Engine):
                     or (dev == dev and dev <= _LN_IMP):
                 continue
             la = sc.ls(a)
-            if la is None or la > _f(p["fs"]) + sc.dt:
+            if la is None or la > _f(p["fs"]) + sc.dt or active.get(a):
                 continue                              # A's continued silence confirms
             self._link(sc, model, a, b, lo, margin, r, out, touched)
             p["linked"] = a
@@ -752,7 +812,7 @@ class EntityLinkEngine(Engine):
                 t = float(t)
                 if t < sc.now and _active(sc.store, sc.s, e, t):
                     ring.append((t, np.asarray(z, dtype=np.float32), hours.get(t, _NAN)))
-            self._last[key] = float(ts[-1]) if len(ts) else -math.inf
+            self._last[key] = ring[-1][0] if ring else -math.inf
         return ring
 
     def _shared(self, sc: _Sys, model: Dict[str, Any], active: Mapping[str, bool],
@@ -771,22 +831,18 @@ class EntityLinkEngine(Engine):
                 if z is not None:
                     ring.append((now, np.asarray(z, dtype=np.float32), _hour(store, s, e, now)))
                 self._last[key] = now
-            rec = shared.get(e)
             ev = store.latest_raw_at(s, e, "client.stack_events", now)
             ss = store.latest_raw_at(s, e, "client.stack_set", now)
             toks = list(ss.value.keys()) if ss is not None and isinstance(ss.value, Mapping) \
                 else []
             if ev is not None and stacks_overlap(ev.value, toks):
-                rec = shared.setdefault(e, _new_shared())
-                if not rec["overlap"] or rec["overlap"][-1] != now:
-                    rec["overlap"] = (list(rec["overlap"]) + [now])[-SH_OVERLAP_KEEP:]
+                ov = list((shared.get(e) or {}).get("overlap") or [])
+                if not ov or ov[-1] != now:
+                    _own(shared, e)["overlap"] = (ov + [now])[-SH_OVERLAP_KEEP:]
                     dirty = True
-            if len(ring) < SH_MIN_ROWS:
-                continue
-            last = _f(rec.get("last_run")) if rec is not None else _NAN
-            if last == last and now - last < every and now >= last:
-                continue
-            rec = shared.setdefault(e, _new_shared())
+            if len(ring) < SH_MIN_ROWS or not self.entity_due(("shared", s, e), now, every):
+                continue                              # per-entity phase spreads the fits
+            rec = _own(shared, e)
             dirty = True
             ts = np.array([t for t, _, _ in ring])
             res = mixture_test(np.vstack([z for _, z, _ in ring]),
@@ -844,6 +900,12 @@ class EntityLinkEngine(Engine):
             store.put_profile(p)
             n += 1
         return n
+
+
+def _own(shared: Dict[str, Any], e: str) -> Dict[str, Any]:
+    """Copy-on-write shared-IP record (the published model is never mutated)."""
+    rec = shared[e] = {**_new_shared(), **(shared.get(e) or {})}
+    return rec
 
 
 def _new_shared() -> Dict[str, Any]:

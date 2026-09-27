@@ -25,7 +25,7 @@ model.link@(s, '__system__') layout (JSON-like; stored by reference):
      'actors': [{'id': 'actor:<first member>@<first ts>', 'members': [e, ...]
                  (appearance order), 'links': [link id], 'first_ts', 'last_ts'}],
      'shared': {e: {'last_run': ts, 'streak': int, 'bic_delta': [last 3],
-                    'hour_overlap': float, 'weights': [w0, w1], 'overlap': [ts],
+                    'hour_overlap': float, 'w_min': float, 'overlap': [ts],
                     'flag': bool, 'since': ts | None, 'neg': int}},
      'pending': {B: B17 private trigger bookkeeping (first_seen, evaluations,
                  candidate log-odds, impersonation pairs)}}
