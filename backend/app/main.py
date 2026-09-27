@@ -9,14 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import routes
+from .api import routes, routes_v2
 from .pipeline.build import Runtime
 
 FRONTEND_DIR = os.environ.get(
     "APPMON_FRONTEND_DIR",
     os.path.join(os.path.dirname(__file__), "..", "..", "frontend"))
 
-app = FastAPI(title="AppMonitor Core", version="1.0",
+app = FastAPI(title="AppMonitor Core", version="2.0",
               description="组织信息化业务系统画像平台 — raw/derived metric, behaviour & signature libraries")
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -32,6 +32,7 @@ def _startup() -> None:
 
 
 app.include_router(routes.router)
+app.include_router(routes_v2.router)      # API v2 (docs/lib3/api_ui.md)
 
 
 @app.get("/")

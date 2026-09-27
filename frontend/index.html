@@ -13,29 +13,29 @@
     <span class="logo">◎</span>
     <div>
       <div class="title">AppMonitor Core</div>
-      <div class="subtitle">组织信息化业务系统画像平台 · 四库联动</div>
+      <div class="subtitle" data-zh="组织信息化业务系统画像平台 · 四库联动" data-en="Business-system profiling · four libraries">组织信息化业务系统画像平台 · 四库联动</div>
     </div>
   </div>
-  <div class="status" id="status">连接中…</div>
+  <div class="topright">
+    <button class="mini" id="langbtn" title="language / 语言">EN</button>
+    <div class="status" id="status">连接中…</div>
+  </div>
 </header>
 
 <nav class="tabs" id="tabs">
-  <button class="tab active" data-view="overview">总览</button>
-  <button class="tab" data-view="entities">实体画像</button>
-  <button class="tab" data-view="events">行为事件</button>
-  <button class="tab" data-view="signatures">行为特征库</button>
-  <button class="tab" data-view="catalog">指标库</button>
-  <button class="tab" data-view="engines">引擎拓扑</button>
+  <a class="tab" data-view="overview" href="#/overview" data-zh="总览" data-en="Overview">总览</a>
+  <a class="tab" data-view="entities" href="#/entities" data-zh="实体画像" data-en="Entities">实体画像</a>
+  <a class="tab" data-view="classes" href="#/classes" data-zh="类画像" data-en="Classes">类画像</a>
+  <a class="tab" data-view="incidents" href="#/incidents" data-zh="事件队列" data-en="Incidents">事件队列</a>
+  <a class="tab" data-view="system" href="#/system" data-zh="系统视图" data-en="System">系统视图</a>
+  <a class="tab" data-view="events" href="#/events" data-zh="行为事件" data-en="Events">行为事件</a>
+  <a class="tab" data-view="signatures" href="#/signatures" data-zh="行为特征库" data-en="Signatures">行为特征库</a>
+  <a class="tab" data-view="catalog" href="#/catalog" data-zh="指标库" data-en="Catalog">指标库</a>
+  <a class="tab" data-view="engines" href="#/engines" data-zh="引擎拓扑" data-en="Engines">引擎拓扑</a>
+  <a class="tab" data-view="eval" href="#/eval" data-zh="评估报告" data-en="Eval">评估报告</a>
 </nav>
 
-<main id="app">
-  <section class="view" id="view-overview"></section>
-  <section class="view hidden" id="view-entities"></section>
-  <section class="view hidden" id="view-events"></section>
-  <section class="view hidden" id="view-signatures"></section>
-  <section class="view hidden" id="view-catalog"></section>
-  <section class="view hidden" id="view-engines"></section>
-</main>
+<main id="app"></main>
 
 <footer class="foot">
   <span>被动流量 / 主动探测 → 原始指标库 → 次生指标库 → 行为库 → 行为特征库</span>
@@ -45,5 +45,6 @@
 <script src="js/api.js"></script>
 <script src="js/charts.js"></script>
 <script src="js/app.js"></script>
+<script src="js/pages.js"></script>
 </body>
 </html>
