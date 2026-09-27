@@ -48,7 +48,7 @@ model.density@(s, e | 'class:<rid>') layout (a dict stored by reference):
     theta1              residual trace sum_{j > k} lambda_j (SPE normaliser)
     box    (g, h)       Box approximation SPE / theta1 ~ g chi2_h, fitted on
                         OUT-OF-SAMPLE normalised SPE (NaN: no SPE evidence)
-    box_src             'oos' | 'crossfit' | 'class' | None
+    box_src             'oos' | 'crossfit' | 'class' | 'given' | None
     class_key, class_w  the class model shrunk towards and its weight
     fitted_ts           ts of the fit
     chol_cache          robustcov.CholCache of Sigma[cols, cols] (LRU of 8

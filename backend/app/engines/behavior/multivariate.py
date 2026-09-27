@@ -26,9 +26,16 @@ What is learned, and how (contract H, lib/gating):
     reweights at chi2_{p,0.975} and floors eigenvalues at 1e-3 mean), PCA to
     90 % of the variance.
   * Missing dimensions: a column is modelled when it is finite in >= 50 % of
-    the buffer and has no tie mass (MAD > 0: MCD-type fits collapse onto a
-    point mass, robustcov docstring); columns missing most often are dropped
-    until >= 60 % of the rows are complete. Unmodelled dims are left to B04.
+    the buffer and has no tie mass (one value holding half the entries: MCD
+    fits collapse onto a point mass, robustcov docstring); a row is used when
+    it observes >= 50 % of the modelled columns. Complete buffers take the
+    spec path (c_step_oas). Buffers with missing entries (real zi: the app
+    group is NaN in every tick without HTTP) are completed by one EM step
+    (conditional expectation from a pairwise-complete first pass, plus the
+    conditional covariance), screened by the C-step at chi2_{p,0.999}, and
+    fitted by OAS: a C-step on imputed rows distorts the shape (1.9 % T2
+    false alarms at 1 %, measured) and complete-case fitting kept 13 of 52
+    columns at 3 % scattered NaN. Unmodelled dims are left to B04.
   * Young entity: Sigma~ = (n Sigma_e + 30 Sigma_class) / (n + 30) (and mu
     likewise) with model.density@(s, class:<rid>) when the entity's role class
     has >= 3 members in the system (contract L); the Hotelling n becomes
@@ -49,7 +56,8 @@ as of the last commit, before this tick's commits: T2 on the observed dims
 (Cholesky of Sigma_oo cached per missingness pattern) with the Hotelling
 prediction p (n = n_eff, q = |o|); SPE of the completed vector (missing dims
 imputed by conditional expectation); RBC for axes (feature groups of the top
-contributions with p < 0.01); behavior.wh the Wilson-Hilferty score of T2.
+contributions with p < 0.01); behavior.wh the Wilson-Hilferty score of T2
+(taken after the prediction scaling, q F, so a finite-n fit does not bias it).
 score.t2 / score.spe = -log10 of the model p (comparable across missingness
 patterns), pm = the model p.
 
@@ -71,10 +79,12 @@ from __future__ import annotations
 
 import math
 import warnings
+from bisect import bisect_left
 from collections import OrderedDict
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
+from scipy import special
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 from scipy.stats import rankdata
@@ -104,6 +114,7 @@ N_FIT_MIN = 32                 # complete rows needed for an own fit
 EAGER_N = 64                   # below this n_eff every new commit refits
 COL_MIN_FRAC = 0.5             # a column is modelled if finite in >= 50 % of rows
 ROW_MIN_OBS = 0.5              # a row is used if it observes >= 50 % of the modelled set
+SCREEN_Q = 0.999               # outlier screen of the EM path
 CLASS_PRIOR_N = m_density.CLASS_PRIOR_N
 CLASS_ROWS = 672               # pooled member rows per class fit
 CLASS_MIN_MEMBERS = m_class.MIN_MEMBERS
@@ -132,15 +143,17 @@ _CTRL_KEYS = ("rollback_to", "release", "rebase_from", "frozen")
 
 
 # ============================================================== learner state
-def _init() -> Dict[str, np.ndarray]:
-    return {"ts": np.empty(0), "w": np.empty(0), "slot": np.empty(0, dtype=np.int64),
-            "X": np.empty((0, FEATURE_DIM), dtype=np.float32)}
+# The state holds lists (slot order) of row ts, weights, slots and float32 rows.
+# Rows are immutable by convention and shared between states, so a commit
+# copies four lists of <= 336 references (~5 us) instead of the 336 x 52 array
+# (~100 us with np.insert); arrays are built at refit time only.
+def _init() -> Dict[str, list]:
+    return {"ts": [], "w": [], "slot": [], "X": []}
 
 
-def _update(st: Dict[str, np.ndarray], row: Tuple[float, np.ndarray], w: float
-            ) -> Dict[str, np.ndarray]:
+def _update(st: Dict[str, list], row: Tuple[float, np.ndarray], w: float) -> Dict[str, list]:
     """Commit one row: per slot keep the newest-ts row, then the newest CAP
-    slots. Pure (new arrays), deterministic and order-independent, so a
+    slots. Pure (new lists), deterministic and order-independent, so a
     release of older held rows or a checkpoint replay gives the same buffer."""
     w = float(w)
     if not w > 0.0:
@@ -148,54 +161,63 @@ def _update(st: Dict[str, np.ndarray], row: Tuple[float, np.ndarray], w: float
     ts, x = float(row[0]), row[1]
     slot = int(math.floor(ts / SLOT_S))
     sl = st["slot"]
-    i = int(np.searchsorted(sl, slot))
-    if i < sl.size and sl[i] == slot:
-        if ts <= st["ts"][i]:
-            return st
-        out = {"ts": st["ts"].copy(), "w": st["w"].copy(), "slot": sl, "X": st["X"].copy()}
+    i = bisect_left(sl, slot)
+    hit = i < len(sl) and sl[i] == slot
+    if hit and ts <= st["ts"][i]:
+        return st
+    out = {"ts": list(st["ts"]), "w": list(st["w"]), "slot": list(sl), "X": list(st["X"])}
+    if hit:
         out["ts"][i], out["w"][i], out["X"][i] = ts, w, x
         return out
-    out = {"ts": np.insert(st["ts"], i, ts), "w": np.insert(st["w"], i, w),
-           "slot": np.insert(sl, i, slot),
-           "X": np.insert(st["X"], i, np.asarray(x, dtype=np.float32), axis=0)}
-    if out["ts"].size > CAP:
+    out["ts"].insert(i, ts)
+    out["w"].insert(i, w)
+    out["slot"].insert(i, slot)
+    out["X"].insert(i, x)
+    if len(out["ts"]) > CAP:
         out = {k: v[-CAP:] for k, v in out.items()}
     return out
 
 
-def _dump(st: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+def state_arrays(st: Dict[str, list]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(ts[m], w[m], X[m, 52] float32) of a learner state, slot order."""
+    if not st["ts"]:
+        return np.empty(0), np.empty(0), np.empty((0, FEATURE_DIM), dtype=np.float32)
+    return (np.asarray(st["ts"], dtype=np.float64), np.asarray(st["w"], dtype=np.float64),
+            np.asarray(st["X"], dtype=np.float32))
+
+
+def _dump(st: Dict[str, list]) -> Dict[str, np.ndarray]:
     """Checkpoint blob: rows as float16 (architecture section 3)."""
-    return {"ts": st["ts"].copy(), "w": st["w"].copy(), "slot": st["slot"].copy(),
-            "X": st["X"].astype(np.float16)}
+    ts, w, X = state_arrays(st)
+    return {"ts": ts, "w": w, "slot": np.asarray(st["slot"], dtype=np.int64),
+            "X": X.astype(np.float16)}
 
 
-def _load(blob: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-    return {"ts": np.asarray(blob["ts"], dtype=np.float64),
-            "w": np.asarray(blob["w"], dtype=np.float64),
-            "slot": np.asarray(blob["slot"], dtype=np.int64),
-            "X": np.asarray(blob["X"], dtype=np.float32)}
+def _load(blob: Dict[str, np.ndarray]) -> Dict[str, list]:
+    X = np.asarray(blob["X"], dtype=np.float32)
+    return {"ts": [float(t) for t in blob["ts"]], "w": [float(v) for v in blob["w"]],
+            "slot": [int(v) for v in blob["slot"]], "X": list(X)}
 
 
-def _merge(own: Dict[str, np.ndarray], other: Dict[str, np.ndarray], w: float
-           ) -> Dict[str, np.ndarray]:
+def _merge(own: Dict[str, list], other: Dict[str, list], w: float) -> Dict[str, list]:
     """Link seeding B := B_own + w A: A's rows join in the slots B lacks, at
     w times their weight (B's own rows win a shared slot)."""
     out = own
-    have = set(own["slot"].tolist())
-    for j in range(other["ts"].size):
-        if int(other["slot"][j]) not in have:
-            out = _update(out, (float(other["ts"][j]), other["X"][j]), float(other["w"][j]) * w)
+    have = set(own["slot"])
+    for j, sl in enumerate(other["slot"]):
+        if sl not in have:
+            out = _update(out, (other["ts"][j], other["X"][j]), other["w"][j] * w)
     return out
 
 
-def _on_rebase(st: Dict[str, np.ndarray], tau: float) -> Dict[str, np.ndarray]:
+def _on_rebase(st: Dict[str, list], tau: float) -> Dict[str, list]:
     """ACCEPTED regime from tau: the old regime keeps REBASE_OLD_W of its
     weight so the new one dominates the next refit without a cold start."""
-    old = st["ts"] < float(tau)
-    if not old.any():
+    tau = float(tau)
+    if not st["ts"] or st["ts"][0] >= tau:
         return st
     out = dict(st)
-    out["w"] = np.where(old, st["w"] * REBASE_OLD_W, st["w"])
+    out["w"] = [v * REBASE_OLD_W if t < tau else v for t, v in zip(st["ts"], st["w"])]
     return out
 
 
@@ -239,47 +261,76 @@ def _tie_mass(A: np.ndarray) -> np.ndarray:
 
 def em_complete(X: np.ndarray, w: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """One EM step for rows with missing entries: (completed rows, mean
-    conditional covariance). The first pass is a plain OAS of the winsorised,
-    column-mean-filled rows; each missingness pattern is then completed by its
-    conditional expectation x_m = mu_m - P_mm^-1 P_mo (x_o - mu_o) (P = Sigma^-1,
-    a |m| x |m| solve per pattern), and the conditional covariance P_mm^-1 is
-    averaged (weights w) so the fitted variance of often-missing columns is not
-    biased low by the imputation."""
+    conditional covariance). The first pass is the pairwise-complete
+    (weighted) covariance of the winsorised rows, eigen-floored; each
+    row is then completed by its conditional expectation
+    x_m = mu_m - P_mm^-1 P_mo (x_o - mu_o) (P = Sigma^-1; |m| x |m| solves,
+    stacked per missing count), and the conditional covariance P_mm^-1 is
+    averaged (weights w) so the fitted variance of often-missing columns is
+    not biased low by the imputation (the E-step's second moment). Observed
+    entries are returned winsorised."""
     Xw = robustcov.winsorize(X)
     miss = ~np.isfinite(Xw)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        cm = np.nanmean(Xw, axis=0)
-    F = np.where(miss, np.where(np.isfinite(cm), cm, 0.0), Xw)
-    mu1, S1, _ = robustcov.oas(F, None if np.all(w == w[0]) else w)
-    P = np.linalg.inv(robustcov.eigen_floor(S1))
-    out = X.astype(np.float64, copy=True)
-    C = np.zeros((X.shape[1], X.shape[1]))
-    rows = np.flatnonzero(miss.any(axis=1))
-    if not rows.size:
-        return out, C
-    keys = np.packbits(miss[rows], axis=1)
-    _, inv = np.unique(keys, axis=0, return_inverse=True)
-    inv = inv.reshape(-1)
-    order = np.argsort(inv, kind="stable")
-    bounds = np.flatnonzero(np.diff(inv[order])) + 1
-    for grp in np.split(rows[order], bounds):
-        mm = miss[grp[0]]
-        m_i, o_i = np.flatnonzero(mm), np.flatnonzero(~mm)
-        Pmm = P[np.ix_(m_i, m_i)]
-        Cm = np.linalg.inv(Pmm)
-        d = X[np.ix_(grp, o_i)] - mu1[o_i]
-        out[np.ix_(grp, m_i)] = mu1[m_i] - (d @ P[np.ix_(o_i, m_i)]) @ Cm
-        C[np.ix_(m_i, m_i)] += float(w[grp].sum()) * Cm
+    M = (~miss).astype(np.float64) * w[:, None]
+    cnt = M.sum(axis=0)
+    tot = np.where(miss, 0.0, Xw * w[:, None]).sum(axis=0)
+    mu1 = np.where(cnt > 0, tot / np.maximum(cnt, 1e-300), 0.0)
+    D = np.where(miss, 0.0, Xw - mu1)
+    num = (D * w[:, None]).T @ D
+    den = (~miss).astype(np.float64).T @ M
+    with np.errstate(divide="ignore", invalid="ignore"):
+        S1 = np.where(den > 0.0, num / den, 0.0)
+    P = np.linalg.inv(robustcov.eigen_floor(S1, rel=0.05))
+    out, C = _estep(Xw, mu1, P, w)
     return out, C / float(w.sum())
 
 
+def _estep(X: np.ndarray, mu: np.ndarray, P: np.ndarray, w: Optional[np.ndarray] = None
+           ) -> Tuple[np.ndarray, np.ndarray]:
+    """Conditional expectation of the missing (non-finite) entries of each row
+    under N(mu, P^-1): x_m = mu_m - P_mm^-1 P_mo (x_o - mu_o), batched by the
+    number r of missing entries (one stacked r x r solve per r). Returns (the
+    completed copy, sum_i w_i P_mm^-1 scattered on the missing blocks). Rows
+    with nothing observed get mu."""
+    out = np.array(X, dtype=np.float64)
+    p = out.shape[1]
+    C = np.zeros((p, p))
+    miss = ~np.isfinite(out)
+    nm = miss.sum(axis=1)
+    for r in np.unique(nm[nm > 0]).tolist():
+        rows = np.flatnonzero(nm == r)
+        if r == p:
+            out[rows] = mu
+            continue
+        Mi = np.nonzero(miss[rows])[1].reshape(rows.size, r)        # missing idx per row
+        Dr = np.where(miss[rows], 0.0, out[rows] - mu)                # observed deviations
+        Pm = P[Mi]                                                    # [k, r, p]
+        Pmm = np.take_along_axis(Pm, Mi[:, None, :], axis=2)          # [k, r, r]
+        rhs = -np.einsum("irp,ip->ir", Pm, Dr)
+        Cm = np.linalg.inv(Pmm)
+        out[rows[:, None], Mi] = mu[Mi] + np.einsum("irs,is->ir", Cm, rhs)
+        if w is not None:
+            np.add.at(C, (Mi[:, :, None], Mi[:, None, :]), Cm * w[rows][:, None, None])
+    return out, C
+
+
+def _mahal2(Z: np.ndarray, S: np.ndarray) -> np.ndarray:
+    L = np.linalg.cholesky(robustcov.eigen_floor(S))
+    Y = np.linalg.solve(L, Z.T)
+    return np.einsum("ij,ij->j", Y, Y)
+
+
+def _chi2_ppf(q: float, df: float) -> float:
+    return float(special.chdtri(df, 1.0 - q))
+
+
 def fit_rows(X: np.ndarray, w: np.ndarray, ts: Optional[np.ndarray] = None) -> Optional[OwnFit]:
-    """Robust fit on the usable rows of the selected columns: rows with
-    missing entries are completed by one EM step (em_complete), then
-    robustcov.c_step_oas (winsorise, OAS, C-steps, reweight, eigen floor), plus
-    the mean conditional covariance of the imputed entries. None when fewer
-    than N_FIT_MIN rows are usable."""
+    """Robust fit on the usable rows of the selected columns. Complete rows:
+    robustcov.c_step_oas (winsorise, OAS, C-steps, reweight at chi2_0.975,
+    consistency rescale, eigen floor). Rows with missing entries: one EM step
+    (em_complete), the C-step as an outlier screen at chi2_{p, SCREEN_Q}, then
+    the OAS of the completed survivors plus the E-step conditional covariance.
+    None when fewer than N_FIT_MIN rows are usable."""
     X = np.asarray(X)
     w = np.asarray(w, dtype=np.float64)
     if X.shape[0] < N_FIT_MIN:
@@ -289,14 +340,25 @@ def fit_rows(X: np.ndarray, w: np.ndarray, ts: Optional[np.ndarray] = None) -> O
         return None
     Xc = X[rows][:, cols].astype(np.float64)
     wc = w[rows]
-    Cc = None
-    if not np.isfinite(Xc).all():
-        Xc, Cc = em_complete(Xc, wc)
-    mu, S = robustcov.c_step_oas(Xc, None if np.all(wc == wc[0]) else wc)
-    if Cc is not None:
-        S = S + Cc
-    n_eff = float(wc.sum() ** 2 / np.dot(wc, wc))
     tsc = np.asarray(ts, dtype=np.float64)[rows] if ts is not None else np.zeros(Xc.shape[0])
+    wopt = None if np.all(wc == wc[0]) else wc
+    if np.isfinite(Xc).all():
+        mu, S = robustcov.c_step_oas(Xc, wopt)
+    else:
+        # C-step on imputed rows distorts the shape (the imputed rows sit near
+        # the centre and crowd its h-subset: T2 false alarms 1.9 % at 1 %,
+        # measured); it only screens outliers here, and the fit is the OAS of
+        # the completed survivors plus the E-step conditional covariance
+        # (1.0 % at 1 % clean, 0.9 % with 10 % contaminated rows).
+        Xc, Cc = em_complete(Xc, wc)
+        mu_r, S_r = robustcov.c_step_oas(Xc, wopt)
+        keep = _mahal2(Xc - mu_r, S_r + Cc) <= _chi2_ppf(SCREEN_Q, Xc.shape[1])
+        if int(keep.sum()) < N_FIT_MIN:
+            keep[:] = True
+        Xc, wc, tsc = Xc[keep], wc[keep], tsc[keep]
+        mu, S, _ = robustcov.oas(Xc, None if np.all(wc == wc[0]) else wc)
+        S = robustcov.eigen_floor(S + Cc)
+    n_eff = float(wc.sum() ** 2 / np.dot(wc, wc))
     return OwnFit(cols, mu, S, n_eff, Xc, wc, tsc)
 
 
@@ -333,22 +395,25 @@ def crossfit_spe(fit: OwnFit) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def spe_norm_rows(model: Dict[str, Any], X: np.ndarray) -> np.ndarray:
-    """SPE / theta1 of 52-dim rows under a fitted model (vectorised for rows
-    complete on the modelled dims, m_density.score_model for the others)."""
+    """SPE / theta1 of 52-dim rows under a fitted model, missing modelled dims
+    completed by conditional expectation (as m_density.score_model does, but
+    batched); rows observing no modelled dim give NaN."""
     out = np.full(X.shape[0], _NAN)
     th = float(model["theta1"])
     if th != th or not X.shape[0]:
         return out
     cols = model["cols"]
-    Z = X[:, cols].astype(np.float64) - model["mu"][cols]
-    comp = np.isfinite(Z).all(axis=1)
-    if comp.any():
-        U = model["U_c"]
-        R = Z[comp]
-        R = R - (R @ U) @ U.T
-        out[comp] = np.einsum("ij,ij->i", R, R) / th
-    for i in np.flatnonzero(~comp).tolist():
-        out[i] = m_density.score_model(model, X[i]).spe_norm
+    Z = np.asarray(X, dtype=np.float64)[:, cols] - model["mu"][cols]
+    Z[~np.isfinite(Z)] = _NAN
+    ok = np.isfinite(Z).any(axis=1)
+    if not ok.any():
+        return out
+    Z = Z[ok]
+    if not np.isfinite(Z).all():
+        Z, _ = _estep(Z, np.zeros(cols.size), np.linalg.inv(model["Sigma_c"]))
+    U = model["U_c"]
+    R = Z - (Z @ U) @ U.T
+    out[ok] = np.einsum("ij,ij->i", R, R) / th
     return out
 
 
@@ -512,7 +577,8 @@ class MultivariateEngine(Engine):
             raise ValueError(f"B06: {ZI} has dim {zi.size}, expected {FEATURE_DIM}")
         has_obs = zi is not None and bool(np.isfinite(zi).any())
         written = 0
-        if b05_failed or (zi is not None and not has_obs) or (zi is None and _active(store, s, e, now)):
+        if (b05_failed or (zi is not None and not has_obs)
+                or (zi is None and _active(store, s, e, now))):
             cause = ("producer_error:" + B05_ENGINE if b05_failed
                      else "nan:" + ZI if zi is not None else "stale:" + ZI)
             emit.write_scores(store, s, e, now, {d: None for d in DETS},
@@ -585,7 +651,7 @@ class MultivariateEngine(Engine):
     def _maybe_refit(self, ctx: Context, s: str, e: str, model: Dict[str, Any], now: float,
                      dt: float, ctrl: bool) -> Dict[str, Any]:
         st = model["_state"]
-        sig = (int(st["ts"].size), float(st["ts"].sum()), float(st["w"].sum()),
+        sig = (len(st["ts"]), math.fsum(st["ts"]), math.fsum(st["w"]),
                int(model["_gate"].version))
         if sig == model["_sig"] and not ctrl:
             return model
@@ -598,21 +664,21 @@ class MultivariateEngine(Engine):
     def _refit(self, ctx: Context, s: str, e: str, model: Dict[str, Any], now: float,
                sig: Tuple) -> Dict[str, Any]:
         store = ctx.store
-        st = model["_state"]
+        ts_a, w_a, X_a = state_arrays(model["_state"])
         oos_ts, oos_v = list(model["_oos_ts"]), list(model["_oos_v"])
         # 1. rows committed since the last fit, scored under that (older) model
-        if m_density.is_fitted(model) and st["ts"].size:
-            new = (st["ts"] > model["_front"]) & (st["w"] >= OOS_MIN_W)
+        if m_density.is_fitted(model) and ts_a.size:
+            new = (ts_a > model["_front"]) & (w_a >= OOS_MIN_W)
             if new.any():
-                v = spe_norm_rows(model, st["X"][new])
+                v = spe_norm_rows(model, X_a[new])
                 ok = np.isfinite(v)
-                oos_ts += st["ts"][new][ok].tolist()
+                oos_ts += ts_a[new][ok].tolist()
                 oos_v += v[ok].tolist()
         # 2. own fit + class shrink
-        own = fit_rows(st["X"], st["w"], st["ts"])
+        own = fit_rows(X_a, w_a, ts_a)
         ck = m_class.class_key(store, s, e, CLASS_MIN_MEMBERS)
         cm = m_density.get(store, s, ck) if ck else None
-        front = float(st["ts"].max()) if st["ts"].size else -math.inf
+        front = float(ts_a.max()) if ts_a.size else -math.inf
         if own is None and cm is None:
             if not model.get("fitted"):
                 model["_sig"] = sig
@@ -671,11 +737,12 @@ class MultivariateEngine(Engine):
         Xs, ws, tss = [], [], []
         for ip in mem:
             st = _other_state(store, s, ip)
-            if st is None or not st["ts"].size:
+            if st is None or not st["ts"]:
                 continue
-            Xs.append(st["X"][-per:])
-            ws.append(st["w"][-per:])
-            tss.append(st["ts"][-per:])
+            t_i, w_i, X_i = state_arrays({k: v[-per:] for k, v in st.items()})
+            Xs.append(X_i)
+            ws.append(w_i)
+            tss.append(t_i)
         if not Xs or sum(x.shape[0] for x in Xs) < N_FIT_MIN:
             return
         X, w, ts = np.vstack(Xs), np.concatenate(ws), np.concatenate(tss)
@@ -694,21 +761,18 @@ class MultivariateEngine(Engine):
         entity centred by its column medians (level differences between
         entities are not dependence)."""
         store = ctx.store
+        states = [st for st in (_other_state(store, s, e) for e in store.entities(s))
+                  if st is not None and st["ts"]]
+        if sum(min(len(st["ts"]), GROUP_ROWS_PER_ENT) for st in states) < GROUP_MIN_ROWS:
+            return
         blocks = []
-        for e in store.entities(s):
-            st = _other_state(store, s, e)
-            if st is None or not st["ts"].size:
-                continue
-            B = st["X"][-GROUP_ROWS_PER_ENT:].astype(np.float64)
+        for st in states:
+            B = np.asarray(st["X"][-GROUP_ROWS_PER_ENT:], dtype=np.float64)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning)
                 med = np.nanmedian(B, axis=0)
             blocks.append(B - np.where(np.isfinite(med), med, 0.0))
-        if not blocks:
-            return
         X = np.vstack(blocks)[-GROUP_ROWS_MAX:]
-        if X.shape[0] < GROUP_MIN_ROWS:
-            return
         groups, _ = dependence_groups(X)
         prev = store.get_model(s, SYSTEM_KEY, GROUPS_MODEL)
         if isinstance(prev, dict) and prev.get("groups") == groups:
@@ -750,7 +814,7 @@ def _archive(arch: "OrderedDict[int, Tuple[float, np.ndarray]]", now: float,
         del arch[k]
 
 
-def _other_state(store: Any, s: str, e: str) -> Optional[Dict[str, np.ndarray]]:
+def _other_state(store: Any, s: str, e: str) -> Optional[Dict[str, list]]:
     m = store.get_model(s, e, DENSITY)
     if isinstance(m, dict) and m.get("fmt") == m_density.FMT and "_state" in m:
         return m["_state"]
