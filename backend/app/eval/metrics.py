@@ -805,6 +805,12 @@ def legit_outcome(view: RunView, idx: int) -> Dict[str, Any]:
     max_risk = max(risks) if risks else None
     risk_ok = max_risk is None or max_risk < TARGETS["legit_max_risk"]
     class_incs = [i for i in incs if str(i.get("entity", "")).startswith("class:")]
+    # class-wide changes may allow a class incident while members stay quiet
+    # (L1: 0 member incidents >= LOW; L10: 0 entity incidents >= LOW)
+    member_max = max((view.max_severity(i) for i in incs if i not in class_incs), default=-1)
+    member_allowed = row.get("max_member_severity")
+    member_ok = (member_allowed is None or member_max < 0
+                 or member_max <= sev_rank(member_allowed))
     return {
         "scenario_id": str(row.get("scenario_id")), "base": base_id(row.get("scenario_id")),
         "pack": view.pack, "seed": view.seed, "label": row_label(row),
@@ -814,8 +820,9 @@ def legit_outcome(view: RunView, idx: int) -> Dict[str, Any]:
         "n_incidents": len(incs), "n_class_incidents": len(class_incs),
         "class_max_severity": (SEVERITIES[max(view.max_severity(i) for i in class_incs)]
                                if class_incs else None),
+        "member_max_severity": SEVERITIES[member_max] if member_max >= 0 else None,
         "max_risk": max_risk, "sev_ok": bool(sev_ok), "risk_ok": bool(risk_ok),
-        "ok": bool(sev_ok and risk_ok),
+        "member_ok": bool(member_ok), "ok": bool(sev_ok and risk_ok and member_ok),
     }
 
 

@@ -227,6 +227,21 @@ def test_legit_outcome_severity_and_risk():
     assert lg["sev_ok"] and not lg["risk_ok"] and lg["max_risk"] == 35.0
 
 
+def test_legit_member_severity_for_class_changes():
+    # L1: one class incident <= LOW is allowed, member incidents >= LOW are not
+    ts = TICKS[40]
+    row = truth("L1", ["10.20.1.11", "10.20.1.12"], ts, ts + 8 * DT, label="legit_change",
+                max_allowed_severity="low", max_member_severity="info", level="class")
+    run = make_run(truth=[row], incidents=[inc("c", "class:r1", ts + DT, "low")],
+                   models={"class": {"assign": {k("10.20.1.11"): {"role": "r1"},
+                                                k("10.20.1.12"): {"role": "r1"}}}})
+    lg = M.score_run(run)["legit"][0]
+    assert lg["ok"] and lg["n_class_incidents"] == 1 and lg["member_max_severity"] is None
+    run.incidents.append(inc("m", "10.20.1.12", ts + 2 * DT, "low"))
+    lg = M.score_run(run)["legit"][0]
+    assert lg["sev_ok"] and not lg["member_ok"] and not lg["ok"]
+
+
 # --------------------------------------------------------------------------- ranges
 A = frozenset({"x"})
 B = frozenset({"y"})

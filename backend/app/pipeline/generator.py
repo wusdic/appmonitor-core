@@ -28,7 +28,10 @@ What v2 models, and why:
   over 5-minute sub-intervals in LOCAL time (tz and holiday / make-up workday
   calendar from the pack). Events are laid out as sessions inside the tick,
   so obs.ts is a real sub-tick time. Idle ticks are really idle: an entity
-  with nothing to do emits nothing (no forced DNS query).
+  with nothing to do emits nothing (no forced DNS query). Human uploads are
+  heavy-tailed (writes sometimes carry an attachment), so a user's per-tick
+  log bytes_up has sd ~ 1: the regime the spec's "T2 stays at |z| < 2.5" and
+  "T18 stays below every marginal p95" assume.
 * Aggregated mode (dt >= 900 s): one Observation per (entity, token, outcome,
   destination, client stack) carrying extra = {count, bytes_up_total,
   bytes_down_total, ts_sample <= 64 offsets from obs.ts}. The raw engines
@@ -175,6 +178,17 @@ def unique_stack(r: np.random.Generator, tag: str) -> Stack:
                  64, 65535)
 
 
+_PRODUCT_VER = re.compile(r"(Chrome|Edg|Firefox|Version|rv:)(/?)(\d+)\.(\d+)")
+
+
+def bump_minor(ua: str) -> str:
+    """The browser's auto-update (L14): every browser product version token
+    (Chrome/, Edg/, Firefox/ + rv:, Safari's Version/) gets its minor + 1;
+    'Mozilla/5.0' and the OS version are left alone."""
+    return _PRODUCT_VER.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}."
+                            f"{int(m.group(4)) + 1}", ua)
+
+
 def library_stack(r: np.random.Generator, tag: str) -> Stack:
     """A client-library stack with its own JA3 (API clients)."""
     lib = ["python-requests/2.31.0", "okhttp/4.12.0", "Go-http-client/1.1"][int(r.integers(0, 3))]
@@ -194,7 +208,7 @@ class Template:
     placeholder: {id} (object id -> '{num}' token), {p} (page) or {q} (term)."""
 
     __slots__ = ("method", "host", "fmt", "cat", "token", "pre", "post", "var",
-                 "base_up", "base_down", "srv_ms")
+                 "base_up", "base_down", "srv_ms", "write", "att_p", "att_bytes")
 
     def __init__(self, method: str, host: str, fmt: str, cat: str) -> None:
         self.method, self.host, self.fmt, self.cat = method, host, fmt, cat
@@ -211,9 +225,19 @@ class Template:
         self.token = f"{method} {host} {path}"
         h = crc(self.token)
         write = method in ("POST", "PUT", "DELETE", "PATCH")
+        self.write = write
         self.base_up = float(1500 + h % 6000) if write else float(350 + h % 900)
         self.base_down = float(2 ** (11 + (h >> 8) % 6))
         self.srv_ms = float(20 + (h >> 16) % 250)
+        # Human uploads are heavy-tailed: a write occasionally carries an
+        # attachment (upload / send / import forms almost always do). This is
+        # what makes a human's per-tick bytes_up marginal wide (sd of log1p
+        # ~ 0.8-1 in business hours), the regime in which generator.md's
+        # "T2 200 KB per 15 min stays at |z| < 2.5" and "T18 x3-4 bytes per
+        # request stays below every marginal p95" hold.
+        bulk = write and re.search(r"upload|send|attach|import|apply", fmt) is not None
+        self.att_p = 0.6 if bulk else (0.2 if write else 0.0)
+        self.att_bytes = float(80_000 + (h >> 4) % 250_000) if write else 0.0
 
     def render(self, obj_id: int, u: float) -> str:
         v = self.var
@@ -265,7 +289,8 @@ _ERP_HUMAN = [
     ("GET", "/settings", "static"),
 ]
 _ERP_SALARY = [("GET", "/hr/salary/list", "private"), ("GET", "/hr/salary/{id}", "private"),
-               ("POST", "/hr/salary/{id}/update", "write")]
+               ("GET", "/hr/salary/export", "report"), ("POST", "/hr/salary/{id}/update", "write")]
+HR_SALARY_FLOOR = 0.03             # the HR persona really uses every /hr/salary/* template
 _OA_HUMAN = [
     ("POST", "/login", "auth"), ("GET", "/logout", "auth"),
     ("GET", "/home", "dash"), ("GET", "/inbox", "dash"), ("GET", "/calendar", "dash"),
@@ -405,12 +430,15 @@ class HumanModel:
             boost = np.array([8.0 if t.cat == "search" else 3.0 if t.cat == "view" else 1.0
                               for t in vocab])
             pref = pref * boost
+        salary = np.array([("/hr/salary" in t.fmt) for t in vocab])
         if not hr:
-            pref = np.where([("/hr/salary" in t.fmt) for t in vocab], 0.0, pref)
+            pref = np.where(salary, 0.0, pref)
+        else:   # T7's df = 1 of the class: HR must actually use /hr/salary/export
+            pref = np.where(salary, np.maximum(pref, HR_SALARY_FLOOR), pref)
         pref = pref / pref.sum()
         noise = r.lognormal(0.0, 0.5, size=(K, K))
         id_lo = int(r.integers(10_000, 900_000))
-        id_w = int(r.integers(60, 400))
+        id_w = int(r.integers(40, 160))
         err = float(r.uniform(0.01, 0.08))
         dev_u = float(r.random())
         uniq = unique_stack(r, key.replace("|", "-"))
@@ -688,10 +716,15 @@ class Scenario:
     def active(self, t0: float, t1: float) -> bool:
         return self.t_start < t1 and self.t_end > t0
 
-    def truth_record(self, pack: str) -> Dict[str, Any]:
+    def truth_record(self, pack: str, t_clip: Optional[float] = None) -> Dict[str, Any]:
+        """The gen.truth row (generator.md §5). An open-ended scenario
+        (t_end = inf) is clipped to `t_clip` (the pack's last tick)."""
+        t_end = float(self.t_end)
+        if math.isinf(t_end) and t_clip is not None:
+            t_end = float(t_clip)
         rec = {"scenario_id": self.scenario_id, "pack": pack, "system": self.system,
                "entities": list(self.entities), "t_start": float(self.t_start),
-               "t_end": float(self.t_end), "label": self.label, "mode": self.mode,
+               "t_end": t_end, "label": self.label, "mode": self.mode,
                "kind": self.kind}
         for k in ("expected_detectors", "expected_axes", "perturbed_features"):
             rec[k] = list(self.truth.get(k) or [])
@@ -707,7 +740,7 @@ class Mods:
     """Per-(entity, tick) modifiers collected from the active scenarios."""
 
     __slots__ = ("replace", "vol", "up", "up_rand", "down", "stack", "path_override", "force",
-                 "swap", "entity_as", "status", "rtt", "retrans", "extra_tpls", "enum",
+                 "swap", "entity_as", "status", "rtt", "retrans", "extra_tpls",
                  "backup_hour")
 
     def __init__(self) -> None:
@@ -725,7 +758,6 @@ class Mods:
         self.rtt = 1.0
         self.retrans = 1.0
         self.extra_tpls: List[Tuple[float, Template]] = []
-        self.enum: Optional[Dict[str, Any]] = None
         self.backup_hour: Optional[float] = None
 
 
@@ -770,7 +802,8 @@ class TrafficGenerator:
             self.pack_name = str(getattr(pack, "name", "pack"))
             self.clock = Clock(getattr(pack, "tz", DEFAULT_TZ) or DEFAULT_TZ,
                                getattr(pack, "calendar", None))
-            keys = list(getattr(pack, "population", None) or BASE_KEYS)
+            pop = getattr(pack, "population", None)
+            keys = list(BASE_KEYS if pop is None else pop)
             scenarios = list(getattr(pack, "scenarios", None) or [])
             self.vt = float(getattr(pack, "start_epoch", 0.0) or 0.0)
         self.scenarios: List[Scenario] = scenarios
@@ -780,10 +813,14 @@ class TrafficGenerator:
         for k in keys:
             self.personas[k] = build_persona(k)
         for sc in scenarios:
+            if sc.live_tick is not None:       # demo: spawned when the scenario activates
+                continue
             for sp in sc.spawns:
                 self._add_spawn(sp)
-        self.truth: List[Dict[str, Any]] = [sc.truth_record(self.pack_name) for sc in scenarios
-                                            if sc.live_tick is None]
+        end = getattr(pack, "end_epoch", None) if pack is not None else None
+        self.t_clip: Optional[float] = float(end) if end is not None else None
+        self.truth: List[Dict[str, Any]] = [sc.truth_record(self.pack_name, self.t_clip)
+                                            for sc in scenarios if sc.live_tick is None]
         self._rngs: Dict[str, np.random.Generator] = {}
         self._state: Dict[str, Any] = {}          # renewal clocks, scenario state
 
@@ -876,7 +913,7 @@ class TrafficGenerator:
                 for sp in sc.spawns:
                     sp.t_from = t0
                     self._add_spawn(sp)
-                self.truth.append(sc.truth_record(self.pack_name))
+                self.truth.append(sc.truth_record(self.pack_name, self.t_clip))
 
     # -------------------------------------------------------------- emitters
     def _emit(self, p: Persona, key: str, tk: Tick, m: Mods) -> List[list]:
@@ -922,11 +959,12 @@ class TrafficGenerator:
         u_var = r.random(n)
         s_up = r.lognormal(0.0, 0.3, n)
         s_down = r.lognormal(0.0, 0.5, n)
+        u_att = r.random(n)
+        s_att = r.lognormal(0.0, 1.0, n)
         vocab, tc, sc_ = hm.vocab, hm.trans_cum, hm.start_cum
         stack = hm.stack
         extra = m.extra_tpls
         u_x = r.random(n) if extra else None
-        enum = m.enum
         out: List[list] = []
         i = 0
         t1 = tk.t1
@@ -953,13 +991,8 @@ class TrafficGenerator:
                         if u_x[i] < acc:
                             t = xt
                             break
-                if enum is not None:
-                    enum["next"] = enum.get("next", enum["start"]) + 1
-                    path = f"/orders/view/{enum['next']}"
-                    t = enum["tpl"]
-                else:
-                    oid = hm.id_lo + int(u_id[i] * u_id[i] * hm.id_w)
-                    path = t.render(oid, u_var[i])
+                oid = hm.id_lo + int(u_id[i] ** 3 * hm.id_w)         # personal working set
+                path = t.render(oid, u_var[i])
                 if u_err[i] < hm.err:
                     status = (404, 403, 500, 400)[int(u_err[i] / hm.err * 4) % 4]
                 elif t.cat == "auth" and t.method == "POST":
@@ -967,6 +1000,8 @@ class TrafficGenerator:
                 else:
                     status = 200
                 up = t.base_up * s_up[i]
+                if t.write and u_att[i] < t.att_p:          # attachment / form body
+                    up += t.att_bytes * hm.size_mult * s_att[i]
                 down = t.base_down * hm.size_mult * s_down[i]
                 out.append([st + float(offs[j]), "h", t.method, t.host, path, status,
                             up, down, t.srv_ms, stack])
@@ -1000,9 +1035,8 @@ class TrafficGenerator:
             return []
         out: List[list] = []
         load = 1.0
-        if mm.archetype == "api":
-            biz = float(np.interp(0.0, [0.0], [tk.biz.mean()]))
-            load = 0.7 + 0.3 * biz
+        if mm.archetype == "api":                 # mild business-hours load swing
+            load = 0.7 + 0.3 * float(tk.biz.mean())
         lam = mm.batch * load * m.vol
         ep, cum, stack = mm.endpoints, mm.ep_cum, mm.stack
         for t in times:
@@ -1106,7 +1140,9 @@ class TrafficGenerator:
                 if stack is not None and e[EV_CH] == "d":
                     e[EV_STACK] = stack
                 continue
-            if po is not None and r.random() < po[0]:
+            # path override (T13, T17): an attachment-carrying upload is left
+            # alone, so the move keeps the user's volume (bytes_up) unchanged
+            if po is not None and r.random() < po[0] and not (po[0] < 1.0 and e[EV_UP] > 20_000):
                 t = po[1][int(r.integers(0, len(po[1])))]
                 e[EV_A], e[EV_B] = t.method, t.host
                 e[EV_C] = t.render(int(r.integers(1, 5000)), float(r.random()))
@@ -1236,20 +1272,21 @@ class TrafficGenerator:
         extra.setdefault(key, []).extend(evs)
 
     def _fx_exfil_business(self, sc, tk, mods, extra) -> None:              # T2
+        """One POST per `every_s` (a jittered script clock) while the user is at
+        work, `bytes` x growth^day. The single upload per 15 min is what keeps
+        the per-tick |z| of bytes_up < 2.5 on days 1-2 (generator.md)."""
         key = sc.keys()[0]
         p = sc.params
         r = self._sc_rng(sc)
         a, b = self._span(sc, tk)
         act = self._human_activity_at(key, tk)
+        every = p.get("every_s", 900.0)
         days = int((tk.t0 - sc.t_start) // 86400.0)
         size = p.get("bytes", 200_000.0) * p.get("growth", 1.6) ** max(0, days)
         out = []
-        for i, mid in enumerate(tk.mids.tolist()):
-            lo, hi = max(a, mid - tk.sub / 2), min(b, mid + tk.sub / 2)
-            if hi <= lo or act[i] < 0.3:
-                continue
-            n = int(r.poisson((hi - lo) / p.get("every_s", 900.0)))
-            for t in r.uniform(lo, hi, n).tolist():
+        for t in self._renewal(f"sc|{sc.scenario_id}|{key}|up", tk, every, 0.1 * every, r):
+            i = min(tk.M - 1, int((t - tk.t0) // tk.sub))
+            if a <= t < b and act[i] >= 0.3:
                 out.append([t, "h", "POST", p.get("host", "ext-store.example.net"), "/upload",
                             200, size * float(r.lognormal(0, 0.1)), 600.0, 900.0,
                             self._stack_of(key)])
@@ -1296,24 +1333,48 @@ class TrafficGenerator:
         extra.setdefault(key, []).extend(e for e in evs if a <= e[EV_TS] < b)
 
     def _fx_rare_resource(self, sc, tk, mods, extra) -> None:               # T7
+        """`per_tick` accesses per 900 s on a jittered clock (cadence
+        invariant), only while the user is active."""
         key = sc.keys()[0]
-        if float(self._human_activity_at(key, tk).max()) < 0.3:
-            return
+        act = self._human_activity_at(key, tk)
         r = self._sc_rng(sc)
         a, b = self._span(sc, tk)
-        n = max(1, int(round(tk.dt / REF_TICK_S * sc.params.get("per_tick", 1.0))))
+        period = REF_TICK_S / max(1e-6, sc.params.get("per_tick", 1.0))
         t = tpl("GET", SYSTEM_HOSTS[sc.system][0], sc.params.get("path", "/hr/salary/export"),
                 "private")
-        evs = [[float(x), "h", t.method, t.host, t.fmt, 200, t.base_up, t.base_down, t.srv_ms,
-                self._stack_of(key)] for x in r.uniform(a, b, n)]
+        evs = []
+        for x in self._renewal(f"sc|{sc.scenario_id}|{key}|rare", tk, period, 0.3 * period, r):
+            i = min(tk.M - 1, int((x - tk.t0) // tk.sub))
+            if a <= x < b and act[i] >= 0.3:
+                evs.append([x, "h", t.method, t.host, t.fmt, 200, t.base_up, t.base_down,
+                            t.srv_ms, self._stack_of(key)])
         extra.setdefault(key, []).extend(evs)
 
     def _fx_enumeration(self, sc, tk, mods, extra) -> None:                 # T8
+        """Replace: a script walks /orders/view/{id} with sequential ids at the
+        persona's normal (full-activity) request rate on a regular clock
+        (+-20 % jitter, so B11 sees the burstiness shift). Per-tick counts stay
+        in the persona's range; the object-id breadth explodes (~1-2 k ids
+        in 09:00-17:00 vs ~40 a day)."""
         key = sc.keys()[0]
+        self._m(mods, key).replace = True
+        hm = self.personas[key].models[0]
         st = self._state.setdefault(f"enum|{sc.scenario_id}", {
-            "start": int(sc.params.get("start_id", 500_000)),
-            "tpl": tpl("GET", SYSTEM_HOSTS[sc.system][0], "/orders/view/{id}", "view")})
-        self._m(mods, key).enum = st
+            "next": int(sc.params.get("start_id", 500_000))})
+        period = 1.0 / max(1e-6, hm.rate_s)
+        t = tpl("GET", SYSTEM_HOSTS[sc.system][0], "/orders/view/{id}", "view")
+        r = self._sc_rng(sc)
+        a, b = self._span(sc, tk)
+        evs = []
+        for x in self._renewal(f"sc|{sc.scenario_id}|{key}|enum", tk, period, 0.2 * period, r):
+            if a <= x < b:
+                st["next"] += 1
+                evs.append([x, "h", "GET", t.host, t.render(st["next"], 0.0),
+                            404 if r.random() < hm.err else 200,
+                            t.base_up * float(r.lognormal(0, 0.3)),
+                            t.base_down * hm.size_mult * float(r.lognormal(0, 0.5)), t.srv_ms,
+                            hm.stack])
+        extra.setdefault(key, []).extend(evs)
 
     def _fx_impersonate(self, sc, tk, mods, extra) -> None:                 # T9
         key = sc.keys()[0]
@@ -1324,9 +1385,10 @@ class TrafficGenerator:
         key = sc.keys()[0]
         mk = f"swap|{sc.scenario_id}|{key}"
         hm = self._state.get(mk)
-        if hm is None:
-            hm = self._state[mk] = build_human(key, tag=f"{sc.params.get('tag', 'new')}|{key}|"
-                                                         f"{self.seed}")
+        if hm is None:                  # new seed, new (unique) stack, new path preferences
+            tag = f"{sc.params.get('tag', 'new')}|{key}|{self.seed}"
+            hm = self._state[mk] = build_human(key, tag=tag,
+                                               stack=unique_stack(rng_for("stack", tag), "t9b"))
         self._m(mods, key).swap = hm
 
     def _fx_jitter_beacon(self, sc, tk, mods, extra) -> None:               # T10
@@ -1400,19 +1462,22 @@ class TrafficGenerator:
         m = self._m(mods, key)
         t = tk.t0
         st0 = self._stack_of(key) or ORG_STANDARD
-        if t >= p["t_ja3"]:
-            m.stack = Stack(st0.name + "-minor", st0.ua, st0.ja3 + "-0", st0.ttl, st0.win) \
-                if False else Stack(st0.name + "-minor", st0.ua,
-                                    st0.ja3.replace(",29-23-24", "-57,29-23-24"), st0.ttl, st0.win)
-        if t >= p["t_bytes"]:
-            m.down *= p.get("bytes_mult", 1.3)
-            m.up *= p.get("bytes_mult", 1.3)
+        if t >= p["t_ja3"]:                  # JA3 minor variant: one extra extension
+            m.stack = Stack(st0.name + "-minor", st0.ua,
+                            st0.ja3.replace(",29-23-24", "-57,29-23-24"), st0.ttl, st0.win)
+        if t >= p["t_bytes"]:       # +0.7 sigma of a human's log bytes (sigma ~ 1)
+            m.down *= p.get("bytes_mult", 2.0)
+            m.up *= p.get("bytes_mult", 2.0)
         a, b = p["t_rare"], p["t_rare"] + 1.0
         if a < tk.t1 and b > tk.t0:
-            h = SYSTEM_HOSTS[sc.system][0]
+            if p.get("rare_path"):
+                t_r = tpl("GET", SYSTEM_HOSTS[sc.system][0], p["rare_path"], "private")
+            else:           # a template the class knows (low df) but this user never uses
+                t_r = class_rare_template(key) or tpl("GET", SYSTEM_HOSTS[sc.system][0],
+                                                       "/crm/lead/export", "private")
             extra.setdefault(key, []).append(
-                [a, "h", "GET", h, p.get("rare_path", "/crm/lead/export"), 200, 500.0, 9000.0,
-                 90.0, m.stack or st0])
+                [a, "h", t_r.method, t_r.host, t_r.render(self._obj_id(key), 0.5), 200,
+                 t_r.base_up, t_r.base_down, t_r.srv_ms, m.stack or st0])
         m.force.append((p["t_off"], p["t_off"] + p.get("off_len", 900.0)))
 
     def _fx_bytes_mult(self, sc, tk, mods, extra) -> None:                  # T18
@@ -1473,10 +1538,8 @@ class TrafficGenerator:
             new = p.get("stack")
             if new is None:
                 st0 = old or ORG_STANDARD
-                ua = re.sub(r"(\d+)\.0(\.0\.0)?", lambda mm: f"{int(mm.group(1)) + 1}.0"
-                            + (mm.group(2) or ""), st0.ua, count=1)
-                new = Stack(st0.name + "-upd", ua, st0.ja3.replace(",29-23-24", "-41,29-23-24"),
-                            st0.ttl, st0.win)
+                new = Stack(st0.name + "-upd", bump_minor(st0.ua),
+                            st0.ja3.replace(",29-23-24", "-41,29-23-24"), st0.ttl, st0.win)
             self._m(mods, key).stack = new
 
     def _fx_new_resource(self, sc, tk, mods, extra) -> None:                # L3
@@ -1522,17 +1585,21 @@ class TrafficGenerator:
             self._m(mods, key).extra_tpls.extend((share / len(added), t) for t in added)
 
     def _explore_candidates(self, key: str) -> List[Template]:
-        """Templates common among the entity's role peers but rare for itself,
-        most common first."""
+        """Templates common among the entity's role peers (the base
+        population's interactive personas of its system, independent of which
+        personas this run carries) but rare for itself, most common first."""
         me = self.personas[key].models[0]
-        peers = [p.models[0] for k, p in self.personas.items()
-                 if k != key and p.system == me.system and p.archetype == "interactive"
-                 and p.models and isinstance(p.models[0], HumanModel)]
+        peers = _role_peers(key)
         if not peers:
             return []
         avg = np.mean([pm.visit for pm in peers if pm.K == me.K] or [me.visit], axis=0)
         order = np.argsort(-avg)
         return [me.vocab[i] for i in order if me.visit[i] < 0.01 and avg[i] > 0.005]
+
+    def _obj_id(self, key: str) -> int:
+        p = self.personas.get(key)
+        hm = p.models[0] if p and p.models else None
+        return int(getattr(hm, "id_lo", 1000)) + 7
 
     def _fx_exfil_bulk(self, sc, tk, mods, extra) -> None:                  # demo (v1 'exfil')
         key = sc.keys()[0]
@@ -1543,6 +1610,33 @@ class TrafficGenerator:
             [float(t), "h", "POST", "ext-store.example.net", "/upload", 200,
              float(r.uniform(3e6, 8e6)), float(r.uniform(500, 1500)), 2000.0, self._stack_of(key)]
             for t in r.uniform(a, b, n))
+
+
+def _role_peers(key: str) -> List[HumanModel]:
+    """The base population's interactive personas of key's system (key
+    excluded): the entity's role class, independent of who is in the run."""
+    system = key.partition("|")[0]
+    return [build_persona(k).models[0] for k, (a, _) in _ARCH.items()
+            if k != key and a == "interactive" and k.partition("|")[0] == system]
+
+
+def class_rare_template(key: str, used: float = 0.01, never: float = 0.002
+                        ) -> Optional[Template]:
+    """A template that is rare at class tier (used by the fewest role peers,
+    at least one) and that `key` itself practically never uses (T16)."""
+    me = build_persona(key).models[0]
+    peers = [pm for pm in _role_peers(key) if pm.K == me.K]
+    best: Optional[Tuple[int, float, int]] = None
+    for i, t in enumerate(me.vocab):
+        if me.visit[i] >= never or "/hr/salary" in t.fmt:
+            continue
+        df = sum(pm.visit[i] >= used for pm in peers)
+        if df < 1:
+            continue
+        cand = (df, float(np.mean([pm.visit[i] for pm in peers])), i)
+        if best is None or cand < best:
+            best = cand
+    return me.vocab[best[2]] if best is not None else None
 
 
 def _ev_ts(e: list) -> float:
