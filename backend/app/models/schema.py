@@ -12,6 +12,14 @@ Layers of data:
     EntityProfile -> per (system, entity) behavioural baseline / fingerprint
     BehaviorEvent -> a detected deviation / behavioural finding
     SignatureMatch-> a preset metric-combination matched to a semantic meaning
+    Label         -> an analyst verdict on an event / incident / entity / class
+    Incident      -> the notified unit: merged findings on one entity or class
+
+Schema v2 (lib-3): the high-volume objects are `slots=True` dataclasses and
+`dims` / `inputs` default to None instead of a fresh dict/list, because the
+store keeps tens of thousands of them per entity and the per-instance
+`__dict__` plus two empty containers used to dominate memory. Readers must
+treat `dims is None` / `inputs is None` as empty.
 """
 from __future__ import annotations
 
@@ -67,9 +75,34 @@ class Severity(str, Enum):
 
 
 # --------------------------------------------------------------------------- #
+# Pseudo-entities (contract B)
+# --------------------------------------------------------------------------- #
+# Series that describe a whole system, the organisation or a class live under
+# these entity keys. They are never observed on the wire, so raw ingestion
+# rejects them and `store.entities()` hides them.
+SYSTEM_ENTITY = "__system__"
+ORG = "__org__"                           # used as both system and entity
+CLASS_PREFIX = "class:"                   # class:<rid>, class:static:<n>, class:pool:<cidr>
+
+
+def is_pseudo_entity(entity: str) -> bool:
+    """True for '__*' (system/org aggregates) and 'class:*' keys."""
+    return entity.startswith("__") or entity.startswith(CLASS_PREFIX)
+
+
+# Closed vocabularies (contract E). Kept as tuples so they are cheap to check.
+EVENT_STATUSES = ("open", "suppressed", "acked", "closed")
+INCIDENT_STATUSES = ("open", "acked", "suppressed", "closed")
+INCIDENT_CLOSE_REASONS = ("returned", "accepted", "labelled", "timeout")
+LABEL_TARGET_TYPES = ("event", "incident", "entity", "class")
+LABEL_VERDICTS = ("tp", "fp", "expected_change", "benign_known", "unsure")
+LABEL_SCOPES = ("this", "pattern", "entity", "class", "system")
+
+
+# --------------------------------------------------------------------------- #
 # Observations (input to the raw-metric engines)
 # --------------------------------------------------------------------------- #
-@dataclass
+@dataclass(slots=True)
 class Observation:
     """A single normalized event. Produced by capture adapters (SPAN decode,
     flow collector, active prober). Engines never touch raw packets — an
@@ -123,7 +156,7 @@ class Observation:
 # --------------------------------------------------------------------------- #
 # Metrics
 # --------------------------------------------------------------------------- #
-@dataclass
+@dataclass(slots=True)
 class RawMetric:
     """One measured value emitted by a raw-metric engine."""
 
@@ -134,7 +167,7 @@ class RawMetric:
     entity: str
     kind: MetricKind = MetricKind.GAUGE
     method: AcquisitionMethod = AcquisitionMethod.PASSIVE_SPAN
-    dims: Dict[str, str] = field(default_factory=dict)  # peer, port, host...
+    dims: Optional[Dict[str, Any]] = None  # peer, port, host... (None == {})
     unit: str = ""
 
     @property
@@ -142,7 +175,7 @@ class RawMetric:
         return f"{self.system}|{self.entity}|{self.name}"
 
 
-@dataclass
+@dataclass(slots=True)
 class DerivedMetric:
     """A value computed from one or more raw metrics over a window."""
 
@@ -153,8 +186,8 @@ class DerivedMetric:
     entity: str
     window_s: int
     kind: MetricKind = MetricKind.GAUGE
-    inputs: List[str] = field(default_factory=list)   # provenance
-    dims: Dict[str, str] = field(default_factory=dict)
+    inputs: Optional[List[str]] = None     # provenance (None == [])
+    dims: Optional[Dict[str, Any]] = None  # e.g. window {span_s, n_active}
     unit: str = ""
 
     @property
@@ -165,7 +198,7 @@ class DerivedMetric:
 # --------------------------------------------------------------------------- #
 # Behaviour layer
 # --------------------------------------------------------------------------- #
-@dataclass
+@dataclass(slots=True)
 class EntityProfile:
     """The dynamic per-(system, entity) behavioural picture. This is the
     '行为库' content — never a static list, always generated. Holds the
@@ -183,32 +216,53 @@ class EntityProfile:
     seasonal: Dict[str, List[float]] = field(default_factory=dict)  # tod/dow
     archetype: str = ""                    # cluster label / user-class
     archetype_confidence: float = 0.0
+    # lib-3: clip(1 - 2*EER_hard, 0, 1) from the cross-validated identity model
     separability: float = 0.0              # how uniquely identifiable (0..1)
     sample_count: int = 0
+    # lib-3: n_eff >= 96 and calibration healthy
     stable: bool = False                   # enough samples for baseline
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(slots=True)
 class BehaviorEvent:
-    """A behavioural finding: an anomaly, a drift from own fingerprint, or an
-    unusual action sequence."""
+    """A behavioural finding: an anomaly, a drift from own fingerprint, an
+    unusual action sequence, or (lib-3) any discrete kind from contract F.
+
+    The v2 fields all default, so v1 constructors keep working. `id` is
+    assigned by `store.add_event` when left empty; `status` is the only field
+    expected to change after insertion (via `store.update_event`)."""
 
     system: str
     entity: str
     ts: float
-    kind: str                              # anomaly | drift | sequence | class
+    kind: str                              # contract F kinds (legacy: anomaly|drift|sequence)
     score: float                           # 0..1 normalized
     severity: Severity = Severity.INFO
     contributors: List[Tuple[str, float]] = field(default_factory=list)  # feat,z
     description: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)
+    # ---- v2 (contract E)
+    id: str = ""
+    status: str = "open"                   # open | suppressed | acked | closed
+    p_value: Optional[float] = None        # fused / detector p at emission
+    e_day: Optional[float] = None          # p * 86400 / dt (expected null ticks per day)
+    axes: List[str] = field(default_factory=list)
+    p_by_detector: Dict[str, float] = field(default_factory=dict)
+    dedupe_key: str = ""
+    incident_id: str = ""
+    model_version: Optional[int] = None
+    window: Optional[Tuple[float, float]] = None   # (t0, t1) the finding covers
+
+    def __post_init__(self) -> None:
+        if self.status not in EVENT_STATUSES:
+            raise ValueError(f"BehaviorEvent.status {self.status!r} not in {EVENT_STATUSES}")
 
 
 # --------------------------------------------------------------------------- #
 # Signature layer (行为特征库)
 # --------------------------------------------------------------------------- #
-@dataclass
+@dataclass(slots=True)
 class SignatureMatch:
     """A preset metric-combination signature that fired, mapping observed
     metrics to a human-meaningful activity."""
@@ -223,3 +277,69 @@ class SignatureMatch:
     matched_terms: List[str] = field(default_factory=list)
     evidence: Dict[str, Any] = field(default_factory=dict)
     severity: Severity = Severity.INFO
+
+
+# --------------------------------------------------------------------------- #
+# Decision layer (lib-3 v2): analyst labels and incidents
+# --------------------------------------------------------------------------- #
+@dataclass(slots=True)
+class Label:
+    """An analyst verdict. Labels are never pruned: feedback learning (B23)
+    and eval replay both need the full history. `scope` widens a verdict from
+    this one target to a pattern / entity / class / system; `ttl_s` (None =
+    forever) bounds how long a widened verdict applies."""
+
+    id: str = ""
+    system: str = ""
+    entity: str = ""                       # may be class:<id>
+    target_type: str = "event"             # event | incident | entity | class
+    target_id: str = ""
+    verdict: str = "unsure"                # tp | fp | expected_change | benign_known | unsure
+    scope: str = "this"                    # this | pattern | entity | class | system
+    t0: Optional[float] = None
+    t1: Optional[float] = None
+    ttl_s: Optional[float] = None
+    analyst: str = ""
+    note: str = ""
+    ts: float = field(default_factory=time.time)
+
+    def __post_init__(self) -> None:
+        if self.target_type not in LABEL_TARGET_TYPES:
+            raise ValueError(f"Label.target_type {self.target_type!r} not in {LABEL_TARGET_TYPES}")
+        if self.verdict not in LABEL_VERDICTS:
+            raise ValueError(f"Label.verdict {self.verdict!r} not in {LABEL_VERDICTS}")
+        if self.scope not in LABEL_SCOPES:
+            raise ValueError(f"Label.scope {self.scope!r} not in {LABEL_SCOPES}")
+
+
+@dataclass(slots=True)
+class Incident:
+    """The only thing that notifies (B27). One incident merges the events,
+    alarms and matches of an entity (or a class, entity = 'class:<id>') over
+    time; it is updated in place via `store.put_incident` (keyed by id)."""
+
+    id: str = ""
+    system: str = ""
+    entity: str = ""                       # an IP or class:<id>
+    entities: List[str] = field(default_factory=list)   # members / aliases involved
+    kinds: List[str] = field(default_factory=list)      # event kinds merged in
+    axes: List[str] = field(default_factory=list)
+    status: str = "open"                   # open | acked | suppressed | closed
+    opened: float = 0.0
+    last_seen: float = 0.0
+    severity: Severity = Severity.LOW
+    e_day_min: Optional[float] = None      # most extreme e_day seen
+    risk: float = 0.0
+    evidence: List[Dict[str, Any]] = field(default_factory=list)
+    explanation: Dict[str, Any] = field(default_factory=dict)
+    narrative: str = ""
+    campaign_id: str = ""
+    parent_id: str = ""
+    close_reason: Optional[str] = None     # returned | accepted | labelled | timeout
+
+    def __post_init__(self) -> None:
+        if self.status not in INCIDENT_STATUSES:
+            raise ValueError(f"Incident.status {self.status!r} not in {INCIDENT_STATUSES}")
+        if self.close_reason is not None and self.close_reason not in INCIDENT_CLOSE_REASONS:
+            raise ValueError(f"Incident.close_reason {self.close_reason!r} "
+                             f"not in {INCIDENT_CLOSE_REASONS}")

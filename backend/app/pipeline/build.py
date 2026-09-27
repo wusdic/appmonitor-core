@@ -104,7 +104,7 @@ class Runtime:
         self.gen.vt = time.time() - self.warmup_ticks * 900
         for _ in range(self.warmup_ticks):
             obs = self.gen.step(dt=900, live=False)
-            self.pipeline.run_tick(obs, now=self.gen.vt, training=True)
+            self.pipeline.run_tick(obs, now=self.gen.vt, training=True, dt=900)
         # align virtual clock to now for the live phase
         self.gen.vt = time.time()
         self.warmed = True
@@ -112,7 +112,8 @@ class Runtime:
     def _loop(self) -> None:
         while not self._stop.is_set():
             obs = self.gen.step(dt=self.window_s, live=True)
-            self.pipeline.run_tick(obs, now=time.time())
+            # the virtual clock is the one the observations were stamped with
+            self.pipeline.run_tick(obs, now=self.gen.vt, dt=self.window_s)
             self.live_ticks += 1
             self._stop.wait(self.live_period_s)
 
@@ -128,6 +129,6 @@ class Runtime:
 
     def step_once(self) -> dict:
         obs = self.gen.step(dt=self.window_s, live=True)
-        stats = self.pipeline.run_tick(obs, now=time.time())
+        stats = self.pipeline.run_tick(obs, now=self.gen.vt, dt=self.window_s)
         self.live_ticks += 1
         return stats
