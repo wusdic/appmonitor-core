@@ -183,7 +183,8 @@ DISCRETE_KINDS = frozenset({
 })
 
 # axes the common-mode flag may discount, and the class-level system-wide set
-VOLUME, TRANSPORT, APP_ERROR, TEMPORAL, PEER = "volume", "transport", "app_error", "temporal", "peer"
+VOLUME, TRANSPORT, APP_ERROR = "volume", "transport", "app_error"
+TEMPORAL, PEER = "temporal", "peer"
 COMMON_MODE_AXES = frozenset({VOLUME, TRANSPORT, APP_ERROR})
 _AXIS_ALIASES = {"app": APP_ERROR, "app-error": APP_ERROR, "apperror": APP_ERROR,
                  "app_errors": APP_ERROR}
@@ -532,7 +533,8 @@ class FusionEngine(Engine):
     consumes = ["behavior.p", "behavior.axes", "behavior.acc_alarm", "behavior.degraded",
                 "behavior.common.flag", "behavior.calib_health", "feature.tctx",
                 "behavior.trust", "behavior.trust_prov", "behavior.quarantine",
-                "model.feedback", "model.control", "model.link", "event.*", "match.*"]
+                "model.feedback", "model.control", "model.link", "store.events",
+                "store.matches"]
     produces = ["behavior.p_family", "behavior.q_inst", "behavior.q_all", "behavior.e_day",
                 "behavior.evidence", "behavior.alarm", "model.calib.meta",
                 "event.pipeline_degraded"]
@@ -692,12 +694,14 @@ class FusionEngine(Engine):
         st = meta[STATE]
         # --- learn: commit row t - D into the meta rings (contract H)
         gate = st["gate"]
-        seen = gate.applied.get("version")
+        # gate.version, not applied['version']: gating's fast path leaves
+        # applied['version'] unset while the control version equals the gate's
+        seen = gate.version
         self._reset_flag = False
         meta, gate = learner.seed_from_link(store, s, e, meta, gate,
                                             lambda src: self._other_meta(store, s, src))
         meta, gate = learner.step(store, s, e, meta, gate, now, dt, training=ctx.training)
-        if seen is not None and gate.version != seen and not self._reset_flag:
+        if gate.version != seen and not self._reset_flag:
             _reset_rings(meta)                       # version change without rebase_from
         j = gate.journal
         if j and j[0].ts < now - PENDING_RETENTION_S:

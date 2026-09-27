@@ -32,23 +32,30 @@ the clock is folded with its weight decayed, never the state backwards):
                    [EDGES_S[k], EDGES_S[k+1]), 10 ms .. 1 day (first / last bin
                    also take anything below / above)
     32       W2    sum of squared per-gap weights (n_eff = HIST.sum()^2 / W2)
-    33..35   GW, GM, GM2      within-session gaps (s): weight, mean, sum sq. dev.
-    36..37   LM, LM2          ln(within-session gap): mean, sum sq. dev. (weight GW)
-    38..43   PW, PX, PY, PXX, PYY, PXY   consecutive within-session gap pairs
+    33..35   GW, GM, GM2      active gaps (< BURST_MAX_S): weight, mean (s), sum sq. dev.
+    36..38   TW, LM, LM2      within-session gaps (< session gap): weight, mean and
+                              sum sq. dev. of ln(gap s)
+    39..44   PW, PX, PY, PXX, PYY, PXY   consecutive active-gap pairs
                    (x = gap_i, y = gap_i+1): weight, means, co-moments
-    44..51   DISP  per daypart (timebins.DAYPARTS order) [W, S]: decayed sum of
+    45..52   DISP  per daypart (timebins.DAYPARTS order) [W, S]: decayed sum of
                    tick weights and of G/df of the recent-window test on those
                    ticks (overdispersion of the gap histogram, see `dispersion`)
-    52       T     clock: newest folded row ts (NaN = empty model)
-"Within-session" means gap < the entity's session gap (model.seq session_gap,
-default 30 min): overnight gaps would otherwise dominate every raw second
-moment, so B, M and think time describe the in-session regime while the
-histogram covers the whole 10 ms .. 1 day range.
+    53       T     clock: newest folded row ts (NaN = empty model)
+Two gap populations, because a single overnight gap would dominate every raw
+second moment:
+  * "active" gaps (< BURST_MAX_S = 30 min, fixed) carry B and M. They include
+    the short breaks between a person's sessions, which is what makes human
+    activity bursty (Goh & Barabasi); longer silences are the rhythm model's
+    business (B07), and the histogram still covers them.
+  * "within-session" gaps (< the entity's session gap, model.seq session_gap,
+    default 30 min) carry the think-time fit, which is a property of a session.
 
 Descriptor definitions (Goh & Barabasi 2008):
-    B = (sd - mean) / (sd + mean) of the gaps: -1 periodic, 0 Poisson, -> 1 bursty.
-        (A log-normal with sigma = 1 has CV = sqrt(e - 1) = 1.31, B = 0.135.)
-    M = corr(gap_i, gap_i+1).
+    B = (sd - mean) / (sd + mean) of the active gaps: -1 periodic, 0 Poisson,
+        -> 1 bursty. (A pure log-normal renewal with sigma = 1 has CV =
+        sqrt(e - 1) = 1.31, B = 0.135; human sessions separated by minutes-long
+        breaks give B ~ 0.3 - 0.6.)
+    M = corr(gap_i, gap_i+1) over consecutive active gaps.
     think time: log-normal fit (MLE) to within-session gaps, (mu, sigma) of ln s.
 
 Accessor signatures (model may be None or {}: the documented NaN default):
@@ -63,13 +70,16 @@ Accessor signatures (model may be None or {}: the documented NaN default):
     loglik_per_gap(model, gaps, alpha=...) -> ndarray  per gap (NaN for invalid gaps)
     quantile(model, q) -> float                  gap (s) at CDF q, log-interpolated
     quantiles(model, qs) -> ndarray              several levels in one pass
-    burstiness(model) -> float;  memory(model) -> float
+    burstiness(model) -> float;  memory(model) -> float      over active gaps
     think_time(model) -> (mu, sigma)             ln-seconds
     think_logpdf(model, gaps) -> ndarray         N(mu, sigma) log-density of ln(gap)
-    dispersion(model, daypart) -> float >= 1     phi used to scale the G test
-    period(model) -> (period_s, period_p)        last strict-period check (NaN if none)
-    descriptors(model) -> dict                   long-term profile in natural units
+    dispersion(model, daypart=None) -> float >= 1  phi used to scale the G test
+    period(model, now=None) -> (period_s, period_p)  last strict-period check
+                                                 (NaN if none, or older than 6 h)
+    descriptors(model, now=None) -> dict         long-term profile in natural units
     recent(model) -> dict                        last published behavior.timing
+    hist_probs(model) -> ndarray[32]             normalised committed histogram (no smoothing)
+    as_float_list(x, nd=4) -> list               JSON-friendly rounding (NaN -> None)
 Pure maths shared with B11 (and usable by B15/B16 on their own windows):
     bin_index(gaps) -> int ndarray (-1 for non-finite / negative gaps)
     gaps_from_times(times, frac=1.0) -> ndarray  true gaps of ONE tick's act.stream
@@ -98,6 +108,7 @@ TAU_S = 7 * 86400.0               # e-folding time of the committed statistics
 DIRICHLET_ALPHA = 1.0             # total pseudo-count of the predictive (uniform over bins)
 DESC_MIN_W = 8.0                  # min (weighted) gaps / pairs for a descriptor
 SESSION_GAP_S = 30.0              # R2 sampling: rows are whole sessions split at > 30 s
+BURST_MAX_S = 1800.0              # active gaps (B, M): longer silences belong to rhythm
 N_DAYPARTS = 4
 PHI_PRIOR = 2.0                   # prior overdispersion of human gap histograms
 PHI_PRIOR_W = 8.0                 # its weight, in ticks
@@ -107,14 +118,14 @@ PERIOD_STALE_S = 6 * 3600.0       # a strict-period check older than this is not
 HIST = slice(0, N_BINS)
 W2 = 32
 GW, GM, GM2 = 33, 34, 35
-LM, LM2 = 36, 37
-PW, PX, PY, PXX, PYY, PXY = 38, 39, 40, 41, 42, 43
-DISP = 44                         # DISP + 2*dp -> W, DISP + 2*dp + 1 -> S
-T = 52
-STATE_DIM = 53
+TW, LM, LM2 = 36, 37, 38
+PW, PX, PY, PXX, PYY, PXY = 39, 40, 41, 42, 43, 44
+DISP = 45                         # DISP + 2*dp -> W, DISP + 2*dp + 1 -> S
+T = 53
+STATE_DIM = 54
 # entries scaled by d when the clock advances by dt (d = exp(-dt/TAU_S)); W2
 # scales by d^2 and the means (GM, LM, PX, PY) and T do not scale
-DECAY_IDX = np.array(list(range(N_BINS)) + [GW, GM2, LM2, PW, PXX, PYY, PXY]
+DECAY_IDX = np.array(list(range(N_BINS)) + [GW, GM2, TW, LM2, PW, PXX, PYY, PXY]
                      + list(range(DISP, DISP + 2 * N_DAYPARTS)), dtype=np.intp)
 
 _NAN = math.nan
@@ -328,9 +339,9 @@ def memory(model: Any) -> float:
 def think_time(model: Any) -> Tuple[float, float]:
     """(mu, sigma) of ln(within-session gap s): the log-normal MLE."""
     s = state_of(model)
-    if s is None or not s[GW] >= DESC_MIN_W:
+    if s is None or not s[TW] >= DESC_MIN_W:
         return _NAN, _NAN
-    return float(s[LM]), math.sqrt(max(0.0, float(s[LM2]) / float(s[GW])))
+    return float(s[LM]), math.sqrt(max(0.0, float(s[LM2]) / float(s[TW])))
 
 
 def think_logpdf(model: Any, gaps: Any) -> np.ndarray:

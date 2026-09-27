@@ -17,9 +17,14 @@ Statistics (docs/lib3/engines.md B14):
     (W = chol(Sigma)^-1, missing dims imputed by conditional expectation),
     h = seq.mcusum_h(12, arl_ticks(100, dt)).
   * latch / onset / reset (shared by both): an alarm latches when a statistic
-    crosses h; tau-hat is the last tick at which the alarmed statistic was at
-    its zero level (0 for a CUSUM; the radial null equilibrium (d-1)/(2k) for
-    Crosier's statistic, which is never 0 in 12 dimensions). The statistics
+    crosses h; tau-hat starts from the last tick at which the alarmed
+    statistic was at its zero level (0 for a CUSUM; the radial null
+    equilibrium (d-1)/(2k) for Crosier's statistic, which is never 0 in 12
+    dimensions) and is refined by the step-change MLE over [that tick, now]
+    on the alarmed input kept in a 128-tick ring (mle_onset: the chart's
+    signed psi from its last zero on; for the MCUSUM, whose zero level is
+    only nominal, the direction-free multivariate step MLE over the whole
+    ring). The statistics
     reset after 2 (t_alarm - tau-hat) of clean time, a clean tick being one at
     which no alarmed chart increased; any alarmed chart reaching a new peak
     restarts the clean clock, so a persisting shift never resets.
@@ -32,7 +37,8 @@ behavior.cusum_state row layout (float32[84]):
 
 Consumer API (all pure reads; NaN / None when B14 has not run):
   get(store, s, e) -> dict | None                       the raw model.cp
-  onset(store, s, e) -> float                           latest behavior.cp.onset (NaN = no episode)
+  onset(store, s, e, at=None) -> float                  tau-hat of the episode (NaN = none; exact from model.cp)
+  level(store, s, e) -> {cusum, mcusum: S/h}            accumulator level (>= 1 alarms, B28 SUSPECT at 0.5)
   prob(store, s, e) -> float                            latest behavior.cp.prob, P(r <= 3 h)
   alarms(store, s, e) -> {detector: 0|1}                latched accumulator alarms
   descriptor(store, s, e) -> dict                       portrait summary (phi, h_mult, creep, episode)
@@ -83,6 +89,7 @@ HMULT_MAX = 1.5
 STATE_DIM = N_CHARTS + 3 * N_KEY           # 84
 AUDIT_BLOCK = 30
 AUDIT_ARL = 300.0                          # audit level: many alarms per bootstrap sample
+ONSET_HIST = 128                           # ticks of inputs kept for the onset MLE
 
 _H_CACHE: Dict[Tuple[str, float], Any] = {}
 
@@ -201,6 +208,90 @@ def _latch_tick(L: Dict[str, np.ndarray], S: np.ndarray, S_old: np.ndarray, h: n
     return new, reset
 
 
+# ============================================================ onset
+def _new_hist(batch: Tuple[int, ...]) -> Dict[str, Any]:
+    """Trailing ring of the last ONSET_HIST inputs (shared ts: a batch ticks together)."""
+    return {"ts": np.full(ONSET_HIST, np.nan), "y": np.full(batch + (ONSET_HIST, N_KEY), np.nan),
+            "pos": 0}
+
+
+def _hist_push(H: Dict[str, Any], v: np.ndarray, now: float) -> None:
+    i = int(H["pos"]) % ONSET_HIST
+    H["y"][..., i, :] = v
+    H["ts"][i] = now
+    H["pos"] = int(H["pos"]) + 1
+
+
+def _hist_order(H: Mapping[str, Any]) -> np.ndarray:
+    n = int(H["pos"])
+    if n <= ONSET_HIST:
+        return np.arange(n)
+    return (n + np.arange(ONSET_HIST)) % ONSET_HIST
+
+
+def mle_onset(y: np.ndarray, ts: np.ndarray, t_lo: float) -> float:
+    """Refined tau-hat: the last pre-change tick of the most likely step in y
+    (rows in ts order), searched from t_lo on (so tau-hat >= t_lo).
+
+    y 1-D (a CUSUM chart's signed input): argmax_j (sum_{i>j} y_i)^2 / m_j
+    over upward steps (sum > 0). y 2-D [n, d] (the MCUSUM's whitened vectors):
+    argmax_j ||sum_{i>j} y_i||^2 / m_j, the direction-free multivariate step
+    MLE (projecting on the MCUSUM direction instead is biased late, because
+    the direction was fitted to the same data).
+
+    Why: 'the last tick the alarmed statistic was 0' is Page's estimate, and
+    it is biased early whenever a null excursion was still open when the
+    change began (common for k = 0.25; Crosier's 12-dim statistic has no true
+    zero at all). When t_lo precedes the buffer, 'every buffered tick is
+    post-change' is a candidate and returns t_lo itself. NaN entries count 0
+    (a row with any NaN is not counted in m).
+    """
+    Y = np.asarray(y, dtype=np.float64)
+    ts = np.asarray(ts, dtype=np.float64)
+    lo = math.isfinite(t_lo)
+    if Y.shape[0] < 2:
+        return float(t_lo) if lo else math.nan
+    vec = Y.ndim == 2
+    fin = np.isfinite(Y).all(axis=1) if vec else np.isfinite(Y)
+    Yz = np.where(np.isfinite(Y), Y, 0.0)
+    suf = np.cumsum(Yz[::-1], axis=0)[::-1]                       # sum_{i>=j}
+    total = suf[0]
+    post = np.concatenate((suf[1:], np.zeros_like(suf[:1])), axis=0)   # sum_{i>j}
+    m = np.concatenate((np.cumsum(fin[::-1])[::-1][1:], [0])).astype(np.float64)
+    if vec:
+        num = np.sum(post * post, axis=1)
+        tot2 = float(np.sum(total * total))
+    else:
+        num = np.where(post > 0.0, post * post, 0.0)
+        tot2 = float(total * total) if total > 0.0 else 0.0
+    stat = np.where(m > 0, num / np.maximum(m, 1.0), 0.0)
+    if lo:
+        stat[ts < t_lo - 1e-6] = 0.0
+    best_j = int(np.argmax(stat))
+    best = float(stat[best_j])
+    n_all = float(fin.sum())
+    if lo and t_lo < ts[0] - 1e-6 and n_all > 0 and tot2 > 0.0 and tot2 / n_all >= best:
+        return float(t_lo)                             # the change predates the buffer
+    if best <= 0.0:
+        return float(t_lo) if lo else float(ts[-1])
+    return float(ts[best_j])
+
+
+def _refine_onsets(L: Dict[str, np.ndarray], rise: np.ndarray, H: Mapping[str, Any],
+                   series: Callable[[Tuple[int, ...], np.ndarray], np.ndarray],
+                   t_lo: np.ndarray, now: float, dt: float) -> None:
+    """Replace the latch's last-zero onset by mle_onset for the entities that
+    alarmed this tick (rare: a Python loop over them is fine)."""
+    order = _hist_order(H)
+    ts = H["ts"][order]
+    for row in np.argwhere(rise):
+        idx = tuple(int(v) for v in row)
+        tau = mle_onset(series(idx, order), ts, float(t_lo[idx]))
+        if math.isfinite(tau):
+            L["onset"][idx] = tau
+            L["span"][idx] = max(now - tau, dt)
+
+
 # ============================================================ CUSUM bank
 def new_bank(batch: Tuple[int, ...] = ()) -> Dict[str, Any]:
     """Zero-state bank for a batch of entities / simulated series."""
@@ -210,6 +301,7 @@ def new_bank(batch: Tuple[int, ...] = ()) -> Dict[str, Any]:
         "zts": np.full(b + (N_CHARTS,), np.nan),     # last tick each chart was 0
         "prev": np.full(b + (N_KEY,), np.nan),       # zr_{t-1} of the key features
         "latch": _new_latch(b, N_CHARTS),
+        "hist": _new_hist(b),                        # psi, for the onset MLE
     }
 
 
@@ -240,7 +332,17 @@ def bank_tick(st: Dict[str, Any], x: np.ndarray, now: float, dt: float, phi: np.
     S_old = st["S"]
     S = _f32(seq.cusum_step(S_old, psi[..., CHART_FEAT] * CHART_SIDE, CHART_K))
     zts = np.where(S <= 0.0, now, st["zts"])
+    H = st.get("hist")
+    if H is None:
+        H = st["hist"] = _new_hist(np.shape(S)[:-1])
+    _hist_push(H, psi, now)
     rise, reset = _latch_tick(st["latch"], S, S_old, h, zts, now, dt)
+    if rise.any():                           # tau-hat: MLE on the alarmed chart's own inputs
+        hb = np.broadcast_to(h, S.shape)
+        c = np.argmax(np.where(S >= hb, S / np.where(hb > 0, hb, 1.0), -np.inf), axis=-1)
+        _refine_onsets(st["latch"], rise, H,
+                       lambda i, o: CHART_SIDE[c[i]] * H["y"][i][o, CHART_FEAT[c[i]]],
+                       np.take_along_axis(zts, c[..., None], axis=-1)[..., 0], now, dt)
     if reset.any():
         S = np.where(reset[..., None], 0.0, S)
         zts = np.where(reset[..., None], now, zts)
@@ -252,7 +354,7 @@ def bank_tick(st: Dict[str, Any], x: np.ndarray, now: float, dt: float, phi: np.
 def new_mc(batch: Tuple[int, ...] = ()) -> Dict[str, Any]:
     b = tuple(batch)
     return {"S": np.zeros(b + (MC_D,)), "stat": np.zeros(b), "zts": np.full(b, np.nan),
-            "latch": _new_latch(b, 1)}
+            "latch": _new_latch(b, 1), "hist": _new_hist(b)}
 
 
 def whitener(Sigma: Optional[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
@@ -298,10 +400,17 @@ def mc_tick(st: Dict[str, Any], w: np.ndarray, now: float, dt: float, h: float
     S_vec = _f32(S_vec)
     stat = np.sqrt(np.sum(S_vec * S_vec, axis=-1))
     zts = np.where(stat <= MC_ZERO, now, st["zts"])
+    H = st.get("hist")
+    if H is None:
+        H = st["hist"] = _new_hist(np.shape(stat))
+    _hist_push(H, np.where(np.isfinite(w), w, 0.0), now)
     hh = np.asarray(h, dtype=np.float64)
     rise, reset = _latch_tick(st["latch"], stat[..., None], np.asarray(S_old)[..., None],
                               np.broadcast_to(hh, np.shape(stat) + (1,)),
                               np.asarray(zts)[..., None], now, dt)
+    if rise.any():                           # tau-hat: multivariate step MLE on the buffer
+        _refine_onsets(st["latch"], rise, H, lambda i, o: H["y"][i][o],
+                       np.full(np.shape(stat), -np.inf), now, dt)
     if reset.any():
         S_vec = np.where(reset[..., None], 0.0, S_vec)
         stat = np.where(reset, 0.0, stat)
@@ -493,9 +602,37 @@ def _latest1(store: Any, s: str, e: str, name: str) -> float:
     return float(np.asarray(hit[1]).reshape(-1)[0])
 
 
-def onset(store: Any, s: str, e: str) -> float:
-    """tau-hat of the current change episode (latest behavior.cp.onset), NaN if none."""
+def onset(store: Any, s: str, e: str, at: Optional[float] = None) -> float:
+    """tau-hat of the change episode, NaN if none.
+
+    at None: the current episode, exact (float64) from model.cp, falling back
+    to the latest behavior.cp.onset row. at given: the behavior.cp.onset row
+    written at exactly `at` (NaN if none). Ring rows are float32, which
+    quantises epoch seconds to 128 s, so prefer at=None for rollback targets.
+    """
+    if at is not None:
+        row = store.vec_at(s, e, CP_ONSET, float(at))
+        return math.nan if row is None else float(np.asarray(row).reshape(-1)[0])
+    m = get(store, s, e)
+    if isinstance(m, Mapping):
+        run = m.get("run") or {}
+        if run.get("episode") is not None:
+            return float((run.get("episode") or {}).get("onset", math.nan))
     return _latest1(store, s, e, CP_ONSET)
+
+
+def level(store: Any, s: str, e: str) -> Dict[str, float]:
+    """{cusum: max_c S_c / h_c, mcusum: ||S|| / h_mc} as of B14's last tick
+    (>= 1 alarms; B28 enters SUSPECT at >= 0.5). NaN when B14 has not run."""
+    m = get(store, s, e)
+    run = (m or {}).get("run") if isinstance(m, Mapping) else None
+    if not run or not math.isfinite(float(run.get("dt", math.nan))):
+        return {"cusum": math.nan, "mcusum": math.nan}
+    dt = float(run["dt"])
+    h = bank_h(dt) * float(run.get("hmult", 1.0) or 1.0)
+    S = np.asarray((run.get("bank") or {}).get("S", np.zeros(N_CHARTS)), dtype=np.float64)
+    stat = float((run.get("mc") or {}).get("stat", 0.0))
+    return {"cusum": float(np.max(S / h)), "mcusum": stat / mcusum_h(dt)}
 
 
 def prob(store: Any, s: str, e: str) -> float:

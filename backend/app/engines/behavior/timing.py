@@ -30,11 +30,15 @@ depends on the 60 / 900 / 3600-s cadence):
      dt / 86400, a union bound over the day's ticks, so the timing budget
      (0.005 alarms per entity-day, lib/detectors) holds at any cadence.
   4. Descriptors of the recent window go to behavior.timing (B15 / B16 / B30):
-     burstiness B = (sd - mean)/(sd + mean), memory M = corr(gap_i, gap_i+1)
-     and the log-normal think time (mu, sigma of ln gap), all over
-     within-session gaps (< model.seq session_gap, default 30 min), because a
-     single overnight gap would dominate every raw second moment.
-  5. Strict periodicity: an rfft of 5-s binned counts over the last 2 h picks
+     burstiness B = (sd - mean)/(sd + mean) and memory M = corr(gap_i,
+     gap_i+1) over active gaps (< 30 min: a single overnight gap would
+     dominate every raw second moment, while the minutes-long breaks between
+     a person's sessions are exactly what makes humans bursty), and the
+     log-normal think time (mu, sigma of ln gap) over within-session gaps
+     (< model.seq session_gap, default 30 min).
+  5. Strict periodicity: an rfft of 5-s binned counts over the last 2 h (events
+     of complete ticks only: R2's session sampling cuts holes laid out per
+     tick, which read as a tick-period train) picks
      a candidate (harmonic sum, so the fundamental beats its harmonics), which
      is confirmed by the window-corrected Rayleigh statistic Z^2_1 at the
      refined period with the Davies trials bound over the scanned band
@@ -63,6 +67,7 @@ from .lib import detectors as DET
 from .lib import emit
 from .lib import evt
 from .lib import gating as G
+from .lib import m_calib
 from .lib import m_template as MT
 from .lib import m_timing as TM
 from .lib import timebins as TB
@@ -85,6 +90,7 @@ SESSION_GAP_DEFAULT_S = 1800.0
 SESSION_GAP_CLIP = (120.0, 7200.0)          # B10's clip of G_e
 DISP_RATIO_CAP = 25.0             # one anomalous window cannot inflate phi much
 P_FLOOR = 1e-300
+PM_STORE_FLOOR = m_calib.P_ISSUED_FLOOR     # behavior.pm is float32: no stored 0
 PROFILE_EVERY_S = 3600.0          # portraits (B30) refresh every 2 h
 AXES_PM_MAX = 0.05                # axes are written when the detector contributes
 
@@ -99,19 +105,22 @@ PERIOD_MAX_PER_TICK = 4
 PERIOD_P_CONFIRM = 1e-3           # publish the period only below this p
 EV_CAP = 1024                     # event times kept for the check
 
-# row statistics (float32; the histogram is a separate uint16[32] array)
-S_W, S_NG, S_GM, S_GM2, S_LM, S_LM2 = 0, 1, 2, 3, 4, 5
-S_NP, S_PX, S_PY, S_PXX, S_PYY, S_PXY = 6, 7, 8, 9, 10, 11
-S_GR, S_DP = 12, 13
-N_STATS = 14
+# row statistics (float32; the histogram is a separate uint16[32] array):
+# active gaps (< TM.BURST_MAX_S) -> count, mean, M2; within-session gaps ->
+# count, mean and M2 of ln gap; consecutive active-gap pairs -> co-moments;
+# then the tick's recent-window G/df and daypart (dispersion learning)
+S_W, S_NG, S_GM, S_GM2, S_NT, S_LM, S_LM2 = 0, 1, 2, 3, 4, 5, 6
+S_NP, S_PX, S_PY, S_PXX, S_PYY, S_PXY = 7, 8, 9, 10, 11, 12
+S_GR, S_DP = 13, 14
+N_STATS = 15
 
 # running window sums (float64): [0:32] sum w*counts, then
 V_W, V_W2 = 32, 33                # sum w*n, sum w^2*n (per-gap weights)
-V_S0, V_S1, V_S2 = 34, 35, 36     # within-session gaps: sum w*ng, *mean, *(m2 + ng*mean^2)
-V_L1, V_L2 = 37, 38               # same for ln gaps (weight V_S0)
-V_P0, V_PX, V_PY, V_PXX, V_PYY, V_PXY = 39, 40, 41, 42, 43, 44
-V_NG, V_NP, V_ROWS = 45, 46, 47   # raw gap / pair / row counts
-V_DIM = 48
+V_S0, V_S1, V_S2 = 34, 35, 36     # active gaps: sum w*ng, *mean, *(m2 + ng*mean^2)
+V_T0, V_L1, V_L2 = 37, 38, 39     # same for ln within-session gaps
+V_P0, V_PX, V_PY, V_PXX, V_PYY, V_PXY = 40, 41, 42, 43, 44, 45
+V_NG, V_NT, V_NP, V_ROWS = 46, 47, 48, 49   # raw gap / think / pair / row counts
+V_DIM = 50
 
 _OK, _SILENT, _UNKNOWN, _DEGRADED = "ok", "silent", "unknown", "degraded"
 _NAN = math.nan
@@ -215,7 +224,8 @@ def new_model() -> Dict[str, Any]:
                  "ev": np.zeros(0, dtype=np.float64), "ev_new": 0,
                  "period": None, "period_eval": -math.inf, "recent": {},
                  "win": np.zeros(V_DIM), "win_lo": -math.inf, "win_hi": -math.inf,
-                 "win_rev": 0, "win_age": 0, "score_key": None, "score": None},
+                 "win_rev": 0, "win_age": 0, "score_key": None, "score": None,
+                 "snap_ts": None, "snap": {}},
     }
 
 
@@ -245,25 +255,27 @@ def build_row(t: np.ndarray, frac: float, live: Dict[str, Any],
     np.maximum(seq, TM.GAP_MIN_S, out=seq)
     if sampled:
         ok = seq <= MT.SESSION_GAP_S      # inside a kept session block
+        active = ok & (seq < TM.BURST_MAX_S)
         within = ok & (seq < session_gap)
     else:
         ok = None
+        active = seq < TM.BURST_MAX_S
         within = seq < session_gap
-    # pairs of consecutive within-session gaps (the boundary pair continues
-    # the previous tick's chain)
+    # pairs of consecutive active gaps (the boundary pair continues the
+    # previous tick's chain)
     if seq.size >= 2:
-        pm = within[:-1] & within[1:]
+        pm = active[:-1] & active[1:]
         x_p, y_p = seq[:-1][pm], seq[1:][pm]
     else:
         x_p = y_p = seq[:0]
     lg = live.get("last_gap", _NAN)
-    if bnd and within[0] and lg == lg:
+    if bnd and active[0] and lg == lg:
         x_p = np.concatenate(([lg], x_p))
         y_p = np.concatenate(([seq[0]], y_p))
     # boundary state for the next tick
     live["last_ev"] = float(t[-1])
     live["last_full"] = not sampled
-    live["last_gap"] = float(seq[-1]) if (not sampled and seq.size and within[-1]) else _NAN
+    live["last_gap"] = float(seq[-1]) if (not sampled and seq.size and active[-1]) else _NAN
     g_ok = seq if ok is None else seq[ok]
     if g_ok.size == 0:
         return None
@@ -272,14 +284,16 @@ def build_row(t: np.ndarray, frac: float, live: Dict[str, Any],
     st[S_W] = rw
     st[S_GR] = _NAN
     st[S_DP] = _NAN
-    x = seq[within]
+    x = seq[active]
     if x.size:
         gm = float(x.mean())
-        lx = np.log(x)
-        lm = float(lx.mean())
         st[S_NG] = x.size
         st[S_GM] = gm
         st[S_GM2] = float(np.dot(x - gm, x - gm))
+    lx = np.log(seq[within])
+    if lx.size:
+        lm = float(lx.mean())
+        st[S_NT] = lx.size
         st[S_LM] = lm
         st[S_LM2] = float(np.dot(lx - lm, lx - lm))
     if x_p.size:
@@ -299,19 +313,20 @@ def _contrib_rows(counts: np.ndarray, stats: np.ndarray) -> np.ndarray:
     """Sum over rows of each row's additive window contribution (V_DIM)."""
     S = stats.astype(np.float64)
     w = S[:, S_W]
-    ng, gm, lm = S[:, S_NG], S[:, S_GM], S[:, S_LM]
+    ng, gm, nt, lm = S[:, S_NG], S[:, S_GM], S[:, S_NT], S[:, S_LM]
     npr, px, py = S[:, S_NP], S[:, S_PX], S[:, S_PY]
     ntot = counts.sum(axis=1, dtype=np.float64)
     v = np.empty(V_DIM)
     v[:TM.N_BINS] = w @ counts
     v[V_W] = w @ ntot
     v[V_W2] = (w * w) @ ntot
-    wg, wp = w * ng, w * npr
+    wg, wt, wp = w * ng, w * nt, w * npr
     v[V_S0] = wg.sum()
     v[V_S1] = wg @ gm
     v[V_S2] = w @ S[:, S_GM2] + wg @ (gm * gm)
-    v[V_L1] = wg @ lm
-    v[V_L2] = w @ S[:, S_LM2] + wg @ (lm * lm)
+    v[V_T0] = wt.sum()
+    v[V_L1] = wt @ lm
+    v[V_L2] = w @ S[:, S_LM2] + wt @ (lm * lm)
     v[V_P0] = wp.sum()
     v[V_PX] = wp @ px
     v[V_PY] = wp @ py
@@ -319,6 +334,7 @@ def _contrib_rows(counts: np.ndarray, stats: np.ndarray) -> np.ndarray:
     v[V_PYY] = w @ S[:, S_PYY] + wp @ (py * py)
     v[V_PXY] = w @ S[:, S_PXY] + wp @ (px * py)
     v[V_NG] = ng.sum()
+    v[V_NT] = nt.sum()
     v[V_NP] = npr.sum()
     v[V_ROWS] = float(len(w))
     return v
@@ -326,14 +342,14 @@ def _contrib_rows(counts: np.ndarray, stats: np.ndarray) -> np.ndarray:
 
 def _contrib_row(counts: np.ndarray, st: np.ndarray) -> np.ndarray:
     """One row's window contribution (scalar arithmetic; the per-tick path)."""
-    (w, ng, gm, gm2, lm, lm2, npr, px, py, pxx, pyy, pxy, _gr, _dp) = st.tolist()
+    (w, ng, gm, gm2, nt, lm, lm2, npr, px, py, pxx, pyy, pxy, _gr, _dp) = st.tolist()
     n = float(counts.sum())
     v = np.empty(V_DIM)
     v[:TM.N_BINS] = w * counts
-    wg, wp = w * ng, w * npr
-    v[V_W:] = (w * n, w * w * n, wg, wg * gm, w * gm2 + wg * gm * gm, wg * lm,
-               w * lm2 + wg * lm * lm, wp, wp * px, wp * py, w * pxx + wp * px * px,
-               w * pyy + wp * py * py, w * pxy + wp * px * py, ng, npr, 1.0)
+    wg, wt, wp = w * ng, w * nt, w * npr
+    v[V_W:] = (w * n, w * w * n, wg, wg * gm, w * gm2 + wg * gm * gm, wt, wt * lm,
+               w * lm2 + wt * lm * lm, wp, wp * px, wp * py, w * pxx + wp * px * px,
+               w * pyy + wp * py * py, w * pxy + wp * px * py, ng, nt, npr, 1.0)
     return v
 
 
@@ -341,25 +357,28 @@ class WindowStats:
     """Window aggregate read from the running sums: the histogram, the
     effective gap count and the descriptor moments."""
 
-    __slots__ = ("hist", "n_eff", "ng", "npairs", "g_mean", "g_var", "l_mean", "l_var",
-                 "cxx", "cyy", "cxy")
+    __slots__ = ("hist", "n_eff", "ng", "nt", "npairs", "g_mean", "g_var", "l_mean",
+                 "l_var", "cxx", "cyy", "cxy")
 
     def __init__(self, v: np.ndarray) -> None:
         self.hist = v[:TM.N_BINS]
         W, W2 = float(v[V_W]), float(v[V_W2])
         self.n_eff = W * W / W2 if W2 > 0.0 else 0.0
-        self.ng, self.npairs = float(v[V_NG]), float(v[V_NP])
+        self.ng, self.nt, self.npairs = float(v[V_NG]), float(v[V_NT]), float(v[V_NP])
         self.g_mean = self.g_var = self.l_mean = self.l_var = _NAN
         self.cxx = self.cyy = self.cxy = _NAN
+        # the power sums cancel at ~1e-13 relative: below that a spread is noise
         s0 = float(v[V_S0])
         if s0 > 0.0:
             gm = float(v[V_S1]) / s0
-            lm = float(v[V_L1]) / s0
             gv = float(v[V_S2]) / s0 - gm * gm
-            lv = float(v[V_L2]) / s0 - lm * lm
-            # the power sums cancel at ~1e-13 relative: below that a spread is noise
-            self.g_mean, self.l_mean = gm, lm
+            self.g_mean = gm
             self.g_var = gv if gv > 1e-12 * gm * gm else 0.0
+        t0 = float(v[V_T0])
+        if t0 > 0.0:
+            lm = float(v[V_L1]) / t0
+            lv = float(v[V_L2]) / t0 - lm * lm
+            self.l_mean = lm
             self.l_var = lv if lv > 1e-12 * (1.0 + lm * lm) else 0.0
         p0 = float(v[V_P0])
         if p0 > 0.0:
@@ -371,13 +390,13 @@ class WindowStats:
             self.cxy = float(v[V_PXY]) - p0 * mx * my
 
     def descriptors(self) -> Dict[str, float]:
-        ok_g = self.ng >= DESC_MIN_N
+        ok_t = self.nt >= DESC_MIN_N
         return {
-            "B": TM.b_from_moments(self.g_mean, self.g_var) if ok_g else _NAN,
+            "B": TM.b_from_moments(self.g_mean, self.g_var) if self.ng >= DESC_MIN_N else _NAN,
             "M": TM.corr_from(self.cxx, self.cyy, self.cxy) if self.npairs >= DESC_MIN_N
             else _NAN,
-            "think_mu": self.l_mean if ok_g else _NAN,
-            "think_sigma": math.sqrt(self.l_var) if ok_g else _NAN,
+            "think_mu": self.l_mean if ok_t else _NAN,
+            "think_sigma": math.sqrt(self.l_var) if ok_t else _NAN,
         }
 
 
@@ -478,25 +497,31 @@ def _advance(state: np.ndarray, ts: float) -> None:
         state[TM.T] = ts
 
 
+def _fold_moments(state: np.ndarray, iw: int, im: int, i2: int, w_b: float, mean: float,
+                  m2: float) -> None:
+    """Chan's parallel combination of (weight, mean, M2) at state[iw, im, i2]
+    with a sample of weight w_b (M2 already scaled)."""
+    if w_b > 0.0:
+        wa = float(state[iw])
+        w = wa + w_b
+        dm = mean - float(state[im])
+        state[im] += dm * w_b / w
+        state[i2] += m2 + dm * dm * wa * w_b / w
+        state[iw] = w
+
+
 def _fold(state: np.ndarray, hist: np.ndarray, w2: float, g: Tuple[float, ...],
-          p: Tuple[float, ...], disp: Optional[np.ndarray], a: float) -> None:
-    """state += a * (a sample of statistics), in place, by Chan's parallel
-    combination. g = (W, mean, M2, lmean, lM2) and p = (W, mx, my, Cxx, Cyy,
-    Cxy) carry per-gap weights; w2 is a sum of squared per-gap weights (so it
-    scales by a^2); disp is [W, S] per daypart (tick weights)."""
+          t: Tuple[float, ...], p: Tuple[float, ...], disp: Optional[np.ndarray],
+          a: float) -> None:
+    """state += a * (a sample of statistics), in place. g = (W, mean, M2) of
+    active gaps, t = (W, mean, M2) of ln within-session gaps and p = (W, mx,
+    my, Cxx, Cyy, Cxy) of active pairs carry per-gap weights; w2 is a sum of
+    squared per-gap weights (so it scales by a^2); disp is [W, S] per daypart
+    (tick weights)."""
     state[TM.HIST] += a * hist
     state[TM.W2] += a * a * w2
-    wb = a * g[0]
-    if wb > 0.0:
-        wa = float(state[TM.GW])
-        w = wa + wb
-        dm = g[1] - float(state[TM.GM])
-        dl = g[3] - float(state[TM.LM])
-        state[TM.GM] += dm * wb / w
-        state[TM.GM2] += a * g[2] + dm * dm * wa * wb / w
-        state[TM.LM] += dl * wb / w
-        state[TM.LM2] += a * g[4] + dl * dl * wa * wb / w
-        state[TM.GW] = w
+    _fold_moments(state, TM.GW, TM.GM, TM.GM2, a * g[0], g[1], a * g[2])
+    _fold_moments(state, TM.TW, TM.LM, TM.LM2, a * t[0], t[1], a * t[2])
     wb = a * p[0]
     if wb > 0.0:
         wa = float(state[TM.PW])
@@ -527,10 +552,11 @@ def _update(state: np.ndarray, row: Tuple[float, np.ndarray, List[float]],
     a = w * (math.exp(-(state[TM.T] - ts) / TM.TAU_S) if ts < state[TM.T] else 1.0)
     rw = st[S_W]
     n = float(counts.sum())
-    g = (rw * st[S_NG], st[S_GM], rw * st[S_GM2], st[S_LM], rw * st[S_LM2])
+    g = (rw * st[S_NG], st[S_GM], rw * st[S_GM2])
+    tt = (rw * st[S_NT], st[S_LM], rw * st[S_LM2])
     p = (rw * st[S_NP], st[S_PX], st[S_PY], rw * st[S_PXX], rw * st[S_PYY], rw * st[S_PXY])
     # per-gap weight a * rw (histogram, W2, moments)
-    _fold(state, rw * counts.astype(np.float64), rw * rw * n, g, p, None, a)
+    _fold(state, rw * counts.astype(np.float64), rw * rw * n, g, tt, p, None, a)
     gr, dp = st[S_GR], st[S_DP]
     if gr == gr and dp == dp and 0 <= int(dp) < TM.N_DAYPARTS:
         # dispersion: tick weight a (trust x decay), G/df capped
@@ -548,11 +574,11 @@ def _merge(own: np.ndarray, other: np.ndarray, w: float) -> np.ndarray:
         return own
     _advance(own, float(to))
     a = float(w) * math.exp(-(own[TM.T] - to) / TM.TAU_S)
-    g = (float(other[TM.GW]), float(other[TM.GM]), float(other[TM.GM2]),
-         float(other[TM.LM]), float(other[TM.LM2]))
+    g = (float(other[TM.GW]), float(other[TM.GM]), float(other[TM.GM2]))
+    tt = (float(other[TM.TW]), float(other[TM.LM]), float(other[TM.LM2]))
     p = (float(other[TM.PW]), float(other[TM.PX]), float(other[TM.PY]),
          float(other[TM.PXX]), float(other[TM.PYY]), float(other[TM.PXY]))
-    _fold(own, other[TM.HIST], float(other[TM.W2]), g, p,
+    _fold(own, other[TM.HIST], float(other[TM.W2]), g, tt, p,
           other[TM.DISP:TM.DISP + 2 * TM.N_DAYPARTS], a)
     return own
 
@@ -708,11 +734,16 @@ class TimingEngine(Engine):
         store = ctx.store
         model = store.get_model(s, e, TM.MODEL)
         status, t, frac = _read_stream(store, s, e, now, r2_failed)
-        if not isinstance(model, dict):
+        if not isinstance(model, dict) or model.get("fmt") != TM.FMT:
+            if status == _DEGRADED:               # contract M even before the first model
+                emit.write_scores(store, s, e, now, {DETECTOR: _NAN},
+                                  degraded={DETECTOR: _degraded_cause(r2_failed)},
+                                  window_s=int(dt))
             if status != _OK:
                 return None                       # never seen with timestamps: nothing to do
             model = new_model()
         live, rows = model["live"], model["rows"]
+        _tick_snapshot(live, now)
         fresh_row = False
         if status == _OK:
             row = build_row(t, frac, live, _session_gap(store, s, e))
@@ -720,7 +751,12 @@ class TimingEngine(Engine):
                 if not rows.append(now, row[0], row[1]):
                     _rewrite_window(live)
                 fresh_row = True
-            _push_events(live, t, now)
+            if frac >= 1.0 - 1e-9:
+                _push_events(live, t, now)
+            else:
+                # R2 kept whole sessions: the holes it cut are laid out per tick,
+                # so a sampled stream carries a spurious tick-period train
+                live["ev"], live["ev_new"] = np.zeros(0, dtype=np.float64), 0
         elif status != _SILENT:
             # events at unknown times, or R2 did not deliver: the gap chain breaks
             live["last_ev"], live["last_full"], live["last_gap"] = _NAN, False, _NAN
@@ -809,12 +845,13 @@ class TimingEngine(Engine):
         win = int(dt)
         if r.status == _DEGRADED:
             emit.write_scores(store, s, e, now, {DETECTOR: _NAN},
-                              degraded={DETECTOR: "stale:act.stream"}, window_s=win)
+                              degraded={DETECTOR: _degraded_cause(store.engine_failed(
+                                  R2_ENGINE, now))}, window_s=win)
             return 1
         if r.score == r.score:
             emit.write_scores(
                 store, s, e, now, {DETECTOR: r.score},
-                pm={DETECTOR: r.pm} if r.pm == r.pm else None,
+                pm={DETECTOR: max(r.pm, PM_STORE_FLOOR)} if r.pm == r.pm else None,
                 axes={DETECTOR: AXES} if (r.pm <= AXES_PM_MAX or r.alarm) else None,
                 acc_alarm={DETECTOR: r.alarm} if r.alarm is not None else None,
                 window_s=win)
@@ -871,6 +908,10 @@ def _read_stream(store: Any, s: str, e: str, now: float, r2_failed: bool
     return _SILENT, empty, 1.0
 
 
+def _degraded_cause(r2_failed: bool) -> str:
+    return f"producer_error:{R2_ENGINE}" if r2_failed else "stale:act.stream"
+
+
 def _session_gap(store: Any, s: str, e: str) -> float:
     """model.seq session_gap (B10; contract C), clipped like B10 does; 30 min
     when absent or invalid."""
@@ -887,6 +928,19 @@ def _session_gap(store: Any, s: str, e: str) -> float:
 def _other_state(store: Any, s: str, entity: str) -> Optional[np.ndarray]:
     st = TM.state_of(store.get_model(s, entity, TM.MODEL))
     return st.copy() if st is not None else None
+
+
+def _tick_snapshot(live: Dict[str, Any], now: float) -> None:
+    """Make a re-run of the same tick exact: the first run at `now` saves the
+    cross-tick state (gap chain, event buffer); a second run restores it, so
+    the tick's row is rebuilt from the same boundary and no event is pushed
+    twice."""
+    keys = ("last_ev", "last_full", "last_gap", "ev", "ev_new")
+    if live.get("snap_ts") == now:
+        live.update(live["snap"])
+    else:
+        live["snap_ts"] = now
+        live["snap"] = {k: live[k] for k in keys}      # ev is replaced, never mutated
 
 
 def _push_events(live: Dict[str, Any], t: np.ndarray, now: float) -> None:

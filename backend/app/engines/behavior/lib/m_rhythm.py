@@ -53,11 +53,14 @@ Posterior predictive of a 48-level cell c (own counts A, N; tier prior mean
 pi0 = clip(pi_tier, 0.02, 0.98), strength S = 6 class / 2 system / 1 hyper):
     neighbourhood (von Mises across hours, kappa = 4, |dh| <= 2, same quarter
     and day type, circular):  A_nb = sum w_dh A[c + dh h], N_nb likewise
-    pi_nb = (A_nb + S pi0) / (N_nb + S)
+    r_nb  = A_nb / N_nb                   (0 when N_nb = 0; then lam = 0 too)
     rho   = exp(-G/2), G/2 = two-sample Bernoulli log-likelihood ratio of
             (A, N) against (A_nb, N_nb)  (1 when either side is empty)
     lam   = rho * N_nb
-    p48   = (A + lam pi_nb + S pi0) / (N + lam + S)
+    p48   = (A + lam r_nb + S pi0) / (N + lam + S)
+The neighbours enter as lam extra observations at their own rate, so the
+prior is counted once (a prior-smoothed neighbour rate would count it
+twice and hold 20 quiet nights at p ~ 0.023 instead of ~ 0.012).
 The neighbourhood is borrowed at full von Mises weight where the cell agrees
 with it (sparse or uniformly quiet hours: 20 days of silent nights give
 p ~ 0.02, B07 test a) and not at all across a real edge (the backup slots
@@ -90,6 +93,13 @@ Accessor signatures (pure; missing data gives the documented default):
     loglik(model, active_slots, tctx) -> float  sum of the finite terms (NaN if none)
     descriptors(model) -> dict                  mu_h, R, window80, active_window,
                                                 wd_we_ratio, entropy168, ...
+    det_p(p_hat) -> float                       p_hat clipped to [0.02, 0.98] (detectors)
+    offhours_step(W, a, p_hat) -> float         Bernoulli CUSUM step (bits), B07 step 3
+    silence_step(s, a, p_hat, machine) -> float silence accumulator step (nats), step 4
+    silence_eligible(p_hat, machine) -> bool
+    slot_history(model, since=-inf) -> [(slot, a, volume, c48, c168)]  per-slot
+                                                activity kept by the engine (9 d; B29 replay)
+    detector_state(model) -> dict               {W_off, s_sil, alarm, shift_explained}
     data_counts(model, at_ts=None) -> dict      decayed copies of the count arrays
     decay_factor(t_from, t_to) -> float
     to_dict(model) -> JSON-safe dict;  from_dict(d) -> live model
@@ -103,6 +113,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 import numpy as np
 from scipy.special import xlogy
 
+from . import seq as SQ
 from . import timebins as TB
 from .priors import RHYTHM_CLASS_STRENGTH
 from .seq import RHYTHM_P0_MAX
@@ -131,6 +142,11 @@ P_USUAL = 0.5                      # "usual window" / "new window" split (schedu
 ENTROPY_MAX = 0.8                  # machine-like: normalised 168-bin entropy <= 0.8
 N_OBS_MIN = 0.25                   # a cell with less decayed weight counts as unobserved
 LL_CLIP = 1e-4                     # p clip inside loglik
+ARL_DAYS = 100.0                   # offhours / silence in-control ARL (B07 spec)
+ARL_SLOTS = ARL_DAYS * SLOTS_PER_DAY               # 9600 slots
+H_OFF = SQ.bernoulli_threshold(ARL_SLOTS)          # 13.73 bits (Wald bound + 0.5)
+H_SIL = math.log(ARL_SLOTS)                        # 9.17 nats: alarm at p_eq <= 1/ARL
+SIL_P_FLOOR = 1e-9                 # 1 - p_hat floor inside -ln(1 - p_hat)
 
 _EPOCH_ORD = _dt.date(1970, 1, 1).toordinal()
 _EPOCH_DOW = 3                     # 1970-01-01 was a Thursday
@@ -345,9 +361,9 @@ def _p48(A: np.ndarray, N: np.ndarray, c: int, pi0: float, s: float) -> Tuple[fl
         n_nb += w * float(N[k])
     a, n = float(A[c]), float(N[c])
     lam = _lr_weight(a, n, a_nb, n_nb) * n_nb
-    pi_nb = (a_nb + s * pi0) / (n_nb + s)
+    r_nb = a_nb / n_nb if n_nb > 0.0 else 0.0
     strength = n + lam + s
-    return (a + lam * pi_nb + s * pi0) / strength, strength, n
+    return (a + lam * r_nb + s * pi0) / strength, strength, n
 
 
 def cell_stats(model: Mapping[str, Any], c48: int, c168: int = -1) -> Tuple[float, float, float]:
@@ -387,22 +403,34 @@ def class_fraction(class_model: Mapping[str, Any], tctx: Mapping[str, Any]) -> f
     return p_expected(class_model, tctx)
 
 
+def _vm_matrix() -> np.ndarray:
+    """K[c, c'] = von Mises weight of neighbour cell c' for cell c (same day
+    type and quarter, |dh| <= 2 hours, circular): a_nb = K @ A."""
+    K = np.zeros((N48, N48))
+    for c in range(N48):
+        dtp, rem = divmod(c, 24 * QUARTERS)
+        h, q = divmod(rem, QUARTERS)
+        for dh, w in VM_OFFSETS:
+            K[c, dtp * 24 * QUARTERS + ((h + dh) % 24) * QUARTERS + q] = w
+    return K
+
+
+VM_MATRIX = _vm_matrix()
+VM_MATRIX.flags.writeable = False
+
+
 def _profile48_arrays(A: np.ndarray, N: np.ndarray, pi: Optional[np.ndarray],
                       s: float) -> Tuple[np.ndarray, np.ndarray]:
     """Vectorised _p48 over all 192 cells -> (p, strength)."""
-    A3 = np.asarray(A, dtype=np.float64).reshape(2, 24, QUARTERS)
-    N3 = np.asarray(N, dtype=np.float64).reshape(2, 24, QUARTERS)
-    a_nb = np.zeros_like(A3)
-    n_nb = np.zeros_like(N3)
-    for dh, w in VM_OFFSETS:
-        a_nb += w * np.roll(A3, -dh, axis=1)
-        n_nb += w * np.roll(N3, -dh, axis=1)
-    a, n, a_nb, n_nb = A3.ravel(), N3.ravel(), a_nb.ravel(), n_nb.ravel()
-    pi0 = np.full(N48, HYPER_PI) if pi is None else np.asarray(pi, dtype=np.float64)
+    a = np.asarray(A, dtype=np.float64)
+    n = np.asarray(N, dtype=np.float64)
+    a_nb = VM_MATRIX @ a
+    n_nb = VM_MATRIX @ n
+    pi0 = HYPER_PI if pi is None else np.asarray(pi, dtype=np.float64)
     lam = _lr_weight_vec(a, n, a_nb, n_nb) * n_nb
-    pi_nb = (a_nb + s * pi0) / (n_nb + s)
+    r_nb = np.divide(a_nb, n_nb, out=np.zeros_like(a_nb), where=n_nb > 0.0)
     strength = n + lam + s
-    return (a + lam * pi_nb + s * pi0) / strength, strength
+    return (a + lam * r_nb + s * pi0) / strength, strength
 
 
 def profile48(model: Mapping[str, Any]) -> np.ndarray:
@@ -634,6 +662,69 @@ def descriptors(model: Mapping[str, Any]) -> Dict[str, Any]:
         out["active_window"] = {"start": _hhmm(s0), "end": _hhmm(s0 + ln), "start_h": s0 / 4.0,
                                 "len_h": ln / 4.0}
     return out
+
+
+# ============================================================= detector maths
+def det_p(p_hat: float) -> float:
+    """p_hat as the detectors use it: clipped to PI_CLIP = [0.02, 0.98], so one
+    slot is never worth more than 4.64 bits (off-hours) or 3.9 nats (silence)
+    and both alarms need >= 3 slots of evidence whatever the history length
+    (B07: the 3rd active slot alarms, 3 x 4.64 = 13.9 >= 13.7)."""
+    p = float(p_hat)
+    return min(PI_CLIP[1], max(PI_CLIP[0], p)) if p == p else math.nan
+
+
+def offhours_step(W: float, a: float, p_hat: float) -> float:
+    """One slot of the off-hours Bernoulli CUSUM (bits). Only bins with
+    p_hat <= 0.3 contribute (p1 = min(0.95, max(0.5, 5 p_hat))); a bin with
+    p_hat > 0.3, a NaN p_hat or an unobserved slot (a NaN) leaves W unchanged,
+    so p1 > 1 can never occur. p_hat is clipped by det_p: at p_hat <= 0.02 an
+    active slot adds 4.64 bits and a silent one -0.97."""
+    p0 = det_p(p_hat)
+    p1 = SQ.rhythm_p1(p0)                      # NaN above RHYTHM_P0_MAX
+    return SQ.bernoulli_cusum_step(W, a, p0, p1)
+
+
+def silence_eligible(p_hat: float, machine: bool) -> bool:
+    """Silence is scored only for machine-like rhythms (normalised 168-bin
+    entropy <= 0.8) and only in bins with p_hat >= 0.95."""
+    return bool(machine) and p_hat == p_hat and p_hat >= P_SIL_MIN
+
+
+def silence_step(s: float, a: float, p_hat: float, machine: bool) -> float:
+    """One slot of the silence accumulator (nats): an eligible silent slot adds
+    -ln(1 - p_hat); an eligible active slot (the scheduled activity happened)
+    resets to 0; ineligible or unobserved slots leave s unchanged.
+    p_eq = exp(-s); alarm at s >= H_SIL."""
+    s = 0.0 if not s == s else float(s)
+    a = float(a)
+    if not a == a or not silence_eligible(p_hat, machine):
+        return s
+    if a > 0.5:
+        return 0.0
+    return s - math.log(max(1.0 - det_p(p_hat), SIL_P_FLOOR))
+
+
+def slot_history(model: Mapping[str, Any], since: float = -math.inf
+                 ) -> List[Tuple[int, float, float, int, int]]:
+    """[(slot, a, volume, c48, c168)] of the finalised slots the engine keeps
+    (9 d) whose end is >= since, oldest first. a is 1 / 0 / NaN (unobserved)."""
+    led = (model or {}).get("ledger") or {}
+    out = []
+    for j, r in (led.get("slots") or {}).items():
+        if r[5] >= since:
+            out.append((int(j), float(r[1]), float(r[2]), int(r[3]), int(r[4])))
+    out.sort()
+    return out
+
+
+def detector_state(model: Mapping[str, Any]) -> Dict[str, Any]:
+    """Current detector values of an entity model (NaN when absent)."""
+    det = (model or {}).get("det") or {}
+    return {"W_off": float(det.get("W", math.nan)), "s_sil": float(det.get("s", math.nan)),
+            "alarm": dict(det.get("alarm") or {}),
+            "shift_explained": bool(det.get("explained_until", -math.inf)
+                                    > float((model or {}).get("updated", math.nan) or -math.inf))}
 
 
 # ============================================================ counts / pooling

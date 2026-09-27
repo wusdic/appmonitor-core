@@ -37,9 +37,12 @@ by the 2 (t - tau-hat) clean-time rule.
 from __future__ import annotations
 
 import copy
+import datetime as _dt
 import importlib
 import math
+import warnings
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
 import numpy as np
 from scipy.special import gammaln
@@ -85,6 +88,7 @@ _LOGPI = math.log(math.pi)
 # ---- creep ----------------------------------------------------------------
 CREEP_DAYS = 14
 CREEP_MIN_DAYS = 10
+CREEP_MIN_MEMBERS = 3          # a class median needs >= 3 members (entity included)
 CREEP_P = 0.01
 CREEP_SLOPE = 0.05             # log-units per day
 DAY_MIN_TICKS = 4
@@ -364,8 +368,9 @@ class ChangepointEngine(Engine):
                     closed.append((e, model, closed_day))
                 if model["learn"]["buf_ts"].size >= 4 * m_cp.AUDIT_BLOCK:
                     audit_pool.append((float(model["run"].get("audit_ts", -math.inf)), s, e))
+            med_cache: Dict[Tuple[str, int], Optional[np.ndarray]] = {}
             for e, model, day in closed:           # every member has closed its day now
-                self._creep(ctx, s, e, model, day)
+                self._creep(ctx, s, e, model, day, med_cache)
         if audit_pool and now >= self._audit_next:
             self._audit(ctx, min(audit_pool))
             self._audit_next = now + 3600.0
@@ -513,6 +518,8 @@ class ChangepointEngine(Engine):
                 cc = d.get("chol_cache")
                 if S is None and cc is not None:
                     S = cc.get("Sigma") if isinstance(cc, Mapping) else getattr(cc, "Sigma", None)
+                if S is None and d.get("U_k") is not None and d.get("lam") is not None:
+                    S = _factor_sigma(d["U_k"], d["lam"])
         if S is None:
             return None
         A = np.asarray(S, dtype=np.float64)
@@ -682,16 +689,22 @@ class ChangepointEngine(Engine):
                           window_s=int(dt))
 
     @staticmethod
-    def _mc_axes(run: Mapping[str, Any], mc: Mapping[str, Any]) -> List[str]:
-        """Groups of the features carrying the MCUSUM state: its direction in
-        psi units is L S (L = W^-1)."""
+    def _mc_dir(run: Mapping[str, Any], mc: Mapping[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+        """(direction, carriers) of the MCUSUM state in psi units, L S with
+        L = W^-1; carriers are the key features with |d| >= half the largest."""
         W = (run.get("whiten") or {}).get("W")
         S = np.asarray(mc["S"], dtype=np.float64)
         d = np.linalg.solve(W, S) if W is not None else S
         a = np.abs(d)
         if not a.max() > 0.0:
-            return []
-        return sorted({m_cp.KEY_GROUPS[i] for i in np.flatnonzero(a >= 0.5 * a.max())})
+            return d, np.zeros(0, dtype=np.intp)
+        return d, np.flatnonzero(a >= 0.5 * a.max())
+
+    @classmethod
+    def _mc_axes(cls, run: Mapping[str, Any], mc: Mapping[str, Any]) -> List[str]:
+        """Groups of the features carrying the MCUSUM state."""
+        _, idx = cls._mc_dir(run, mc)
+        return sorted({m_cp.KEY_GROUPS[i] for i in idx})
 
     def _write_delta(self, store: Any, s: str, e: str, run: Dict[str, Any],
                      bank: Mapping[str, Any], mc: Mapping[str, Any], on: Mapping[str, bool]
@@ -708,12 +721,10 @@ class ChangepointEngine(Engine):
         if on["cusum"]:
             for c in np.flatnonzero(np.asarray(bank["latch"]["alarmed"])):
                 sides[(0 if m_cp.CHART_SIDE[c] > 0 else 1, int(m_cp.CHART_FEAT[c]))] = None
-        if on["mcusum"]:
-            z = ex["z"] / np.maximum(ex["n"], 1.0)
-            for f in range(m_cp.N_KEY):
-                for sd in (0, 1):
-                    if ex["n"][sd, f] > 0 and abs(z[sd, f]) >= 0.5:
-                        sides[(sd, f)] = None
+        if on["mcusum"]:                     # the features carrying the MCUSUM direction
+            d, idx = self._mc_dir(run, mc)
+            for f in idx:
+                sides[(0 if d[f] > 0 else 1, int(f))] = None
         out: Dict[str, Any] = {}
         for sd, f in sides:
             n = float(ex["n"][sd, f])
@@ -746,7 +757,8 @@ class ChangepointEngine(Engine):
         store.put_profile(p)
 
     # ------------------------------------------------------------ creep
-    def _creep(self, ctx: Context, s: str, e: str, model: Dict[str, Any], day: int) -> None:
+    def _creep(self, ctx: Context, s: str, e: str, model: Dict[str, Any], day: int,
+               cache: Dict[Tuple[str, int], Optional[np.ndarray]]) -> None:
         """Daily: Mann-Kendall over the last 14 days of (entity - class median)
         group means of zr, relative to the golden anchor; Sen slope converted
         to log-units with the learned vec-per-zr scale."""
@@ -756,16 +768,9 @@ class ChangepointEngine(Engine):
         own = self._daily_matrix(run, days)
         if int(np.isfinite(own).any(axis=1).sum()) < CREEP_MIN_DAYS:
             return
-        peers = self._peer_daily(store, s, e, days)
-        if peers is None:
+        med = self._class_median(store, s, e, days, cache)
+        if med is None:                                # no peer tier: against golden alone
             med = np.zeros_like(own)
-        else:
-            cnt = np.isfinite(peers).sum(axis=0)
-            with np.errstate(all="ignore"):
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", RuntimeWarning)
-                    med = np.where(cnt >= 2, np.nanmedian(peers, axis=0), np.nan)
         X = own - med + self._golden_offset(store, s, e)[None, :]
         sc = scale_of(model["learn"])
         cnt_g = _GMAT @ np.isfinite(sc)
@@ -796,7 +801,8 @@ class ChangepointEngine(Engine):
                   on=any(v["alarm"] for v in groups.values()),
                   axes=sorted(g for g, v in groups.items() if v["alarm"]), day=int(day))
         if new_on and not ctx.training:
-            self._emit_creep(store, s, e, model, groups, new_on, now, int(days[0]))
+            tz = ctx.config.get("tz") or timebins.DEFAULT_TZ
+            self._emit_creep(store, s, e, model, groups, new_on, now, int(days[0]), tz)
 
     @staticmethod
     def _daily_matrix(run: Mapping[str, Any], days: np.ndarray) -> np.ndarray:
@@ -809,28 +815,36 @@ class ChangepointEngine(Engine):
                 X[i] = v
         return X
 
-    def _peer_daily(self, store: Any, s: str, e: str, days: np.ndarray) -> Optional[np.ndarray]:
-        """[peers, days, groups] of the class (other members; contract L:
-        a class with < 3 members backs off to the system), or None when the
-        entity has no peers with history at all."""
-        mats = []
+    def _class_median(self, store: Any, s: str, e: str, days: np.ndarray,
+                      cache: Dict[Tuple[str, int], Optional[np.ndarray]]) -> Optional[np.ndarray]:
+        """[days, groups] median of the entity's class INCLUDING the entity
+        (a median of the other two members of a 3-member class is their mean,
+        which carries half of a creeping member's ramp); cells need >= 3
+        members with a value. Contract L: a class with < 3 members backs off
+        to the system tier. Cached per (tier, day) for the tick, so a system
+        of N entities costs O(N) per day, not O(N^2). None: no usable tier."""
         ck = m_class.class_key(store, s, e)
-        if ck is not None:
-            for p in m_class.class_members(store, s, ck):
-                if p != e:
+        tiers = ([(ck, lambda: m_class.class_members(store, s, ck))] if ck is not None else [])
+        tiers.append(("__system__", lambda: store.entities(s)))
+        for key, members in tiers:
+            ck_ = (key, int(days[-1]))
+            if ck_ not in cache:
+                mats = []
+                for p in members():
                     m = store.get_model(s, p, m_cp.MODEL)
                     if m:
                         mats.append(self._daily_matrix(m["run"], days))
-        if len(mats) < 2:
-            mats = []
-            for p in store.entities(s):
-                if p != e:
-                    m = store.get_model(s, p, m_cp.MODEL)
-                    if m:
-                        mats.append(self._daily_matrix(m["run"], days))
-        if len(mats) < 2:
-            return None
-        return np.stack(mats)
+                med = None
+                if len(mats) >= CREEP_MIN_MEMBERS:
+                    M = np.stack(mats)
+                    cnt = np.isfinite(M).sum(axis=0)
+                    with warnings.catch_warnings():    # all-NaN cells: masked below
+                        warnings.simplefilter("ignore", RuntimeWarning)
+                        med = np.where(cnt >= CREEP_MIN_MEMBERS, np.nanmedian(M, axis=0), np.nan)
+                cache[ck_] = med
+            if cache[ck_] is not None:
+                return cache[ck_]
+        return None
 
     @staticmethod
     def _golden_offset(store: Any, s: str, e: str) -> np.ndarray:
@@ -860,7 +874,7 @@ class ChangepointEngine(Engine):
     @staticmethod
     def _emit_creep(store: Any, s: str, e: str, model: Mapping[str, Any],
                     groups: Mapping[str, Mapping[str, Any]], new_on: Sequence[str],
-                    now: float, day0: int) -> None:
+                    now: float, day0: int, tz: str) -> None:
         p = min(groups[g]["p"] for g in new_on)
         ed = combine.e_day(p, 86400.0)                    # one test per entity-day
         sev = combine.e_day_severity(ed) or "low"
@@ -881,7 +895,7 @@ class ChangepointEngine(Engine):
             p_by_detector={"creep": float(p)},
             dedupe_key=f"baseline_creep|{s}|{e}|{'+'.join(sorted(new_on))}",
             model_version=int(model.get("version", 0)),
-            window=(float(timebins_day_start(day0)), float(now))))
+            window=(float(local_day_start(day0, tz)), float(now))))
 
     # ------------------------------------------------------------ audit
     def _audit(self, ctx: Context, pick: Tuple[float, str, str]) -> None:
@@ -910,9 +924,11 @@ class ChangepointEngine(Engine):
         store.put_model(s, e, m_cp.MODEL, model, ts=now)
 
 
-def timebins_day_start(day_ordinal: int) -> float:
-    """UTC epoch of 00:00 UTC on a proleptic ordinal (event window start)."""
-    return (day_ordinal - timebins._EPOCH_ORDINAL) * 86400.0
+def local_day_start(day_ordinal: int, tz: str) -> float:
+    """UTC epoch of local midnight (tz) on a proleptic day ordinal: the creep
+    days are local calendar days, so the event window starts there."""
+    d = _dt.date.fromordinal(int(day_ordinal))
+    return _dt.datetime(d.year, d.month, d.day, tzinfo=ZoneInfo(tz)).timestamp()
 
 
 def _natural_ref(v: np.ndarray, dt: float) -> np.ndarray:
@@ -934,3 +950,20 @@ def _natural_ref(v: np.ndarray, dt: float) -> np.ndarray:
             else:
                 out[i] = x
     return out
+
+
+def _factor_sigma(U_k: Any, lam: Any) -> Optional[np.ndarray]:
+    """Key-feature covariance from model.density's contract fields (PCA
+    loadings U_k [52, k], eigenvalues lam [k]) completed as a factor model:
+    U diag(lam) U^T plus the residual variance 1 - diag on the diagonal (the
+    residuals are standardised, so each feature's total variance is ~1).
+    Invalid shapes -> None (the caller falls back to its own correlation)."""
+    U = np.asarray(U_k, dtype=np.float64)
+    lam = np.asarray(lam, dtype=np.float64).reshape(-1)
+    if U.ndim != 2 or U.shape[0] != FEATURE_DIM or U.shape[1] != lam.size or lam.size == 0:
+        return None
+    Uk = U[m_cp.KEY_IDX]
+    S = (Uk * np.clip(lam, 0.0, None)) @ Uk.T
+    d = np.diag(S).copy()
+    S[np.diag_indices_from(S)] = d + np.maximum(1.0 - d, 0.05)
+    return S if np.isfinite(S).all() else None
