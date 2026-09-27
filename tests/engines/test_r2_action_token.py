@@ -266,14 +266,35 @@ def test_token_formats_ids_outcomes_and_stack():
     assert dests == ["erp.corp", "erp.corp", "evil.com", "example.org", "example.com",
                      "10.1.2.0/24", "10.1.2.0/24"]
     assert _raw(st, e, "act.distinct_templates", T0) == 7.0
-    assert _raw(st, e, "act.new_template_ratio", T0) == 1.0
+    # the vocabulary is born this tick: "new to the system" is not defined yet
+    assert _raw(st, e, "act.new_template_ratio", T0) is None
     assert rows["up"][4] == 1024 and rows["down"][4] == 16384
+
+
+def test_new_template_ratio_waits_for_one_daily_cycle():
+    """act.new_template_ratio is absent until the system vocabulary is
+    MT.NEW_REF_S old (integration: the first-tick 1.0 of an empty vocabulary
+    is the vocabulary's growth, not the entity's behaviour)."""
+    st, eng = make_store(), ActionTokenEngine()
+    e = "10.0.0.1"
+    _run(eng, st, T0, [_http(e, T0 - 100, "/a")])
+    assert _raw(st, e, "act.new_template_ratio", T0) is None
+    assert MT.get(st, S)["born"] == T0
+    t = T0 + MT.NEW_REF_S - 900.0
+    _run(eng, st, t, [_http(e, t - 10, "/b")])
+    assert _raw(st, e, "act.new_template_ratio", t) is None
+    t = T0 + MT.NEW_REF_S
+    _run(eng, st, t, [_http(e, t - 10, "/a"), _http(e, t - 9, "/c/d/e")])
+    assert _raw(st, e, "act.new_template_ratio", t) == 0.5
+    # the birth time survives a to_dict / from_dict round trip (checkpoints)
+    assert MT.from_dict(MT.to_dict(MT.get(st, S)))["born"] == T0
 
 
 def test_new_template_ratio_and_top_tokens_other():
     st, eng = make_store(), ActionTokenEngine()
     e = "10.0.0.1"
     b1 = [_http(e, T0 - 100 + i, "/a") for i in range(4)]
+    _run(eng, st, T0 - MT.NEW_REF_S, [_tls("10.0.0.9", T0 - MT.NEW_REF_S - 1, "prime.example")])
     _run(eng, st, T0, b1)
     assert _raw(st, e, "act.new_template_ratio", T0) == 1.0
     now = T0 + 900

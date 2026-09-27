@@ -55,18 +55,19 @@ _RETAINED: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 def ensure_retention(store, extra: Iterable[str] = (), extra_age_s: float = 0.0) -> None:
     """Idempotently extend raw retention for the D0 grid inputs (and `extra`
-    names to at least `extra_age_s`). set_retention clears the store's rule
-    cache, so it is called once per (store, name), not every tick."""
+    names to at least `extra_age_s`). store.ensure_retention only ever raises a
+    rule (integration R2.1: D0 and D2 share act.events); it is still called
+    once per (store, name), not every tick."""
     done = _RETAINED.get(store)
     if done is None:
         done = _RETAINED[store] = {}
     for name in D0_INPUTS:
         if done.get(name, 0.0) < D0_INPUT_MAX_AGE_S:
-            store.set_retention(name, max_age_s=D0_INPUT_MAX_AGE_S)
+            store.ensure_retention(name, max_age_s=D0_INPUT_MAX_AGE_S)
             done[name] = D0_INPUT_MAX_AGE_S
     for name in extra:
         if done.get(name, 0.0) < extra_age_s:
-            store.set_retention(name, max_age_s=extra_age_s)
+            store.ensure_retention(name, max_age_s=extra_age_s)
             done[name] = extra_age_s
 
 

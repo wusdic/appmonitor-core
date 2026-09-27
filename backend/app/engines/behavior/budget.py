@@ -878,8 +878,9 @@ class BudgetEngine(Engine):
         return n
 
     def _ensure_retention(self, store: Any) -> None:
-        """behavior.budget is not in contract B's retention table: keep the
-        newest points only (36 [value, z_q, p] entries each)."""
+        """behavior.budget: the newest points only (36 [value, z_q, p] entries
+        each; contract B, store default). The explicit cap stays: it is a
+        memory bound on this engine's own output, not an input requirement."""
         if self._ret_store is None or self._ret_store() is not store:
             store.set_retention(SERIES, SERIES_KEEP_POINTS, SERIES_KEEP_S)
             self._ret_store = weakref.ref(store)

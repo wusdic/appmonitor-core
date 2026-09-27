@@ -73,6 +73,9 @@ Each engine: purpose, algorithm, store reads/writes, perf budget and the unit te
 (d) A silent known entity gets act.events=0 at ctx.now, and its last_seen is unchanged.
 (e) act.objs lists the ids, with n = 2000 and HLL error within 5%.
 
+**Integration notes (as built, docs/lib3/integration.md).**
+- act.new_template_ratio is written only once model.template is ≥ 24 h old (m_template.NEW_REF_S; model['born'] is the vocabulary's first tick). The first tick of an empty vocabulary gives 1.0 for every entity, which B03 learnt into the buckets of that day-type; on the first live day of the mini pack every entity then scored new_template_ratio z ≈ −4 to −8 for hours.
+
 ## R3 — ClientStackEngine [new]
 
 - **File:** `backend/app/engines/raw/client_stack.py`
@@ -790,6 +793,8 @@ Emit low_identifiability (INFO) when EER_hard > 0.2.
 
 **Integration notes (as built, docs/lib3/integration.md).**
 - Reads also behavior.trust / trust_prov / quarantine, model.link, act.tokens, act.stream, act.stream_frac, client.stack_set, tls.sni_etld1_set, dns.qname_etld1_set and l4.dport_set (live modality calibration). Interval 1 (window collection) with the fit every 96 ticks or 24 h. EER_hard is the max pairwise EER over the 3 nearest impostors. model.identity fields: contract C.
+- Live modality calibration opens an entity's next calibration window at least CAL_GAP_S = 4 h after its previous one (≈ 6 windows per entity per day, MIN_CAL still reached within hours): the PPM / vocab LLRs under 4 candidates cost ~7 ms per system per tick when three entities sampled continuously.
+- The window vector zeroes the client.stack_set block of the mean sketch (R20.2): client stacks are their own capped modality in B16.
 
 ## B16 — AttributionEngine [new]
 
@@ -834,6 +839,9 @@ The common-mode flag never suppresses identity. When the entity has shared_ip, e
 (c) Rows from an unseen distribution: unknown_identity.
 (d) Change only the client stack: no mismatch (cap).
 (e) A static check asserts that consumes excludes behavior.z.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- The unknown CUSUM only climbs on full K-row windows (partial windows of a new or long-silent entity only let it decay): the chi² typicality is calibrated on B15's K-row windows, and a 1–2 row window (IQR 0, noisier median) failed it for enrolled entities on their first ticks.
 
 ## B17 — EntityLinkEngine [new]
 
@@ -1181,6 +1189,7 @@ Class risk = max(the class pseudo-entity's own risk from its own detectors, mean
 
 **Integration notes (as built, docs/lib3/integration.md).**
 - Warm-up evidence does not carry into live risk: the per-key state is cleared on the first live tick after training (the warm-up risk series stays in the store).
+- Habitual lib-4 activity: a match of severity ≤ medium whose (entity, signature) has matched on ≥ 4 ticks, the first ≥ 24 h earlier, weighs 0. lib-4 severities grade activities (routine login / form write / admin page / poor TCP are 'low'), so without this every busy entity carried L ≈ 30–50 of routine matches (risk 40–60, plus credential / privilege / exfiltration stages from the auth / admin / transfer categories) on every live tick, far above the spec's null (L ≈ 7). A new routine activity counts for its first day; high and critical matches always count; habits are learnt in warm-up too and forgotten after 30 d unseen.
 
 ## B27 — IncidentEngine [new]
 
@@ -1330,7 +1339,7 @@ The z shown in the UI is the engine's own z, fixing routes.py:140.
 ## B30 — PortraitEngine [new]
 
 - **File:** `backend/app/engines/behavior/portrait.py`
-- **Layer / order / interval:** behavior / 30 / 8
+- **Layer / order / interval:** behavior / 30 / 1 (each key refreshes once per 2 h at its own phase)
 
 **Purpose.** (Previously B28.) The human-readable, dynamically generated behaviour library: versioned portraits with diffs, for each IP and for each class (role, sub-class, static CIDR and pool).
 
@@ -1362,3 +1371,6 @@ Personal data from paths and query values is never embedded; only templates are 
 - The portrait window is '09:00–18:00' ± 30 min and the top template is /orders.
 - After the window changes to 14–23, the diff reports that 活跃时段 changed.
 - A static CIDR class of 3 IPs gets a portrait with members and class bands.
+
+**Integration notes (as built, docs/lib3/integration.md).**
+- The engine runs every tick and each IP / class key refreshes once per refresh_s = 2 h at its own crc32 phase (Engine.entity_due). An 8-tick engine stride refreshed every key on the same tick (≈ 70 ms bursts at 20 entities); the per-key phase spreads the same work.

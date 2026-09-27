@@ -102,6 +102,7 @@ DROP_EVERY = 4               # modality-drop importance every 4th fit
 CAL_OPEN_MAX = 3             # entities accumulating live modality windows at once
 CAL_RING = 2000              # samples kept per modality
 CAL_STALE_S = 86400.0
+CAL_GAP_S = 4 * 3600.0       # an entity opens its next calibration window >= 4 h after its last
 MAX_GAUSS_IMP = 20000
 NG_MODS = tuple(m for m in MI.MODALITIES if m != "gauss")
 EVENT_AXES = ["identity"]
@@ -418,12 +419,13 @@ class IdentityModelEngine(Engine):
 
     def __init__(self, fit_ticks: int = 96, fit_period_s: float = 86400.0,
                  min_windows: int = MIN_WINDOWS, cal_open_max: int = CAL_OPEN_MAX,
-                 **params: Any) -> None:
+                 cal_gap_s: float = CAL_GAP_S, **params: Any) -> None:
         super().__init__(**params)
         self.fit_ticks = int(fit_ticks)
         self.fit_period_s = float(fit_period_s)
         self.min_windows = max(MIN_WINDOWS, int(min_windows))
         self.cal_open_max = int(cal_open_max)
+        self.cal_gap_s = float(cal_gap_s)
         self._now, self._dt, self._config = 0.0, 900.0, {}
         self._learner = G.GatedLearner(name=LEARNER, init=new_state, update=_update,
                                        fetch=self._fetch, dump=_dump, load=_load,
@@ -571,7 +573,13 @@ class IdentityModelEngine(Engine):
         model = MI.get(store, s)
         free = self.cal_open_max - len(acc)
         if free > 0:
-            waiting = sorted((e for e in active if e not in acc),
+            # stride (integration perf): the per-modality LLR calibration moves
+            # slowly and is refitted daily, so an entity contributes at most one
+            # window per cal_gap_s (~6 windows / day each, MIN_CAL reached in
+            # hours) instead of keeping 3 entities sampling PPM / vocab LLRs
+            # under 4 candidates on every tick
+            waiting = sorted((e for e in active if e not in acc
+                              and not now - last.get(e, -math.inf) < self.cal_gap_s),
                              key=lambda e: (last.get(e, -math.inf), e))
             for e in waiting[:free]:
                 imps = self._impostors(model, e, ents)

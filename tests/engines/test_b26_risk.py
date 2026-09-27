@@ -195,6 +195,30 @@ def test_c_lib4_matches_damped_and_lagged():
     assert t0 == T0
 
 
+def test_habitual_routine_lib4_activity_stops_counting():
+    """Integration: lib-4 grades activities, so a routine 'low' match (a
+    login, a form write) of an entity that has done it for a day is habitual
+    and weighs nothing; a new routine activity counts for its first day and
+    high / critical matches always count. Habits survive the warm-up reset."""
+    rig = Rig()
+
+    def routine(sig, sev=Severity.LOW, cat="auth"):
+        return lambda store, ts: store.add_match(SignatureMatch(
+            system=S, entity=E, ts=ts, signature_id=sig, label=sig, category=cat,
+            confidence=1.0, severity=sev))
+    for _ in range(100):                                  # > 24 h of routine logins, warm-up
+        rig.tick(before=routine("auth_login"), training=True)
+    rig.tick(before=routine("auth_login"))                # first live tick: evidence reset
+    rig.tick(before=routine("auth_login"))
+    assert rig.state().L.get("lib4:auth_login", 0.0) == 0.0
+    rig.tick(before=routine("admin_operation", cat="admin"))   # a new activity counts
+    rig.tick()
+    assert rig.state().L["lib4:admin_operation"] == pytest.approx(5.0, rel=1e-2)
+    rig.tick(before=routine("auth_bruteforce", Severity.HIGH))  # never habitual
+    rig.tick()
+    assert rig.state().L["lib4:auth_bruteforce"] == pytest.approx(30.0, rel=1e-2)
+
+
 # ------------------------------------------------------------------ spec (d)
 @pytest.mark.parametrize("dt_after", [900.0, 60.0])
 def test_d_risk_halves_after_half_life(dt_after):

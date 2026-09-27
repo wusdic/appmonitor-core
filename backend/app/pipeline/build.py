@@ -166,7 +166,7 @@ def build_registry(sig_store: Optional[SignatureStore] = None, composite_rules=N
             IncidentEngine(),               # B27
             GovernorEngine(),               # B28
             *_explain_engines(),            # B29 slot
-            PortraitEngine())               # B30 (own 8-tick / 2 h refresh)
+            PortraitEngine())               # B30 (every tick; each key refreshes per 2 h at its own phase)
     # signature (行为特征库)
     reg.add(RuleMatchEngine(sig_store, min_confidence=0.6),
             CorrelationEngine(composite_rules))

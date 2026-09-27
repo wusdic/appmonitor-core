@@ -563,9 +563,9 @@ class FusionEngine(Engine):
         return lr
 
     def _ensure_retention(self, store) -> None:
-        """behavior.e_day is missing from contract B's table: keep it 8 d like q_all."""
+        """behavior.e_day: at least 8 d like q_all (contract B; store default). Raise-only."""
         if self._ret_store is None or self._ret_store() is not store:
-            store.set_retention(E_DAY, None, E_DAY_RETENTION_S)
+            store.ensure_retention(E_DAY, None, E_DAY_RETENTION_S)
             self._ret_store = weakref.ref(store)
 
     def _stratum(self, daypart: str, cc: int) -> str:

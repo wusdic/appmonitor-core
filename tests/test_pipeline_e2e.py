@@ -85,17 +85,46 @@ def test_feature_score_p_risk_series_are_populated(run):
         assert MB.n_eff(m) > 0.0, k
 
 
+def _threats(res):
+    """{'sys|ip': (t_start, t_end)} of the malicious scenarios."""
+    out = {}
+    for row in res.truth:
+        if row.get("label") != "malicious":
+            continue
+        s = row.get("system")
+        for e in row.get("entities") or []:
+            key = e if "|" in e else f"{s}|{e}"
+            out[key] = (float(row.get("t_start", -math.inf)), float(row.get("t_end", math.inf)))
+    return out
+
+
 def test_an_incident_opens_on_a_threat_entity(run):
-    threat = set()
-    for row in run.truth:
-        if row.get("label") == "malicious":
-            s = row.get("system")
-            threat |= {e if "|" in e else f"{s}|{e}" for e in row.get("entities") or []}
+    threat = _threats(run)
     assert threat
     hits = [i for i in run.incidents
             if f"{i['system']}|{i['entity']}" in threat
-            or threat & {f"{i['system']}|{x}" for x in i.get("entities") or []}]
+            or set(threat) & {f"{i['system']}|{x}" for x in i.get("entities") or []}]
     assert hits, "no incident on any malicious scenario entity"
     t0, t1 = run.scenario_window
     assert any(t0 <= float(i["opened"]) <= t1 for i in hits)
     assert all(not math.isnan(float(i.get("risk") or 0.0)) for i in hits)
+    # the pipeline keeps feeding the incident while the threat is active:
+    # alarm / finding / risk evidence stamped inside the scenario's own window
+    live = []
+    for i in hits:
+        w = threat.get(f"{i['system']}|{i['entity']}")
+        if w is None:
+            continue
+        live += [ev for ev in i.get("evidence") or []
+                 if ev.get("source") in ("alarm", "event", "risk")
+                 and w[0] <= float(ev.get("ts", -math.inf)) <= w[1]]
+    assert live, "no incident evidence inside a threat's scenario window"
+
+
+def test_timings_are_recorded_per_engine(run):
+    tm = run.timings
+    E = np.asarray(tm["engine_ms"])
+    assert E.shape == (72 + 128, len(tm["engine_names"]))
+    assert np.all(np.isfinite(E)) and np.all(E >= 0.0)
+    behavior = [i for i, n in enumerate(tm["engine_names"]) if n.startswith("behavior.")]
+    assert E[:, behavior].sum(axis=1).max() > 0.0

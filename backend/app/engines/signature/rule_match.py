@@ -37,8 +37,9 @@ class RuleMatchEngine(Engine):
             sigs = self.sig_store.for_system(system)
             if not sigs:
                 continue
+            names = self._metric_names(sigs)
             for entity in ctx.store.entities(system):
-                snap = ctx.store.snapshot(system, entity)
+                snap = ctx.store.snapshot(system, entity, names=names)
                 if not snap:
                     continue
                 for sig in sigs:
@@ -52,6 +53,15 @@ class RuleMatchEngine(Engine):
                             evidence={t: round(snap.get(t.split(" ")[0], 0.0), 3) for t in terms}))
                         n += 1
         return n
+
+    @staticmethod
+    def _metric_names(sigs) -> Tuple[str, ...]:
+        """Every metric the system's signatures reference: the snapshot is
+        restricted to them (same values, a fraction of the cost once lib-3
+        writes hundreds of series and vector views per entity)."""
+        return tuple(sorted({str(c.get("metric", "")) for sig in sigs
+                             for c in list(sig.all) + list(sig.any) + list(sig.none)
+                             if c.get("metric")}))
 
     # --------------------------------------------------------------- evaluation
     def _evaluate(self, sig: Signature, snap: Dict[str, float]) -> Tuple[float, List[str]]:

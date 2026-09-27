@@ -548,7 +548,7 @@ class ClassMonitorEngine(Engine):
         self._cfg, self._now = ctx.config, now
         self._cur.d_min_s = float(ctx.config.get("D_min_s") or G.D_MIN_S)
         if id(store) not in self._ret_stores:           # the learner clock must cover replay
-            store.set_retention(AGG, None, META_KEEP_S)
+            store.ensure_retention(AGG, None, META_KEEP_S)
             self._ret_stores.add(id(store))
         if len(self._tctx_cache) > _TCTX_CACHE_MAX:
             self._tctx_cache.clear()

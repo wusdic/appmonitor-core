@@ -24,7 +24,17 @@ Evidence per tick (all in the same "surprise" unit so they add up):
     number of repeats adds < 2 x a single one.
   * lib-4 matches with a one-tick lag (the signature layer runs after the
     behaviour layer): info 0 / low 5 / medium 15 / high 30 / critical 50,
-    x confidence, damped per signature id like events.
+    x confidence, damped per signature id like events. A HABITUAL match
+    (integration): a signature of severity <= medium that the entity has
+    matched on >= HABIT_MIN_TICKS ticks, the first of them >= HABIT_S (24 h)
+    ago, counts x 0. lib-4 severities grade activities (a routine login,
+    form write, admin page or a poor-TCP link is 'low', a noisy backend
+    'medium'), so without this every busy entity carried L ~ 30-50 of
+    routine matches (risk 40-60, and the auth / admin / transfer categories
+    added kill-chain stages) on every live tick. A NEW routine activity
+    still counts for its first day; high / critical always count. The habit
+    memory is learnt from every tick, warm-up included, and is not cleared
+    with the evidence on the first live tick.
   * everything that belongs to a suppressed incident (or a suppressed event)
     counts x 0.25 (m_feedback.SUPPRESSED_RISK_WEIGHT): feedback may silence
     notifications, never evidence.
@@ -147,6 +157,12 @@ _TIER_ALIASES = {"system": "system", "org": "system", "class": "class", "role": 
 
 SIG_W: Dict[str, float] = {"info": 0.0, "low": 5.0, "medium": 15.0, "high": 30.0,
                            "critical": 50.0}
+# habitual lib-4 activity (see module doc): discounted at these severities
+HABIT_SEVERITIES = frozenset({"info", "low", "medium"})
+HABIT_S = 86400.0              # first match of the (entity, signature) at least this old
+HABIT_MIN_TICKS = 4            # ... and matched on at least this many ticks
+HABIT_MULT = 0.0
+HABIT_FORGET_S = 30 * 86400.0  # a habit not seen for 30 d is forgotten
 _STAGE_DECAY = {"c2": "c2", "exfiltration": "exfil", "identity": "identity"}
 
 
@@ -445,6 +461,9 @@ class RiskEngine(Engine):
         self._crit_cache: Tuple[Any, List[Tuple[Optional[Set[str]], List[Any], float, str]]] = \
             (None, [])
         self._warm: Set[int] = set()        # stores whose last tick was a training tick
+        # (s, e, signature_id) -> [first_ts, n_ticks, last_ts] of lib-4 matches (habits)
+        self._habits: "weakref.WeakKeyDictionary[Any, Dict[Tuple[str, str, str], List[float]]]" \
+            = weakref.WeakKeyDictionary()
 
     # ------------------------------------------------------------------ run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
@@ -577,11 +596,17 @@ class RiskEngine(Engine):
                             detail=_event_detail(ev))
 
         # --- lib-4 matches, one tick late: [prev, now)
+        habits = self._habits.get(store)
+        if habits is None:
+            habits = self._habits[store] = {}
         for mt in reversed(store.matches(s, e, since=win0, limit=1000)):
             if mt.ts >= now:
                 continue
             sev = _sev(mt.severity)
+            habitual = self._habit(habits, s, e, str(mt.signature_id), float(mt.ts))
             w = SIG_W.get(sev, 0.0) * min(1.0, max(0.0, float(mt.confidence or 0.0)))
+            if habitual and sev in HABIT_SEVERITIES:
+                w *= HABIT_MULT
             if w <= 0.0:
                 continue
             stage = stage_for_category(mt.category)
@@ -591,6 +616,22 @@ class RiskEngine(Engine):
                                    f"conf {float(mt.confidence or 0.0):.2f})")
         st.prune(now)
         return st.score(now, pi, self._criticality(ctx.config, s, e))
+
+    @staticmethod
+    def _habit(habits: Dict[Tuple[str, str, str], List[float]], s: str, e: str, sig: str,
+               ts: float) -> bool:
+        """Record one lib-4 match of (s, e, sig) at ts (once per tick) and say
+        whether the activity was already habitual before it."""
+        k = (s, e, sig)
+        h = habits.get(k)
+        if h is None or ts - h[2] > HABIT_FORGET_S:
+            habits[k] = [ts, 1.0, ts]
+            return False
+        habitual = h[1] >= HABIT_MIN_TICKS and ts - h[0] >= HABIT_S
+        if ts > h[2]:
+            h[1] += 1.0
+            h[2] = ts
+        return habitual
 
     # ------------------------------------------------------------ writing
     def _write(self, store, s: str, e: str, st: RiskState, now: float, dt: float, r: float,

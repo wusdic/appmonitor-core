@@ -313,6 +313,9 @@ class ActionTokenEngine(Engine):
         if model is None or not isinstance(model.get("templater"), TPL.Templater):
             model = MT.from_dict(model)
         tm: TPL.Templater = model["templater"]
+        if not isinstance(model.get("born"), (int, float)):
+            model["born"] = float(now)                 # first tick of this vocabulary
+        new_ok = MT.vocab_mature(model, now)
         vocab = tm.vocab
         new_toks: Set[str] = set()
         dest_names: Dict[int, str] = {}
@@ -415,7 +418,7 @@ class ActionTokenEngine(Engine):
         n = 0
         for e, acc in accs.items():
             active.add((s, e))
-            n += self._emit(store, s, e, acc, now, rare)
+            n += self._emit(store, s, e, acc, now, rare, new_ok)
         return n
 
     # ----------------------------------------------------------- prevalence
@@ -462,7 +465,8 @@ class ActionTokenEngine(Engine):
                 and _decay_to(dests[did][1], dests[did][2], now, h) <= lim}
 
     # ----------------------------------------------------------------- emit
-    def _emit(self, store, s: str, e: str, acc: _Acc, now: float, rare: Set[int]) -> int:
+    def _emit(self, store, s: str, e: str, acc: _Acc, now: float, rare: Set[int],
+              new_ok: bool = True) -> int:
         total = acc.events
         arr = _rows_array(acc)                                   # every sampled event
         order = np.argsort(arr["ts"], kind="stable")
@@ -496,7 +500,7 @@ class ActionTokenEngine(Engine):
             ("act.distinct_templates", float(len({_tkey(t) for t in acc.tokens})),
              MetricKind.GAUGE),
         ]
-        if acc.http_n > 0:
+        if acc.http_n > 0 and new_ok:                  # absent while the vocabulary is young
             out.append(("act.new_template_ratio", acc.http_new / acc.http_n, MetricKind.RATE))
         if acc.objs:
             objs: Dict[str, Dict[str, Any]] = {}

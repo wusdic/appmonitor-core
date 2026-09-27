@@ -55,7 +55,11 @@ Series written by R2 (all at ts = ctx.now, raw layer, via store.add_raw):
   act.distinct_templates float  distinct template_key(token) this tick.
   act.new_template_ratio float  fraction of the entity's HTTP events (weighted) whose
                              token entered the system vocabulary this tick; written
-                             only when the entity had HTTP events (n = http.requests).
+                             only when the entity had HTTP events (n = http.requests)
+                             and the system vocabulary is at least NEW_REF_S (24 h)
+                             old (model['born']): before one daily cycle has been
+                             seen, "new to the system" measures the vocabulary's
+                             own growth (1.0 on the first tick), not the entity.
   act.objs            {obj_key: {'n': int, 'ids': [str, ...], 'hll'?: bytes}}
                              obj_key = '<host><path template>' without the query
                              (e.g. 'erp.corp/orders/view/{num}'); an id is the value
@@ -215,6 +219,18 @@ def template_key(token: str) -> str:
     if ch in ("tls", "l4"):
         return token.split(" ", 1)[0]
     return token
+
+
+# the vocabulary must have seen one daily cycle before act.new_template_ratio
+# means "new to the system" (integration: the first-tick 1.0 poisoned B03's
+# workday buckets and every entity alarmed on the first live Monday)
+NEW_REF_S = 86400.0
+
+
+def vocab_mature(model: Optional[Dict[str, Any]], now: float) -> bool:
+    """True when model.template has existed for at least NEW_REF_S."""
+    b = model.get("born") if isinstance(model, dict) else None
+    return isinstance(b, (int, float)) and math.isfinite(float(b)) and now - float(b) >= NEW_REF_S
 
 
 # ------------------------------------------------------------------ model reads
@@ -439,6 +455,8 @@ def to_dict(model: Dict[str, Any]) -> Dict[str, Any]:
         "fmt": FMT,
         "version": int(model.get("version", 0)),
         "templater": t.to_dict() if isinstance(t, Templater) else (t or {}),
+        "born": (float(model["born"]) if isinstance(model.get("born"), (int, float))
+                 and math.isfinite(float(model["born"])) else None),
         "prev": {
             "half_life_s": float(p.get("half_life_s", PREV_HALF_LIFE_S)),
             "ents": {str(k): float(v) for k, v in (p.get("ents") or {}).items()},
@@ -463,6 +481,8 @@ def from_dict(d: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     m = new_model()
     m["version"] = int(d.get("version", 0) or 0)
     m["templater"] = Templater.from_dict(d.get("templater"))
+    if d.get("born") is not None:
+        m["born"] = float(d["born"])
     p = d.get("prev") or {}
     nan = math.nan
     es = p.get("ent_sum") or [0.0, None]

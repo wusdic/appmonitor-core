@@ -250,3 +250,67 @@ def test_b24_resets_rings_on_a_bare_version_change_from_the_default():
     run_engine(eng, st, t)
     m = st.get_model(S, e, "model.calib")
     assert m["resets"] == 1 and m["version"] == 2
+
+
+# ------------------------------------------------- store: raise-only rules
+def test_ensure_retention_only_raises():
+    """R2.1: D0 and D2 both ask for act.events; neither may lower a longer
+    rule another engine (or the store default) set."""
+    st = make_store()
+    H = 3600.0
+    assert st._rule("raw", "act.events", 1.0)[1] == 24 * H          # store default
+    assert st.ensure_retention("act.events", max_age_s=6 * H) is False
+    assert st._rule("raw", "act.events", 1.0)[1] == 24 * H          # not lowered
+    st.ensure_retention("act.events", max_age_s=48 * H)
+    assert st._rule("raw", "act.events", 1.0)[1] == 48 * H          # raised
+    assert st.ensure_retention("act.events", max_age_s=24 * H) is False
+    assert st._rule("raw", "act.events", 1.0)[1] == 48 * H
+    # a name without any rule gets the requested one
+    st.ensure_retention("x.custom", max_age_s=2 * H)
+    assert st._rule("raw", "x.custom", 1.0)[1] == 2 * H
+    # the explicit points cap of an engine-owned series is kept
+    st.ensure_retention("behavior.budget", None, 1 * 86400.0)
+    assert st._rule("derived", "behavior.budget")[0] == 24
+
+
+# --------------------------------------------------- store: named snapshot
+def test_snapshot_restricted_to_names_equals_the_full_snapshot():
+    """lib-4 asks only for the metrics its signatures reference; the values
+    must equal the full snapshot's (derived wins over raw, NaN skipped)."""
+    from helpers import add_obs_tick, add_derived_series
+    st = make_store()
+    e = "10.0.0.1"
+    add_obs_tick(st, S, e, T0, {"http.requests": 10, "l4.flows": 3})
+    add_derived_series(st, S, e, "derived.path_entropy", [0.4])
+    add_derived_series(st, S, e, "derived.nan_one", [math.nan])
+    st.add_vec(S, e, "behavior.risk", T0, [5.0], window_s=int(DT))
+    full = st.snapshot(S, e)
+    names = ["http.requests", "derived.path_entropy", "derived.nan_one", "nope"]
+    part = st.snapshot(S, e, names=names)
+    assert part == {k: v for k, v in full.items() if k in names}
+    assert st.snapshot(S, e, now=T0 + DT, names=names) == {}
+
+
+# ----------------------------------------------------- R2: vocab maturity
+def test_new_template_ratio_needs_a_mature_system_vocabulary():
+    from app.engines.behavior.lib import m_template as MT
+    assert not MT.vocab_mature(None, T0)
+    assert not MT.vocab_mature({"born": T0}, T0 + MT.NEW_REF_S - 1.0)
+    assert MT.vocab_mature({"born": T0}, T0 + MT.NEW_REF_S)
+
+
+# ------------------------------------------- m_identity: client sketch block
+def test_window_vector_zeroes_the_client_stack_sketch_block():
+    """R20.2: client stacks are their own capped modality in B16, so the
+    client.stack_set namespace of the mean sketch is not part of z."""
+    from app.engines.behavior.lib import m_identity as MI
+    from app.engines.behavior.lib import sketch as SK
+    rng = np.random.default_rng(1)
+    rows = rng.normal(size=(4, MI.TICK_DIM))
+    w = MI.window_vector(rows)
+    assert np.all(w[MI.W_SK_CLIENT] == 0.0)
+    i = SK.SKETCH_NAMESPACES.index("client.stack_set")
+    blk = slice(60 + 16 * i, 60 + 16 * (i + 1))
+    assert MI.W_SK_CLIENT == blk
+    other = [c for c in range(60, 140) if not blk.start <= c < blk.stop]
+    assert np.all(w[other] != 0.0)

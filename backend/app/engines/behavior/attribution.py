@@ -576,8 +576,12 @@ class AttributionEngine(Engine):
         ln2pi = z.size * math.log(2.0 * math.pi)            # d2 = -2 l_e(z) - r ln 2 pi
         ps = [chi2_p(-2.0 * l_all[j] - ln2pi, z.size) for j in cands if j in l_all]
         p_max = max(ps) if ps else _NAN
+        # the chi2 typicality is calibrated on full K-row windows (B15 fits on
+        # them); a partial window (a new or long-silent entity's first active
+        # ticks: IQR 0, a noisier median) only lets the chart decay
         if p_max == p_max:
-            st["U"] = max(0.0, float(st["U"]) + (U_UP if p_max < P_TYPICAL else -U_DOWN))
+            up = p_max < P_TYPICAL and len(rows) >= K
+            st["U"] = max(0.0, float(st["U"]) + (U_UP if up else -U_DOWN))
         class_p = typicality(model, z, own_cls if own_cls else SYSTEM_KEY)
 
         # ---- events

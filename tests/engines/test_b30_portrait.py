@@ -302,10 +302,11 @@ def test_refresh_is_per_key_and_scheduled():
     eng = PortraitEngine()
     assert run_engine(eng, store, NOW) == 1
     assert run_engine(eng, store, NOW + 900.0) == 0          # refreshed < 2 h ago
-    # safe_run honours interval 8 / period 2 h
+    # the engine runs every tick; each key refreshes once per 2 h at its own
+    # phase (integration: spreads the refresh work instead of an 8-tick burst)
     eng2 = PortraitEngine()
     runs = [run_engine(eng2, store, NOW + k * 900.0, scheduled=True) for k in range(9)]
-    assert runs[0] == 1 and sum(runs[1:8]) == 0 and eng2.runs == 2
+    assert runs[0] == 1 and sum(runs[1:9]) == 1 and eng2.runs == 9
 
 
 def test_template_mix_change_and_workload_shift_are_versioned():
@@ -419,7 +420,7 @@ def test_mixture_quantiles_match_single_nb():
 
 def test_static_consumes_are_absolute_and_contract_names():
     eng = PortraitEngine()
-    assert eng.interval == 8 and eng.period_s == 7200.0 and eng.layer == "behavior"
+    assert eng.interval == 1 and eng.refresh_s == 7200.0 and eng.layer == "behavior"
     for bad in ("behavior.z", "behavior.zr", "behavior.zi"):
         assert bad not in eng.consumes
     assert "profile.extra.portrait" in eng.produces

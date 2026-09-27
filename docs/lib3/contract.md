@@ -43,7 +43,7 @@ Raw (lib-1):
 - New: l4.dport_set, l4.peer_set, l4.syn_count, l4.pkts_total, l4.flow_duration_ms_avg, http.status_3xx, http.get_count, http.write_count, http.req_bytes_avg, dns.txt_count, dns.qname_len_avg, tls.handshake_ms_avg.
 - act.tokens {token: n}.
 - act.stream: numpy structured rows [ts, token_id, outcome, up, down, dest_id, stack_id], at most 512 per tick.
-- act.stream_frac, act.events (zero-filled with touch=False), act.objs {template: {n, ids ≤ 256, hll?}}, act.distinct_templates, act.new_template_ratio.
+- act.stream_frac, act.events (zero-filled with touch=False), act.objs {template: {n, ids ≤ 256, hll?}}, act.distinct_templates, act.new_template_ratio (absent until the system vocabulary model.template is 24 h old: before one daily cycle, "new to the system" measures the vocabulary's own growth, 1.0 on the first tick).
 - act.rare_events {dest_id: [[ts, up, down]]}.
 - client.stack_set {token: {n, bytes, first_ts, last_ts}}, client.stack_events [[stack_id, first_ts, last_ts, n]], client.ua_set, client.ja3n_set, client.ttl_set, client.os_ua_ttl_pairs.
 
@@ -146,10 +146,10 @@ D. MetricStore API additions (backward compatible)
 - put_profile_version and profile_versions(s, e, n=12).
 - put_model, get_model, model_version.
 - put_checkpoint and get_checkpoint.
-- set_retention and memory_report().
+- set_retention and memory_report(). ensure_retention(prefix, max_points=None, max_age_s=None) is the raise-only form for inputs several engines need (D0 / D2 on act.events): it never lowers a rule the store default or another engine set.
 - put_health(engine, dict), health(), last_write_ts(s, e, name).
 - timeline(s, e, since): merges indexed events, matches, incidents, profile versions and risk points.
-- snapshot(s, e, now=None): when now is given, it returns only fresh values.
+- snapshot(s, e, now=None, names=None): when now is given, it returns only fresh values; with names, only those metrics (the same values; lib-4 passes the metrics its signatures reference, since lib-3 adds ~300 derived names and vector views per entity).
 - RawMetric, DerivedMetric, BehaviorEvent and SignatureMatch become dataclass(slots=True) with None defaults for dims and inputs.
 
 E. Schema additions

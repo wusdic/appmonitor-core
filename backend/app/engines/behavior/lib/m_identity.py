@@ -101,6 +101,7 @@ from . import m_client, m_rhythm, m_seq, m_template, m_timing, m_vocab
 from .classkeys import SYSTEM_KEY
 from .names import etld1
 from .template import channel_of
+from .sketch import SKETCH_BLOCK, SKETCH_NAMESPACES
 
 MODEL = "model.identity"
 IDWIN = "model.idwin"
@@ -124,6 +125,9 @@ TICK_DIM = 138
 W_MED = slice(0, 52)
 W_IQR = slice(52, 60)
 W_SK = slice(60, 140)
+# sketch namespace 'client.stack_set' (lib/sketch.SKETCH_NAMESPACES[1]) inside W_SK
+_SK_CLIENT = SKETCH_NAMESPACES.index("client.stack_set")
+W_SK_CLIENT = slice(60 + SKETCH_BLOCK * _SK_CLIENT, 60 + SKETCH_BLOCK * (_SK_CLIENT + 1))
 W_TIM = slice(140, 143)
 W_CLK = slice(143, 146)
 RAW_DIM = 146
@@ -292,6 +296,11 @@ def window_vector(rows: Any) -> np.ndarray:
     q25, q75 = _col_quantiles(vec[:, list(IQR_IDX)], (0.25, 0.75))
     out[W_IQR] = q75 - q25
     out[W_SK] = _col_nanmean(R[:, T_SK])
+    # the client.stack_set namespace block of the sketch is zeroed (integration
+    # R20.2): client stacks are their own capped modality (B16's +-4 nats),
+    # and leaving them in z too would let a browser upgrade move the gauss
+    # block without bound
+    out[W_SK_CLIENT] = 0.0
     out[W_TIM] = _col_quantiles(R[:, T_TIM], (0.5,))[0]
     clk = R[:, T_CLK]
     sc = _col_nanmean(clk[:, :2])

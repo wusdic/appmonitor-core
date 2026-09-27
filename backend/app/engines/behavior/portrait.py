@@ -194,8 +194,12 @@ class PortraitEngine(Engine):
                    "stability, risk, timeline; class members, cohesion, bands, heatmap, "
                    "adoptions) with zh/en texts and diffs (JSD > 0.1, quantile shift > 25 %, "
                    "window change > 1 h).")
-    interval = 8
-    period_s = 7200.0
+    # the engine runs every tick and each key refreshes once per refresh_s at
+    # its own phase (entity_due): the same work as an 8-tick / 2-h engine
+    # stride, spread over the ticks instead of one burst for every key
+    # (integration perf: the burst was ~70 ms per 8th tick at 20 entities)
+    interval = 1
+    period_s = None
 
     def __init__(self, refresh_s: float = REFRESH_S, **params: Any) -> None:
         super().__init__(**params)
@@ -207,16 +211,18 @@ class PortraitEngine(Engine):
         dt = float(ctx.window_s) if ctx.window_s and ctx.window_s > 0 else BAND_EXPOSURE_S
         n = 0
         for s in store.systems():
+            ents = [e for e in store.entities(s)
+                    if self.entity_due(("portrait", s, e), now, self.refresh_s)]
+            cks = [ck for ck in m_class.all_class_keys(store, s)
+                   if self.entity_due(("portrait", s, ck), now, self.refresh_s)]
+            if not ents and not cks:
+                continue
             sysc = _SysCtx(store, s, now, dt)
-            for e in store.entities(s):
-                if not self.entity_due(("portrait", s, e), now, self.refresh_s):
-                    continue
+            for e in ents:
                 js, sig = entity_portrait(sysc, e)
                 _publish(store, s, e, js, sig, now)
                 n += 1
-            for ck in m_class.all_class_keys(store, s):
-                if not self.entity_due(("portrait", s, ck), now, self.refresh_s):
-                    continue
+            for ck in cks:
                 js, sig = class_portrait(sysc, ck)
                 _publish(store, s, ck, js, sig, now)
                 n += 1

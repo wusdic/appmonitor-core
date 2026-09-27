@@ -72,13 +72,13 @@ _RETAINED: "weakref.WeakSet" = weakref.WeakSet()
 
 
 def ensure_retention(store) -> None:
-    """Keep act.events for 24 h (contract B + reviewer correction; D0 sets the
-    same rule). Idempotent; done once per store because set_retention clears
-    the store's rule cache."""
+    """Keep act.events for at least 24 h (contract B; D0 asks for the same).
+    store.ensure_retention only raises a rule, so D2 can never lower a longer
+    retention another engine set (integration R2.1). Done once per store."""
     if store in _RETAINED:
         return
     for name in RETAIN_INPUTS:
-        store.set_retention(name, max_age_s=SPAN_S)
+        store.ensure_retention(name, max_age_s=SPAN_S)
     _RETAINED.add(store)
 
 

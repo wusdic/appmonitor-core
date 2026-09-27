@@ -429,9 +429,9 @@ class CalibrationEngine(Engine):
         return lr
 
     def _ensure_retention(self, store) -> None:
-        """behavior.calib_health is not in contract B's retention table: keep 8 d."""
+        """behavior.calib_health: at least 8 d (contract B; store default). Raise-only."""
         if self._ret_store is None or self._ret_store() is not store:
-            store.set_retention(CALIB_HEALTH, None, HEALTH_RETENTION_S)
+            store.ensure_retention(CALIB_HEALTH, None, HEALTH_RETENTION_S)
             self._ret_store = weakref.ref(store)
 
     def _ring_key(self, d: str, stratum: str) -> str:

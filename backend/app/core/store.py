@@ -369,6 +369,38 @@ class MetricStore:
             self._retention[prefix] = (max_points, max_age_s)
             self._ret_cache.clear()
 
+    def ensure_retention(self, prefix: str, max_points: Optional[int] = None,
+                         max_age_s: Optional[float] = None) -> bool:
+        """Raise-only retention for `prefix`: keep AT LEAST max_points points
+        and max_age_s seconds (None = no requirement), never lowering what the
+        store defaults or another engine already set for it (integration R2.1:
+        two engines that need the same input must not undo each other in
+        registry order). The starting point is the longest-prefix explicit
+        rule covering `prefix`; without one the request is taken as is.
+        Idempotent and cheap (the rule cache is cleared only on a change).
+        Returns True when the rule changed."""
+        with self._lock:
+            best = ""
+            for p in self._retention:
+                if prefix.startswith(p) and len(p) > len(best):
+                    best = p
+            cur = self._retention.get(best) if best else None
+            if cur is None:
+                new = (int(max_points) if max_points is not None else None,
+                       float(max_age_s) if max_age_s is not None else None)
+            else:
+                mp, age = cur
+                if max_points is not None and mp is not None and int(max_points) > mp:
+                    mp = int(max_points)
+                if max_age_s is not None and age is not None and float(max_age_s) > age:
+                    age = float(max_age_s)
+                new = (mp, age)
+            if best == prefix and cur == new:
+                return False
+            self._retention[prefix] = new
+            self._ret_cache.clear()
+            return True
+
     def _rule(self, space: str, name: str, value: Any = None) -> Tuple[int, Optional[float]]:
         """(max_points, max_age_s) for a series; cached per (space, name)."""
         ck = (space, name)
@@ -1052,13 +1084,30 @@ class MetricStore:
                 return None
             return m.value
 
-    def snapshot(self, system: str, entity: str, now: Optional[float] = None) -> Dict[str, float]:
+    def snapshot(self, system: str, entity: str, now: Optional[float] = None,
+                 names: Optional[Iterable[str]] = None) -> Dict[str, float]:
         """Latest numeric value of every raw+derived metric for an entity.
         This flat name->value map is what the signature engines match against,
         so they need no knowledge of how the values were produced. With `now`,
         only values written at `now` are included (fresh-only). NaN views
-        (unscored) are skipped."""
+        (unscored) are skipped. With `names`, only those metrics are looked
+        up (same values as the full snapshot restricted to them): lib-3 adds
+        ~300 derived names and vector views per entity that no signature reads
+        (integration: the full scan cost lib-4 ~2.5 ms per entity per tick)."""
         snap: Dict[str, float] = {}
+        if names is not None:
+            with self._lock:
+                for name in names:                     # derived wins, as below
+                    m = self.latest_derived(system, entity, name)
+                    if m is not None and isinstance(m.value, (int, float)) \
+                            and (now is None or m.ts == now) and m.value == m.value:
+                        snap[name] = float(m.value)
+                        continue
+                    r = self.latest_raw(system, entity, name)
+                    if r is not None and isinstance(r.value, (int, float)) \
+                            and (now is None or r.ts == now):
+                        snap[name] = float(r.value)
+            return snap
         with self._lock:
             for name in self.raw_names(system, entity):
                 m = self.latest_raw(system, entity, name)
