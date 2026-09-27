@@ -1,6 +1,11 @@
-// AppMonitor Core — dashboard controller.
+// AppMonitor Core — dashboard controller: shared helpers, hash router and the
+// v1 views (overview, entity list, events, signatures, catalog, engines).
+// The lib-3 v2 pages (entity, class, incident queue, system view, eval) live
+// in pages.js.
 const SEV = ["info","low","medium","high","critical"];
-const SEV_COLOR = {info:"#4da3ff",low:"#7bd88f",medium:"#f2c14e",high:"#ff9f43",critical:"#ff5d6c"};
+// status colours (reserved; always shown with a text label)
+const SEV_COLOR = {info:"#4da3ff",low:"#0ca30c",medium:"#fab219",high:"#ec835a",critical:"#d03b3b"};
+const TIER_ZH = {low:"低",medium:"中",high:"高",critical:"严重"};
 const LAYER_CN = {raw:"原始指标库",derived:"次生指标库",behavior:"行为库",signature:"行为特征库"};
 const CAT_COLOR = {browse:"#4da3ff",search:"#4da3ff",write:"#7bd88f",api:"#2ec7a6",integration:"#2ec7a6",
   auth:"#f2c14e",admin:"#f2c14e",transfer:"#ff9f43",streaming:"#4da3ff",sync:"#2ec7a6",
@@ -11,72 +16,124 @@ const $ = s => document.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
   const e = document.createElement(tag);
   for (const k in attrs) {
-    if (k === "class") e.className = attrs[k];
-    else if (k === "html") e.innerHTML = attrs[k];
-    else if (k.startsWith("on")) e.addEventListener(k.slice(2), attrs[k]);
-    else e.setAttribute(k, attrs[k]);
+    const v = attrs[k];
+    if (v === undefined || v === null || v === false) continue;
+    if (k === "class") e.className = v;
+    else if (k === "html") e.innerHTML = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
   }
-  kids.flat().forEach(k => e.appendChild(typeof k === "string" ? document.createTextNode(k) : k));
+  kids.flat().forEach(k => { if (k === null || k === undefined || k === false || k === "") return;
+    e.appendChild(typeof k === "string" || typeof k === "number" ? document.createTextNode(String(k)) : k); });
   return e;
 };
-const sevBadge = s => h("span",{class:"badge sev-"+s}, s);
+let STATE = { view:"overview", system:null, systems:[], tz:"Asia/Shanghai", lang:"zh", params:[] };
+try { STATE.lang = localStorage.getItem("appmon.lang") || "zh"; } catch (_) { /* storage blocked */ }
+const t = (zh, en) => STATE.lang === "en" ? (en ?? zh) : zh;
+const sevBadge = s => h("span",{class:"badge sev-"+(s||"info")}, s||"—");
+const tierBadge = (tier, score) => tier
+  ? h("span",{class:"badge sev-"+tier, title:"risk tier"}, t(TIER_ZH[tier]||tier, tier) + (score!=null?` · ${Math.round(score)}`:""))
+  : h("span",{class:"muted small"},"—");
 const catBadge = c => h("span",{class:"badge",style:`background:${(CAT_COLOR[c]||"#4da3ff")}22;color:${CAT_COLOR[c]||"#4da3ff"}`}, c);
 const pct = v => Math.round((v||0)*100);
-const fmtTs = t => new Date(t*1000).toLocaleTimeString();
-
-let STATE = { view:"overview", system:null, entity:null, systems:[] };
+const fmtN = v => Charts.fmtNum(v);
+function fmtTs(ts, withDate=true){
+  if(ts==null) return "—";
+  try{
+    const o = {timeZone:STATE.tz, hour12:false, hour:"2-digit", minute:"2-digit", second:"2-digit"};
+    if(withDate){ o.month="2-digit"; o.day="2-digit"; }
+    return new Intl.DateTimeFormat(STATE.lang==="en"?"en-GB":"zh-CN", o).format(new Date(ts*1000));
+  }catch(_){ return new Date(ts*1000).toLocaleString(); }
+}
+const fmtShort = ts => fmtTs(ts, true).replace(/:\d\d$/,"");
+function fmtDays(days){
+  if(days==null||!isFinite(days)) return "—";
+  if(days>=3650) return t("超过万年一遇","rarer than once in 10k years").replace("万年", days>=3.65e6?"千万年":"万年");
+  if(days>=365) return t(`约 ${Math.round(days/365)} 年一次`,`once in ~${Math.round(days/365)} years`);
+  if(days>=1) return t(`约 ${Math.round(days)} 天一次`,`once in ~${Math.round(days)} days`);
+  return t(`每天约 ${(1/days).toFixed(1)} 次`,`~${(1/days).toFixed(1)}× per day`);
+}
+const link = (href, ...kids) => h("a",{href}, ...kids);
+const entHref = (sys, e) => e && e.startsWith("class:") ? `#/class/${encodeURIComponent(sys)}/${encodeURIComponent(e)}`
+  : `#/entity/${encodeURIComponent(sys)}/${encodeURIComponent(e)}`;
+function card(title, ...kids){ return h("div",{class:"card"}, title?h("h3",{},title):"", ...kids); }
+function kvRow(k, v){ return h("div",{class:"kv"}, h("span",{class:"muted"},k), h("b",{},v==null||v===""?"—":v)); }
+function empty(msg){ return h("div",{class:"muted small empty"}, msg||t("暂无数据","no data yet")); }
+function toast(msg, ok=true){
+  const d=h("div",{class:"toast "+(ok?"ok":"bad")}, msg); document.body.appendChild(d);
+  setTimeout(()=>d.remove(), 3200);
+}
+function systemSelect(onChange){
+  return h("select",{class:"search",onchange:e=>onChange(e.target.value)},
+    ...STATE.systems.map(s=>h("option",{value:s,selected:s===STATE.system?"selected":null},s)));
+}
+function meter(v){ return h("div",{class:"rowline"}, h("div",{class:"meter",style:"flex:1"},
+  h("span",{style:`width:${pct(v)}%`})), h("span",{class:"small muted"}, v==null?"—":pct(v)+"%")); }
+function riskBar(score, tier){
+  const w = Math.max(0, Math.min(100, score||0));
+  return h("div",{class:"rowline"}, h("div",{class:"meter risk",style:"flex:1"},
+    h("span",{style:`width:${w}%;background:${SEV_COLOR[tier]||"#4da3ff"}`})), tierBadge(tier, score));
+}
 
 // ------------------------------------------------------------------ router
-function switchView(v){
-  STATE.view=v;
-  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.view===v));
-  document.querySelectorAll(".view").forEach(s=>s.classList.add("hidden"));
-  $("#view-"+v).classList.remove("hidden");
+const ROUTES = {};   // view -> render(params)
+const TABS = ["overview","entities","classes","incidents","system","events","signatures","catalog","engines","eval"];
+function route(){
+  const hash = location.hash.replace(/^#\/?/,"") || "overview";
+  const [path, query] = hash.split("?");
+  const parts = path.split("/").map(decodeURIComponent);
+  STATE.view = parts[0] || "overview";
+  STATE.params = parts.slice(1);
+  STATE.query = Object.fromEntries(new URLSearchParams(query||""));
+  const tab = {entity:"entities", class:"classes", incident:"incidents"}[STATE.view] || STATE.view;
+  document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active", b.dataset.view===tab));
   render();
 }
-document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>switchView(t.dataset.view)));
-
 async function render(){
+  const root = $("#app"); const fn = ROUTES[STATE.view] || ROUTES.overview;
+  const token = (STATE.renderToken = (STATE.renderToken||0)+1);
   try{
-    if(STATE.view==="overview") await renderOverview();
-    else if(STATE.view==="entities") await (STATE.entity?renderEntityDetail():renderEntities());
-    else if(STATE.view==="events") await renderEvents();
-    else if(STATE.view==="signatures") await renderSignatures();
-    else if(STATE.view==="catalog") await renderCatalog();
-    else if(STATE.view==="engines") await renderEngines();
-  }catch(e){ console.error(e); }
+    const node = await fn(STATE.params, STATE.query);
+    if(token !== STATE.renderToken || !node) return;       // a newer route won
+    root.innerHTML=""; root.appendChild(node);
+  }catch(e){
+    console.error(e);
+    if(token !== STATE.renderToken) return;
+    root.innerHTML="";
+    root.appendChild(card(t("加载失败","Failed to load"), h("div",{class:"muted"},
+      e.status===404 ? t("未找到 (404)","not found (404)") : String(e.message||e))));
+  }
 }
+const go = (hash) => { if(location.hash===hash) render(); else location.hash = hash; };
 
 // ------------------------------------------------------------------ overview
-async function renderOverview(){
+ROUTES.overview = async () => {
   const o = await API.overview();
-  const root = $("#view-overview"); root.innerHTML="";
+  const root = h("section",{});
   root.appendChild(pipelineFlow());
   const sevSeg = SEV.map(s=>({label:s,value:(o.severity_breakdown||{})[s]||0,color:SEV_COLOR[s]})).filter(x=>x.value);
-  const kpis = h("div",{class:"grid g4"},
-    kpi("业务系统", o.systems.length, "monitored systems"),
-    kpi("监测实体", o.entity_count, "IP / IP-类"),
-    kpi("行为事件", o.event_count, "anomaly / drift / sequence"),
-    kpi("特征命中", o.match_count, "signature matches"));
-  root.appendChild(kpis);
+  root.appendChild(h("div",{class:"grid g4"},
+    kpi(t("业务系统","Systems"), o.systems.length, "monitored systems"),
+    kpi(t("监测实体","Entities"), o.entity_count, "IP / IP-类"),
+    kpi(t("行为事件","Events"), o.event_count, "lib-3 findings"),
+    kpi(t("特征命中","Matches"), o.match_count, "signature matches")));
   const catData = Object.entries(o.category_breakdown||{}).sort((a,b)=>b[1]-a[1])
     .map(([k,v])=>({label:k,value:v,color:CAT_COLOR[k]||"#4da3ff"}));
   root.appendChild(h("div",{class:"grid g3",style:"margin-top:14px"},
-    h("div",{class:"card"}, h("h3",{},"系统与实体"), systemsTable(o.systems)),
-    h("div",{class:"card"}, h("h3",{},"事件严重度分布"),
-      sevSeg.length?Charts.donut(sevSeg):h("div",{class:"muted"},"暂无"),
+    card(t("系统与实体","Systems"), systemsTable(o.systems)),
+    card(t("事件严重度分布","Event severity"),
+      sevSeg.length?Charts.donut(sevSeg):empty(),
       h("div",{class:"legend"}, ...sevSeg.map(s=>h("span",{}, h("i",{class:"dot",style:`background:${s.color}`}), `${s.label} ${s.value}`)))),
-    h("div",{class:"card"}, h("h3",{},"活动类别命中 Top"), Charts.bars(catData.slice(0,10),{h:catData.slice(0,10).length*26+8}))));
+    card(t("活动类别命中 Top","Top activity categories"), Charts.bars(catData.slice(0,10),{h:Math.max(1,catData.slice(0,10).length)*26+8}))));
   $("#tickinfo").textContent = `tick ${o.tick_count} · live ${o.live_ticks}`;
-}
-
+  return root;
+};
 function kpi(title,val,sub){ return h("div",{class:"card"}, h("h3",{},title),
   h("div",{class:"kpi"}, String(val), h("small",{},sub))); }
-
 function pipelineFlow(){
   const nodes = [["原始指标库","被动流量 + 主动探测","layer-raw"],
     ["次生指标库","聚合/比率/周期/熵/会话/图/趋势","layer-derived"],
-    ["行为库","特征向量→基线→指纹→聚类→异常/漂移/序列","layer-behavior"],
+    ["行为库","特征→基线→似然→校准→融合→风险→事件→画像","layer-behavior"],
     ["行为特征库","规则匹配 + 时序关联","layer-signature"]];
   const f=h("div",{class:"flow"});
   nodes.forEach((n,i)=>{ f.appendChild(h("div",{class:"node"},
@@ -85,140 +142,96 @@ function pipelineFlow(){
   return f;
 }
 function systemsTable(systems){
-  const t=h("table",{}, h("tr",{}, h("th",{},"系统"), h("th",{},"实体数"), h("th",{})));
-  systems.forEach(s=> t.appendChild(h("tr",{},
+  const tb=h("table",{}, h("tr",{}, h("th",{},t("系统","System")), h("th",{},t("实体数","Entities")), h("th",{})));
+  systems.forEach(s=> tb.appendChild(h("tr",{},
     h("td",{}, h("b",{},s.id)), h("td",{class:"num"},String(s.entities)),
-    h("td",{}, h("span",{class:"tag pill",onclick:()=>{STATE.system=s.id;STATE.entity=null;switchView("entities");}},"查看画像 →")))));
-  return t;
+    h("td",{class:"links"}, link(`#/entities/${encodeURIComponent(s.id)}`, t("画像","entities")," →"),
+      link(`#/system/${encodeURIComponent(s.id)}`, t("系统视图","system")," →")))));
+  return h("div",{class:"tablewrap"}, tb);
 }
 
 // ------------------------------------------------------------------ entities
-async function renderEntities(){
-  const root=$("#view-entities"); root.innerHTML="";
-  if(!STATE.system) STATE.system = (await API.systems()).systems[0];
-  const sysSel = h("select",{class:"search",onchange:e=>{STATE.system=e.target.value;renderEntities();}},
-    ...STATE.systems.map(s=>h("option",{value:s,...(s===STATE.system?{selected:"1"}:{})},s)));
+// Ranked by behavior.risk (B26); tier + risk replace the raw anomaly %.
+ROUTES.entities = async (params) => {
+  if(params[0]) STATE.system = params[0];
+  if(!STATE.system) STATE.system = STATE.systems[0];
   const data = await API.entities(STATE.system);
-  root.appendChild(h("div",{class:"detail-head"}, h("h3",{style:"margin:0"},"实体行为画像"), sysSel,
-    h("span",{class:"muted small right"},"按当前异常/漂移评分排序 · 点击行查看画像")));
-  const t=h("table",{}, h("tr",{},
-    h("th",{},"实体(IP/IP类)"), h("th",{},"行为类型(泛化)"), h("th",{},"可区分度"),
-    h("th",{},"当前活动"), h("th",{},"异常"), h("th",{},"漂移"), h("th",{},"基线")));
+  const root = h("section",{});
+  root.appendChild(h("div",{class:"detail-head"}, h("h2",{},t("实体行为画像","Entities")),
+    systemSelect(s=>go(`#/entities/${encodeURIComponent(s)}`)),
+    h("span",{class:"muted small right"},t("按风险排序 · 点击行查看画像","ranked by risk · click a row"))));
+  const tb=h("table",{}, h("tr",{},
+    h("th",{},t("实体","Entity")), h("th",{},t("类路径","Class path")), h("th",{style:"min-width:170px"},t("风险","Risk")),
+    h("th",{},t("趋势","Trend")), h("th",{},t("可辨识度","Identifiability")), h("th",{},t("事件","Incidents")),
+    h("th",{},t("状态","Regime")), h("th",{},t("当前活动","Current activity"))));
   data.entities.forEach(e=>{
-    const score=Math.max(e.anomaly_score,e.drift_score);
-    const row=h("tr",{style:"cursor:pointer",onclick:()=>{STATE.entity=e.entity;renderEntityDetail();}},
+    tb.appendChild(h("tr",{class:"clickable",onclick:()=>go(entHref(STATE.system,e.entity))},
       h("td",{}, h("b",{class:"mono"},e.entity)),
-      h("td",{}, e.archetype?h("span",{class:"tag"},e.archetype):h("span",{class:"muted"},"学习中")),
+      h("td",{}, e.class_path?h("span",{class:"tag",title:e.role_name||""},e.class_path):h("span",{class:"muted"},t("学习中","learning"))),
+      h("td",{}, riskBar(e.risk, e.tier)),
+      h("td",{class:"num"}, e.trend==null?"—":Math.round(e.trend)),
       h("td",{}, meter(e.separability)),
+      h("td",{class:"num"}, e.open_incidents?h("span",{class:"badge sev-high"},String(e.open_incidents)):"0"),
+      h("td",{}, regimeBadge(e.regime)),
       h("td",{}, e.current_category?catBadge(e.current_category):h("span",{class:"muted"},"—"),
-        " ", h("span",{class:"small muted"}, e.current_activity||"")),
-      h("td",{class:"num",style:scoreColor(e.anomaly_score)}, e.anomaly_score?pct(e.anomaly_score)+"%":"—"),
-      h("td",{class:"num",style:scoreColor(e.drift_score)}, e.drift_score?pct(e.drift_score)+"%":"—"),
-      h("td",{}, e.stable?h("span",{class:"badge sev-low"},"已建立"):h("span",{class:"badge sev-info"},"n="+e.sample_count)));
-    t.appendChild(row);
+        " ", h("span",{class:"small muted"}, e.current_activity||""))));
   });
-  root.appendChild(h("div",{class:"card scroll"},t));
-}
-function meter(v){ return h("div",{class:"rowline"}, h("div",{class:"meter",style:"flex:1"},
-  h("span",{style:`width:${pct(v)}%`})), h("span",{class:"small muted"},pct(v)+"%")); }
-function scoreColor(s){ if(s>=0.8)return "color:var(--critical);font-weight:700";
-  if(s>=0.6)return "color:var(--high);font-weight:700"; if(s>0)return "color:var(--medium)"; return "color:var(--muted)"; }
-
-async function renderEntityDetail(){
-  const root=$("#view-entities"); root.innerHTML="";
-  const d = await API.entity(STATE.system, STATE.entity);
-  root.appendChild(h("div",{class:"detail-head"},
-    h("span",{class:"back",onclick:()=>{STATE.entity=null;renderEntities();}},"← 返回列表"),
-    h("h3",{style:"margin:0"}, h("span",{class:"mono"},d.entity)),
-    h("span",{class:"muted"}, "@ "+d.system),
-    d.archetype?h("span",{class:"tag"},"泛化行为类: "+d.archetype+" ("+pct(d.archetype_confidence)+"%)"):"" ,
-    h("span",{class:"chip"}, "可区分度 ", h("b",{},pct(d.separability)+"%")),
-    d.stable?h("span",{class:"badge sev-low"},"基线已建立"):h("span",{class:"badge sev-info"},"学习中 n="+d.sample_count)));
-  // fingerprint feature bars (z vs baseline)
-  const feats = d.features.slice().sort((a,b)=>Math.abs(b.z)-Math.abs(a.z));
-  const fpCard = h("div",{class:"card"}, h("h3",{},"行为指纹 · 各维度相对基线偏离 (稳健z)"));
-  feats.forEach(f=> fpCard.appendChild(zRow(f)));
-  // events & matches
-  const evCard = h("div",{class:"card scroll"}, h("h3",{},"行为事件"),
-    d.events.length?eventsTable(d.events,true):h("div",{class:"muted"},"无"));
-  const mCard = h("div",{class:"card scroll"}, h("h3",{},"当前行为特征命中（TA在做什么）"),
-    d.matches.length?matchesTable(d.matches):h("div",{class:"muted"},"无"));
-  root.appendChild(h("div",{class:"grid g2"}, fpCard, h("div",{class:"grid",style:"gap:14px"}, mCard, evCard)));
-  // metric explorer
-  const explorer = h("div",{class:"card"}, h("h3",{},"指标时序浏览"));
-  const chartHost = h("div",{style:"margin-top:10px"});
-  const sel = h("select",{class:"search",onchange:e=>drawSeries(e.target.value,chartHost)});
-  // load the entity's available raw/derived metric names
-  const ml = await fetch(`/api/systems/${encodeURIComponent(STATE.system)}/entities/${encodeURIComponent(STATE.entity)}/metrics`).then(r=>r.json());
-  const allMetrics = [...ml.raw, ...ml.derived];
-  allMetrics.forEach(m=> sel.appendChild(h("option",{value:m},m)));
-  explorer.appendChild(sel); explorer.appendChild(chartHost);
-  root.appendChild(explorer);
-  if(allMetrics.length){ const pref = allMetrics.find(m=>m==="l4.bytes_up")||allMetrics[0]; sel.value=pref; drawSeries(pref,chartHost); }
-}
-function zRow(f){
-  const z=Math.max(-12,Math.min(12,f.z)); const left=50+ (z/12)*50;
-  const w=Math.abs(z/12)*50; const x=z>=0?50:left;
-  const col = Math.abs(z)>=3?"#ff5d6c":Math.abs(z)>=2?"#ff9f43":"#4da3ff";
-  return h("div",{class:"feat-bar",style:"margin:4px 0"},
-    h("div",{class:"n"},f.name),
-    h("div",{class:"zbar"}, h("div",{class:"mid"}), h("i",{style:`left:${x}%;width:${w}%;background:${col}`})),
-    h("div",{class:"small mono",style:"width:56px;text-align:right;color:"+col}, (f.z>=0?"+":"")+f.z.toFixed(1)+"σ"));
-}
-async function drawSeries(name,host){
-  host.innerHTML="";
-  const s = await API.series(STATE.system, STATE.entity, name);
-  const pts = s.points.map(p=>p.value).filter(v=>typeof v==="number");
-  host.appendChild(h("div",{class:"muted small"}, name+" · "+s.kind+" · "+pts.length+" 点"));
-  host.appendChild(Charts.sparkline(s.points,{w:640,h:120,color:"#7c5cff"}));
+  root.appendChild(h("div",{class:"card tablewrap"},tb));
+  return root;
+};
+function regimeBadge(state){
+  if(!state) return h("span",{class:"muted small"},"—");
+  const c = {normal:"sev-low",suspect:"sev-medium",drifting:"sev-high",accepted:"sev-info",returned:"sev-low",rejected:"sev-critical"}[state]||"sev-info";
+  return h("span",{class:"badge "+c}, state);
 }
 
 // ------------------------------------------------------------------ events
-async function renderEvents(){
-  const root=$("#view-events"); root.innerHTML="";
+ROUTES.events = async () => {
   const o = await API.events();
-  root.appendChild(h("div",{class:"card scroll"}, h("h3",{},"全局行为事件流（异常 / 漂移 / 异常序列）"),
-    eventsTable(o.events,false)));
-}
+  return h("section",{}, h("div",{class:"card tablewrap scroll"},
+    h("h3",{},t("全局行为事件流","Behaviour events")), eventsTable(o.events,false)));
+};
 function eventsTable(events,compact){
-  const t=h("table",{}, h("tr",{},
-    h("th",{},"时间"), compact?"":h("th",{},"实体"), h("th",{},"类型"), h("th",{},"评分"),
-    h("th",{},"严重度"), h("th",{},"说明")));
-  events.forEach(e=>{ t.appendChild(h("tr",{},
-    h("td",{class:"small muted"},fmtTs(e.ts)),
-    compact?"":h("td",{class:"mono small"}, e.system+"/"+e.entity),
+  const tb=h("table",{}, h("tr",{},
+    h("th",{},t("时间","Time")), compact?"":h("th",{},t("实体","Entity")), h("th",{},t("类型","Kind")),
+    h("th",{},"e_day"), h("th",{},t("严重度","Severity")), h("th",{},t("说明","Description"))));
+  events.forEach(e=>{ tb.appendChild(h("tr",{},
+    h("td",{class:"small muted nowrap"},fmtTs(e.ts)),
+    compact?"":h("td",{class:"mono small"}, link(entHref(e.system,e.entity), e.system+"/"+e.entity)),
     h("td",{}, kindBadge(e.kind)),
-    h("td",{class:"num"}, pct(e.score)+"%"),
+    h("td",{class:"num small"}, e.e_day==null?"—":fmtN(e.e_day)),
     h("td",{}, sevBadge(e.severity)),
     h("td",{class:"small"}, e.description))); });
-  return t;
+  return tb;
 }
-function kindBadge(k){ const m={anomaly:"异常",drift:"漂移",sequence:"异常序列",class:"分类"};
-  const c={anomaly:"#ff9f43",drift:"#7c5cff",sequence:"#f2c14e"}[k]||"#4da3ff";
-  return h("span",{class:"badge",style:`background:${c}22;color:${c}`}, m[k]||k); }
+function kindBadge(k){
+  const c={incident:"#ec835a",regime:"#9085e9",first_seen:"#c98500",unknown_identity:"#d55181",identity_mismatch:"#d55181"}[k]||"#4da3ff";
+  return h("span",{class:"badge",style:`background:${c}22;color:${c}`}, k);
+}
 function matchesTable(matches){
-  const t=h("table",{}, h("tr",{}, h("th",{},"时间"), h("th",{},"类别"), h("th",{},"活动"), h("th",{},"置信")));
-  matches.forEach(m=> t.appendChild(h("tr",{},
-    h("td",{class:"small muted"},fmtTs(m.ts)),
+  const tb=h("table",{}, h("tr",{}, h("th",{},t("时间","Time")), h("th",{},t("类别","Category")), h("th",{},t("活动","Activity")), h("th",{},t("置信","Conf."))));
+  matches.forEach(m=> tb.appendChild(h("tr",{},
+    h("td",{class:"small muted nowrap"},fmtTs(m.ts)),
     h("td",{}, catBadge(m.category)),
     h("td",{class:"small"}, (m.signature_id.startsWith("composite:")?"⛓ ":"")+m.label),
     h("td",{class:"num"}, pct(m.confidence)+"%"))));
-  return t;
+  return tb;
 }
 
 // ------------------------------------------------------------------ signatures
-async function renderSignatures(){
-  const root=$("#view-signatures"); root.innerHTML="";
+ROUTES.signatures = async () => {
   const s = await API.signatures();
-  const search = h("input",{class:"search",placeholder:"筛选特征…",oninput:e=>filterSig(e.target.value)});
-  root.appendChild(h("div",{class:"detail-head"}, h("h3",{style:"margin:0"},"行为特征库 · 指标组合 → 语义"),
-    h("span",{class:"chip"},"原子特征 ", h("b",{},String(s.primitives.length))),
-    h("span",{class:"chip"},"组合特征 ", h("b",{},String(s.composite.length))), search));
-  const wrap=h("div",{class:"grid",id:"sigwrap"});
+  const root=h("section",{});
+  const search = h("input",{class:"search",placeholder:t("筛选特征…","filter…"),oninput:e=>filterSig(e.target.value)});
+  root.appendChild(h("div",{class:"detail-head"}, h("h2",{},t("行为特征库 · 指标组合 → 语义","Signature library")),
+    h("span",{class:"chip"},t("原子特征 ","primitives "), h("b",{},String(s.primitives.length))),
+    h("span",{class:"chip"},t("组合特征 ","composite "), h("b",{},String(s.composite.length))), search));
+  const wrap=h("div",{class:"grid g3"});
   s.primitives.forEach(p=> wrap.appendChild(sigCard(p,false)));
   s.composite.forEach(p=> wrap.appendChild(sigCard(p,true)));
   root.appendChild(wrap);
-}
+  return root;
+};
 function sigCard(p,composite){
   const conds=[];
   (p.all||[]).forEach(c=>conds.push(["ALL",c])); (p.any||[]).forEach(c=>conds.push(["ANY",c]));
@@ -228,81 +241,89 @@ function sigCard(p,composite){
     : h("div",{}, ...conds.map(([kind,c])=>h("div",{class:"chip",style:"margin:2px 4px 2px 0;display:inline-block"},
         h("span",{class:"muted"},kind+" "), h("b",{},c.metric), " "+(c.op||"")+" "+(Array.isArray(c.value)?("["+c.value.join(",")+"]"):c.value))));
   return h("div",{class:"card sigitem","data-txt":(p.id+" "+p.label+" "+p.category).toLowerCase()},
-    h("div",{class:"rowline"}, catBadge(p.category), sevBadge(p.severity),
+    h("div",{class:"rowline wrap"}, catBadge(p.category), sevBadge(p.severity),
       composite?h("span",{class:"tag"},"⛓ 组合"):"", h("b",{class:"right"},p.label)),
     h("div",{class:"small mono muted",style:"margin:4px 0"}, p.id),
     body, p.description?h("div",{class:"small",style:"margin-top:6px;color:#b9c7dd"},p.description):"");
 }
 function filterSig(q){ q=q.toLowerCase(); document.querySelectorAll(".sigitem").forEach(c=>
-  c.classList.toggle("hidden", q && !c.dataset.txt.includes(q))); }
+  c.classList.toggle("hidden", !!q && !c.dataset.txt.includes(q))); }
 
 // ------------------------------------------------------------------ catalog
-async function renderCatalog(){
-  const root=$("#view-catalog"); root.innerHTML="";
+ROUTES.catalog = async () => {
   const c = await API.catalog();
-  const search=h("input",{class:"search",placeholder:"筛选指标…",oninput:e=>filterCat(e.target.value)});
-  root.appendChild(h("div",{class:"detail-head"}, h("h3",{style:"margin:0"},"指标库 · 原始 + 次生"),
-    h("span",{class:"chip"},"原始指标 ", h("b",{},String(c.raw.length))),
-    h("span",{class:"chip"},"次生指标 ", h("b",{},String(c.derived.length))), search));
-  root.appendChild(h("div",{class:"card"}, h("h3",{},"原始指标库（原始指标 · 获取方式）"), catTable(c.raw)));
-  root.appendChild(h("div",{class:"card",style:"margin-top:14px"}, h("h3",{},"次生指标库（组合/分析派生）"), catTable(c.derived)));
-}
+  const root=h("section",{});
+  const search=h("input",{class:"search",placeholder:t("筛选指标…","filter…"),oninput:e=>filterCat(e.target.value)});
+  root.appendChild(h("div",{class:"detail-head"}, h("h2",{},t("指标库 · 原始 + 次生","Metric catalog")),
+    h("span",{class:"chip"},t("原始指标 ","raw "), h("b",{},String(c.raw.length))),
+    h("span",{class:"chip"},t("次生指标 ","derived "), h("b",{},String(c.derived.length))), search));
+  root.appendChild(h("div",{class:"card tablewrap"}, h("h3",{},t("原始指标库","Raw metrics")), catTable(c.raw)));
+  root.appendChild(h("div",{class:"card tablewrap",style:"margin-top:14px"}, h("h3",{},t("次生指标库","Derived metrics")), catTable(c.derived)));
+  return root;
+};
 function catTable(rows){
-  const t=h("table",{class:"cattable"}, h("tr",{},
+  const tb=h("table",{}, h("tr",{},
     h("th",{},"指标"), h("th",{},"分类"), h("th",{},"单位"), h("th",{},"获取方式"), h("th",{},"引擎"), h("th",{},"说明")));
-  rows.forEach(r=> t.appendChild(h("tr",{class:"catrow","data-txt":(r.name+" "+r.category+" "+(r.desc||"")).toLowerCase()},
-    h("td",{class:"mono small"}, r.name),
-    h("td",{}, h("span",{class:"tag"},r.category)),
-    h("td",{class:"small muted"}, r.unit||""),
-    h("td",{}, methodBadge(r.method)),
-    h("td",{class:"small mono muted"}, r.engine||""),
-    h("td",{class:"small"}, r.desc||""))));
-  return t;
+  rows.forEach(r=> tb.appendChild(h("tr",{class:"catrow","data-txt":(r.name+" "+r.category+" "+(r.desc||"")).toLowerCase()},
+    h("td",{class:"mono small"}, r.name), h("td",{}, h("span",{class:"tag"},r.category)),
+    h("td",{class:"small muted"}, r.unit||""), h("td",{}, methodBadge(r.method)),
+    h("td",{class:"small mono muted"}, r.engine||""), h("td",{class:"small"}, r.desc||""))));
+  return tb;
 }
 function methodBadge(m){ const map={passive_span:["被动·镜像解码","#4da3ff"],passive_flow:["被动·流记录","#4da3ff"],
   passive_log:["被动·日志","#4da3ff"],active_probe:["主动·探测","#ff9f43"],active_dns:["主动·DNS","#ff9f43"],
   active_tls:["主动·TLS","#ff9f43"],derived:["派生·计算","#2ec7a6"]};
-  const [t,c]=map[m]||[m,"#8ba0be"]; return h("span",{class:"badge",style:`background:${c}22;color:${c}`}, t); }
+  const [tx,c]=map[m]||[m,"#8ba0be"]; return h("span",{class:"badge",style:`background:${c}22;color:${c}`}, tx); }
 function filterCat(q){ q=q.toLowerCase(); document.querySelectorAll(".catrow").forEach(r=>
-  r.classList.toggle("hidden", q && !r.dataset.txt.includes(q))); }
+  r.classList.toggle("hidden", !!q && !r.dataset.txt.includes(q))); }
 
 // ------------------------------------------------------------------ engines
-async function renderEngines(){
-  const root=$("#view-engines"); root.innerHTML="";
+ROUTES.engines = async () => {
   const e = await API.engines();
-  root.appendChild(h("h3",{},`引擎拓扑 · 共 ${e.count} 个引擎（低耦合 · 可复用）`));
+  const root=h("section",{}, h("h2",{},t(`引擎拓扑 · 共 ${e.count} 个引擎`,`Engines · ${e.count}`)));
   ["raw","derived","behavior","signature"].forEach(layer=>{
     const list = e.layers[layer]||[];
-    const card=h("div",{class:"card",style:"margin-bottom:14px"},
+    const c=h("div",{class:"card tablewrap",style:"margin-bottom:14px"},
       h("h3",{class:"layer-"+layer}, LAYER_CN[layer]+" · "+layer+" ("+list.length+")"));
-    const t=h("table",{}, h("tr",{}, h("th",{},"引擎"), h("th",{},"产出"), h("th",{},"消费"),
+    const tb=h("table",{}, h("tr",{}, h("th",{},"引擎"), h("th",{},"产出"), h("th",{},"消费"),
       h("th",{},"上一tick产出"), h("th",{},"说明")));
-    list.forEach(en=> t.appendChild(h("tr",{},
+    list.forEach(en=> tb.appendChild(h("tr",{},
       h("td",{}, h("b",{class:"mono"},en.name), en.last_error?h("div",{class:"small",style:"color:var(--critical)"},en.last_error):""),
       h("td",{class:"small mono muted"}, (en.produces||[]).join(", ")),
       h("td",{class:"small mono muted"}, (en.consumes||[]).join(", ")),
       h("td",{class:"num"}, String(en.last_count)),
       h("td",{class:"small"}, en.description))));
-    card.appendChild(t); root.appendChild(card);
+    c.appendChild(tb); root.appendChild(c);
   });
-}
+  return root;
+};
 
 // ------------------------------------------------------------------ boot
-async function boot(){
-  try{
-    const sys = await API.systems(); STATE.systems=sys.systems; STATE.system=sys.systems[0];
-    const hb = await API.health();
-    $("#status").textContent = hb.warmed?`运行中 · live ${hb.live_ticks}`:"预热中…";
-    $("#status").classList.toggle("live",hb.warmed);
-  }catch(e){ $("#status").textContent="后端未就绪"; }
-  render();
-  setInterval(async ()=>{
-    try{ const hb=await API.health();
-      $("#status").textContent = hb.warmed?`运行中 · live ${hb.live_ticks}`:"预热中…";
-      $("#status").classList.toggle("live",hb.warmed);
-      if(STATE.view==="overview"||STATE.view==="events") render();
-      if(STATE.view==="entities"&&!STATE.entity) render();
-    }catch(_){}
-  }, 4000);
+async function refreshHealth(){
+  try{ const hb=await API.health();
+    STATE.tz = hb.tz || STATE.tz;
+    $("#status").textContent = hb.warmed?`${t("运行中","live")} · ${fmtTs(hb.now)} · ${STATE.tz}`:t("预热中…","warming up…");
+    $("#status").classList.toggle("live",!!hb.warmed);
+  }catch(e){ $("#status").textContent=t("后端未就绪","backend not ready"); }
 }
-boot();
+function applyLang(){
+  document.documentElement.lang = STATE.lang==="en"?"en":"zh-CN";
+  document.querySelectorAll("[data-zh]").forEach(n=>{ n.textContent = STATE.lang==="en"?n.dataset.en:n.dataset.zh; });
+  const b=$("#langbtn"); if(b) b.textContent = STATE.lang==="en"?"中文":"EN";
+}
+async function boot(){
+  try{ const sys = await API.systems(); STATE.systems=sys.systems; STATE.system=STATE.system||sys.systems[0]; }catch(_){ /* backend down */ }
+  await refreshHealth();
+  applyLang();
+  const lb=$("#langbtn");
+  if(lb) lb.addEventListener("click",()=>{ STATE.lang = STATE.lang==="en"?"zh":"en";
+    try{ localStorage.setItem("appmon.lang",STATE.lang); }catch(_){ /* ignore */ }
+    applyLang(); render(); });
+  window.addEventListener("hashchange", route);
+  route();
+  setInterval(async ()=>{
+    await refreshHealth();
+    if(["overview","entities","incidents"].includes(STATE.view) && !STATE.params[1] && !document.querySelector(".no-autorefresh")) render();
+  }, 8000);
+}
+document.addEventListener("DOMContentLoaded", boot);

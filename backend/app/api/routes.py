@@ -6,23 +6,24 @@ breaks it.
 """
 from __future__ import annotations
 
-import math
 import os
 from typing import Optional
 
-import numpy as np
 import yaml
 from fastapi import APIRouter, HTTPException, Query
 
-from ..engines.behavior.lib.detectors import DETECTORS
-from ..engines.behavior.lib.features import FEATURE_NAMES_V2
 from ..pipeline.build import Runtime
+from . import views as V
 from .serialize import to_jsonable
 
 router = APIRouter(prefix="/api")
 
 # The Runtime is created and attached by main.py
 RUNTIME: Optional[Runtime] = None
+
+# "current activity" = a lib-4 match within this many seconds of STORE time
+# (the newest tick), or within one tick when the cadence is slower
+CURRENT_ACTIVITY_S = 45.0
 
 
 def rt() -> Runtime:
@@ -38,8 +39,11 @@ def _catalog_path() -> str:
 @router.get("/health")
 def health():
     r = rt()
+    now = V.store_now(r)
+    tz = V.runtime_tz(r)
     return {"status": "ok", "warmed": r.warmed, "live_ticks": r.live_ticks,
-            "tick_count": r.pipeline.tick_count}
+            "tick_count": r.pipeline.tick_count, "tz": tz, "now": now,
+            "now_local": V.iso(now, tz), "window_s": V.window_s(r)}
 
 
 @router.get("/overview")
@@ -101,123 +105,110 @@ def systems():
 
 
 # --------------------------------------------------------------------------- #
-# lib-3 v2 read helpers (minimal projection until the full API v2 lands)
+# Entities (legacy endpoints, migrated to lib-3 v2: docs/lib3/api_ui.md)
 # --------------------------------------------------------------------------- #
-DRIFT_DETECTORS = ("cusum", "mcusum", "bocpd", "creep")
-
-
-def _latest_vec(store, system: str, entity: str, name: str):
-    """(ts, row) of the newest row of a vec ring, or (None, None)."""
-    ts, M = store.vec_tail(system, entity, name, 1)
-    if not len(ts):
-        return None, None
-    return float(ts[-1]), np.asarray(M[-1], dtype=np.float64)
-
-
-def _latest_scalar(store, system: str, entity: str, name: str) -> float:
-    _, row = _latest_vec(store, system, entity, name)
-    if row is not None and row.size:
-        return float(row[0])
-    d = store.latest_derived(system, entity, name)
-    try:
-        return float(d.value) if d is not None else math.nan
-    except (TypeError, ValueError):
-        return math.nan
-
-
-def _evidence_score(p: float) -> float:
-    """-log10 of a p-value / expected-count mapped to [0, 1] (1e-6 -> 1)."""
-    if not (p == p) or p <= 0.0:
-        return 0.0 if not (p == p) else 1.0
-    return float(min(1.0, max(0.0, -math.log10(min(p, 1.0)) / 6.0)))
-
-
-def _anomaly_score(store, system: str, entity: str) -> float:
-    """From behavior.e_day (expected equally extreme null ticks per entity-day,
-    architecture section 4), else q_all (meta-calibrated p of the fusion)."""
-    e_day = _latest_scalar(store, system, entity, "behavior.e_day")
-    if e_day == e_day:
-        return _evidence_score(e_day)
-    return _evidence_score(_latest_scalar(store, system, entity, "behavior.q_all"))
-
-
-def _drift_score(store, system: str, entity: str) -> float:
-    """The strongest change-family accumulator (B14 cusum / mcusum / bocpd /
-    creep): calibrated behavior.p where scored, else behavior.pm."""
-    for name in ("behavior.p", "behavior.pm"):
-        _, row = _latest_vec(store, system, entity, name)
-        if row is None or row.size != len(DETECTORS):
-            continue
-        ps = [row[DETECTORS.index(d)] for d in DRIFT_DETECTORS]
-        ps = [p for p in ps if p == p]
-        if ps:
-            return _evidence_score(min(ps))
-    return 0.0
-
-
 @router.get("/systems/{system}/entities")
 def system_entities(system: str):
+    """Entities ranked by behavior.risk (B26). The legacy fields stay for one
+    release but are computed the new way: anomaly_score from the latest
+    q_all's e_day, drift_score from the change-family scores, archetype =
+    class_path, separability = clip(1 - 2 EER_hard, 0, 1) (B15)."""
     r = rt()
-    out = []
-    for entity in r.store.entities(system):
-        prof = r.store.profile(system, entity)
-        recent_match = r.store.matches(system=system, entity=entity, limit=1)
-        out.append({
-            "entity": entity,
-            "archetype": prof.archetype if prof else "",
-            "archetype_confidence": prof.archetype_confidence if prof else 0.0,
-            "separability": prof.separability if prof else 0.0,
-            "stable": prof.stable if prof else False,
-            "sample_count": prof.sample_count if prof else 0,
-            "anomaly_score": round(_anomaly_score(r.store, system, entity), 4),
-            "drift_score": round(_drift_score(r.store, system, entity), 4),
-            "risk": _finite_or_none(_latest_scalar(r.store, system, entity, "behavior.risk")),
-            "current_activity": recent_match[0].label if recent_match else "",
-            "current_category": recent_match[0].category if recent_match else "",
-        })
-    out.sort(key=lambda x: max(x["anomaly_score"], x["drift_score"]), reverse=True)
-    return {"system": system, "entities": out}
-
-
-def _finite_or_none(x: float):
-    return round(x, 4) if x == x and math.isfinite(x) else None
-
-
-def _num(v) -> float:
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        return 0.0
-    return x if math.isfinite(x) else 0.0
+    st = r.store
+    tz = V.runtime_tz(r)
+    with V.read_lock(r):
+        now = V.store_now(r)
+        dt = V.window_s(r)
+        cutoff = now - max(CURRENT_ACTIVITY_S, dt)      # store time, not time.time()
+        out = []
+        for entity in st.entities(system):
+            prof = st.profile(system, entity)
+            extra = dict(prof.extra or {}) if prof else {}
+            pg = V.peer_group(st, system, entity, extra)
+            risk = V.risk_info(st, system, entity, extra)
+            recent = st.matches(system=system, entity=entity, since=cutoff, limit=1)
+            rg = V.regime_info(st, system, entity)
+            out.append({
+                "entity": entity,
+                # legacy fields (kept for one release, computed the v2 way)
+                "archetype": pg.get("class_path") or (prof.archetype if prof else ""),
+                "archetype_confidence": V.rnd(pg.get("prob"), 4)
+                if pg.get("prob") is not None else (prof.archetype_confidence if prof else 0.0),
+                "separability": V.rnd(prof.separability, 4) if prof else None,
+                "stable": bool(prof.stable) if prof else False,
+                "sample_count": prof.sample_count if prof else 0,
+                "anomaly_score": round(V.anomaly_score(st, system, entity, dt), 4),
+                "drift_score": round(V.drift_score(st, system, entity), 4),
+                "current_activity": recent[0].label if recent else "",
+                "current_category": recent[0].category if recent else "",
+                # v2
+                "risk": risk["score"], "tier": risk["tier"], "trend": risk["trend"],
+                "class_path": pg.get("class_path"), "role": pg.get("role"),
+                "role_name": pg.get("role_name"), "role_prob": V.rnd(pg.get("prob"), 4),
+                "open_incidents": V.open_incident_count(st, system, entity),
+                "regime": rg.get("state"),
+                "last_seen": st.last_seen(system, entity),
+                "last_seen_local": V.iso(st.last_seen(system, entity), tz),
+            })
+    out.sort(key=lambda x: (x["risk"] is not None, x["risk"] or 0.0,
+                            x["anomaly_score"], x["drift_score"]), reverse=True)
+    return to_jsonable({"system": system, "tz": tz, "now": now, "now_local": V.iso(now, tz),
+                        "entities": out})
 
 
 @router.get("/systems/{system}/entities/{entity}")
 def entity_detail(system: str, entity: str):
+    """Profile, portrait summary, risk, identity, continuity and regime. The
+    features carry the current value, the predictive p5/p50/p95 in natural
+    units and the engine's own z / zr (B04), not a recomputed unfloored z."""
     r = rt()
-    prof = r.store.profile(system, entity)
-    if not prof:
-        raise HTTPException(404, "no profile yet")
-    names = list(prof.feature_names or FEATURE_NAMES_V2)
-    _, z = _latest_vec(r.store, system, entity, "behavior.z")
-    features = []
-    for i, name in enumerate(names):
-        cur = _num(prof.fingerprint[i]) if i < len(prof.fingerprint) else 0.0
-        med = _num(prof.baseline_median[i]) if i < len(prof.baseline_median) else 0.0
-        mad = _num(prof.baseline_mad[i]) if i < len(prof.baseline_mad) else 0.0
-        zi = _num(z[i]) if z is not None and i < z.size else 0.0
-        features.append({"name": name, "current": round(cur, 3),
-                         "baseline": round(med, 3), "spread": round(mad, 3),
-                         "z": round(zi, 2), "stable": round(med, 3)})
-    return {
-        "system": system, "entity": entity,
-        "archetype": prof.archetype, "archetype_confidence": prof.archetype_confidence,
-        "separability": prof.separability, "stable": prof.stable,
-        "sample_count": prof.sample_count, "updated": prof.updated,
-        "features": features,
-        "seasonal": prof.seasonal,
-        "events": to_jsonable(r.store.events(system=system, entity=entity, limit=30)),
-        "matches": to_jsonable(r.store.matches(system=system, entity=entity, limit=30)),
-    }
+    st = r.store
+    tz = V.runtime_tz(r)
+    with V.read_lock(r):
+        prof = st.profile(system, entity)
+        if not prof:
+            raise HTTPException(404, "no profile yet")
+        now = V.store_now(r)
+        dt = V.window_s(r)
+        extra = dict(prof.extra or {})
+        pg = V.peer_group(st, system, entity, extra)
+        por = extra.get("portrait") if isinstance(extra.get("portrait"), dict) else {}
+        body = {
+            "system": system, "entity": entity,
+            "kind": "class" if entity.startswith("class:") else
+                    ("system" if entity.startswith("__") else "entity"),
+            "tz": tz, "now": now, "now_local": V.iso(now, tz),
+            # legacy
+            "archetype": pg.get("class_path") or prof.archetype,
+            "archetype_confidence": V.rnd(pg.get("prob"), 4)
+            if pg.get("prob") is not None else prof.archetype_confidence,
+            "separability": V.rnd(prof.separability, 4), "stable": bool(prof.stable),
+            "sample_count": prof.sample_count, "updated": prof.updated,
+            "updated_local": V.iso(prof.updated, tz),
+            "features": V.feature_rows(st, system, entity, extra, prof, dt),
+            "seasonal": prof.seasonal,
+            "events": [V.event_view(e, tz) for e in
+                       st.events(system=system, entity=entity, limit=30)],
+            "matches": to_jsonable(st.matches(system=system, entity=entity, limit=30)),
+            # v2
+            "class_path": pg.get("class_path"), "peer_group": pg,
+            "risk": V.risk_info(st, system, entity, extra),
+            "anomaly_score": round(V.anomaly_score(st, system, entity, dt), 4),
+            "drift_score": round(V.drift_score(st, system, entity), 4),
+            "portrait": {"text_zh": por.get("text_zh"), "text_en": por.get("text_en"),
+                         "version": por.get("version"), "updated": por.get("updated"),
+                         "diff": por.get("diff") or []},
+            "identity": extra.get("identity") or {},
+            "attribution": extra.get("attribution") or {},
+            "continuity": extra.get("continuity") or {},
+            "regime": V.regime_info(st, system, entity),
+            "maturity": extra.get("maturity") or {},
+            "calibration": extra.get("calibration") or {},
+            "feedback": extra.get("feedback") or {},
+            "open_incidents": V.open_incident_count(st, system, entity),
+            "first_seen": st.first_seen(system, entity), "last_seen": st.last_seen(system, entity),
+        }
+    return to_jsonable(body)
 
 
 @router.get("/systems/{system}/entities/{entity}/metrics")
@@ -234,10 +225,10 @@ def entity_series(system: str, entity: str, name: str = Query(...), limit: int =
     if raw:
         pts = [{"ts": m.ts, "value": m.value if isinstance(m.value, (int, float)) else None}
                for m in raw[-limit:]]
-        return {"name": name, "kind": "raw", "points": pts}
-    der = r.store.derived_series(system, entity, name)
-    pts = [{"ts": m.ts, "value": m.value} for m in der[-limit:]]
-    return {"name": name, "kind": "derived", "points": pts}
+        return to_jsonable({"name": name, "kind": "raw", "points": pts})
+    der = r.store.derived_tail(system, entity, name, limit)
+    pts = [{"ts": m.ts, "value": m.value} for m in der]
+    return to_jsonable({"name": name, "kind": "derived", "points": pts})
 
 
 @router.get("/events")
