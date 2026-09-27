@@ -1,0 +1,492 @@
+[
+ {
+  "engine": "D0 — AggregationEngine / PeriodicityEngine / TrendEngine (derived, order 0, inte",
+  "requested": [
+   "contract.md B retention table: add 'D0 trend targets (l4.bytes_up, l4.distinct_peers, http.latency_ms_avg, probe.rtt_ms): 13 h'. Also update the row '6 h for the D0 inputs' to 24 h, in line with the reviewer correction already applied (D2 sets the same 24 h).",
+   "engines.md D0: document the 6 h activity gate for trend, the rescaling of counters to the current tick, the Welch split-half z, beacon_lag = 0 when there is no peak, and act.events as a periodicity target.",
+   "Optional: derived/fresh.py could adopt grid_many's vectorised searchsorted fill (the same semantics) so that D2 and others get the speedup."
+  ],
+  "deviations": [
+   "Activity gate: all three engines skip an entity whose last_seen is more than 6 h old. For aggregation and periodicity that is their span. For trend the 12 h span would otherwise still emit for an entity that has been silent 6 to 12 h, which breaks the spec test 'an entity silent for more than 6 h gets no window metrics'.",
+   "Trend targets that are not D0 inputs (l4.bytes_up, l4.distinct_peers, http.latency_ms_avg, probe.rtt_ms) get raw retention of 13 h instead of the 6 h default for raw scalars. Without it the first half of the 12 h trend grid is empty or zero-filled, which gives a NaN or false changepoint. This goes beyond contract B's retention table.",
+   "Cadence invariance: counter grid values are rescaled to the current tick length (v * dt_now / dt_tick). sum is the true total; mean is the time-weighted rate per current tick; p95, max and cv are taken over the rescaled values. Trend's EWMA uses a 1800 s wall-clock half-life (about v1's alpha 0.3 at 900 s ticks), and its slope is fitted against time and reported per current tick. On a uniform grid all of these equal the plain v1-style statistics.",
+   "trend changepoint is now a Welch z of the recent-half mean minus the prior-half mean, split at now - 6 h. Variance is floored at the pooled mean for counters (Poisson) and at (1% of the level)^2 for gauges, and z is clipped to +/-10. v1's robust z against median/MAD gave a saturated +/-6 on sparse series with MAD = 0.",
+   "periodicity: act.events was added as a fourth count target, so TLS-only and L4-only automation is covered. The autocorrelation is FFT-based over lags 2 to n/2. When the grid is non-uniform (a cadence switch or a gap inside the span), counts are re-binned at the coarsest spacing, capped at span/8, so beacon_lag in seconds keeps one meaning. timing_regularity is written only when there are at least 2 active ticks. Otherwise it is absent, which B01 reads as NaN.",
+   "A target with no raw point in the span is not written, and neither is an all-NaN gauge. This is 'absence is data', not 'zero'.",
+   "The engines use fresh.grid_times, plus an equivalent vectorised fill (grid_many), instead of calling fresh.grid once per metric. A test asserts the outputs are identical to fresh.grid; the change was made for performance (fresh.grid's Python loop was about 60% of runtime at 60 s ticks).",
+   "Perf: measured about 1.8 ms per entity for all three engines at 900 s ticks and about 5.3 ms per entity at 60 s ticks (a 720-point 12 h grid). The spec's 'at most 3 ms per tick' is met only for small populations. Aggregation's writes alone are 45-65 add_derived calls per entity."
+  ]
+ },
+ {
+  "engine": "D1 — RatioEngine / EntropyEngine / GraphEngine (derived, interval 1, no period_s",
+  "requested": [
+   "Docs (engines.md D1 or contract B): write down what `derived.<x>_n` means (total set mass including '__other__') and that entropies exclude '__other__'. B01's bounded gate (n >= 5) and B04 read this value, so its meaning should be stated.",
+   "Optional: contract B could mention that D1 graph peers now include l4.peer_set buckets and use eTLD+1 names."
+  ],
+  "deviations": [
+   "The `_n` value for each entropy output is the total mass of its set, with '__other__' included. Because of R1 this is the true request, query or handshake count. The entropy itself is computed only on the 64 named entries: '__other__' is a remainder, not a category, and counting it as one would make a tunnel with thousands of random names look concentrated. The spec only says 'the number of items', so this is my reading of it.",
+   "derived.ja3_diversity counts the named fingerprints, plus 1 when a '__other__' remainder exists. This is a lower bound. derived.dns_dga_score is the count-weighted mean character entropy of the first label over the named qnames. v1 had the same formula, now cached.",
+   "Graph peers are TLS and DNS names at eTLD+1, preferring the R1 *_etld1_set series and otherwise mapping the full-name set through names.etld1, plus l4.peer_set buckets (/24, /64 or host). v1 used full SNI and qname names only. Full names would make every random DNS label a 'new peer', and l4.peer_set captures destinations reached without DNS or TLS. '__other__' is never treated as a peer.",
+   "derived.fanout is written only when l4.distinct_peers is fresh. v1 fell back to len(peers). new_peer_count is written, and may be 0, whenever at least one peer source is fresh. peer_novelty needs at least one peer.",
+   "dest_concentration keeps the v1 source order (tls.sni_set first, then dns.qname_set, full names). It is the top named count divided by the true total with '__other__' included, and is written only when that set is fresh.",
+   "The 30-day history {peer: last_seen_ts} is engine-instance memory, as in v1. It is not a contract-C model, so it is not trust-gated or checkpointed through lib/gating. Contract C lists no D1 model and the D1 spec does not ask for gating. The history is swept once a day per entity, capped at max_peers (default 20000; beyond it the newest half is kept), and fully dropped for entities idle longer than the TTL. If the clock goes backwards during replay, a peer seen 'in the future' still counts as known.",
+   "Entities are iterated with store.entities_active(system, now), which relies on raw engines touching last_seen when they write real data. The act.events zero-fill uses touch=False, so silent entities are skipped cheaply. The freshness check is still applied to every input.",
+   "Constructor keyword parameters (all optional): GraphEngine(peer_ttl_s=30*86400, max_peers=20000)."
+  ]
+ },
+ {
+  "engine": "D2 SessionEngine (backend/app/engines/derived/session.py), status upgrade. The c",
+  "requested": [
+   "build.py (not mine): per the spec D2 is order 4, after D0 (order 0) and D1 (order 1). SessionEngine currently sits between EntropyEngine and GraphEngine, which is harmless because D2 reads only act.*, but it should move after the D0 and D1 engines for spec order.",
+   "Retention: D2 sets act.events max_age_s=86400 itself, idempotently, once per store; D0 sets the same rule. If anyone raises act.events retention above 24 h, D2's one-time call could lower it again if it runs later. Harmless at today's values.",
+   "Docs (engines.md D2): state that req_per_session is absent while no session has completed, that duty is time-weighted across cadence changes, and that session counts are not reweighted by stream_frac (only event counts are)."
+  ],
+  "deviations": [
+   "Duty weights each tick by its wall-clock length: the gap to the previous clock tick, capped at 3600 s so a pipeline outage cannot count as one long tick. At a uniform cadence this equals the fraction of active ticks. After a 900 -> 60 cadence switch, a plain tick count would let the 60 s ticks outvote the 900 s ones.",
+   "stream_frac reweighting applies to event counts (the req_per_session numerator, weight 1/frac per row) but not to the session count. R2 drops whole sub-sessions cut at 30 s, far below G (120 s or more), so dropping one almost never removes a whole D2 session. Reweighting the session count would overcount sessions.",
+   "Think-time gaps: on a sampled tick (stream_frac < 1) only gaps of 30 s or less are used, because the m_template sampling contract guarantees only those are real gaps between consecutive events; B11 applies the same rule. A gap across the tick boundary counts only when both ticks were unsampled. Gaps of exactly 0 (records sharing one obs.ts) are skipped. A missing or invalid frac is treated as complete rows.",
+   "req_per_session is not written, rather than written as 0 or NaN, while no session has completed in the 24 h window: during the first 1–2 ticks, and after 24 h of silence. The spec test's 'window metrics on every tick' holds for duty and session_count on every tick and for req_per_session from the first completed session onward.",
+   "Window metrics require R2's act.events clock point at ctx.now (R2 zero-fills every entity seen in the last 30 d), so a stale grid is never re-stamped. An entity with no act.events and no act.stream gets nothing, because there is no fallback to http.requests or l4.flows as v1 had.",
+   "Session and clock state lives in memory per engine instance and is updated incrementally, because act.stream is kept for only 1 h while the session window is 24 h. It is not a contract-C model and is not trust-gated, since it is a representation and not a learner of normality. A fresh instance bootstraps duty from 24 h of act.events but sees sessions only from the act.stream still retained. When the clock goes backwards the entity's state is reset, and entities idle for more than 2 d are swept."
+  ]
+ },
+ {
+  "engine": "B11 TimingEngine (backend/app/engines/behavior/timing.py, class TimingEngine, na",
+  "requested": [
+   "docs/lib3/engines.md B11 Unit test (a): reword to 'Human sessions with LogNormal(ln 8 s, sigma = 1) think time and minutes-long breaks give B in [0.2, 0.6] (a pure log-normal renewal with sigma = 1 has B = 0.135)', and state that B and M use gaps < 30 min while think time uses gaps < session_gap.",
+   "B11's gating clock is feature.active (B01, written every tick for every entity). If B01 is missing from a pipeline, B11 scores but never commits. The pipeline/build owners should keep B01 ahead of B11.",
+   "B15/B16/B30 should consume m_timing.loglik(model, gaps), descriptors(model, now) and recent(model), not the model dict. The state layout is fmt 1 with STATE_DIM = 54."
+  ],
+  "deviations": [
+   "Spec test (a) 'log-normal gaps with sigma = 1 give B in [0.2, 0.6]' cannot hold for a pure log-normal renewal: CV = sqrt(e-1) = 1.31, so B = 0.135 (measured 0.13-0.15). The test implements it with the generator's human persona (think time LogNormal(ln 8 s, 1.0) inside sessions, Exp(300 s) breaks between sessions), which gives B of about 0.37-0.53, inside the range. It also asserts that the pure renewal matches theory (sigma = 1 gives B in [0.08, 0.2]; sigma = 1.3 gives B in [0.2, 0.6]).",
+   "B and M use 'active' gaps below 30 min (fixed BURST_MAX_S). The think-time log-normal fit uses within-session gaps below model.seq session_gap, as the spec says. Using all gaps would let one overnight gap dominate B. Using session_gap for B as well, as the interrupted draft did, would drop the between-session breaks that make humans bursty, and B collapses to about 0.09 once B10 learns a ~150-s session gap.",
+   "The 'timing p' in spec test (b) is tested on behavior.pm[timing]: a two-sample G test (G = 2N*JSD) divided by a learned per-daypart overdispersion phi, against chi2_df. score.timing is the JSD and is made conformal by B24 as specified. behavior.pm is float32, so pm is floored at 1.18e-38 instead of 1e-300, which would store as 0.",
+   "The strict-period check: the rfft of 5-s bins over 2 h picks a candidate (harmonic sum), which is confirmed by the window-corrected Rayleigh statistic Z^2_1 (evt.z2_periodogram, m=1) with evt.z2_p's Davies bound over the scanned band [10 s, span/4]. This accounts for the period search, which a plain rayleigh_p at the chosen period does not. The test also checks evt.rayleigh_p < 1e-4 at the reported period. A period is published only when p <= 1e-3.",
+   "The period check uses only events from complete ticks (stream_frac = 1). R2 caps a long session to one contiguous chunk per tick, and the resulting holes produced a false 'strict period' (308 s, p = 2e-7) for a 0.8-s scraper. A sampled tick clears the event buffer.",
+   "Reads beyond the spec's list: act.events and last_seen (to tell silence from a missing zero-fill), feature.active (the GatedLearner clock), trust_prov, quarantine and model.link (contract H). Writes beyond the spec's list: behavior.pm, behavior.axes and behavior.degraded (via emit).",
+   "A re-run of the same tick is made exact: the pre-tick gap-chain and event-buffer state is snapshotted and restored."
+  ]
+ },
+ {
+  "engine": "B25 FusionEngine (backend/app/engines/behavior/fusion.py, class FusionEngine, na",
+  "requested": [
+   "backend/app/engines/behavior/calibration.py (B24) has a latent bug: it uses `seen = gate.applied.get('version')` to detect a model.control version change without rebase_from. The GatedLearner fast path never records applied['version'] while the control version equals the gate's default (0). So a later bare change such as 0 -> 2 is read as seen=None and the rings are not reset. B25 had the same pattern and now uses `seen = gate.version`; B24 should do the same, so that B24 and B25 rings reset together.",
+   "docs/lib3/contract.md section B retention table: add behavior.e_day with max_age 8 d, next to q_all. B25 currently calls store.set_retention for it itself.",
+   "docs/lib3/engines.md B25 Unit test (c): say that the [0.015, 0.045] band is checked over replicates, because a single 200 entity-day sample has about 6 expected alarms."
+  ],
+  "deviations": [
+   "Unit test (c): one run of 200 entity-days holds only about 6 expected onsets (Poisson sd about 0.012 per entity-day), so a single fixed-seed run cannot reliably land in [0.015, 0.045] (seed 0 at 60 s gives 0.055). The band is asserted on 10 replicates of 200 entity-days each, pooled and median. On 4000 entity-days the realised rates are 0.029 (900 s), 0.026 (60 s) and 0.028 (3600 s).",
+   "Evidence CUSUM: S is not reset on alarm, and alarm episodes are counted at onsets (S crossing h). A tick with NaN q_inst leaves S unchanged.",
+   "Evidence audit: the bootstrap uses the last 7 d of trusted q_inst (1 h blocks, 200 resampled days), not 1 d. On a rate above 2x target it raises h by 5% per audit, capped at +20% in total; at or below target it relaxes h by 1%. Because the bootstrap cannot resample q beyond the sample's own extremes, it under-estimates the rate. It therefore guards against overshoot and never raises h on a null.",
+   "behavior.alarm is written only on alarm ticks. It carries extra diagnostic keys (paths, e_day, q_all, evidence, h, onset, acc, n_axes, rules) besides {path, severity, axes, families}.",
+   "BH at q=0.05 runs over the q_all of every key the system fused this tick (real entities plus class keys). It removes only LOW single-tick alarms.",
+   "A model.control version change without rebase_from resets the meta rings after that tick's commit, so one tick's row is lost.",
+   "The engine sets retention for behavior.e_day (8 d, as for q_all) itself, because contract B's retention table does not list it."
+  ]
+ },
+ {
+  "engine": "B26 RiskEngine (backend/app/engines/behavior/risk.py, class RiskEngine, name 'be",
+  "requested": [
+   "backend/app/pipeline/build.py: register app.engines.behavior.risk.RiskEngine() in the behavior layer after B25 fusion and before B27 incident (order 26).",
+   "backend/app/core/store.py timeline(): read behavior.risk from the vec ring (vec_since(system, entity, 'behavior.risk', since), 1-element rows) in addition to or instead of the derived deque, so risk points appear under the §0.1 storage convention.",
+   "B08 novelty (and B21 if it emits first_seen): set BehaviorEvent.extra['tier'] in {'entity','class','system'}, extra['adopted']=True on adoption-discounted first_seen, extra dim/value (or token), and the stage flags (sensitive, admin, external, upload_dominant, new_external_domain, low_prevalence) as top-level extra keys or extra['flags']. B26 reads these for weight, repeat key and stage.",
+   "B27 incident / B29 explain: read behavior.risk as a 1-element vec ring (store.vec_at / vec_tail) and tier / top_reasons / stages from profile.extra.risk.",
+   "docs/lib3/contract.md B: add behavior.risk explicitly to the §0.1 scalar-ring list in the contract table, and note that the profile.extra.risk tier names are lowercase ('low', 'medium', 'high', 'critical')."
+  ],
+  "deviations": [
+   "behavior.risk is a 1-element float32 vec ring, following helpers_api §0.1, which is binding. core/store.py timeline() still reads behavior.risk from the derived deque (dict or scalar), so risk points do not show up in the timeline until the store is updated (see requested changes). eval/runner.py already reads both forms.",
+   "Stage credit for continuous evidence: a family earns its kill-chain stage only when its e_day is <= 0.03 (the LOW level); otherwise the null would always have several stages and M would sit at about 1.6. Stages come from the family's refined axes in behavior.axes, falling back to FAMILY_DEFAULT_AXES, and go through stages.stage_for_axis.",
+   "π (the feedback multiplier) is applied per component rather than as one global factor: risk = 100(1 - exp(-M·c_s·Σ π_k L_k / 60)), where π_k = m_feedback.risk_mult(family of the component). Event components use m_feedback.EVENT_FAMILY; lib-4 components use π = 1. It is applied at read time, so a label changes risk immediately without rewriting L.",
+   "The spec does not fix these weights or half-lives, so I chose them. xsys weight is 1.5. Half-lives by family: intensity, shape, peer, temporal, breadth and xsys 12 h; change 24 h; sequence 24 h; categorical 72 h (novelty); identity 72 h; c2 48 h; exfil 48 h. By event kind: first_seen, rare_access and class_adoption_risky 72 h (novelty); client_impersonation, identity_mismatch, possible_impersonation and new_entity_unmatched 72 h (identity); beacon 48 h (c2); budget_exceeded 48 h (exfil). By lib-4 stage: c2 and exfiltration 48 h, identity 72 h, everything else 12 h. Any finding of severity critical, and this tick's continuous evidence when behavior.alarm severity is critical, uses 48 h, or the slower class if that is longer.",
+   "Repeat damping (0.5^(n-1) within 24 h) also applies to lib-4 matches, keyed by signature_id. Without it, a low-severity signature firing every 60 s would saturate risk.",
+   "first_seen tier comes from event.extra['tier'] (system/org -> system; class/role/static/pool/sub -> class; anything else -> entity, weight 3). A first_seen with extra['adopted'] true counts x0.1 (the B08 adoption discount); a numeric extra['discount'] in (0, 1] is applied instead when given. A system- or class-tier first_seen or rare_access is treated as low_prevalence, so its stage is c2 unless its axes or flags refine it; rare_access defaults to sensitive (stage privilege). The repeat key is dedupe_key, else extra token, else dim=value.",
+   "Episode definition: each (key, family) has a streak counter. A tick with a valid p and e_day >= 1 resets it unless an open, acked or suppressed incident covers the key (the incident is the episode). A NaN or missing family neither contributes nor resets.",
+   "Suppression x0.25: all new evidence counts x0.25 while the key's only live incidents are suppressed; any event with status 'suppressed' also counts x0.25.",
+   "State (decayed components, streaks, repeats, stage times, tier, trend history) is kept in memory per store (a WeakKeyDictionary), not in a model: contract C has no risk model. Nothing is learned from live data (L_ref is fixed), so lib/gating and model.control do not apply. A clock that goes backwards resets the key, and re-running the same tick is idempotent.",
+   "Contract M: when behavior.fusion has an error at this tick, risk is written as NaN and profile.extra.risk.degraded is set to True. State is left untouched, so the next tick catches up both decay and the discrete windows.",
+   "Class keys scored = pseudo_entities starting with 'class:' ∪ m_class.all_class_keys(store, s). Class risk = nanmax(own, mean of the top 3 finite member risks); with fewer than 3 members it is the mean of those available. System risk = nanmax over entities and classes, written only when the system has at least one key.",
+   "Measured null: mean L is about 6 (spec says about 7; the test band [5, 10] passes). p99.99 of L is about 11.8, below the spec's 17-19, because the spec's simulation used a 24 h half-life for every family.",
+   "Unit test (a): L after 12 ticks is 46.7 rather than the spec's '≈49', which ignores 3 h of decay; the test asserts 44-52. Unit test (d): risk halves only approximately, because risk is concave in L. The test asserts that L halves exactly and that risk halves within 0.02 for a small risk (about 3.4).",
+   "Perf: about 58 µs per key per tick (2.5 ms per tick for 40 entities + 4 classes), mostly the per-tick profile write and top_reasons. That is within '<1 ms per tick' only for up to about 15 keys."
+  ]
+ },
+ {
+  "engine": "B05 CommonModeEngine (behavior.common_mode), layer behavior, interval 1, no peri",
+  "requested": [
+   "B08 novelty (later wave): put extra['tier'] in {'entity','class','system'} on first_seen and rare_access events (and emit them for every system-tier first sighting), so B05 can apply the 'system-tier novelty' exclusion. B05 reads events since t-1 because B08 runs after it.",
+   "Optional: a contract-C model (e.g. model.common@(s,e)) or a documented checkpoint-only persistence for B05's tiny loading state, if engine restarts must preserve learned loadings. Today it lives in the engine instance.",
+   "contract.md / engines.md: document the behavior.common.<g> dict layout (L, n, n_scored, n_members, frac_up, frac_down, dir, dt, run) and the group keys volume / transport / app_error / probe, for B18 and B25.",
+   "B28 governor: as gating already documents, set behavior.quarantine = 1 at or before the tick it writes rollback_to. Otherwise the same step commits rows newer than tau (seen in B05's rollback test)."
+  ],
+  "deviations": [
+   "B05 owns no contract-C model, so the learner's persistent state lives in the engine instance: 4-group decayed sums, GateState, current beta, and learning rows (L_g, z_g) kept 8 d so commit, release and rollback replay are exact. Checkpoints still go to the store. A re-instantiated engine restarts from beta = 1, which is the ridge prior and the safe default.",
+   "The gate is stepped per entity only on its refit tick (every 16 ticks, with the per-entity phase from Engine.entity_due) or when model.control changes. So commits batch up to 16 rows instead of committing row t-D every tick. Beta is only read at refits, and this is never less conservative: a quarantined tick has trust 0, and a quarantine at step time holds the whole batch. It cut per-tick cost about 2x.",
+   "Loading sums decay with a 7-d half-life (the spec gives no window). Decay is applied to the row weight for out-of-order commits, as gating requires. Beta is clipped to [0, 2].",
+   "Excluded entities (and quarantined ones) are also removed from everyone else's LOO pool, not only given zi = z. Otherwise compromised members could define 'normal' for the rest. A quarantined entity's own zi is still de-meaned.",
+   "Active means a behavior.z row exists at now (B04 scores only when feature.active = 1). An active entity without z gets an all-NaN zi (degraded). A silent entity gets nothing.",
+   "Exclusion evidence covers t-1 (previous tick within 2*dt) and the current tick. p for client, identity and budget_exfil is behavior.p if finite, else behavior.pm, else 10^-score. budget_exfil also excludes on acc_alarm = 1.",
+   "'System-tier novelty' is detected from B08 first_seen / rare_access events (since now - dt) with extra.tier in {system, org}. The novelty score alone carries no tier. See the requested change.",
+   "system_shift needs at least 3 scored entities with a finite group mean (50 % of 1-2 entities is not a system). It fires once per episode: when a group reaches a 2-tick run while no group was already coherent at the previous tick.",
+   "Group key for app-error is 'app_error' (matches fusion's COMMON_MODE_AXES canonical axis). behavior.common.<g> is also written at static and pool class keys, not only role classes, for B18.",
+   "Perf: about 3.2 ms per tick median at 40 entities (8-member classes) on this sandbox. The spec target is 1 ms or less. The floor here is store-call cost: vec_at is about 3.5 us, and add_vec + add_derived + is_quarantined + exclusion reads are about 20 us per entity. The perf test bound is 25 ms."
+  ]
+ },
+ {
+  "engine": "B03 BaselineEngine (behavior.baseline, layer behavior, interval 1) — upgrade of ",
+  "requested": [
+   "backend/app/pipeline/build.py: register BaselineEngine() with interval 1. It currently uses BaselineEngine(interval=4); the spec is interval 1, and interval 4 delays commits beyond D.",
+   "tests/test_helpers_sanity.py::test_baseline_from_feature_rows encodes the v1 contract and now fails. It writes legacy feature.<name> derived rows and expects B03 to set profile.stable, which B01 owns per spec. Either rewrite it to write feature.nat / feature.active rings (helpers.add_vec_rows) and assert profile.baseline_median, or delete it.",
+   "B28 governor._baseline_slope reads an optional model.baseline 'slope_log' / 'slope_diag' 'requested from B03'. This is not in contract C and is not provided. If it is wanted, define it in contract C first (for example a per-feature Sen slope, in log-units/day, of committed daily bucket-normalised means).",
+   "docs/lib3 (engines.md B03, contract C, helpers_api.md §0.1) should document m_baseline and its API, and record these choices: float32 checkpoints; the band-day cap on the data mean; location-only bin168; retransmit_rate / probe_loss as t family; stats layout per family (k = 6/4/3 instead of a uniform k); model fields (held as a list of CommitRow); tier model fields; reference = golden once one exists (so golden_offset is 0).",
+   "B04 (later): use m_baseline.predictive_set(store, s, e, tctx) plus m_baseline.midp / quantiles. The ratio exposure n* is nat[m_baseline.RATIO_N_IDX] (== the feature.expo channel), and t-family values come from m_baseline.values_from_nat. retransmit_rate and probe_loss are t family.",
+   "Eval (metrics.py) already probes m_baseline.anchor_summary; it is now provided, and Anchor._asdict gives plain-data snapshots with mean, sd15 and W per bucket. The runner could keep snapshots small by storing only m_baseline.anchor_summary per perturbed feature instead of _jsonable(model), which includes gate journals."
+  ],
+  "deviations": [
+   "Checkpoints are float32 bucket blocks (zlib-compressed when mostly zero), not float16: float16 overflows the raw moment sums (sum x^2, scaled by 2^(t/H)). Rollback equality is then ~6e-8 relative (test (e) asserts 1e-6 relative). Blocks untouched between checkpoints are shared, and Blob.__deepcopy__ returns self (the blob is immutable).",
+   "The rate cap is a per-bucket band-day: day boundaries sit 12 h from the bucket's hour, so one daily cluster of commits is one band. Within a band the bucket's DATA mean sum(num)/sum(den) may move at most +-cap*sigma15, with sigma15 from the bucket's own posterior at the band start. A violating row is folded with the largest weight that lands on the band edge. The data mean is used because decay cannot move it; the posterior mean drifts slightly toward the hyperprior as data ages. A per-row allowance was rejected because it also clips ordinary noise and freezes learning. The cap binds only on bucket-features with >= 8 rows and >= 120 weighted minutes at band start (half of each once capped, as hysteresis), so the hyperprior start converges freely.",
+   "bin168 is location-only: 168 cells hold first-order stats that refine the bin48 mean, shrunk with 4 pseudo-rows, while dispersion comes from bin48. The cells are used once commits span >= 28 d, on typical days only; holidays and make-up workdays stay on bin48. The reference anchor is bin48-only with a fixed 28-d half-life.",
+   "Two ratio kinds are modelled as Student-t on logit(nat), not Beta-Binomial: retransmit_rate (n = l4.pkts_total) and probe_loss (n = probe.probes), because their exposure is not recoverable from feature.nat/expo. dns_fail_rate uses dns_queries as n (D1 writes its .n from dns.queries). Ratio stats are [W, sum k, sum n, sum k^2/n]; sum (k/n)^2 is dropped because bayes.ratio_posterior does not use it.",
+   "Row values are rebuilt from feature.nat (8-d retention), not feature.vec (1-d), so rollback replays are exact. Expo channels come from the nat count features, which are identical to feature.expo. tctx is computed with timebins.tctx_from_config (as B01 does) instead of being read from feature.tctx. A row's exposure is the gap to the previous feature.active tick (<= 3600 s), else ctx.window_s.",
+   "Only active ticks (feature.active == 1) are committed, because B04 scores active ticks and absence is B07's job. Inactive ticks still advance the commit cursor.",
+   "Tiers (class / system / org) are the sums of their members' current-anchor stats, recomputed hourly, rather than incrementally updated. They therefore follow member rollbacks. Every link is leave-one-out, and the hyperprior is carried with weight h = s*h_parent, so a child with no data gets exactly the parent's predictive mean. kappa units: 15-min exposure rows for counts, trials for ratios, rows for t. The EB default is kappa = 2 when a tier has < 2 children. Tier models hold current stats only; there is no tier reference anchor.",
+   "Reference anchor: the current anchor acts as a 4-row prior, so an empty reference equals the current anchor. It steps in hourly batches for all entities in the same tick, or at once on a new control directive. The admission decision is made at first fetch and cached, so replays are stable. Abnormal regimes are behavior.regime.state in {suspect, drifting, rejected, rollback}. Golden is the cell-wise median of up to 4 UTC-weekly reference snapshots, taken when the finished week's max behavior.risk < 30 (no risk data counts as < 30) and reference n_eff >= 96. Once golden exists the reference predictive uses it.",
+   "Half-life selection uses global (unbucketed) shadow stats per candidate H. The p5/p95 pinball loss uses moment approximations for NB/BB and exact t quantiles. It is evaluated on every 8th commit, and losses are halved rather than cleared at each 96-commit selection.",
+   "Rebase: the current anchor folds rows with ts in [rebase_from, now_at_rebase + 1 d] uncapped. The reference clears (and drops its golden snapshots) at its first row with ts >= rebase_from + 1 d. Link seeding applies to the current anchor only.",
+   "Commit maths are batched across entities: GatedLearner.update only queues the row on the anchor, the engine folds every queue once per tick (m_baseline.flush_many) before publishing, and checkpoint blobs carry the queue.",
+   "n_eff is the 14-d-decayed, trust-weighted count of committed active rows. The legacy profile fields are in feature.vec space (count log1p(rate/min), ratio logit p, t loc/scale). baseline_median/mad refresh on each bucket or version change; seasonal (24 hourly values for the current day type) and extra.maturity refresh every 6 h.",
+   "Perf is above the spec target of 7 ms/tick at 40 entities, except at 60-s cadence (see perf)."
+  ]
+ },
+ {
+  "engine": "B08 NoveltyEngine (behavior.novelty), new: backend/app/engines/behavior/novelty.",
+  "requested": [
+   "backend/app/pipeline/build.py: register NoveltyEngine() (from ..engines.behavior.novelty import NoveltyEngine) in the behavior layer at order 8, after RhythmEngine (B07) and before SequenceEngine (B10).",
+   "backend/app/engines/behavior/beacon.py (B12): its _Prevalence docstring says to switch once m_vocab has a prevalence accessor. It can now use m_vocab.dest_prevalence(store, s, m_template.dest_name(store, s, did)), keeping R2's counts as the fallback when that returns NaN.",
+   "docs/lib3/helpers_api.md: add an m_vocab entry (the signatures in the module docstring), next to m_seq / m_rhythm.",
+   "B13 budget (novel exfil destinations) can use m_vocab.first_seen_age(store, s, e, 'sni'|'dns'|'peer', name, now) < 7 d or m_vocab.idf on the class model. B18 reads adoption records through m_vocab.adoption_records. B02 reads m_vocab.family_distribution. B15–B17 read m_vocab.loglik / loglik_models / llr_vs_system."
+  ],
+  "deviations": [
+   "Good–Turing rate test: n is the number of distinct values in the tick, not raw accesses. Within a tick, accesses to one value come in bursts. With raw accesses, p would be about 1/(2T) after T ticks whatever the history, and spec test (a) could not reach p < 1e-3 at 200 ticks.",
+   "N1 is the decayed mass of singleton values (values with n_acc == 1), to match the decayed N. The rate test is skipped until the entity has at least 32 committed accesses. With p_new = 0.5 at N = 0, every new entity would otherwise alarm.",
+   "Surprisal term: the sum runs over dimensions and takes the most surprising scored value in each one (Σ_d max_v ω_d·w·I/12), not a sum over every value. Without this, one burst of fresh peers or CDN /24s would add up to dozens of findings. Breadth is left to novelty_rate. ω is computed per dimension, falling back to the pooled value below 20 accesses.",
+   "The values in the surprisal sum are those new to the entity (including values already sighted but not yet committed) plus class-rare sensitive or admin values with I ≥ 12 bits.",
+   "Event gating: the entity-tier first_seen clause uses maturity-weighted bits (ω_d·I ≥ 12), so an explorer's routine discoveries are not each reported. Class-tier and entity-tier events need a mature entity (≥ 100 accesses and ω ≥ 0.5). System-tier first_seen and rare_access are always emitted. At most 5 events per entity-tick; dedupe per (entity, dim, value) for 30 days.",
+   "Tier semantics: 'class' means new or rare among peers (class IDF ≥ ln 5 + 1). When the entity has no class, the system stands in. A known but class-rare sensitive value is reported with tier 'class' on rare_access. 'system' needs a mature system tier (at least 1 member and 50 accesses). A sightings ledger stops a second entity from also reading as system-new before the hourly rebuild.",
+   "Class and system tiers are rebuilt hourly from the member entity models, so they inherit gating and rollback. They are not updated incrementally. The system base measure is U = 1/V, where V is a per-dimension universe constant (tmpl 4096, ports / names / peers 65536, qtype and cat 256, ctype 1024) or twice the system's distinct values if larger.",
+   "The tmpl dimension uses HTTP act.tokens only. TLS, DNS and L4 tokens would double-count the sni / dns / dport dimensions.",
+   "Adoption discount is implemented as score = max(score without adopted values, 0.1 × full score). class_adopted is emitted once per value at the class pseudo-entity (s, 'class:<rid>'). First sightings from all entities are gathered in a first pass, so adopters in the same tick count each other.",
+   "novelty_rate: a rolling 24 h count of class-rare first sightings, tested against a Gamma–Poisson NB built from committed complete active UTC days, with method-of-moments overdispersion. It needs at least 2 complete days, otherwise it is unscored. acc_alarm fires when e_day(p) ≤ the detector's budget_per_day.",
+   "jsd: max over dimensions of the JSD between each decayed window and the profile p_e, plus a rest bin. The 1 h window is evaluated at most every 5 minutes and the 24 h window hourly. Evaluation starts only once the entity has ≥ 100 accesses: immature profiles give JSD ≈ 1, which would poison the rings. Conformal rings (256) plus a GPD tail, scored once the ring has ≥ 32 entries; Bonferroni over the evaluated windows. acc_alarm fires when e_day ≤ budget.",
+   "Sensitivity weight w = 1 + [sensitive or admin] + low_prev × h, capped at 3. h = clip(log10(max(4·up, up+down)/1e4)/2, 0, 1). Admin is detected by a path regex, admin ports and lib-4 category 'admin'. When config sensitive_patterns is empty, built-in defaults are used (salary, payroll, passw, secret, credential).",
+   "Degradation: any raw producer error on an active tick sets NaN plus degraded for all three detectors. Activity with no categorical data is 'stale:act.tokens'. Silent entities are not scored."
+  ]
+ },
+ {
+  "engine": "B09 ClientIdentityEngine (backend/app/engines/behavior/client_identity.py, name ",
+  "requested": [
+   "backend/app/pipeline/build.py: register ClientIdentityEngine (from ..engines.behavior.client_identity import ClientIdentityEngine) in the behavior layer at order 9, after B08 novelty. It must run after R3 raw.client_stack and after B01 (the feature.active clock). B28 governor must run after it, or at least write the trust/quarantine rings for t-1 before it runs.",
+   "docs/lib3/engines.md B09: document the deviations above, in particular the interleave requirement for C, the active-clock replacement, the 'family/major' key for p(ja3n|UA), the 20-bit surprise cap and the slot-equivalent count unit.",
+   "docs/lib3/contract.md C: note that the model.client@(s,'__system__') layout carries the class tiers ('classes'), the co-occurrence table ('cooc'/'ua_N') and the live rollout tables ('acq'/'known').",
+   "docs/lib3/helpers_api.md: add an m_client section (signatures listed in accessor_api)."
+  ],
+  "deviations": [
+   "Count unit is slot-equivalents, not request counts: each tick adds share_s*dt/900*trust. This keeps N_e cadence-invariant (60/900/3600 s) and stops it growing with request volume; with request counts the entity tier would swamp the class backoff and alpha=5 would mean nothing. The share weighting inside S still uses request counts over the last 10 ticks, as the spec says.",
+   "S is capped per token at 20 bits: min(20, -log2 p_e). Without the cap, a stack never seen at any tier costs 30-45 bits depending only on tier sizes, and 0.6*S saturates the logistic, so C/I/R stop mattering.",
+   "The system tier uses p_s=(c_s+U)/(N_s+1) with U=1/4096. The spec does not give the system base measure; this mirrors m_vocab.",
+   "Concurrency C additionally requires that the two stacks interleave (s0 still active after s1's first event). A clean handover within 5 min (browser restart or upgrade) would otherwise set C=1 and push every first mover of a rollout towards client_impersonation, which breaks test (b). NAT and impersonation interleave, so they are unaffected; test (a) fires with C=1.",
+   "'New stack' s1 means p(s1|e) < 0.05. The spec does not define it.",
+   "Replacement ('s0 absent for longer than its P99 gap') is measured on the entity's ACTIVE clock: dt accumulates only on ticks where the entity has client traffic without s0. Threshold = max(P99, 30 min, 2*dt). Measured on wall time, a workstation's overnight gaps would push P99 to days and client_change would come days late; a silent host has not replaced anything.",
+   "p(ja3n | UA family) uses the R3 client.ua_set key 'family/major' (e.g. 'chrome/127') and needs at least 16 slot-equivalents of that UA before it can set I. With a family-only key, every new Chrome major version with a new ja3n would set I=1 and flag rollouts (breaks test b).",
+   "R = max(R_class, R_system). Each is the share of the OTHER members / known entities that first used s1 within 7 d, and each is NaN (ignored) with fewer than 2 others. Acquisitions are recorded live, before scoring, so a same-tick rollout counts. They are recorded only once the entity's backoff chain has at least 16 slot-equivalents of evidence, so start-up is not read as a rollout.",
+   "With no new stack this tick, risk = sigmoid(0.6*S - 3) (C=I=R=0). With several, the largest per-stack risk is used.",
+   "A tick with no usable fingerprinted traffic is not scored (behavior.score/pm stay NaN) and the entity is not counted absent. Scoring also requires N_e+N_c+N_s >= 16 slot-equivalents. When R3 failed this tick: NaN score plus behavior.degraded.",
+   "Class tiers are stored inside model.client@(s,'__system__') under 'classes', because contract C gives model.client no class key. The system and class tiers are rebuilt hourly from the committed entity models, so they inherit trust gating and rollbacks.",
+   "Event dedupe: client_impersonation fires at most once per (entity, stack) per 24 h. client_change fires once per (s0 -> s1) transition; while not yet emitted it is re-checked every tick, so R can rise into the threshold later.",
+   "Scores are still written in training mode, like B11; only events are suppressed."
+  ]
+ },
+ {
+  "engine": "B07 RhythmEngine (backend/app/engines/behavior/rhythm.py, class RhythmEngine, na",
+  "requested": [],
+  "deviations": [
+   "P(active) is modelled per 15-minute quarter of each bin48/bin168 hour (192/672 cells), not per whole hour. With whole hours, a 40-minute backup could never reach p>=0.95, so spec test (b) could not pass. von Mises smoothing (kappa 4) borrows from the same quarter of neighbouring hours with an adaptive likelihood-ratio weight, so sharp schedule edges are not blurred.",
+   "The detectors clip p_hat to [0.02, 0.98] (det_p). The 'third active slot alarms' arithmetic (3 x 4.64 = 13.9 >= 13.7) therefore holds whatever the history length, and one slot can never carry unbounded evidence.",
+   "Silence resets to 0 on an eligible active slot, and the alarm fires at s >= ln(ARL slots) (p_eq <= 1/9600).",
+   "Schedule shift: the event is emitted when the moved run ends, not earlier. While a run could still be the missed window (<= its duration + tolerance), the reported offhours W is the pre-run value and the 60-s provisional increment waits. An explained move therefore never raises an offhours alarm. A run that does not match reports its full W at once, at most n0+1 slots late, and only right after a machine-like entity missed its window. The 'shift_explained' flag lives in behavior.rhythm, profile.extra.rhythm and the event's extra. behavior.axes stays in the emit format {detector: ['temporal']}, and B25 applies the LOW cap from the schedule_shift event.",
+   "Calendar self-healing needs at least 3 active entities and >= 25% of the system, on top of the > 3x usual system level. The whole local day is then treated as a workday (recorded in model.rhythm@(s,'__system__').healed).",
+   "Class prior Beta(6 pi_class, 6(1-pi_class)) needs a class with >= 3 members (contract L). Otherwise the prior falls back to the system tier Beta(2 pi_sys, ...) if the system model has >= 2 members, else Jeffreys.",
+   "Spec test (b)/(c) fixtures use 28 training days, not 21. A daily job lands in the workday cells only 5 days in 7, and the 3-member system prior pulls toward the pooled rate, so 3 weeks leave p_hat about 0.949 (just below 0.95). Test (b) asserts on p_hat as it was when the slots were scored, not on the model after the miss was learned."
+  ]
+ },
+ {
+  "engine": "B12 BeaconEngine (behavior.beacon), backend/app/engines/behavior/beacon.py, laye",
+  "requested": [
+   "build.py / engine registry: register app.engines.behavior.beacon.BeaconEngine (it takes no arguments). Nothing in backend/ references it yet.",
+   "lib/m_vocab (B08): add a destination-prevalence accessor, e.g. dest_prevalence(store, s, dest_id_or_name, now) -> (share, n_entities) from model.vocab@__system__. B12 will then switch _Prevalence._lookup in beacon.py to use it.",
+   "Docs: engines.md B12 should record the kappa0 = 1.5 composite renewal null, the population-rank size test and the median-anchored Z^2 band listed in the deviations.",
+   "Note for test authors: emit.read_dict only looks back 4 points, and store.get_model returns live mutable objects. Tests must snapshot values per tick."
+  ],
+  "deviations": [
+   "Renewal p is taken at the least-favourable point kappa0 = 1.5 of a composite null (Barndorff-Nielsen r* saddlepoint), then max'ed with the exact kappa = 1 table p (evt.beacon_null_p). Reason: log-normal human gaps (kappa ~ 1.1) reject kappa = 1 too often once the 256-event buffer fills, which would break spec test (d).",
+   "Size constancy: the statistic is the Gamma shape MLE of byte sizes, but its p is a randomised rank among the system's other evaluated pairs. It is floored at 1/(N+1) and is NaN when there are fewer than 20 reference pairs. It is not a parametric LRT against the class dispersion, because constant-size benign API calls would otherwise give p ~ 1e-300.",
+   "Z^2_2 band is [max(10 s, med/2), min(T/4, 2*med)] around the median interval instead of [T/4, 10 s], because a 7-day span cannot be scanned at 5x oversampling within 512 trials. At most 2 scans run per tick, and none when the renewal p already alarms. The p uses the Davies + union bound with n_trials. The peak period is refined on a fine local grid for P_hat only.",
+   "Prevalence comes from R2's decayed distinct-entity counts (m_template) max'ed with this engine's live buffers, behind the private _Prevalence class. lib/m_vocab does not exist yet, so model.vocab@__system__ is not read.",
+   "Class-shared: buffer admission drops a destination when at least 2 other class members, and at least half of them, hold a buffer for it this tick. The alert whitelist needs another member to have LEARNED (gate-committed) a beacon to the destination at P_hat +-10%.",
+   "The prevalence alert gate uses n_entities <= 2 (decayed R2 count or live buffer holders, whichever is larger)."
+  ]
+ },
+ {
+  "engine": "B13 BudgetEngine (behavior.budget), backend/app/engines/behavior/budget.py, clas",
+  "requested": [
+   "build.py: register app.engines.behavior.budget.BudgetEngine() at behavior order 13, after B12 beacon and before B14 changepoint. Currently nothing registers it.",
+   "docs/lib3/contract.md B retention table: add behavior.budget. The engine currently sets 24 points / 1 d itself, because 36 list entries per tick at 60 s would otherwise hold about 7 MB per entity.",
+   "docs/lib3/contract.md I and core/engine.py DEFAULT_CONFIG (optional): document the new config key budget_abs_floor {Q: natural units}. The engine has built-in defaults.",
+   "docs/lib3/engines.md B13 Reads: add dns.qname_set, the DNS label-bytes source. Also document the stricter level-q peer-ratio guard, the log-space standardisation, and the default floors, including bytes_up at 5 MB.",
+   "lib/m_vocab (B08): B13 calls m_vocab.dest_prevalence(store, s, name, now) when the module is importable. Please keep that signature, or tell me if it changes.",
+   "B17 (model.link.actors): B13 accepts {id: [members] | {members|entities|chain: [...]}} or a list of those, with members given as 'ip', 'sys|ip' or {system, entity}. Please document the exact shape."
+  ],
+  "deviations": [
+   "Common-mode guard is stricter than the spec. I kept the spec's condition that B/peer_median exceed the P99 of its own ratio history, and added a level-q test on log(B/peer_median): the same-phase median and robust scale plus a POT quantile, like z_q. Without a ratio fit it falls back to z_q rescaled by the peers' current level over their usual level. Reason: under a class-wide shift B > z_q holds at every hourly evaluation, so the P99 alone passes 1% of them. With the P99 alone I measured 1 alarming entity in 48 class-entity-days, which is 2x the whole budget. For large peer sets (more than 8), the history peer median includes the entity itself, for cost reasons.",
+   "Thresholds are computed in log space. Horizon sums are standardised as log(W + unit), with unit = 1% of the absolute floor, and z_q = exp(median + scale*z) - unit. Standardising on the raw scale let a skewed single-hour-dominated 8-h window give up to 1% null alarm days; in log space it is 0.16%. As a result, 'rescaled by the entity median' for young entities means taking the peers' log (relative) scales.",
+   "Scale and tail regularisation beyond the spec:\n- Per-phase scales are smoothed over +-2 local hours.\n- Weekends, or any day type with fewer than 10 days, use the spread pooled across day types.\n- The 7-d scale is at least the rolling-24h log scale / sqrt(7), and the 7-d z_q is at least the normal quantile.\n- The GPD xi is shrunk n/(n+30) and clipped to [0, 0.3], and sigma is at least 0.4.\nWithout these, the ~13 correlated exceedances gave 1-h z_q values up to about 17.",
+   "Fits run round-robin once per local day, spread over 12 h and least-recently-served first, rather than every 6 h. Rollback, release, rebase or a link seed forces an immediate refit. Commits are batched every 4 due rows, or when a row has waited 1 h.",
+   "Horizons end with the current partial local hour. Tick rows go to the hour of now - dt/2. Breadth quantities are per-local-day distinct increments, so the 7-d breadth value is the sum of daily distinct counts. HLL is used per template, capped at 128 templates per day, with an overflow sketch.",
+   "The 'class-rare' test uses R2's act.rare_events membership, else lib/m_vocab.dest_prevalence when that module imports (guarded by try/except ImportError), else m_template.dest_prevalence at or below 0.2, all behind the private _is_rare. Novelty is first-seen by the entity within 7 d, from B13's own map; the map is inherited on a link. Exfil counts external destinations only (names.is_external); a destination R2 never named counts as external.",
+   "Extra read: dns.qname_set, which the spec's Reads list omits but which the DNS-label-bytes quantity needs. I compute feature.tctx from config via lib/timebins instead of reading the series, the same way B11 does.",
+   "The spec gives no default absolute floors except examples. I used config['budget_abs_floor'] with these defaults:\n- bytes_up 5 MB\n- bytes_down 50 MB\n- writes 200\n- slots 8\n- up_novel 20 MB\n- dns_label 200 KB\n- objs 500\n- templates 50\n- dests 50\nbytes_up is 5 MB, not 20 MB, because spec (a) only accumulates about 9 MB of excess by 14:00.",
+   "Interpretation of spec test (a): 'daily ~ LogNormal(ln 50 MB, 0.3)' is implemented as per-tick lognormal noise with sigma 0.3, truncated at +-1.1 sigma, scaling to about 50 MB/day. With a day-level sigma of 0.3, a 30% day could not be detected at q = 1e-5, and 'every per-tick |z| < 2' could not hold literally. Tests (b), (c) and (d) run at 3600 s to stay under the 5 s budget.",
+   "Performance misses the spec target of <= 2 ms per tick. Measured at 900 s with 40 entities and streams: about 12-20 ms per tick without fits, 27-32 ms per tick while the day's fits run (about 5 fits per tick, 1.5-2.5 ms each, during the first 12 h of each local day). The cost goes to the GatedLearner step and checkpoints, emit upserts, and vectorised evaluation of 36 cells."
+  ]
+ },
+ {
+  "engine": "B27 IncidentEngine (class IncidentEngine, name 'behavior.incident', layer behavi",
+  "requested": [
+   "pipeline/build.py: register IncidentEngine() after RiskEngine (B26) and before GovernorEngine (B28).",
+   "contract E / schema: either add 'suppressed_common' to INCIDENT_STATUSES, or document the convention 'status suppressed + parent_id'. Also document which close_reason a quiet (d) close uses; 'timeout' is used here.",
+   "A shared accumulator-level accessor. B27 needs 'every accumulator < h/4' and B28 needs 'every accumulator < h/2' and 'any accumulator >= h/2', but only m_cp.level exposes S/h. Suggest one of: a behavior.acc_level dict written through emit.write_scores(acc_level=...), or a helper in a lib module. B27 would then drop its p-based approximation (acc_level_from_p).",
+   "B28 (concurrent): please write behavior.regime as a dict with a 'state' key (either case is accepted), and emit regime events with extra.state on transitions. B27 closes on a transition INTO returned or accepted observed at or after the incident (re)opened. If B28 closes incidents itself on ACCEPT, B27 detects that and emits the close notification.",
+   "A model.link accessor (lib/m_link.py, owner B17) for aliases and actors. B27 currently reads links[{from,to,retracted/status/active}] and actors (list, or dict of lists / {members}) defensively, matching lib/gating._iter_links and eval/metrics."
+  ],
+  "deviations": [
+   "Join for the same entity: an incident that is still open is always joined, whatever the gap. The max(4 ticks, 1 h) gap applies only to continuity-alias and actor joins. Applying the gap to the same entity would give two open incidents for one entity and break the eval target of 1 incident per episode. After a close, a new trigger reopens the incident within 24 h and keeps its id.",
+   "The Incident status list has no 'suppressed_common'. Common-mode children are stored as status='suppressed' plus parent_id, with an evidence entry state='suppressed_common'. Children are NOT listed in the parent's entities, so B26 keeps weighting their evidence at 0.25.",
+   "Close reasons: (a) regime RETURNED gives 'returned', (b) ACCEPTED gives 'accepted', (c) a label gives 'labelled', and (d) the quiet close gives 'timeout'. Nothing is closed by age.",
+   "The risk opener also requires the family hit (e_day <= 0.1 within 24 h) to be newer than the key's last incident activity. Otherwise a closed attack's slowly decaying risk would reopen the incident every tick, which contradicts 'close never on risk'.",
+   "'Every accumulator < h/4': exact S/h for cusum and mcusum via m_cp.level. For the other accumulators, S/h is approximated from the calibrated p as ln(1/p)/ln(ARL_ticks), using the exponential CUSUM tail and the detector's wall-clock budget. acc_alarm == 1 always blocks the close.",
+   "In quiet close (d), NaN q_inst and NaN accumulator p count as neutral (they neither confirm nor block the close). (d) is skipped on a tick where behavior.fusion failed (contract M). Without this, an entity that goes offline after an attack would hold its incident for 14 days.",
+   "Campaign: 'within 1 h' means opened within 1 h of each other, with union-find chaining. Linking also requires a shared feature-sign or new-value token in addition to Jaccard >= 0.5, so two incidents alike only in a bare axis such as 'volume' are not merged. Campaign ids are 'cmp-<smallest incident id>', or the oldest existing campaign id in the group.",
+   "An incident closed by a label is not reopened; the label is final for B23. Incidents closed as returned, accepted or timeout are reopened within 24 h.",
+   "lib-4 matches never open an incident. They are attached as evidence, and matches >= MEDIUM restart the quiet clock.",
+   "Notifications: open and escalate use tokens. update and close are free, and are sent only for incidents that have already announced themselves; children and policy-suppressed incidents emit no events. A queued open is merged with any later escalate into a single open.",
+   "14-day label-queue hand-off: B27 cannot write model.feedback, which B23 owns. It marks the incident (evidence state='label_queue') and emits one 'update' event with reason='label_queue'. B23 already queues open incidents older than 14 d as 'held'.",
+   "Class parent: the spec text calls it 'the class incident from B18', but B18 writes no incidents, so B27 creates or joins the class-key incident itself, at LOW, with kind coherent_shift. The class key's own alarm or findings are merged into the same incident."
+  ]
+ },
+ {
+  "engine": "B28 GovernorEngine (backend/app/engines/behavior/governor.py, class GovernorEngi",
+  "requested": [
+   "build.py / registry: register GovernorEngine() (app.engines.behavior.governor, name 'behavior.governor') at behavior order 28, after B27 IncidentEngine and before B29.",
+   "contracts.md F: add 'c2' and 'exfil' to the regime type vocabulary (B28's prior table already distinguishes them).",
+   "B03 / lib/m_baseline: publish ramp slope diagnostics in log-units/day, e.g. m_baseline.slope_log(store, s, e) or model.baseline['slope_log']. B28 reads model.baseline 'slope_log' / 'slope_diag'.slope_log with a NaN default and falls back to B14's baseline_creep slope, then the Sen slope of its own level.",
+   "B23 feedback: add governor label-queue items to model.feedback.queue with reason 'held'. Source: m_governor.label_queue(store, s), or regime events with extra.label_queue=True. eval metrics long_drift checks queue membership, and B28 cannot write model.feedback.",
+   "B27 incident (d) and the m_cp.level docstring ('B28 enters SUSPECT at >= 0.5'): m_cp.level is the max S/h over 48 charts, which simulates at >= h/4 on 88 % and >= h/2 on 15 % of null ticks at 900 s. B27's '< h/4' quiet test on it almost never passes. Consider the calibrated-p level for cusum/mcusum, as B28 now uses.",
+   "docs engines.md B28: record the SUSPECT accumulator guard, the evidence-beyond-prior rule for REJECT, time-in-regime durations, the q_floor release start and the tau-hat - dt rollback fit in test (d)."
+  ],
+  "deviations": [
+   "Accumulator SUSPECT trigger is guarded: level >= h/2 AND e_day(p_d) * n_scored_acc <= 0.1 (or the detector's own acc_alarm). Literal h/2 fires on about 9 % of null ticks per entity at 900 s from calibrated p (more at 60 s); every such SUSPECT turns DRIFTING/LOW after 1 h and blocks B03's +-24 h reference admission. The trust factor [every accumulator < h/2] keeps the literal h/2.",
+   "Accumulator level is B27's calibrated-p proxy ln(1/p)/ln(ARL_ticks) for all accumulators, including cusum and mcusum (>= 1 while acc_alarm is set). m_cp.level (the max S/h over 48 raw charts) is not used: simulated on B14's own bank, it is >= h/4 on 88 % and >= h/2 on 15 % of null ticks, so a return test on it would never pass.",
+   "REJECT needs P <= 0.2 plus evidence beyond the prior (a malicious-type flag or a negative ln LR term). The type prior alone (c2/exfil -4, identity -3) only holds the key in DRIFTING for a label. Without this, test (a) would reject on the first tick instead of 'once a lib-4 high match appears'.",
+   "Regime types add c2 and exfil (from the spec's 'c2/exfil -4' prior); contract F lists only 7 types. c2, exfil and identity never accrue time evidence.",
+   "The ACCEPT duration >= T_type and the 14-day label queue are measured as time in regime (since SUSPECT), not since tau-hat. With a far-back tau-hat (the creep ramp in (g)) this is what makes 'accepted after 1 d of stationarity' hold.",
+   "Release window is [min(tau-hat, q_floor), t], where q_floor is the commit frontier on the first quarantined tick. Rows processed while quarantined but older than tau-hat would otherwise stay held forever. A quarantine that ends with no episode (an incident closed while normal) releases [q_floor, t].",
+   "Test (d) compares the baseline with a fit on rows <= tau-hat - dt, the rows rollback_to = tau-hat - dt keeps; the spec text says '<= tau-hat'.",
+   "When neither q_inst nor q_all is scored, the evidence factor is 1 and the other factors still gate (absence is data; this prevents a cold-start or silent-entity deadlock). A B25 failure on the tick gives trust = trust_prov = NaN, which lib/gating treats as weight 0 live.",
+   "Training: the regime machine does not run (any leftover episode is reset silently); trust = trust_prov = 1 unless there is a lib-4 HIGH match (one-tick lag); quarantine still follows open incidents.",
+   "B28 also closes live incidents keyed by the entity on RETURNED (close_reason returned), not only on ACCEPT. This keeps 'quarantine 0 from the release tick' consistent; B27 notifies external closes. Quarantine counts only incidents with inc.entity == key, not alias members.",
+   "behavior.regime is written on non-normal ticks, on transitions and as an hourly heartbeat, not every tick (memory at 60 s over 8 d retention).",
+   "Stationarity and dispersion use a governor-maintained level: the mean over the episode's feature groups of the group-mean behavior.zr, else feature.vec. MK runs on at most 48 re-binned points; the dispersion ratio is a variance ratio. Ramp slope source: baseline_creep event slope_log, else model.baseline slope_log/slope_diag (not in contract C), else the Sen slope of the level.",
+   "new_entity: first_seen within 3 d before the onset AND >= 1 d after the system's earliest first_seen (or a new_entity_* event). It also accepts after 3 d in regime with no malicious evidence and no negative term, per architecture section 3.",
+   "A label freeze lasts while m_feedback.is_frozen. An automatic REJECT unfreezes (frozen=False, regime event 'returned' with extra.from=rejected) once the returned conditions hold.",
+   "A non-ramp ACCEPT writes allow_drift = 0 (a new regime supersedes an earlier ramp's allowance); a ramp ACCEPT writes its slope in log-units/day (B03's unit).",
+   "Known limitation: at RETURNED/ACCEPTED, the last D rows before the verdict are not held, so learners commit them with their recorded trust (0 while suspect). The paths test asserts this explicitly.",
+   "profile.extra.regime.rollbacks is a dict {count, last_ts, last_to}."
+  ]
+ },
+ {
+  "engine": "B06 MultivariateEngine (name \"behavior.multivariate\", layer behavior, interval 1",
+  "requested": [
+   "backend/app/pipeline/build.py should register MultivariateEngine() in the behavior layer in place of AnomalyEngine (the IsolationForest). It is constructible with no arguments.",
+   "Set OPENBLAS_NUM_THREADS=1 / OMP_NUM_THREADS=1 in tests/conftest.py and the pipeline entry points, or wrap refits in threadpoolctl. Under the current concurrent load, multithreaded OpenBLAS makes 52x52 eigh and c_step_oas 10x slower (25 ms vs 2.2 ms per c_step at 336x52).",
+   "robustcov owner, for awareness (not changed): c_step_oas systematically shrinks a strong pair. Major-axis variance comes out at 0.80/0.91/0.86 of the truth (n,p = 146,4 / 336,4 / 336,10), and a ρ=0.9 correlation reads 0.81/0.87/0.74. This is larger than the documented '~10% low' at small n or larger p. T² along the correlation reads correspondingly high; the null calibration stays fine.",
+   "B04 (later): call m_density.groups(store, s, split_by_feature_group=True) so marg_int (volume) and marg_shape never share a dependence group. B29: use m_density.score_model / contributions_model on the stored model for faithful replay; profile.extra.last_contrib has the top-5 RBC.",
+   "B04 randomized PIT (per the robustcov docstring): zi columns with tie mass are excluded from the B06 model, so mid-p z of low-count features would be unmodelled here."
+  ],
+  "deviations": [
+   "Committed-row buffer keeps at most 336 rows, one per 15-minute slot (the newest committed row of each slot). At 900 s this is identical to the spec. At 60 s a plain 336-row buffer would cover only 5.6 h; slots keep about 3.5 days at every cadence, and the update stays order-independent, so release and replay are exact.",
+   "Missing data. A column is modelled if it is finite in at least 50% of rows and no single value holds half of its entries (MCD-type fits collapse on ties). Complete buffers follow the spec path: robustcov.c_step_oas, eigen floor, 90% PCs. Buffers with NaN take a one-step EM path: conditional expectation from a pairwise-complete first pass, the C-step used only as an outlier screen at χ²_{p,0.999}, then OAS of the completed rows plus the E-step conditional covariance. Measured reasons: running the C-step on imputed rows gave 1.9% T² false alarms at the 1% level; the EM path gives 1.0% clean and 0.9% with 10% contamination. Complete-case fitting kept only 13 of 52 columns at 3% scattered NaN.",
+   "SPE Box parameters are fitted on out-of-sample SPE/θ1 (θ1 = residual trace). The values come from rows committed since the previous fit, scored under that previous model, in a 256-entry ring, and are trimmed on rollback. Bootstrap falls back to the class model's Box, else a two-fold cross-fit. Multi-seed null check at p=52: SPE 1.04%/5.1% and T² 1.15%/5.6% at the 1%/5% levels.",
+   "behavior.wh is the Wilson–Hilferty score of q·F (T² after the prediction scaling) rather than of raw T², so a finite-n fit does not bias it (null mean ≈ 0, sd ≈ 1). It is NaN when the Hotelling p is undefined (n_pred ≤ q+1).",
+   "Young-entity shrink (nΣ_e + 30Σ_class)/(n+30) is applied to μ as well as Σ, whenever a class model exists (the weight fades as 30/(n+30)); the Hotelling n becomes n_eff + 30.",
+   "An ACCEPTED rebase keeps rows before tau at weight 0.25 rather than dropping them, so the new regime dominates without a cold start. Link seeding adds the source's rows only in slots the entity lacks, at half weight.",
+   "Release of held rows older than the 6 h zi ring uses an 8-day per-slot archive that keeps only the newest row of each slot. At cadences below 900 s, a rollback whose tau falls mid-slot cannot replay older rows of that one slot. At 900 s it is exact.",
+   "Spec test (a) was implemented with the reviewed correction: (+3,+3) for the T²-significant case."
+  ]
+ },
+ {
+  "engine": "B04 LikelihoodEngine (behavior.likelihood), layer behavior, order 4, interval 1,",
+  "requested": [
+   "BUG in lib/m_baseline.py (owner B03). quantiles() and mean_nat() fill a full 52-column array, `full[:, NIG] = y`, and then call _inverse_tx(full, dt). _inverse_tx indexes `out[..., pos]` with _TX_SETS positions, which are positions inside the NIG block (0..31), not feature indices. The t-family inverse transforms therefore land on the wrong columns and leave the right ones untransformed. Example: http_latency (feature index 19) gets expit, so its p95 comes out as 0.999 instead of about 150 ms. Fix: apply _inverse_tx to the [.., nN] block (y) and assign the result to out[:, NIG], or map pos through NIG. B04 works around it in likelihood.state_quantiles.",
+   "Performance in lib/m_baseline.quantiles: it calls bayes.bb_ppf once per (q, ratio feature). Passing the q array once per feature, as bayes.bb_ppf supports, reuses one pmf pass and cuts about 4 ms to about 1 ms per call.",
+   "Performance in lib/m_class.members: it scans the whole assign map on every call, so class_key (called inside m_baseline.parent_key and predictive_set once per entity per tick) costs O(N) per entity and O(N^2) per tick. A per-version member index would remove this.",
+   "Optional: expose in lib/bayes.py a public scalar BB triple (P(K<k), P(K=k), P(K>k)); the private _bb_parts1 already computes it. B04 needs P(X=x) for the randomised PIT and currently uses its own lgamma-based pmf, because the array bayes.bb_logpmf costs about 150 us per call.",
+   "Pipeline registry (build.py, not mine): register LikelihoodEngine() in the behavior layer right after BaselineEngine (order 4), before B05 common_mode, which reads behavior.z. It needs no constructor arguments."
+  ],
+  "deviations": [
+   "Test (d) follows the known correction and the helpers_api note. z comes from the seeded randomised PIT, u = F(x-1) + V P(X=x) with V = combine.seeded_uniform(s, e, ts, 'B04', f); the same V is used for both anchors. The test checks that z has mean and sd within 0.1 of 0/1 and that KS on Phi(z) is not rejected at 0.01, for the count, ratio and t families. The spec's 'KS on p_f' cannot hold literally: with two identical anchors p_f = min(1, 2p) has D of about 0.25, and a discrete mid-p is not uniform either. So KS on p_f is run for a continuous feature scored against a single anchor (there p_f = p). With two anchors, the test checks that p_f is conservative: P(p_f <= a) <= 1.2a + 0.005.",
+   "Test (a) at engine level is checked against B03's own model after 3 days of constant traffic. That model has r of about 84, not about 1e3, so the engine-level bound is pf < 1e-6 with z < -4.5. The exact spec bounds (pf < 1e-7 for k=1, pf < 1e-5 and z < -4.5 for k=3, and p < 1e-3 at r=20) are asserted on hand-built predictives with the spec's parameters.",
+   "Test (e) needs http_requests >= 5 in the observation. The avg feature http_latency is weighted min(1, n/5), so with no requests it is unobserved.",
+   "Perf is about 1.5 ms per entity on this machine at steady state, against the spec's figure of about 0.15 ms. Most of it is outside B04: m_baseline.predictive_set takes 0.36-0.7 ms and m_baseline.observe 0.07 ms, and the scalar bayes.bb_midp costs about 5 us per ratio feature. B04's own per-feature scoring is about 0.1 ms per predictive. A model_state refresh adds about 1 ms, once per hour per entity.",
+   "profile.extra.model_state is given for a 15-minute exposure (dt_s = 900, which does not depend on cadence and matches the B29 explain wording). It is refreshed hourly at a per-entity phase rather than on every bucket change, so the load is spread out; the bucket field says which bucket it describes.",
+   "peer is NaN while no class or system tier model.baseline exists. A bare hyperprior is not treated as a peer group; its p-values are uncalibrated (see COLD_START_NOTE).",
+   "Axis names are the FEATURE_SPEC group names (volume, breadth, app, dns, tls, timing, transport, probe, comp), all of which lib/stages accepts.",
+   "Channels use a two-stage harmonic mean with equal weights: first within each dependence group (weight 1/|group|), then across groups. model.groups is split by feature group through m_density.groups(split_by_feature_group=True). A feature that model.groups leaves out becomes its own singleton group. Overlapping or out-of-range groups raise ValueError.",
+   "When B01 fails at a tick, every real entity gets behavior.degraded but no z/zr/pf rows, because activity is unknown. When B03 fails, or feature.nat is missing for an active entity, the entity gets all-NaN z/zr/pf rows plus behavior.degraded.",
+   "model_state quantiles are computed locally by state_quantiles instead of m_baseline.quantiles. m_baseline.quantiles has a t-family bug (see requested_shared_changes) and is about 3x slower on the ratio features. A test checks that the local count and ratio columns equal m_baseline.quantiles."
+  ]
+ },
+ {
+  "engine": "B18 ClassMonitorEngine (backend/app/engines/behavior/class_monitor.py, name 'beh",
+  "requested": [
+   "store DEFAULT_RETENTION (backend/app/core/store.py): add 'behavior.class.agg': (None, 9*DAY). B18 currently sets it itself with store.set_retention once per store; the ring is the reference learner's replay clock (24 h delay + 8 d journal).",
+   "lib/m_vocab or B08: optionally write adoption ledgers for static/pool classes (and 2-member roles) directly. B18 currently reads the members' role-class ledgers instead.",
+   "fusion (B25): the class caps key on the axes names B18 writes. class_int is ['volume']; class_coherence is ['peer', <axis>]; class_shape uses 'app_error' / 'transport' / 'shape'. These match fusion's canonical_axis and its COMMON_MODE_AXES today, so keep them stable.",
+   "docs/lib3/engines.md B18: the perf line (12 x 0.2 ms) is unrealistic with the exact m_baseline predictives (~0.4 ms per midp call); suggest about 1.5-2 ms per class."
+  ],
+  "deviations": [
+   "Perf: measured ~1.5 ms per class-tick, 17-20 ms per tick for 12 classes x 4 members at 900 s, against the spec's 12 x 0.2 ms <= 3 ms. Most of it is two m_baseline.midp calls (~0.4-0.7 ms each; the BB scalar loop over 10 ratio features) plus anchor_predictive and gating. The perf test bound is a generous 80 ms/tick.",
+   "class_int / class_shape combine per-feature p with the harmonic mean (lib/combine.whmp, the same as B04's group combination) rather than a named NB/Student-t group statistic; B24 calibrates the result.",
+   "class_novel pm = 10^-score (weights act as evidence multipliers); calibration 'over the class history' is left to B24's rings of behavior.score. The co-adoption rate (Beta-binomial, prior mean 0.05 with 4 pseudo-trials) is learned from matured ledger records through the gated learner. The acc_alarm fires when e_day(pm) <= the budget_per_day of class_novel.",
+   "Adoption source: B08 writes adoption ledgers only for role classes with >= 3 members. Static, pool and 2-member role classes therefore use the ledgers of their members' role classes, restricted to their own members. class_novel is NaN (unscored) only while no class model.vocab exists in the system.",
+   "'New to the class' = no class-vocabulary entry whose first_ts is more than 1 h older than the record's first sighting. The 'new external destinations' count in the aggregate is derived from the ledger records (external flag, first sighted this tick) and published as behavior.class.new_ext.",
+   "Events: coherent_shift fires at the onset when class_int p <= 1e-3, class_shape is not <= 1e-3, and >= 50 % of the scored members deviate the same way on volume (or B05's class volume direction agrees). class_shift fires at the onset of a class_shape change with p <= 1e-3 whose axes are all app_error/transport; severity is always LOW, and extra.system_wide comes from B05 behavior.common.<g>@__system__. class_adoption_risky fires once per value per 24 h at severity e_day_severity capped at HIGH; it can fire from the 2nd adopter (m_v >= 2).",
+   "behavior.class.agg is a vec ring and behavior.class is a dict without the agg list (helpers_api §0.1 storage). Member feature.tctx is not read: the tick's tctx is recomputed from ctx.config with lib/timebins, the same function B01 uses.",
+   "Unit test (a) checks 'no member incidents' as 'no member behavior.alarm and a class B25 alarm capped at low'. (b) checks 'incident >= MEDIUM' as a B24->B25 class alarm >= medium plus the acc_alarm, and 'each member p > 0.01' as the aggregate class_int > 0.01. B27 and B04 are not run in the B18 tests.",
+   "Link seeding (model.link) does not apply to class keys and is not called.",
+   "Tallies for adoption records that mature on a tick where B01 failed are not learned: no clock row is written that tick. This is rare and conservative."
+  ]
+ },
+ {
+  "engine": "B02 PeerGroupEngine (backend/app/engines/behavior/peer_group.py, class PeerGroup",
+  "requested": [
+   "backend/app/pipeline/build.py: register app.engines.behavior.peer_group.PeerGroupEngine (behavior order 2) in place of clustering.ClusteringEngine, and remove the clustering.py import when the legacy engine is dropped at integration.",
+   "docs/lib3/engines.md B02: note that the engine interval is 1 with an internal 16-tick / 6-h refit stride (the cold path runs every tick), the epsilon merge (0.15 roles / 0.05 subs), and the d90 floor of 0.15.",
+   "lib/m_class.py docstring (owner B02, but I was told not to edit lib modules): optionally document the extra fields assign.class_path/provisional/pend, roles.super/A/d90/desc/cluster/subs/absent/name_parts, and the private '_state' key."
+  ],
+  "deviations": [
+   "The engine interval is 1, not 16. The spec's cold-start path must run every tick, so the refit keeps its own stride: it runs when 16 ticks or 6 h have passed since the last refit (or the clock went backwards). period_s is None.",
+   "HDBSCAN cluster_selection_epsilon is added as a post-merge: clusters whose smallest cross distance is <= eps are merged (ROLE_EPS = 0.15 at level 1, SUB_EPS = 0.05 at level 2). Without it, EOM with min_cluster_size=2 split a tight 8-member role (members 0.01 apart) into two roles. sklearn's own cluster_selection_epsilon raises TypeError in _tree.epsilon_search/traverse_upwards on tied or zero distances, so it is implemented after the fit.",
+   "d90 is floored at D90_FLOOR = 0.15, both for the soft-membership kernel and for the cold match rule D <= d90. Otherwise a tight role rejects its own new members on the sampling noise of 3 ticks.",
+   "Level-1 inputs from model.baseline: the A components (timing_regularity, periodicity, path_entropy, think_time), the channel mix and the volume are read from m_baseline.profile_many (vec-space median/sd) at the entity's busiest bin48. A component whose predictive sd is >= 5 (hyperprior only, i.e. not identified) is dropped from the mean. Think time falls back to m_timing.think_time. The think-time percentile is taken against the sorted think times of the eligible population, stored in _state.think_ref for cold typing.",
+   "Level-2 W1(deciles) uses a normal approximation of each vec-space predictive: mean over deciles of |d median + d sd * z_k| at the role's busiest bin48, in units of 3 pooled member sds, capped at 1, averaged over features identified for both entities.",
+   "Missing distance terms (for example no rhythm or no vocab model) count 0.5 (neutral).",
+   "Cold-start rhythm term: with only a few active ticks the 48-bin shape is not identified, so it is computed as 1 - sum_b h_b s_c[b] / max s_c (are the observed slots where the role is active?) instead of 1 - cos. The cold descriptor is accumulated in model.class._state.cold because raw sets are kept only 1 h.",
+   "Cold typing emits once per entity. It is deferred until at least one role exists. An entity that was clustered before and whose baseline evidence decayed is not re-announced and keeps its role. Unmatched entities get role None (system backoff), not 'unique'.",
+   "Published role hysteresis: an established member keeps its role until the soft argmax names the same other role with p >= 0.7 on 3 runs; then class_transition fires. Split children and merged roles are relabelled directly with no transition event. A non-eligible entity (quarantined, open incident, frozen, < 48 commits) keeps its last assignment.",
+   "Severities, which the spec leaves open: class_transition LOW; class_split, class_merge and peer_outlier INFO. The split/merge events are emitted at (s, 'class:<rid>') for each system with members.",
+   "Only status='open' incidents block eligibility (per the spec's reads). acked or suppressed incidents do not.",
+   "model.class.version is bumped on every refit even when assignments are unchanged, so consumers caching on id/version (B05, B18) recompute every 16 ticks.",
+   "Extra engine-private fields are kept in model.class (_state, and the assign/roles extras listed in store_writes). m_class readers ignore them."
+  ]
+ },
+ {
+  "engine": "B15 IdentityModelEngine (behavior.identity_model), class IdentityModelEngine in ",
+  "requested": [
+   "backend/app/pipeline/build.py still registers the legacy FingerprintEngine(interval=4) at line 59. It should register IdentityModelEngine() from app.engines.behavior.identity_model instead, constructed with no arguments since it schedules its own fit stride. Legacy drift.py and clustering.py read profile.extra.stable_fingerprint, which only fingerprint.py writes. Retire them or keep fingerprint.py until they are gone.",
+   "docs/lib3/engines.md B15 and contract C need updating. The B15 Reads list should add behavior.trust, trust_prov, quarantine, model.link, act.tokens, act.stream, act.stream_frac, client.stack_set, tls.sni_etld1_set, dns.qname_etld1_set and l4.dport_set, used for live modality calibration. Contract C's model.identity fields grow to the layout documented in m_identity's docstring (stats, classes, bg, class_var, llr_n, distinctive, modality_share). The interval should read 1 (collection) with the fit every 96 ticks or 24 h. EER_hard should be defined as the max pairwise EER over the 3 nearest impostors.",
+   "B16/B17 authors: to score a window, call m_identity.window_from_store(store, s, e, last_K_active_ts), then m_identity.transform(model, x, class_key=m_class.class_key(...)). Use top_k and gauss_llr for the gauss block. Build one m_identity.Background(store, s, now) per tick and call modality_llrs(store, s, cands, ModalData, now, bg) for the other modalities, then calibrate(model, m, llr) for the ±4-nat cap. confusion(model, e, j) supplies B16's 'confusion(e, j*) < 0.1' check.",
+   "Performance note for the orchestrator or eval: under CPU contention, multithreaded BLAS made the small 48x48 to 200x200 eigendecompositions 3-5x slower. Setting OMP_NUM_THREADS=1 / OPENBLAS_NUM_THREADS=1 in the pipeline process would stabilise every engine's fit cost."
+  ],
+  "deviations": [
+   "The engine interval is 1, not 96. Window collection has to run every tick because feature.vec and feature.sketch are kept for only 1 day, and a 96 x 900 s stride plus the commit delay D would read rows that are already pruned. The CV fit still runs every 96 ticks or 24 h, with a per-system phase through Engine.entity_due. The first fit runs as soon as at least 2 entities have at least 9 windows each.",
+   "LDA is solved as a generalised eigenproblem (scipy eigh) against the OAS-shrunk within scatter. This is equivalent to sklearn's 'eigen' solver with automatic shrinkage. The 'lsqr' solver was not used because it has no transform, and B16/B17 need an LDA space.",
+   "EER_hard is the worst pairwise EER of an entity's held-out genuine windows against each of its 3 nearest impostors, taken separately. Pooling the 3 impostors' windows gives about 0.25 for an identical twin, which would fail the spec's EER > 0.3 assertion.",
+   "Bhattacharyya nearest impostors are computed on diagonal Gaussians in the full-data WCCN-whitened PCA space. The LDA space overfits twin separation in-sample.",
+   "T99 is the 99th percentile of held-out genuine squared distance d^2 in LDA space. recall@K uses K = 4 candidate ranks.",
+   "Non-gauss modality calibration (vocab, rhythm, seq, client, timing) uses live window samples. Raw sets are kept for only 1 h, so B15 cannot rescore old windows. Up to 3 active, non-quarantined entities at a time accumulate the LLR of their raw evidence over K active ticks, under their own model and their 3 nearest impostors' models, through the owners' accessors. The ring holds 2000 samples per modality. These samples are gated by quarantine only and are not reversed by rollback. This adds reads of act.tokens, act.stream, act.stream_frac, client.stack_set, tls.sni_etld1_set, dns.qname_etld1_set and l4.dport_set, which are not in the spec's Reads list.",
+   "Per-modality LLR is defined against a background: vocab against the system tier; seq against the system PPM; client against the system tier; rhythm against the system rhythm model, or else the mean p over entity models; timing against the mean pmf over entity models. The gauss background is a full Gaussian of all windows in LDA space. When a logistic slope comes out below 0, calibration is set to (0, 0). The default is (1, 0) until there are 20 samples of each label.",
+   "'log think_mu' is taken as behavior.timing.think_mu as is, because B11 already stores the mean of ln(gap).",
+   "Modality-drop importance, run every 4th fit, uses 9 blocks: volume, breadth, app, dns_tls, timing (feature timing group plus behavior.timing), transport (+probe), comp, sketch and clock. The pooled PCA basis is not refitted per block; the block's standardised and mask columns are zeroed before projection, and WCCN/LDA are refitted in every fold. This saves 9 eigendecompositions.",
+   "Class identifiability covers role classes from model.class only, not static or pool classes. It needs at least 2 roles among the scored entities.",
+   "Held rows older than feature.vec's 1-day retention cannot be released or replayed, so they are skipped. Ticks with trust below 0.5 are not learned (a binary weight). Link seeding adds every second window of the linked entity A to B, still pointing at A's stored vectors.",
+   "low_identifiability is emitted once per crossing above 0.2 and re-armed when EER_hard drops to 0.2 or below. Fits run in training mode neither emit nor mark the entity, so the first live fit reports it.",
+   "profile.separability is left untouched for unscored entities, which have fewer than 9 windows or are not part of a fit. NaN is never written into the dataclass float.",
+   "A public refit(ctx, system=None) method was added to force a fit (ops and tests)."
+  ]
+ },
+ {
+  "engine": "B16 AttributionEngine (behavior.attribution), backend/app/engines/behavior/attri",
+  "requested": [
+   "B15 / lib/m_identity.py: window_vector costs about 1.7 ms per call (masked-array nanmedian plus apply_along_axis nanpercentile). attribution.window_vector is a bit-identical replacement at about 0.13 ms, equality tested over thousands of randomized trials. Please move it into m_identity (and use it in B15) so B16 and B17 share one fast version.",
+   "B15 / lib/m_identity.py: modality_logliks does not apply the spec's vocab factor min(n_tok, 20)/20. B16 applies it before calibration. B15's cross-validated llr_calib for 'vocab' should be fitted on the same scaled LLR (best done inside modality_logliks), and B17 should use the same.",
+   "B15 representation: the window vector's mean feature.sketch includes the client.stack_set namespace block (sketch columns 16:32). A client-stack change therefore also moves z, so the +-4 cap on the client modality does not bound a browser upgrade's total effect. In spec test (d) B's own posterior fell to about 0.05 and unknown_identity fired, although no mismatch did. Suggest zeroing or dropping that sketch block in window_vector, since client is its own capped modality.",
+   "B15 / lib/m_identity.py: modality_logliks rebuilds the m_vocab and m_client backoff chains, and m_class.class_key (a scan of every assignment), on every call. attribution.tick_background and tick_cheap_llrs are cached per-tick equivalents (tested equal); consider moving them into m_identity.Background.",
+   "B17 / lib/m_link.py (not in the repo yet): please expose aliases(store, s, e) -> set and is_shared_ip(store, s, e). B16 currently reads profile.extra.continuity {aliases, linked_from, linked_to, shared_ip, entity_kind} and scans model.link['links'] defensively. A link_retracted should drop the alias from continuity."
+  ],
+  "deviations": [
+   "Built on lib/m_identity, which B15 landed mid-task. The window rows, transform, Gaussian terms against the full background Gaussian ('bg'), calibration pairs and the modality LLR maths all come from it, so B15 and B16 compute the same numbers. My earlier local re-implementation was removed.",
+   "score.identity = -log10(pi_self) and pm.identity = pi_self (a conservative small-sample prior for B24). This is my reading of the spec's 'self posterior's LLR tail'.",
+   "Priors: self 0.5, unknown 0.05, the other candidates share 0.45 equally. The unknown hypothesis has log-evidence 0, i.e. the system background. Linked aliases count as self. The own role class never counts as 'another identity' for lambda or the window wins.",
+   "The unknown CUSUM is spec-literal: +1 when max_j p_j < 0.01, where p_j is the chi2 typicality of z under each individual candidate. Consequence: during an impersonation, the 1-2 transition windows (2 of the attacker's rows, 2 genuine) can also raise unknown_identity on the victim alongside identity_mismatch. Test (a) therefore checks that bystanders get no events, not that no unknown event fires at all.",
+   "Class typicality: without an own role class in model.identity, the full background Gaussian stands in for the class (contract L backoff). 'Young' means not enrolled in model.identity.means; first_seen is not used, because a 7-day age rule would turn every unknown_identity in a short run into INFO.",
+   "PPM and gap terms are computed at window completion (every K = 4 active ticks) and cached per candidate. Vocab, client and rhythm are summed from per-tick, per-candidate LLRs (they are additive over a window). The rhythm presence term follows m_identity: cells of active ticks only, so idle slots inside the window span do not enter it.",
+   "Vocab LLR is multiplied by min(n_tok, 20)/20 before calibration, per the spec. m_identity.modality_logliks does not apply this factor (see requested changes).",
+   "Alert holds: 6 h per (j*, severity) for mismatch and per severity for unknown. The chart resets after an alarm. In training mode a chart that reaches its threshold is reset silently.",
+   "Spec test (d) is asserted as: no mismatch, the other-identity CUSUM stays at 0, A's raw client LLR is more than 10x the cap, and L_A <= L_B. B's own posterior is not asserted, because B15's window vector also carries the client stack (see requested changes).",
+   "Perf: 29.6 ms per tick at 40 entities on this box (about 0.75 ms per entity-tick; cheap modalities about 15-20 us per candidate) against the spec's 10 ms. The perf test bound is a generous 250 ms."
+  ]
+ },
+ {
+  "engine": "B17 EntityLinkEngine (backend/app/engines/behavior/entity_link.py, name 'behavio",
+  "requested": [
+   "B28 governor: for each retracted link (m_link.retractions(model.link, e, since=...), or the link_retracted event), write model.control@(s, B) {rollback_to: link['rollback_to'], release: [rollback_to, now]} so learners drop the link seed and recommit B's own rows unseeded. test_b17 (c) emulates exactly this against the real B03 and shows equality with an unseeded twin. B28 should also raise quarantine as gating requires, if it wants the held rows released later instead of at once.",
+   "pipeline/build.py: register EntityLinkEngine (app.engines.behavior.entity_link) at behavior order 17. It takes no constructor arguments.",
+   "B02 peer_group._linkable reads model.link without skipping retracted links. It should use m_link.links(model) (active only) or m_link.aliases.",
+   "B16 attribution.link_aliases / continuity, B27 incident._aliases and B13 budget._actor_chains already match this layout. Optionally switch them to m_link.aliases / actor_members / continuity to drop the duplicated parsing.",
+   "Docs: contract.md C should list the model.link fields (links record fields, actors {id, members, links, first_ts, last_ts}, plus the private shared / pending). helpers_api.md should index lib/m_link.py. engines.md B17 should note that behavior.zi is read only by the shared-IP test (the linking path is absolute), and the shared-IP fit (PCA<=4 + deterministic EM, >= 64 rows).",
+   "Known risk for B26 / tuning: during warm-up, when every IP is 'new', a periodic machine of a homogeneous fleet can be linked and then retracted when it reappears. The margin rule usually prevents it when several fleet members are silent. It produces no events in training, but it bumps model.link.version, so learners seed and B28 rolls back."
+  ],
+  "deviations": [
+   "Behavioural LLR modalities: behaviour sums {gauss, rhythm, seq, timing}, each B15-calibrated and capped at +-4 per window. The vocab MNB and the device term are kept separate so client and vocab evidence are not counted twice. The alternatives j are the other candidates, the 5 nearest enrolled entities (by LDA score on B's window) and 'new' (the background, L = 0).",
+   "A candidate's own continuity chain (its aliases) is excluded from its rivals. Without this, an IP-hopping actor's previous address loses to its own, already-linked predecessor.",
+   "A candidate not enrolled in model.identity gets its Gaussian centre from the mean of its own last 16 active absolute windows (feature.vec is kept 1 d), transformed with m_identity.",
+   "Extra link guards: B must have at least 2 active ticks (MIN_TICKS), and behaviour + vocab must be positive, so device, topology and time priors alone can never link. A must still be silent at link time: last_seen(A) <= first_seen(B) + dt and A not active now. A link is decided only on a tick where B was evaluated.",
+   "Device LR is defined as LR(t) = [(1-eps) p_A(t) + eps f(t)] / f(t), with eps = 0.05 (stack change on re-addressing), f = max(system share, rho = 0.02), share-weighted over B's stacks. A new or foreign stack gives LR = eps = 0.05 <= 0.1. NaN (no evidence) when A has no entity model.client or B has no stacks.",
+   "possible_impersonation fires when the log-odds without the device term is >= 5 with margin 2 over B's other candidates, and device LLR <= ln 0.1. It fires once per (B, A) pair, at MEDIUM severity.",
+   "Candidate restriction: same DHCP scope when B is in a configured scope; else the same B02 pool when B has one; else the whole system (the topology prior then separates /24s). Also required: gap <= 7 d, no active outgoing link, and at most 8 candidates by a cheap prior (topology + time + capped Gaussian).",
+   "Shared IP: the fit uses PCA(<= 4) of the centred zi rows (NaN -> 0, clipped at +-8; zi is already in z units) and a deterministic EM for the 2-component diagonal mixture, started from the PC1 median split. sklearn GaussianMixture measured ~50 ms per run at 96x4, against the spec's ~2 ms. Other details: first run needs >= 64 rows; runs are phased per entity with entity_due; both component weights must be >= 0.15; the local-hour histogram overlap must be >= 0.3; 'disjoint stacks' means different ja3n AND different UA family/major, with episodes within 300 s (B09's rule) on >= 2 ticks of the lookback; 3 negative runs clear the flag. Measured: bimodal delta >= 28 at 64 rows and >= 63 at 96; unimodal max -10.",
+   "Retraction applies only to links younger than ROLLBACK_MAX_DEPTH_S (7 d), and only when B was seen within the last hour. Older links are treated as the address being reused. link_retracted is emitted on B only, at LOW.",
+   "Actors include single-link components (a 2-member actor for a plain DHCP move), so B13 and B27 get the pair immediately.",
+   "Event severities chosen (the spec gives none): entity_resolution INFO, identity_moved INFO, shared_ip INFO (generator L7), possible_impersonation MEDIUM, link_retracted LOW.",
+   "B17 keeps a small private state inside model.link ('pending' trigger bookkeeping and 'shared' streaks), next to the contract fields links / actors / version, so a restart resumes where it stopped."
+  ]
+ },
+ {
+  "engine": "B30 PortraitEngine (backend/app/engines/behavior/portrait.py, name \"behavior.por",
+  "requested": [
+   "backend/app/pipeline/build.py: register `from ..engines.behavior.portrait import PortraitEngine` and add `PortraitEngine()` to the behavior layer at order 30 (after risk / incident / governor). The registry instantiates it with no arguments.",
+   "Optional, lib/m_baseline.py: a public `n_eff_by_bucket(model) -> float[48]` accessor. B30 currently reads true_stats(anchor)[:, FULL.W[flows]] itself.",
+   "Optional, lib/m_class or B02: publish the per-IP automation index A in model.class.assign (it exists only inside B02's descriptors today), so portraits can show B02's value instead of recomputing it.",
+   "When lib/m_link.py lands (B17), portraits could read aliases and actor chains through it. Today they read profile.extra.continuity."
+  ],
+  "deviations": [
+   "The portrait dict has two keys beyond contract G {json, text_zh, text_en, version, diff}: 'updated' (ts) and 'sig', a compact signature of the current version. Diffs are measured against 'sig', so slow drift accumulates until it passes a threshold. Between versions the json and texts are refreshed in place and the diff of the current version is kept.",
+   "A new version (and put_profile_version) is cut only on the first build or when a diff passes a threshold. It is not cut on every 2-h refresh, which would push the 12 kept versions out within a day. A class_path change also counts as a categorical change.",
+   "Identifiability is B15's separability (1 - 2 EER_hard), with a Wilson 95% CI over its n_windows held-out windows. EER is not strictly a binomial proportion, so the CI is an approximation.",
+   "The automation index is computed here from the available parts (timing regularity (1-B)/2, a confirmed strict period, the non-browser share of the UA mix). B02 does not publish a per-IP A in model.class.",
+   "Workload per bucket is taken from m_baseline.bucket_means (the entity's own statistics plus the hyperprior, without the class backoff chain). Counts use an NB recovered exactly from the mean and 15-min sd. Bytes (t family) use a normal on the log1p(rate/min) scale, which ignores the Student-t tails. Buckets with no committed data (weight < 0.25) are excluded, so a day type the entity was never active on gives None rather than a hyperprior band.",
+   "Perf is about 2-2.7 ms per entity or class per run (200 entities plus 6 classes, noisy shared machine) against the spec's ≈1 ms. About 60% is the exact NB/normal mixture bands (4 features, 3 mixtures). All keys are refreshed on the same run tick every 8 ticks at 900 s, so amortised this is about 0.3 ms per key per tick.",
+   "Class common tokens and class-vs-system distinctive tokens are computed from the members' entity vocab models, not from model.vocab@class, so static and pool classes get them too. Adoption history uses m_vocab.adoption_records for role classes, else class_monitor.adoption.recent.",
+   "Continuity and aliases come from profile.extra.continuity (contract G) because lib/m_link.py does not exist yet. shared_ip comes from continuity or attribution."
+  ]
+ }
+]
