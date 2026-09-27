@@ -314,7 +314,7 @@ def test_strict_period_and_size_rank():
     r = B.evaluate_pair(t, np.full(60, 900.0), np.sort(rng.gamma(2.0, 2.0, 200)), 0.5)
     assert r["p_z2"] < 1e-20 and abs(r["period"] - 3600.0) < 5.0
     assert r["p_size"] < 1.0 / 150                         # most constant of 200 pairs
-    assert r["p_size"] >= 1.0 / 202
+    assert r["p_size"] == pytest.approx(0.5 / 201)         # above all 200: (0 + u) / (N + 1)
     # the size test alone never alarms: it is floored at 1 / (N + 1)
     assert B._rank_p(1e6, np.full(20, 1e6), 0.5) == pytest.approx(0.5 * 21 / 21)
     assert math.isnan(B._rank_p(5.0, np.arange(19.0), 0.5))
@@ -366,20 +366,28 @@ def test_nan_inputs():
     st, eng = make_store(), B.BeaconEngine()
     e = "10.0.0.1"
     t = _beacon_times(rng, T0, 20)
-    sizes = np.full(20, np.nan)
-    _drive(st, eng, e, t, sizes=sizes, ticks=4)
-    now = T0 + 5 * DT
-    rows = [(math.nan, 1.0, 2.0), (float(t[-1]) + 300.0, math.nan, math.nan),
-            (math.inf, 1.0, 1.0)]
-    _feed(st, e, now, {DID: rows})
-    _fillers(st, now)
-    run_engine(eng, st, now, dt=DT)
+    nows = _drive(st, eng, e, t, sizes=np.full(20, np.nan))   # sizes all unknown
+    pr = _pair(st, e)
+    assert pr["t"].size == 20 and math.isnan(pr["res"]["p_size"])
+    assert pr["res"]["p"] < 1e-5                           # renewal alone still decides
+    # NaN / inf times are dropped, NaN bytes kept as unknown sizes; the next
+    # evaluation (EVAL_EVERY_TICKS later) sees 21 finite events
+    for k in range(1, B.EVAL_EVERY_TICKS + 1):
+        now = nows[-1] + k * DT
+        rows = [(math.nan, 1.0, 2.0), (float(t[-1]) + 300.0, math.nan, math.nan),
+                (math.inf, 1.0, 1.0)] if k == 1 else []
+        _feed(st, e, now, {DID: rows}, events=3)
+        _fillers(st, now)
+        run_engine(eng, st, now, dt=DT)
+        assert math.isfinite(_score(st, e, now))           # active tick: scored, never NaN
     pr = _pair(st, e)
     assert pr["t"].size == 21 and np.isfinite(pr["t"]).all()
-    assert pr["res"] is not None and math.isnan(pr["res"]["p_size"])
-    assert pr["res"]["p"] < 1e-5
-    assert math.isnan(B.evaluate_pair(np.array([0.0, 1.0]), np.full(2, np.nan),
-                                      np.zeros(0), 0.5)["p"])
+    assert pr["last_eval"] == now and pr["res"]["n"] == 21
+    assert math.isnan(pr["res"]["p_size"]) and pr["res"]["p"] < 1e-5
+    # too few intervals: every test is undefined -> NaN, never p = 1
+    r = B.evaluate_pair(np.array([0.0, 1.0]), np.full(2, np.nan), np.zeros(0), 0.5)
+    assert math.isnan(r["p"])
+    assert math.isnan(B.evaluate_pair(np.array([]), np.array([]), np.zeros(0), 0.5)["p"])
 
 
 def test_r2_failure_degrades():
@@ -452,16 +460,27 @@ def test_cooldown_and_throttle():
     rng = np.random.default_rng(95)
     st, eng = make_store(), B.BeaconEngine()
     e = "10.0.0.1"
-    t = _beacon_times(rng, T0, 80)                        # ~6.7 h of beaconing
-    evals = []
-    for now in _drive(st, eng, e, t, ticks=28):
-        pr = _pair(st, e)
-        evals.append(pr["last_eval"] == now)
-    idx = [i for i, v in enumerate(evals) if v]
-    assert len(idx) >= 3 and min(np.diff(idx)) >= B.EVAL_EVERY_TICKS
-    assert len(_beacon_events(st, e)) == 1               # 24 h cooldown per pair
-    # buffer bound: never more than BUF_MAX events
-    assert _pair(st, e)["t"].size <= B.BUF_MAX
+    t = _beacon_times(rng, T0, 330)                       # ~27.5 h of beaconing
+    evals, alarms = [], []
+
+    def probe(st_, now):                                  # runs before each tick's engine run
+        pr = _pair(st_, e)
+        evals.append(None if pr is None else pr["last_eval"])
+        alarms.append(emit.read_dict(st_, S, e, emit.ACC_ALARM, now - DT).get("beacon", 0))
+
+    nows = _drive(st, eng, e, t, ticks=110, extra=probe)
+    # store models are live objects: read the throttle from last_eval snapshots
+    evals = evals[1:] + [_pair(st, e)["last_eval"]]
+    idx = [i for i, (now, le) in enumerate(zip(nows, evals)) if le == now]
+    assert len(idx) >= 4 and min(np.diff(idx)) >= B.EVAL_EVERY_TICKS
+    alarms = alarms[1:] + [emit.read_dict(st, S, e, emit.ACC_ALARM, nows[-1]).get("beacon", 0)]
+    assert [i for i, a in enumerate(alarms) if a] == idx[1:] or sum(alarms) >= len(idx) - 1
+    assert sum(alarms) >= 2                               # acc_alarm on every alarming eval
+    evs = sorted(_beacon_events(st, e), key=lambda ev: ev.ts)
+    assert len(evs) == 2                                  # one event per pair per 24 h ...
+    assert evs[1].ts - evs[0].ts >= B.EVENT_COOLDOWN_S    # ... and again after the cooldown
+    assert evs[1].ts - evs[0].ts <= B.EVENT_COOLDOWN_S + B.EVAL_EVERY_TICKS * DT
+    assert _pair(st, e)["t"].size == B.BUF_MAX            # 256-event buffer bound
 
 
 def test_buffer_cap_256():

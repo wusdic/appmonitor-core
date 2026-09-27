@@ -1,7 +1,7 @@
 """B07 RhythmEngine: the spec unit tests (engines.md B07 (a)-(e)).
 
 The `Rig` driver (a store with feature.active + act.stream per tick, as B01
-and R2 write them) is shared with test_b07_rhythm_edges.py. Training runs at
+and R2 write them) is shared with test_b07_rhythm_{edges,clock,shift}.py. Training runs at
 3600-s ticks (the slot clock resolves each hour into its 4 slots from the
 stream timestamps) to keep the files fast; the scored days run at 900 s or
 60 s."""
@@ -33,6 +33,10 @@ EV_OFF = 17.0                    # events at hh:m5:17, never on a tick boundary
 H_OFF = R.H_OFF
 H_SIL = R.H_SIL
 
+# 4 weeks: a daily job lands in the workday cells only 5 days in 7 and the
+# 3-member system prior (strength 2) pulls toward the pooled rate, so 3 weeks
+# leave p_hat ~ 0.949 (< 0.95, ineligible); 4 weeks give ~ 0.958.
+SCHED_DAYS = 28
 Pattern = Callable[[float], bool]
 
 
@@ -207,17 +211,18 @@ def human(t: float) -> bool:
 @pytest.fixture(scope="module")
 def sched():
     """bk: backup 02:00-02:40 daily; hu: human rhythm with the same slots;
-    sh: backup 01:00-01:40 daily. 21 training days, then day 21 live at 900 s:
-    bk and hu skip their night, sh moves to 03:00-03:40 (same volume)."""
+    sh: backup 01:00-01:40 daily. SCHED_DAYS training days, then one night
+    live at 900 s: bk and hu skip their night, sh moves to 03:00-03:40 (same
+    volume)."""
     rig = Rig({"bk": backup_at(2.0, 2.67), "hu": human, "sh": backup_at(1.0, 1.67)})
-    train(rig, 21)
+    train(rig, SCHED_DAYS)
     skip = {
         "bk": lambda t: False,
         "hu": lambda t: human(t) and not in_window(local(t)[1], 0.0, 6.0),
         "sh": backup_at(3.0, 3.67),
     }
     out = {e: [] for e in skip}
-    while rig.now + 900.0 <= T0 + 21 * DAY + 6 * 3600 + 1e-6:
+    while rig.now + 900.0 <= T0 + SCHED_DAYS * DAY + 6 * 3600 + 1e-6:
         rig.step(900.0, patterns=skip)
         for e in skip:
             out[e].append(rig.snap(e))
@@ -228,9 +233,12 @@ def test_b_backup_skip_gives_silence_p_le_1e4(sched):
     rig, out = sched
     m = rig.model("bk")
     assert m["machine_like"] and m["entropy168"] <= R.ENTROPY_MAX
-    ps = [R.p_cell(m, R.cell48(2, q)) for q in range(3)]
-    assert min(ps) >= 0.95
     rows = out["bk"]
+    # p_hat of the three skipped slots as scored (the rows report the slot
+    # just finalised; the model has since learned the miss)
+    sil = [r for r in rows if r["s_sil"] > 0.0]
+    assert [r["p_expected"] >= R.P_SIL_MIN for r in sil[:3]] == [True] * 3
+    assert len({r["s_sil"] for r in sil}) == 3                # three increments, then flat
     s_max = max(r["s_sil"] for r in rows)
     assert math.exp(-s_max) <= 1e-4
     assert s_max >= H_SIL
@@ -250,9 +258,11 @@ def test_c_same_skip_for_a_human_rhythm_is_ineligible(sched):
     m = rig.model("hu")
     assert m["entropy168"] > R.ENTROPY_MAX and not m["machine_like"]
     # the backup slots alone would qualify (p >= 0.95): only the entropy gate differs
-    assert min(R.p_cell(m, R.cell48(2, q)) for q in range(3)) >= 0.95
+    assert min(R.p_cell(m, R.cell48(2, q)) for q in range(3)) >= R.P_SIL_MIN
+    assert not R.silence_eligible(0.99, m["machine_like"])
     rows = out["hu"]
-    assert all(math.isnan(r["score"]["silence"]) for r in rows)      # unscored
+    assert all("silence" not in r["score"] for r in rows)            # NaN = unscored
+    assert all("silence" not in r["pm"] for r in rows)
     assert all(r["s_sil"] is None for r in rows)
     assert all(r["acc"].get("silence") == 0 for r in rows)
     assert all(math.isfinite(r["score"]["offhours"]) for r in rows)

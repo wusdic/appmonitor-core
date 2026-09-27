@@ -35,7 +35,8 @@ shows up in a tick-level count). This engine works on POINT events instead:
       3) strict period: the window-corrected Z^2_2 scan over trial periods
          oversampled at 1/(5T), band [max(10 s, med/2), min(T/4, 2 med)]
          (med = median interval; a 7-d span cannot be scanned at 5x down to
-         10 s within 512 trials), with the Davies + union trials bound. At
+         10 s within 512 trials), with the Davies + union trials bound (the
+         peak period is refined on a fine local grid for P_hat only). At
          most Z2_MAX_PER_TICK scans per tick, and none when the renewal p
          already alarms.
       p = min(3 min(p_renewal, p_size, p_Z2), 1) over the finite ones
@@ -114,6 +115,7 @@ Z2_MAX_PER_TICK = 2                # ~0.5-0.8 ms each at 256 events x 512 trials
 Z2_P_MIN_S = 10.0
 Z2_OVERSAMPLE = 5
 Z2_HARMONICS = 2
+Z2_REFINE = 21                     # fine points between the peak's grid neighbours
 N_TESTS = 3                        # Bonferroni factor (renewal, size, Z^2)
 RARE_SHARE = MT.RARE_SHARE         # buffer only destinations used by <= 20 % of entities
 CLASS_SHARE_MIN = 2                # class-shared: >= 2 other members ...
@@ -264,7 +266,26 @@ def _z2_test(t: np.ndarray, med: float) -> Tuple[float, float]:
         return _NAN, _NAN
     j = int(np.nanargmax(z))
     p = evt.z2_p(float(z[j]), Z2_HARMONICS, n_eff, n_trials=int(periods.size))
-    return p, float(periods[j])
+    return p, _refine_peak(t, periods, j, float(z[j]))
+
+
+def _refine_peak(t: np.ndarray, periods: np.ndarray, j: int, z_j: float) -> float:
+    """Best period on a Z2_REFINE-point frequency grid between the grid
+    neighbours of peak j. The scan step 1/(5T) is ~P^2/(5T) in period (12 s
+    at P = 1 h over 2.5 d), coarser than a strict train's own precision.
+    Only the period estimate uses it; p stays the scanned grid's (the union
+    bound counts that grid's trials)."""
+    f = 1.0 / periods
+    lo, hi = f[max(j - 1, 0)], f[min(j + 1, f.size - 1)]
+    if not hi > lo:
+        lo, hi = hi, lo
+    if not hi > lo:
+        return float(periods[j])
+    fine = np.linspace(lo, hi, Z2_REFINE)
+    zf = evt.z2_periodogram(t, 1.0 / fine, Z2_HARMONICS)
+    if not np.isfinite(zf).any() or not float(np.nanmax(zf)) > z_j:
+        return float(periods[j])
+    return float(1.0 / fine[int(np.nanargmax(zf))])
 
 
 def _q(xs: np.ndarray, q: float) -> float:

@@ -40,11 +40,15 @@ describes (and alarms on) the same wall-clock slots.
      (contiguous slots with p_hat >= 0.5) stays silent, followed within 24 h
      by a run of unusual activity of the same duration (+-25 %, at least +-1
      slot) and volume (x0.5..x2) whose centre moved by > 1 h, gets a
-     schedule_shift event (LOW). W and s are reset (the evidence is
-     explained) and for 24 h behavior.rhythm.shift_explained = 1; B25 caps
-     temporal-only evidence at LOW when a schedule_shift event exists. A
-     change of destination or content is scored by other detectors and is
-     never capped.
+     schedule_shift event (LOW) when that run ends. While a run may still be
+     the moved window (<= its duration + tolerance) its off-hours evidence is
+     held (the pre-run W is reported, the 60-s provisional increment waits),
+     so an explained move never alarms; a run that outgrows the tolerance or
+     ends without matching reports its full W at once. On a shift W and s
+     are reset (the evidence is explained) and for 24 h
+     behavior.rhythm.shift_explained = 1; B25 caps temporal-only evidence at
+     LOW when a schedule_shift event exists. A change of destination or
+     content is scored by other detectors and is never capped.
   6. Calendar self-healing: when the fraction of a system's entities active
      in a slot of a nonworkday exceeds 3x the system rhythm's usual level
      (>= 3 entities, >= 25 %), that local day is treated as a workday from
@@ -104,6 +108,8 @@ TIER_REFIT_S = 3600.0
 ENTROPY_REFIT_S = 3600.0          # entropy168 / machine_like (~40 us)
 DESC_REFIT_S = 6 * 3600.0         # full descriptors (~0.3 ms): the rhythm moves slowly
 PRIOR_REFIT_S = 3600.0
+CLASS_MIN_MEMBERS = 3             # contract L: a smaller class backs off to the system tier
+SYSTEM_MIN_MEMBERS = 2            # the entity alone is no prior for itself
 HEAL_FACTOR = 3.0
 HEAL_MIN_ACTIVE = 3
 HEAL_MIN_FRAC = 0.25
@@ -397,6 +403,9 @@ class RhythmEngine(Engine):
         finals = self._finalise(ctx, s, e, clock, model, det, presence)
         # 3) provisional score of the current slot (60-s ticks)
         W_rep, p_cur, a_cur, w_slot = self._provisional(model, det, clock)
+        held = _held_W(det)
+        if held is not None:
+            W_rep = held                    # a possible schedule move: evidence held
         # 4) learn (rows <= now - D; the scores above used the pre-commit model)
         self._learn(ctx, lrn, s, e, model)
         _prune(model, now)
@@ -473,10 +482,11 @@ class RhythmEngine(Engine):
             c48, c168 = clock.cells(j)
             t_end = clock.t_end(j)
             p = R.p_cell(model, c48, c168)
-            det["W"] = R.offhours_step(det["W"], a, p)
+            w_prev = det["W"]
+            det["W"] = R.offhours_step(w_prev, a, p)
             det["s"] = R.silence_step(det["s"], a, p, machine)
             det["w_slot"] = j
-            self._track_shift(ctx, s, e, model, det, j, a, vol, p, c48, machine, t_end)
+            self._track_shift(ctx, s, e, model, det, j, a, vol, p, c48, machine, t_end, w_prev)
             led["slots"][j] = _Slot(clock.now, a, vol if vol == vol else math.nan, c48, c168,
                                     t_end)
             tick_js.append(j)
@@ -494,13 +504,16 @@ class RhythmEngine(Engine):
         """(W to report, p_hat and activity of the current slot, slot W refers
         to). An already active open slot is scored now (activity within a slot
         is monotone, so its final increment is known); an open slot without
-        activity yet is left to its completion (it may still become active)."""
+        activity yet is left to its completion (it may still become active).
+        While a missed usual window is pending (a schedule-shift candidate)
+        the unusual run is scored at slot completion only, where the shift is
+        checked first, so an explained move never alarms provisionally."""
         j = clock.cur if clock.cur in det["acc"] else clock.hi
         c48, c168 = clock.cells(j)
         p = R.p_cell(model, c48, c168)
         cur = det["acc"].get(j)
         a = cur[0] if cur is not None else math.nan
-        if cur is not None and a == 1.0:
+        if cur is not None and a == 1.0 and not _shift_pending(det, p):
             return R.offhours_step(det["W"], 1.0, p), p, a, j
         return det["W"], p, a, det.get("w_slot")
 
@@ -520,7 +533,7 @@ class RhythmEngine(Engine):
     # --------------------------------------------------------- schedule shift
     def _track_shift(self, ctx: Context, s: str, e: str, model: Dict[str, Any],
                      det: Dict[str, Any], j: int, a: float, vol: float, p: float, c48: int,
-                     machine: bool, t_end: float) -> None:
+                     machine: bool, t_end: float, w_prev: float) -> None:
         """Usual-window misses and unusual-activity runs, per finalised slot."""
         miss = det["miss"]
         if miss is not None and t_end - miss["t_end"] > SHIFT_WINDOW_S + SLOT_S:
@@ -546,7 +559,7 @@ class RhythmEngine(Engine):
         new = det["new"]
         if a > 0.5 and not usual:
             if new is None:
-                new = det["new"] = {"j0": j, "n": 0, "vol": 0.0}
+                new = det["new"] = {"j0": j, "n": 0, "vol": 0.0, "W0": w_prev}
             new["n"] += 1
             new["vol"] += vol if vol == vol else math.nan
         elif new is not None:
@@ -649,12 +662,13 @@ class RhythmEngine(Engine):
             return
         ck = m_class.class_key(store, s, e)
         prior = {"tier": "hyper", "pi48": None, "s": R.HYPER_S}
-        for key, strength, tier in ((ck, R.CLASS_S, ck), (SYSTEM_KEY, R.SYSTEM_S, "system")):
+        for key, strength, tier, n_min in ((ck, R.CLASS_S, ck, CLASS_MIN_MEMBERS),
+                                           (SYSTEM_KEY, R.SYSTEM_S, "system", SYSTEM_MIN_MEMBERS)):
             if not key:
                 continue
             tm = store.get_model(s, key, MODEL)
             pi = tm.get("pi48") if isinstance(tm, dict) else None
-            if pi is not None and int(tm.get("n_members", 0) or 0) >= 2:
+            if pi is not None and int(tm.get("n_members", 0) or 0) >= n_min:
                 prior = {"tier": tier, "pi48": np.asarray(pi, dtype=np.float64), "s": strength}
                 break
         model["prior"] = prior
@@ -731,6 +745,31 @@ class RhythmEngine(Engine):
 
 
 # ================================================================ helpers
+def _held_W(det: Dict[str, Any]) -> Optional[float]:
+    """W before the current unusual run while that run may still be the moved
+    usual window (<= its duration + tolerance), else None. Its off-hours
+    evidence is held until the run either completes the shift (explained,
+    W reset) or can no longer be one (then the full W is reported): at most
+    n0 + tol slots of delay, and only right after a machine-like entity
+    silently missed its window."""
+    miss, new = det.get("miss"), det.get("new")
+    if miss is None or new is None:
+        return None
+    if new["n"] > miss["n"] + max(1.0, SHIFT_DUR_TOL * miss["n"]):
+        return None
+    return float(new.get("W0", det["W"]))
+
+
+def _shift_pending(det: Dict[str, Any], p: float) -> bool:
+    """A missed usual window awaits its moved run, and this unusual slot may
+    still complete it (run length <= the window's duration + tolerance)."""
+    miss = det.get("miss")
+    if miss is None or not (p == p and p < R.P_USUAL):
+        return False
+    n = (det["new"]["n"] if det.get("new") else 0) + 1
+    return n <= miss["n"] + max(1.0, SHIFT_DUR_TOL * miss["n"])
+
+
 def _other_state(store, s: str, e: str) -> Optional[Dict[str, Any]]:
     m = store.get_model(s, e, MODEL)
     return m.get("state") if isinstance(m, dict) and m.get("kind") == "entity" else None

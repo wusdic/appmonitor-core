@@ -86,7 +86,8 @@ Accessor signatures (pure; missing data gives the documented default):
     profile48(model) -> float64[192];  profile168(model) -> float64[672]
     activity48(model) / activity168(model) -> MLE rates A/N (NaN unobserved)
     hourly48(model) -> float64[48]              expected active slots per bin (0..4)
-    shape48(model) -> float64[48];  shape168(model) -> float64[168]   (sum 1, NaN empty)
+    shape48(model) -> float64[48];  shape168(model) -> float64[168]   (sum 1; NaN if
+                                                never active)
     entropy168(model) -> float;  machine_like(model) -> bool
     expected_volume(model, c48) -> float        mean events of an active slot (NaN)
     loglik_terms(model, active_slots, tctx) -> float64[n]   nats per slot
@@ -489,14 +490,25 @@ def _norm(m: np.ndarray) -> np.ndarray:
     return np.nan_to_num(m, nan=0.0) / t
 
 
+def _ever_active(model: Mapping[str, Any]) -> bool:
+    st = model.get("state") or {}
+    a = st.get("A48")
+    return a is not None and float(np.sum(a)) > 0.0
+
+
 def shape48(model: Mapping[str, Any]) -> np.ndarray:
     """Normalised 48-bin rhythm shape (B02 role descriptor): expected active
-    slots per bin48 hour over their total; NaN when the model is empty."""
+    slots per bin48 hour over their total. NaN when nothing was ever active
+    (the posterior would only echo the prior)."""
+    if not _ever_active(model):
+        return np.full(48, np.nan)
     return _norm(hourly48(model))
 
 
 def shape168(model: Mapping[str, Any]) -> np.ndarray:
-    """Normalised 168-bin (hour of week) shape from the posterior."""
+    """Normalised 168-bin (hour of week) shape from the posterior (NaN as shape48)."""
+    if not _ever_active(model):
+        return np.full(168, np.nan)
     return _norm(profile168(model).reshape(168, QUARTERS).sum(axis=1))
 
 
