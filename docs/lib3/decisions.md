@@ -1,0 +1,73 @@
+# Dropped alternatives
+
+- Per-run IsolationForest refit (anomaly.py:117-139). It costs about 1.1 s per run, trains on attack rows and uses an in-sample 8% tail. Replaced by the gated robust T²/SPE with RBC in B06. A pooled IsolationForest per system is also not adopted: SPE, mixture, novelty and sequence already cover nonlinear structure.
+- KMeans silhouette sweep with names from z-score thresholds (clustering.py:63-111). Labels are unstable, names are wrong, and it cost 9.5–15.7 s of warm-up. Replaced by the two-level HDBSCAN hierarchy in B02. A pooled window-level GMM of modes was also rejected: its prototype ARI was 0.098.
+- Flat single-level HDBSCAN on individual distances (the previous spec). With individual Dirichlet path preferences it splits same-archetype users into singletons, which contradicts the ARI gate. Replaced by role clustering on role descriptors, then sub-clustering on individual distances.
+- Cosine drift (drift.py) and nearest-neighbour cosine separability (fingerprint.py:80-94). Both ignore scale and within-entity variance. Replaced by B14 (CUSUM, MCUSUM, BOCPD and creep against the reference anchor) and B15 (cross-validated EER on absolute representations).
+- Identification on self-normalised behavior.z (the previous B4/B16). It removes exactly the between-entity information that identification needs. Replaced by absolute window vectors and likelihoods under each candidate's own models.
+- ACAT (Cauchy combination) as the fusion operator. A single p close to 1 masks strong evidence: measured ACAT([1e-3, 0.999, 0.5]) = 0.5 and ACAT([1e-6, 1.0]) ≈ 1. Truncating p at 0.9 removes the masking but is anti-conservative and would need a new null derivation. Replaced by weighted HMP, which is insensitive to p ≈ 1 and measured at 1.095× nominal at 1e-3 under ρ = 0.64, followed by per-entity meta-calibration.
+- Dropping p > 0.5 before combining (critic option). The selection biases the null and inflates false alarms. Randomised conformal p-values plus HMP address the actual problem, ties at p = 1.
+- Deterministic conformal p-values. Sparse and accumulator detectors put a point mass at p = 1, which breaks KS health and ACAT. Replaced by randomised tie-breaking seeded per (entity, detector, ts).
+- Separate Mondrian calibration of identity inside B4. That would be a second owner of the same quantity. B24 is the single owner, and identity uses (daypart, regime) strata.
+- Thresholds as ARL in ticks and fixed per-tick CUSUM thresholds. They change 15–60× between 900-s, 60-s and 3600-s cadences. Replaced by wall-clock ARL through lib/seq.py, a 15-minute slot clock for rhythm, and e_day severities.
+- Forcing trust = 1 for immature entities during live operation (critic option). It would absorb cold-start attackers (T11). Replaced by hyperpriors, class and system backoff, trust = 1 only during training, and an explicit new_entity acceptance path in the governor.
+- The rate cap of 0.5σ/day and scoring against a single moving baseline (the previous B2). Slow attacks could move the baseline 1σ in 2 days. Replaced by a 0.1σ15 cap on the current anchor, a 0.03σ15 reference anchor with a 24-hour delay used in both likelihood and changepoint, and rollback.
+- Risk L_ref set automatically so that the clean p99 maps to 30. That is poisonable and puts 1% of clean ticks at Medium. Replaced by a fixed L_ref = 60 (null p99.99 of L ≈ 19 gives risk ≈ 27) and cadence-invariant excess-surprise evidence.
+- Incident close tied to risk falling below the entry level. With a risk half-life of 12–72 h this locks entities in quarantine. Replaced by closing on regime, accumulators and evidence.
+- The 'feature.active iff last_seen ≥ now − Δt/2' rule. It fails when events fall in the first half of a tick. Replaced by activity in the ingestion tick.
+- Lomb–Scargle and Rayleigh as the primary beacon tests. A renewal process with ±30% jitter loses phase coherence: measured Rayleigh median p = 0.14 at n = 40, and the log-spaced grid under-samples peaks. Replaced by a Gamma renewal LRT with a finite-n Monte-Carlo null, plus oversampled Z² for low-jitter trains. RITA dispersion is kept only as a descriptor.
+- Daily stationary block bootstrap of every CUSUM chart, and 5-fold CV plus modality-drop re-runs on every identity_model run. Neither fits the CPU budget. Replaced by Siegmund thresholds with AR(1) prewhitening plus a round-robin audit, and 3-fold CV with modality drops on every 4th run.
+- DeepLog-style LSTM next-token models. With about 10³–10⁴ sessions per entity per week they need pooled training, which loses individual grammars. They also give no calibrated tail probabilities without extra conformal layers and are expensive to roll back. PPM with entity → role → system backoff is near-optimal for small alphabets (Begleiter et al. 2004). Controlled comparisons (Le & Zhang, ICSE 2022; Landauer et al. 2023) find n-gram and count baselines competitive once data leakage is removed.
+- LogBERT or transformer sequence encoders. The GPU and CPU cost exceeds the budget of less than 100 ms per tick, pre-training data is absent, and explanations are hard. Documented as an upgrade path behind B22's store contract for deployments with 10³ or more entities.
+- Autoencoder, VAE and Deep SVDD density models. Reconstruction errors must be calibrated anyway. They are data-hungry for a per-entity model, and online retraining makes rollback expensive. Robust T²/SPE with exact RBC plus the P2 GMM covers the same ground, stays interpretable and costs microseconds.
+- Contrastive or self-supervised entity embeddings (SimCLR, TS2Vec, Siamese). With 20–40 entities, OAS-WCCN shrinkage LDA on absolute windows already reaches near-perfect prototype attribution (measured 1.00 over 4-tick windows in the audits). Contrastive encoders are an upgrade path behind B15 and B16 at larger scale.
+- Word2vec trained by SGD. Replaced by PPMI-SVD in P2 B22, which is equivalent to SGNS (Levy & Goldberg 2014), deterministic, and about 50 ms per system per day.
+- GNN or graph SVD embeddings, NCA, LODA and global-only PLDA. The gain is marginal at this entity count. The sketch, WCCN-LDA and vocab LLR suffice, and B22 covers semantic co-occurrence.
+- Holt–Winters forecasting (audit 4) and harmonic IRLS seasonal regression (audit 2). Both overlap with the conjugate, kernel-smoothed, hierarchical two-anchor bucket baseline, which handles counts and ratios exactly. Forecast bands come from predictive quantiles.
+- FOCuS and the energy-distance permutation test. FOCuS is approximated by the k ∈ {0.25, 1.0} CUSUM bank at lower implementation risk. The energy test is redundant with BOCPD and MCUSUM and costs 199 permutations.
+- Separate cold-start (NIW), peer_context, multiscale, DetectorHealth/AutoTuner and 'ops layer' engines. They are folded into B03 hierarchy and hyperpriors, B04 peer channel, B05, time-based half-lives, B24 health, B23 budget, the offline eval tuner, and a one-tick lib-4 lag.
+- Learned micro-state stream (MiniBatchKMeans or DP-GMM modes) for sequence. Action tokens exist on every channel, so modes add cost and label churn without adding coverage.
+- Fisher and noisy-OR fusion (invalid under dependence; measured 32× false-alarm inflation), and AAD tree-level feedback (it depends on the removed IsolationForest).
+- HMM identity chain. Replaced by calibrated, capped modality LLRs with other-identity and unknown CUSUMs whose run lengths are controllable.
+- Storing 45 scalar feature.<name> copies and 100+ sketch series as DerivedMetric objects. Replaced by float32 vector rings with virtual scalar views. Otherwise the store would grow to gigabytes (store.py:33-35 keeps 20000 objects per key).
+- Class risk as only the mean of the top-3 members. Replaced by class pseudo-entity risk from B18's own detectors, combined by max with the member view.
+- The legacy 24-bucket UTC medians, fixed 0.6/0.8/0.35/4-bit thresholds, the 12-sample stable flag, and one dominant category per tick. All are superseded by calibrated, timezone-aware, exposure-aware models.
+
+# Risks and mitigations
+
+- Integration complexity. The plan has 30 behaviour engines plus 3 raw and 3 derived upgrades, and the store and core changes. Mitigation:
+- Freeze the contract first: lib/features.py, lib/detectors.py, the model layouts and the gating/rollback API.
+- P0 order: store/core, R1–R3, D0–D2, B01, B03, B04, B07, B08, B09, B14, B24–B28.
+- P1: B02, B05, B06, B10–B13, B15–B18, B29, B30.
+- P2: B19–B22, each gated by ablation.
+- Every engine has a unit test that runs in isolation.
+- Rollback and replay correctness. If checkpoint, journal and replay diverge, models are silently corrupted. Mitigation:
+- Unit tests assert bit-level equality with offline fits.
+- The eval checks every rollback.
+- Rollbacks are limited to one per hour and a 7-day depth.
+- On a replay error the learner freezes and emits pipeline_degraded.
+- Training-mode trust = 1 assumes a clean warm-up. Real historical data may contain attackers, and rollback cannot reach before go-live. Mitigation:
+- Lib-4 HIGH matches still zero the trust.
+- The first live week keeps the reference anchor frozen to golden candidates.
+- Recommend replaying warm-up data through the full live path once, where feasible.
+- Delayed and gated learning holds legitimate change until the governor accepts it: 1 day for intensity, 3 days for rhythm, 7 days for shape, and a label for categorical. Organic change can therefore sit as DRIFTING/LOW for days. Class-level fast acceptance, expected_change labels and the label queue must be operational from day one.
+- Residual HMP miscalibration at moderate α (measured 1.16× at 1e-2 under ρ = 0.64) and autocorrelation in the evidence stream. Mitigation: per-entity meta-calibration of p_inst and p_all, and a round-robin block-bootstrap audit that raises h by at most 20%.
+- Time-based thresholds rely on the AR(1) prewhitening and the model assumptions. Heavy autocorrelation or heavy-tailed innovations shorten the real run lengths. Mitigation: the audit plus KS health, which halves a detector's weight when its realised rate exceeds 2× its budget.
+- Conformal rings after a cadence switch or in rare strata are thin: 64 entries are needed per daypart × cadence class. Early p-values rely on model pm or class rings, which are only as good as the NB/BB/t assumptions.
+- Class-level detection in very small classes (2–3 members) has little power, and a coordinated campaign across a whole class can look like a rollout. Mitigation:
+- Risky-adoption weights (external, upload-dominant, sensitive).
+- Common mode never touches categorical, identity, c2 or exfil axes.
+- Lib-4 is never discounted.
+- Campaign merge.
+- HDBSCAN on about 40 items can be unstable, and role descriptors may still separate personas whose rhythms differ strongly. Mitigation: the agglomerative fallback, Hungarian-stable ids, 3-run hysteresis, and the ARI gates.
+- Memory. The target of 12 MB per entity depends on strict retention, slots dataclasses and virtual views. Production must move the store behind the ClickHouse/Timescale seam. Retention must still cover the 8-day replay window, or acceptance replays become impossible.
+- CPU in pure Python. B16 candidate scoring and B10 PPM dominate. If the entity count grows about 10×, raise strides, prefilter candidates harder and shard by system. Lomb–Scargle has already been removed from the hot path.
+- Circular validation. The generator is designed alongside the detectors. Mitigation:
+- Hold-out seeds.
+- A red-team variant set that is never used for tuning.
+- Ablations.
+- An early pilot on real SPAN or proxy logs with analyst labels before any accuracy claim is trusted.
+- Passive visibility limits. TLS 1.3 with ECH hides SNI; encrypted L7 leaves only size and service tokens; JA3 randomisation requires ja3n or JA4; NAT and VDI blend identities. Identifiability must be reported per entity, as B15 does, and never assumed.
+- A misconfigured calendar, timezone or daypart shifts every bin and stratum. Mitigation: calendar self-healing, validation of the config at startup, and the L4 and L13 gates.
+- Label scarcity and noise. Mitigation: the L2 prior toward uniform weights, Beta precision priors, TTLs on suppressions, and suppressed incidents still feeding risk at 0.25.
+- Privacy and scope. The entity stays an IP or IP class. Templating masks ids, query strings keep parameter names only, and portraits never embed path values.
