@@ -252,10 +252,32 @@ def _nanmedian(a: np.ndarray, axis: int = 0) -> np.ndarray:
         return np.nanmedian(a, axis=axis)
 
 
-def _nanmean(a: np.ndarray, axis: int = 0) -> np.ndarray:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        return np.nanmean(a, axis=axis)
+def _col_quantiles(R: np.ndarray, qs: Sequence[float]) -> List[np.ndarray]:
+    """NaN-aware per-column quantiles (linear interpolation, numpy's default)
+    by one sort: NaN sorts last, so the finite values of a column are its
+    first n entries. All-NaN columns give NaN, without numpy's warnings. For
+    the 4-row windows this is ~20x cheaper than nanpercentile."""
+    fin = np.isfinite(R)
+    S = np.sort(np.where(fin, R, np.nan), axis=0)          # +-inf count as missing
+    n = np.sum(fin, axis=0)
+    cols = np.arange(R.shape[1])
+    out = []
+    for q in qs:
+        h = (np.maximum(n, 1) - 1) * float(q)
+        lo = np.floor(h).astype(int)
+        hi = np.minimum(lo + 1, np.maximum(n - 1, 0))
+        a, b = S[lo, cols], S[hi, cols]
+        v = a + (h - lo) * (b - a)
+        v = np.where(h == lo, a, v)
+        out.append(np.where(n > 0, v, np.nan))
+    return out
+
+
+def _col_nanmean(R: np.ndarray) -> np.ndarray:
+    ok = np.isfinite(R)
+    n = ok.sum(axis=0)
+    s = np.where(ok, R, 0.0).sum(axis=0)
+    return np.where(n > 0, s / np.maximum(n, 1), np.nan)
 
 
 def window_vector(rows: Any) -> np.ndarray:
@@ -265,20 +287,17 @@ def window_vector(rows: Any) -> np.ndarray:
     if not R.shape[0]:
         return out.astype(np.float32)
     vec = R[:, T_VEC]
-    out[W_MED] = _nanmedian(vec)
-    sub = vec[:, list(IQR_IDX)]
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        q = np.nanpercentile(sub, [25.0, 75.0], axis=0)
-    out[W_IQR] = q[1] - q[0]
-    out[W_SK] = _nanmean(R[:, T_SK])
-    out[W_TIM] = _nanmedian(R[:, T_TIM])
+    out[W_MED] = _col_quantiles(vec, (0.5,))[0]
+    q25, q75 = _col_quantiles(vec[:, list(IQR_IDX)], (0.25, 0.75))
+    out[W_IQR] = q75 - q25
+    out[W_SK] = _col_nanmean(R[:, T_SK])
+    out[W_TIM] = _col_quantiles(R[:, T_TIM], (0.5,))[0]
     clk = R[:, T_CLK]
-    sc = _nanmean(clk[:, :2])
+    sc = _col_nanmean(clk[:, :2])
     nrm = math.hypot(sc[0], sc[1]) if np.all(np.isfinite(sc)) else _NAN
     if nrm > 1e-9:
         out[143:145] = sc / nrm
-    out[145] = _nanmean(clk[:, 2:3])[0]
+    out[145] = _col_nanmean(clk[:, 2:3])[0]
     return out.astype(np.float32)
 
 
@@ -305,16 +324,16 @@ def augment(model: Mapping, X: np.ndarray, class_keys: Optional[Sequence[Optiona
     mcols = [int(c) for c in pc.get("mask_cols") or []]
     miss = ~np.isfinite(X)
     mask = miss[:, mcols].astype(np.float64) if mcols else np.zeros((X.shape[0], 0))
-    for i in range(X.shape[0]):
-        row_miss = miss[i]
-        if not row_miss.any():
-            continue
-        f = fill
-        ck = class_keys[i] if class_keys is not None else None
-        if ck is not None and ck in fcls:
-            f = np.asarray(fcls[ck], dtype=np.float64)
-        X[i, row_miss] = f[row_miss]
-    X[~np.isfinite(X)] = 0.0
+    if miss.any():
+        Fm = np.repeat(fill.reshape(1, -1), X.shape[0], axis=0)
+        if class_keys is not None and fcls:
+            ks = np.asarray([k if k is not None else "" for k in class_keys], dtype=object)
+            for ck, f in fcls.items():
+                sel = ks == ck
+                if sel.any():
+                    Fm[sel] = np.asarray(f, dtype=np.float64)
+        X = np.where(miss, Fm, X)
+        X[~np.isfinite(X)] = 0.0
     A = np.hstack([X, mask])
     keep = pc.get("keep")
     return A[:, [int(k) for k in keep]] if keep is not None else A

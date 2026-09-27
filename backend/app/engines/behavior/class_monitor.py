@@ -107,6 +107,7 @@ Store:
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple
 
@@ -122,7 +123,7 @@ from .lib import m_baseline as MB
 from .lib import m_class
 from .lib import m_vocab as V
 from .lib import timebins as TB
-from .lib.classkeys import SYSTEM_KEY, class_kind, is_class
+from .lib.classkeys import SYSTEM_KEY, class_kind
 from .lib.detectors import DETECTOR_INFO, arl_days
 
 MODEL = "model.classagg"
@@ -246,6 +247,15 @@ GROUP_IDX = [np.asarray(F.GROUPS[g], dtype=np.intp) for g in GROUP_NAMES]
 _GROUP_AXIS = {"volume": "volume", "breadth": "breadth", "app": "shape", "dns": "shape",
                "tls": "shape", "timing": "temporal", "transport": "transport",
                "probe": "transport", "comp": "shape"}
+
+
+_G_START = np.array([int(ix[0]) for ix in GROUP_IDX], dtype=np.intp)
+if not all(np.array_equal(ix, np.arange(ix[0], ix[0] + ix.size)) for ix in GROUP_IDX) \
+        or int(_G_START[0]) != 0 or sum(ix.size for ix in GROUP_IDX) != NF:
+    raise ImportError("class_monitor: FEATURE_SPEC groups must be contiguous blocks in GROUP_ORDER")
+_G_OF = np.repeat(np.arange(len(GROUP_IDX)), [ix.size for ix in GROUP_IDX])
+_APP_ERR_COL = np.zeros(NF, dtype=bool)
+_APP_ERR_COL[sorted(APP_ERROR_F)] = True
 
 
 def feature_axis(i: int) -> str:
@@ -462,6 +472,7 @@ class _Sys:
         self.store, self.s, self.now = store, s, now
         self.common_sys: Dict[str, Dict[str, Any]] = {}
         self._ledgers: Optional[List[Tuple[Dict[str, Any], Dict[str, Any]]]] = None
+        self.has_vocab = False          # some role class has a model.vocab (B08 runs)
         self.b01_failed = store.engine_failed(B01_ENGINE, now)
         self.b04_failed = store.engine_failed(B04_ENGINE, now)
         for g in ("app_error", "transport"):
@@ -482,6 +493,7 @@ class _Sys:
                 vm = V.get(self.store, self.s, ck)
                 if not vm:
                     continue
+                self.has_vocab = True
                 for rec in (vm.get("adoption") or {}).values():
                     if _f(rec.get("last_ts")) >= lo and rec.get("members"):
                         out.append((rec, vm))
@@ -594,7 +606,7 @@ class ClassMonitorEngine(Engine):
                dt: float, tc_now: Dict[str, Any], tc_slot: Dict[str, Any]
                ) -> Optional[Dict[str, Any]]:
         store, s = ctx.store, sc.s
-        rows, act, present, active_members = [], [], [], []
+        rows, present, active_members = [], [], []
         seen_any = False
         for m in members:
             nat = store.vec_at(s, m, NAT, now)
@@ -604,9 +616,7 @@ class ClassMonitorEngine(Engine):
             present.append(m)
             rows.append(nat)
             a = store.vec_at(s, m, ACTIVE, now)
-            on = a is not None and float(a[0]) > 0.5
-            act.append(on)
-            if on:
+            if a is not None and float(a[0]) > 0.5:
                 active_members.append(m)
         model = store.get_model(s, ck, MODEL)
         if not present and not seen_any and not _valid(model):
@@ -629,7 +639,7 @@ class ClassMonitorEngine(Engine):
         jsd = _NAN
         tokens: Dict[str, float] = {}
         tok_row: Optional[Dict[str, float]] = None
-        if present:
+        if present and not sc.b01_failed:
             agg = aggregate(np.asarray(rows, dtype=np.float64))
             store.add_vec(s, ck, AGG, now, agg.astype(np.float32), window_s=int(round(dt)))
             expo: Dict[str, float] = {}
@@ -707,7 +717,7 @@ class ClassMonitorEngine(Engine):
         emit.write_scores(store, s, ck, now, scores, pm=pm or None, axes=axes or None,
                           acc_alarm=acc or None, degraded=degraded or None,
                           window_s=int(round(dt)))
-        if present:
+        if agg is not None:
             val = {k: v for k, v in info.items() if k in ("m", "m_act", "active_frac", "expo",
                                                           "coherence", "n_tokens", "new_ext")}
             val["dt"] = dt
@@ -723,8 +733,8 @@ class ClassMonitorEngine(Engine):
             run["coh_on"] = run["shift_on"] = False
 
         # ---- 2) learning (after scoring: the scores used the pre-commit model)
-        if present or slot_obs is not None or tallies:
-            model["meta"][now] = (dt, len(active_members) if present else 0,
+        if agg is not None or slot_obs is not None or tallies:
+            model["meta"][now] = (dt, len(active_members) if agg is not None else 0,
                                   jsd if jsd == jsd else None, slot_obs, tuple(tallies),
                                   tok_row)
         self._learn(ctx, s, ck, model, now, dt)
@@ -859,8 +869,9 @@ class ClassMonitorEngine(Engine):
             p_hat, phi = bayes.ratio_posterior(a0, b0, W, sk, sn, skk, 0.0)
             c = min(sn + RHYTHM_PRIOR_K, float(phi))
             aa, bb = float(p_hat) * c, (1.0 - float(p_hat)) * c
+            # randomised PIT from the scalar CDF path (the pmf is the CDF step)
             lo = float(bayes.bb_cdf(a - 1, m, aa, bb)) if a > 0 else 0.0
-            eq = math.exp(float(bayes.bb_logpmf(a, m, aa, bb)))
+            eq = max(0.0, float(bayes.bb_cdf(a, m, aa, bb)) - lo)
             v = combine.seeded_uniform(s, ck, "class_rhythm", run["slot"])
             u = min(max(lo + v * eq, 0.0), 1.0)
             z = min(max(float(bayes.phi_inv(u)), -Z_CLIP), Z_CLIP)
@@ -893,31 +904,32 @@ class ClassMonitorEngine(Engine):
             return None
         P = np.asarray(P)
         Zs = np.asarray(Zs)
+        # FEATURE_SPEC groups are contiguous column blocks: one reduceat per quantity
+        ok = np.isfinite(P) & np.isfinite(Zs)
+        Pm = np.where(ok, P, np.inf)
+        k = np.add.reduceat(ok, _G_START, axis=1)                      # [n, G]
+        gmin = np.minimum.reduceat(Pm, _G_START, axis=1)
+        at = ok & (Pm == gmin[:, _G_OF])                              # the group's argmin(s)
+        dirn = np.sign(np.add.reduceat(np.where(at, np.sign(Zs), 0.0), _G_START, axis=1))
+        app = np.add.reduceat(at & _APP_ERR_COL, _G_START, axis=1) > 0
+        flag = (k > 0) & (gmin * np.maximum(k, 1) < COH_P)
+        n_g = (k > 0).sum(axis=0)
+        ups = (flag & (dirn > 0)).sum(axis=0)
+        dns = (flag & (dirn < 0)).sum(axis=0)
         best = (2.0, "", 0)
         frac: Dict[str, Dict[str, float]] = {}
-        for g, idx in zip(GROUP_NAMES, GROUP_IDX):
-            sub = P[:, idx]
-            ok = np.isfinite(sub) & np.isfinite(Zs[:, idx])
-            k = ok.sum(axis=1)
-            sub = np.where(ok, sub, np.inf)
-            j = np.argmin(sub, axis=1)
-            pmin = sub[np.arange(n), j] * np.maximum(k, 1)
-            flag = (k > 0) & (pmin < COH_P)
-            sgn = np.sign(Zs[np.arange(n), idx[j]])
-            up = int((flag & (sgn > 0)).sum())
-            dn = int((flag & (sgn < 0)).sum())
-            n_g = int((k > 0).sum())
-            if not n_g:
-                continue
-            frac[g] = {"up": up / n_g, "down": dn / n_g, "n": n_g}
+        for gi in np.flatnonzero(n_g):
+            g, ng = GROUP_NAMES[gi], int(n_g[gi])
+            up, dn = int(ups[gi]), int(dns[gi])
+            frac[g] = {"up": up / ng, "down": dn / ng, "n": ng}
             for x, d in ((up, 1), (dn, -1)):
                 if x <= 0:
                     continue
-                pt = float(sp.bdtrc(x - 1, n_g, COH_RATE))
+                pt = float(sp.bdtrc(x - 1, ng, COH_RATE))
                 if pt < best[0]:
-                    fsel = idx[j[flag & (sgn * d > 0)]]
-                    app = g == "app" and any(int(f) in APP_ERROR_F for f in fsel)
-                    best = (pt, "app_error" if app else _GROUP_AXIS[g], d)
+                    is_app = g == "app" and bool((flag[:, gi] & (dirn[:, gi] == d)
+                                                  & app[:, gi]).any())
+                    best = (pt, "app_error" if is_app else _GROUP_AXIS[g], d)
         if not frac:
             return None
         p = min(1.0, max(best[0], P_FLOOR) * 2 * len(frac)) if best[1] else 1.0
@@ -930,8 +942,8 @@ class ClassMonitorEngine(Engine):
                ) -> Tuple[List[Tuple[float, float]], Optional[Tuple[float, List[str], bool, List]]]:
         """(adoption tallies matured this tick, (p, axes, alarm, top records) or None)."""
         led = sc.ledgers()
-        if not led:
-            return [], None
+        if not sc.has_vocab:
+            return [], None                      # B08 never described a class: unscored
         run = model["run"]
         n = len(memset)
         # merge the ledgers' records restricted to this class's members
@@ -1189,6 +1201,8 @@ class ClassMonitorEngine(Engine):
                  tc: Mapping[str, Any], now: float) -> None:
         pred = MB.anchor_predictive(model["current"], tc)
         names = [F.FEATURE_NAMES_V2[i] for i in VOL_IDX]
+        # volume features only: the ratio ppf searches would cost ~5 ms
+        pred = dataclasses.replace(pred, c=np.full(NF, np.nan))
         Q = MB.quantiles(pred, [0.05, 0.5, 0.95], dt_s=900.0)
         agg = {n: [_fin(Q[0, i]), _fin(Q[1, i]), _fin(Q[2, i])] for n, i in zip(names, VOL_IDX)}
         rh = _dec_true(model["aux"]["rh"], now, RHYTHM_HL_S)

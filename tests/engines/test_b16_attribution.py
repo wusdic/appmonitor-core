@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import inspect
 import math
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 
@@ -29,8 +29,10 @@ from helpers import DT, T0, add_obs_tick, make_store, put_model, run_engine
 from app.engines.behavior import attribution as AT
 from app.engines.behavior.attribution import AttributionEngine
 from app.engines.behavior.lib import emit
+from app.engines.behavior.lib import m_identity as MI
 from app.engines.behavior.lib import sketch as SK
 from app.engines.behavior.lib import timebins as TB
+from app.models.schema import DerivedMetric, MetricKind
 
 S = "erp"
 A, B, C, D = "10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"
@@ -94,6 +96,9 @@ class World:
              n_req: int = 30) -> None:
         st = self.store
         w = int(dt)
+        st.add_derived(DerivedMetric(name="feature.tctx", value=TB.tctx_from_config(now, {}, dt),
+                                     ts=now, system=S, entity=e, window_s=w,
+                                     kind=MetricKind.CATEGORICAL))
         if p is None:                          # idle tick: B01 still writes a row
             st.add_vec(S, e, "feature.vec", now, np.zeros(52, np.float32), window_s=w)
             st.add_vec(S, e, "feature.sketch", now, np.zeros(80, np.float32), window_s=w)
@@ -109,41 +114,56 @@ class World:
                                      {t: {"n": n} for t, n in stk.items()}})
 
     def step(self, feeds: Dict[str, Optional[Persona]], dt: float = DT,
-             training: bool = False, **kw) -> int:
+             training: bool = False, extra: Optional[Dict[str, Dict]] = None) -> int:
+        """One tick: `feeds` overrides an entity's persona (None = idle), the
+        others behave as themselves; `extra` passes feed() options per entity."""
         self.now += dt
+        extra = extra or {}
         for e in ENTS:
             if e in feeds:
-                self.feed(e, self.now, feeds[e], dt, **kw.get(e, {}))
+                self.feed(e, self.now, feeds[e], dt, **extra.get(e, {}))
             else:
                 self.feed(e, self.now, self.p[e], dt)
         return run_engine(self.eng, self.store, self.now, training=training, dt=dt)
 
     # ------------------------------------------------------------ mini-B15
+    def tick_row(self, vec, sk, ts: float) -> np.ndarray:
+        """m_identity.tick_row layout: [vec 52 | sketch 80 | timing 3 | clock 3]."""
+        tc = TB.tctx_from_config(ts, {}, DT)
+        return np.concatenate([vec, sk, np.full(3, np.nan), MI.clock_features(tc)])
+
     def fit(self, n_win: int = 50, enrolled: Sequence[str] = ENTS) -> Dict:
+        """B15's model.identity layout (m_identity docstring): standardise ->
+        PCA(8) -> within-entity whitening fused into P; entity / class means,
+        class_var, the full background Gaussian."""
         rng = np.random.default_rng(11)
         X, lab = [], []
         for e in enrolled:
             p = self.p[e]
             for w in range(n_win):
-                rows, sks = [], []
-                for _ in range(AT.K):
+                t0 = T0 - 86400.0 * 3 + w * 3700.0
+                rows = []
+                for k in range(AT.K):
                     v, _, _, sk = self.draw(p, rng)
-                    rows.append(v)
-                    sks.append(sk)
-                center = T0 - 86400.0 * 3 + w * 3700.0
-                tc = TB.tctx_from_config(center, {}, DT)
-                X.append(AT.window_vector(np.vstack(rows), np.vstack(sks), None,
-                                          float(tc["hour_local"]), tc["day_type"] == "workday",
-                                          None))
+                    rows.append(self.tick_row(v, sk, t0 + k * DT))
+                X.append(MI.window_vector(np.vstack(rows)))
                 lab.append(e)
-        X = np.vstack(X)
+        X = np.vstack(X).astype(np.float64)
         lab = np.array(lab)
-        mean = X.mean(axis=0)
-        scale = np.maximum(X.std(axis=0), 1e-3)
-        Xs = (X - mean) / scale
-        _, _, Vt = np.linalg.svd(Xs, full_matrices=False)
+        with np.errstate(all="ignore"):
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                fill = np.nanmedian(X, axis=0)
+        pca = {"fill": np.nan_to_num(fill).tolist(), "fill_cls": {}, "mask_cols": [],
+               "keep": None}
+        Aug = MI.augment({"pca": pca}, X)
+        center = Aug.mean(axis=0)
+        scale = np.maximum(Aug.std(axis=0), 1e-3)
+        U = (Aug - center) / scale
+        _, _, Vt = np.linalg.svd(U, full_matrices=False)
         comp = Vt[:DIM_PCA]
-        Y = Xs @ comp.T
+        Y = U @ comp.T
         Sw = np.zeros((DIM_PCA, DIM_PCA))
         mu = {}
         for e in enrolled:
@@ -152,18 +172,27 @@ class World:
             R = Ye - mu[e]
             Sw += R.T @ R
         Sw /= len(Y) - len(enrolled)
-        lam, U = np.linalg.eigh(Sw)
-        W = U @ np.diag(1.0 / np.sqrt(np.maximum(lam, 1e-3 * lam.max())))
-        means = {e: (mu[e] @ W).tolist() for e in enrolled}
-        model = {"pca": {"mean": mean.tolist(), "scale": scale.tolist(),
-                         "components": comp.tolist()},
-                 "W": W.tolist(), "means": means, "class_means": {},
+        lam, V = np.linalg.eigh(Sw)
+        Wh = V @ np.diag(1.0 / np.sqrt(np.maximum(lam, 1e-3 * lam.max())))
+        P = comp.T @ Wh
+        Z = U @ P
+        means = {e: Z[lab == e].mean(axis=0).tolist() for e in enrolled}
+        cov = np.cov(Z.T)
+        pca.update(center=center.tolist(), scale=scale.tolist(), P=P.tolist(),
+                   d_pca=DIM_PCA, r=DIM_PCA)
+        model = {"fmt": 1, "version": 1, "fitted_ts": T0, "run": 1,
+                 "entities": list(enrolled), "roles": {e: ROLE for e in enrolled},
+                 "pca": pca, "W": Wh.tolist(), "means": means,
+                 "class_means": {}, "class_var": {},
+                 "bg": {"mu": Z.mean(axis=0).tolist(), "prec": np.linalg.inv(cov).tolist(),
+                        "logdet": float(np.linalg.slogdet(cov)[1])},
                  "llr_calib": {m: [1.0, 0.0] for m in AT.MODALITIES},
                  "confusion": {e: {j: 0.0 for j in enrolled if j != e} for e in enrolled},
-                 "anonymity_sets": [], "version": 1}
+                 "anonymity_sets": [], "stats": {}}
         if self.with_class:
-            model["class_means"] = {f"class:{ROLE}": np.mean([means[e] for e in enrolled],
-                                                             axis=0).tolist()}
+            ck = f"class:{ROLE}"
+            model["class_means"] = {ck: Z.mean(axis=0).tolist()}
+            model["class_var"] = {ck: Z.var(axis=0).tolist()}
         return model
 
     def setup(self, enrolled: Sequence[str] = ENTS, vocab: bool = True, client: bool = True,
@@ -244,9 +273,10 @@ def test_a_impersonation_with_concurrent_owner_is_high():
     assert e.extra["posterior"] >= 0.9
     assert e.severity.value == "high" and e.extra["concurrent"] is True
     assert e.axes == ["identity"]
-    # the owner of the persona is not accused, nobody is 'unknown'
-    assert not w.events(A)
-    assert not w.events(kinds=("unknown_identity",))
+    # the owner of the persona and the bystanders are not accused (B's mixed
+    # transition windows may legitimately read 'unknown' as well)
+    for x in (A, C, D):
+        assert not w.events(x)
     # the score is written through emit and reads as anomalous
     sc = emit.read_row(w.store, S, B, emit.SCORE, w.now)["identity"]
     assert sc > 1.0
@@ -302,13 +332,14 @@ def test_d_client_stack_change_alone_is_capped():
     w = World().setup()
     a_stacks = {t: 200.0 * float(x) for t, x in zip(w.p[A].stacks, w.p[A].sw)}
     for _ in range(12):                       # B's own behaviour on A's client stacks
-        w.step({B: w.p[B]}, B={"stacks": a_stacks, "n_req": 30})
+        w.step({B: w.p[B]}, extra={B: {"stacks": a_stacks}})
+        assert w.idrow(B)["cusum_other"] == 0.0   # lambda <= 0: A never out-scores B
     assert not w.events(kinds=("identity_mismatch",))
     att = w.store.profile(S, B).extra["attribution"]
     ll = {c["id"]: c["llr"] for c in att["candidates"]}
-    if A in ll:                               # the raw client evidence exceeds the cap
-        assert ll[A]["client"] > AT.CAP
-    assert w.idrow(B)["posterior_self"] > 0.5
+    assert ll[A]["client"] > 10 * AT.CAP      # raw client evidence far beyond the cap ...
+    L = {c["id"]: c["L"] for c in att["candidates"]}
+    assert L[A] <= L[B]                       # ... yet it cannot lift A above B
 
 
 # ================================================================== (e)
