@@ -10,7 +10,7 @@ Each engine: purpose, algorithm, store reads/writes, perf budget and the unit te
 
 **Algorithm.**
 
-1) Weighted records. Let w = int(obs.extra.get('count', 1)). Every counter and sum adds w. Byte totals use obs.extra['bytes_up_total'] / ['bytes_down_total'] when present, otherwise w·bytes. Averages are w-weighted. This supports NetFlow/IPFIX-style aggregates and the generator's aggregated mode.
+1) Weighted records. Let w = int(obs.extra.get('count', 1)). Every counter and sum adds w. Byte totals use obs.extra['bytes_up_total'] / ['bytes_down_total'] when present, otherwise w·bytes, and retransmits use obs.extra['retransmits_total'] when present, otherwise w·retransmits (every per-record field of an aggregate is a per-flow value; eval round 2: the generator used to put the group's retransmit total in the per-flow field, so l4.retransmit_rate of aggregated ticks was ~w× too high). Averages are w-weighted. This supports NetFlow/IPFIX-style aggregates and the generator's aggregated mode.
 2) Full sets. Replace the top-8 / top-12 truncation (http.py:102, tls.py:78, dns.py:66) with the top 64 values plus '__other__', so the values sum to the true count. SNI and qname sets are additionally emitted at eTLD+1 (lib/names.py public-suffix subset: com.cn, gov.cn, edu.cn, org.cn, co.uk, ...).
 3) New metrics:
    - l4flow: l4.dport_set {port: n}, l4.peer_set {peer /24 or service host: n}, each top 64 plus __other__; l4.syn_count; l4.pkts_total; l4.flow_duration_ms_avg.
@@ -20,7 +20,7 @@ Each engine: purpose, algorithm, store reads/writes, perf budget and the unit te
 4) Freshness contract. Emit only for entities that had observations in this tick, always stamped ts = ctx.now (as http.py already does). store.add_raw updates first_seen and last_seen from that ts.
 5) Pseudo-entity guard. Drop observations whose entity starts with '__' or 'class:', and count them in the health record. Otherwise add_raw would register them (store.py:49-53).
 
-**Reads.** Observations, including extra.count, extra.bytes_*_total and extra.ts_sample
+**Reads.** Observations, including extra.count, extra.bytes_*_total, extra.retransmits_total and extra.ts_sample
 
 **Writes.** Existing l2l3/l4/http/tls/dns metrics with full sets; l4.dport_set, l4.peer_set, l4.syn_count, l4.pkts_total, l4.flow_duration_ms_avg, http.status_3xx, http.get_count, http.write_count, http.req_bytes_avg, dns.txt_count, dns.qname_len_avg, tls.handshake_ms_avg
 
@@ -465,7 +465,12 @@ Scoring on the observed dimensions o:
    - At p̂ = 0.02, each active slot adds +4.64 bits, so the 3rd active slot alarms.
    - p_eq = 2^(−W).
 4) Silence:
-   - Eligible only when normalised 168-bin entropy ≤ 0.8 (machine-like) and p̂_b ≥ 0.95.
+   - Eligible only for machine-like entities and bins with p̂_b ≥ 0.95. Machine-like (W7 tuning, replaces "normalised 168-bin entropy ≤ 0.8", which held for most office workers and for no 24/7 client): the automation index m_rhythm.automation_index = mean of the identified components
+     - off-hours ratio min(1, r_off / r_biz) (active rate outside workday 08–19 over the rate inside),
+     - week ratio min(r_wd, r_nwd) / max(r_wd, r_nwd),
+     - presence regularity 1 − Σ r·4r(1−r) / Σ r over the observed cells,
+     - B02's per-IP automation index A (timing regularity, periodicity, non-browser share, think time, path entropy),
+     with B02's hysteresis (enter ≥ 0.6, leave < 0.4), the rhythm components only from a model spanning ≥ 7 d, and never when regularity < 0.5. Validated on the generator population (integration.md §8.2): humans ≤ 0.34, machines ≥ 0.73.
    - s accumulates −ln(1 − p̂_b) over silent slots; p_eq = e^(−s); the alarm threshold comes from ARL = 100 days.
 5) Schedule shift. When silence in the usual window is followed, within 24 h, by activity of the same duration and volume in a new window (circular shift > 1 h):
    - emit schedule_shift (LOW);
@@ -706,6 +711,7 @@ Emit budget_exceeded with natural-unit text. Aggregate per actor when model.link
 
 **Integration notes (as built, docs/lib3/integration.md).**
 - Reads also dns.qname_set (DNS label bytes). The common-mode guard adds a level-q test on log(B / peer median); thresholds are computed in log space; default absolute floors (config budget_abs_floor, contract I) include bytes_up 5 MB.
+- Eval round 2 (integration.md §10): the log-scale floor of a COUNT quantity (writes, slots, objs, templates, dests) also covers its counting noise, sqrt(m + 1)/(m + 1 + unit) at level m (`budget.floor_scale(..., count_unit=unit)`). A phase whose count history is constant (0 writes at 03:00, 5 destinations in 7 d) had a log scale of 0 floored at 2 %, so one more count was a 20-50σ residual and a tail p of 1e-10 … 1e-38 on clean entities. Bytes quantities are unaffected.
 
 ## B14 — ChangepointEngine [upgrade]
 
@@ -1100,9 +1106,13 @@ Degraded inputs (NaN score) give NaN p, never 1.
 (g) NaN in gives NaN out.
 
 **Integration notes (as built, docs/lib3/integration.md).**
-- Small-sample prior order: the entity's own rings of the OTHER dayparts at the same cadence (pooled, ≥ 64 entries), then pm[d], then the class-pooled ring. The first workday after a weekend warm-up, or the first night, is a new stratum for every detector, and several pm are only approximately calibrated.
+- Small-sample prior order: the entity's own rings of the OTHER dayparts at the same cadence (pooled, ≥ 64 entries), then the pm prior, then the class-pooled ring. The first workday after a weekend warm-up, or the first night, is a new stratum for every detector, and several pm are only approximately calibrated.
+- pm prior (W7 tuning, m_calib.pm_prior): pm is a p-value with two atoms — an accumulator's stationary p_eq is exactly 1 at a zero statistic (creep KS D was 1.0: the blend re-created a point mass at p = 1), and some entities' pm sits at the float floor on every null tick (a sparse nightly host scored against its peers: p at the floor every night). The prior randomises a tie at an atom with the mid-p rule, pm = 1 → 1 − π1 + u·π1 and pm at the floor → u·π0 (u the score's seeded U), π the atom's share of the entity's admitted pm history (ring '<d>@pm|<cc>', canonical H / Q detectors '<d>@pm|g:<g>'); below 16 entries π1 is the Laplace estimate and an unseen floor keeps its evidence. The body of pm is used as is. (Calibrating the whole of pm on that ring was measured and rejected: integration.md §8.2.)
+- Live commits are capped by the governor's row-evidence weight (m_governor.evidence_weight, behavior.trust_evidence): it binds only for released rows (trust_prov has no accumulator factor). Warm-up commits keep trust 1.
+- In canonical mode a Q score on the provisional transfer (behavior.prov < 0.5) is marked behavior.degraded 'provisional:q_transfer'.
 - A model.control version change is detected against the gate's own version (as B25), so a bare 0 → 2 change resets the rings.
 - Identity rings are stratified by (daypart, regime tercile, cadence class): B16's windows are K active ticks, so the identity score's null depends on the cadence like every other detector's (architecture §6). Key 'daypart|r<k>|<cc>'.
+- Own-history floor (eval round 2, integration.md §10; m_calib.p_value, shared with B29 / B25 meta): below 64 entries the prior may add resolution BEYOND the ring but never contradict it — p ≥ #{ring > s}/(n + 1). A sparse entity (a nightly backup host: one scored H row a night, ~10 entries after two weeks) is scored every night against its peers with pm ≈ 1e-18 while its own ring holds the same score every night; the blend (weight n/(n+64) ≈ 0.14) issued p ≈ 1e-16 every night (MEDIUM evidence-CUSUM incidents on the L15 automation hosts).
 
 ## B25 — FusionEngine [new]
 
@@ -1119,6 +1129,8 @@ Degraded inputs (NaN score) give NaN p, never 1.
    Measured: HMP([1e-3, 0.999, 0.5]) = 0.003, where ACAT gives 0.5. Under ρ = 0.64 dependence the rate ratio is 1.095 at 1e-3.
 2) Meta-calibration: per entity, rings of s = −log10 p_inst and −log10 p_all (strata daypart × cadence, randomized, GPD tail, owned here under model.calib meta keys), giving q_inst and q_all.
    e_day = q_all·86400/Δt.
+   - Admission (W7 tuning): weight = min(gate weight, the governor's row-evidence weight behavior.trust_evidence), which binds for released rows (trust_prov has no accumulator factor); warm-up rows are admitted with trust 1 as before (gating them on their own evidence truncates the null: integration.md §8.2).
+   - Tail (W7 tuning): the exceedances are winsorised before the PWM fit — values beyond the 99.9 % bound of the maximum of n_u exponential excesses (scale from ranks) are replaced by their expected order statistics (calib.winsorise_exceedances). −log10 of a valid p has an exponential tail, so a heavier fitted tail can only come from contamination (warm-up p_all of 1e-21 … 1e-37 gave ξ ≈ 0.3 and saturated q_all near 5e-4).
 3) Evidence CUSUM: e_t = −ln q_inst; S = max(0, S + e_t − 3).
    - Alarm at S ≥ h = (ln ARL − 3.07)/0.94, with ARL = 33·86400/Δt. That is h = 5.31 at 900 s, 8.19 at 60 s and 3.83 at 3600 s (from the exact integral-equation ARL, ARL ≈ 21.6·e^(0.94h)).
    - A persistent q = 0.01 alarms in 4 ticks at 900 s and in 6 ticks at 60 s.
@@ -1234,6 +1246,7 @@ Emit BehaviorEvent(kind='incident', extra.state, e_day, axes, p_by_detector, inc
 
 **Integration notes (as built, docs/lib3/integration.md).**
 - Every accumulator, cusum / mcusum included, is tested on the calibrated-p level lib/detectors.acc_level (shared with B28) in the quiet close; m_cp.level is diagnostic only.
+- A HABITUAL lib-4 match (lib/stages.habit_step, the rule B26 uses: severity ≤ medium, ≥ 4 matched ticks of the (entity, signature), the first ≥ 24 h earlier; learnt from every tick, warm-up included) joins as evidence but does not restart the quiet clock (eval round 2): an integration host's routine 'high_error_backend' (medium) match on almost every tick kept an FP incident open for days, and the T4 exfiltration that started meanwhile only escalated it. Lib-4 evidence entries: ≥ MEDIUM at most hourly per signature, below MEDIUM once per signature per (re)opening (a poller's routine info matches filled 477 of the 512 kept evidence entries and evicted the alarm entries).
 
 ## B28 — GovernorEngine [new]
 
@@ -1273,13 +1286,14 @@ Legit log-odds:
 ACCEPT when P ≥ 0.9, duration ≥ T_type, and there is no malicious-type evidence (lib-4 ≥ high, identity mismatch or impersonation, beacon alarm, exfil-axis budget alarm, system-tier sensitive novelty). Risk tier is not a condition.
 - Write model.control {version + 1, rebase_from = τ̂, allow_drift = the slope for a ramp}; learners replay the held rows.
 - Emit regime(state = accepted) at INFO and close the incident.
-REJECT when P ≤ 0.2: stay quarantined and discard the held rows.
+REJECT when P ≤ 0.2 and the episode is corroborated (W7 tuning, m_governor.reject_corroborated: its own alarm / accumulator evidence on ≥ 4 ticks spanning ≥ 1 h — the SUSPECT → DRIFTING persistence — or two independent malicious sources, or a tp label): stay quarantined and discard the held rows. One lib-4 ≥ HIGH match meeting a one-tick rhythm alarm froze entities on their first live tick.
+trust_evidence (W7 tuning), live ticks only = the live trust's gate on the row itself ([no alarm] × [no finding ≥ MEDIUM] × [every accumulator < h/2]); B24 and B25 cap their ring admission with it, which binds for released rows (trust_prov has no accumulator factor). It carries neither the regime state nor the q_inst evidence factor (B25's own output), and is not written in training: gating warm-up rows on their own evidence truncated the meta rings' null (pack A: single-tick exceedance 5× → 18× nominal, 62× with the q factor).
 Otherwise hold as DRIFTING at LOW, update every 24 ticks, and push to the label queue after 14 d.
 A class-wide change accepts at class level after 24 h of concordance. Profile versions are kept via put_profile_version.
 
 **Reads.** behavior.alarm, behavior.q_inst, behavior.e_day, behavior.acc_alarm, behavior.score (accumulators), behavior.cp.*, behavior.axes, behavior.id, store.incidents, store.events(since, kinds), store.matches(since), model.feedback, model.class, model.baseline (slope diagnostics)
 
-**Writes.** behavior.trust, behavior.trust_prov, behavior.quarantine, behavior.regime, model.control@(s,e|class:<id>), model.governor, profile.extra.regime, profile versions; event regime
+**Writes.** behavior.trust, behavior.trust_prov, behavior.quarantine, behavior.trust_evidence, behavior.regime, model.control@(s,e|class:<id>), model.governor, profile.extra.regime, profile versions; event regime
 
 **Perf.** ≈1 ms per tick; rollback replays are O(rows × F) and occur at most hourly
 

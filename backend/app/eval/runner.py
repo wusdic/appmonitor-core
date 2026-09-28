@@ -44,7 +44,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 
 import numpy as np
 
-from ..core.engine import Registry
+from ..core.engine import Registry, default_config
 from ..core.store import MetricStore
 from ..models.schema import (ORG, SYSTEM_ENTITY, BehaviorEvent, Incident, Label, Severity,
                              is_pseudo_entity)
@@ -255,7 +255,9 @@ def _pack_config(pack: Any, strict: bool) -> Dict[str, Any]:
     if cal is not None:
         cfg["calendar"] = _jsonable(cal)
     cfg["strict"] = bool(strict)
-    return cfg
+    # contract I defaults made explicit (as Context would fill them each tick),
+    # so the run records e.g. the grain mode it ran in (metrics gate 7 splits)
+    return default_config(cfg)
 
 
 # --------------------------------------------------------------------------- #
@@ -424,13 +426,26 @@ class _StaleChecker:
     PREFIXES = ("feature.", "behavior.")
     # written only on some ticks BY CONTRACT, so a gap is not staleness:
     # behavior.alarm only on alarm ticks (B25), behavior.regime on non-normal
-    # ticks, transitions and an hourly heartbeat (B28)
-    SPARSE = frozenset({"behavior.alarm", "behavior.regime"})
+    # ticks, transitions and an hourly heartbeat (B28), behavior.degraded only
+    # on ticks where a detector ran degraded (contract M, lib/emit causes)
+    SPARSE = frozenset({"behavior.alarm", "behavior.regime", "behavior.degraded"})
 
     def __init__(self) -> None:
         self.found: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        self._name_cache: Dict[Tuple[str, str], Tuple[Any, List[Tuple[str, str]]]] = {}
 
     def _names(self, store: MetricStore, s: str, e: str) -> List[Tuple[str, str]]:
+        """The entity's lib-3 series, re-scanned only when its name sets grew
+        (store.names_signature; the scan is O(derived x vec names))."""
+        sig = store.names_signature(s, e)
+        hit = self._name_cache.get((s, e))
+        if hit is not None and hit[0] == sig:
+            return hit[1]
+        out = self._scan_names(store, s, e)
+        self._name_cache[(s, e)] = (sig, out)
+        return out
+
+    def _scan_names(self, store: MetricStore, s: str, e: str) -> List[Tuple[str, str]]:
         vecs = store.vec_names(s, e)
         out = [("vec", v) for v in vecs if v.startswith(self.PREFIXES)]
         vec_cols = {v: set(store.vec_columns(v) or ()) for v in vecs}
@@ -444,6 +459,23 @@ class _StaleChecker:
                 continue
             out.append(("derived", n))
         return out
+
+    @staticmethod
+    def _due_since(store: MetricStore, s: str, e: str, last: float, now: float,
+                   period: float) -> bool:
+        """A series written once per `period` (an H / Q grain series, spec
+        v2.1) is overdue only once the entity has been active for two periods
+        since its last write: it is written on the grain's decision ticks
+        after an active window, so an entity that wakes up between two
+        decision ticks has not missed one yet."""
+        ts, A = store.vec_since(s, e, "feature.active", last + 1e-6)
+        if not len(ts):
+            return True
+        a = np.asarray(A, dtype=np.float64).reshape(len(ts), -1)[:, 0]
+        on = np.flatnonzero(a >= 0.5)
+        if not on.size:
+            return False
+        return now - float(ts[on[0]]) > 2.0 * period + 1e-6
 
     def check(self, store: MetricStore, now: float, dt: float) -> None:
         try:
@@ -477,6 +509,8 @@ class _StaleChecker:
                         continue
                     # recent gaps only: a warm-up cadence must not mask a live stall
                     period = max(float(np.median(np.diff(ts)[-3:])), dt)
+                    if period > 1.5 * dt and not self._due_since(store, s, e, last, now, period):
+                        continue          # a grain series (spec v2.1) of a re-activated entity
                     if now - last > 2.0 * period + 1e-6:
                         key = (s, e, n)
                         rec = self.found.get(key)
@@ -713,11 +747,21 @@ def _baseline_snapshot(m: Any) -> Any:
     snapshot ~10x smaller."""
     if not isinstance(m, dict):
         return _jsonable(m, max_depth=6)
-    keep = ("fmt", "tier", "version", "branch", "n_eff", "allow_drift", "golden")
+    keep = ("fmt", "tier", "version", "branch", "n_eff", "allow_drift", "golden", "grain_mode")
     out = {k: _jsonable(m[k], max_depth=6) for k in keep if k in m}
     for k in ("current", "reference"):
         if k in m:
             out[k] = _jsonable(m[k], max_depth=4)
+    # spec v2.1 (cadence.md §9.7): per grain. The top-level anchors are the H
+    # anchors in canonical mode (the tick anchors in tick mode); the native Q
+    # anchor rides along under grains.q
+    if m.get("grain_mode") == "canonical":
+        g: Dict[str, Any] = {"h": {k: out[k] for k in ("current", "reference") if k in out}}
+        q = m.get("q")
+        if isinstance(q, dict) and "current" in q:
+            g["q"] = {"current": _jsonable(q["current"], max_depth=4),
+                      "n_eff": _jsonable(q.get("n_eff"))}
+        out["grains"] = g
     return out
 
 
@@ -743,12 +787,15 @@ def _row_keys(row: Dict[str, Any]) -> List[str]:
 # --------------------------------------------------------------------------- #
 class SimulatedAnalyst:
     """Labels `per_day` incidents per day (newest unlabelled first) with a
-    verdict derived from truth and flipped with probability `noise`. This is
+    verdict derived from truth and flipped with probability `noise`; fp
+    verdicts use `fp_scope` (default 'pattern'), the others 'this'. This is
     the eval harness playing the analyst; the label goes through the public
     store API exactly as the UI would put it."""
 
-    def __init__(self, seed: int = 0, noise: float = 0.05, per_day: float = 5.0) -> None:
+    def __init__(self, seed: int = 0, noise: float = 0.05, per_day: float = 5.0,
+                 fp_scope: str = "pattern") -> None:
         self.rng = np.random.default_rng(zlib.crc32(f"analyst|{seed}".encode()))
+        self.fp_scope = str(fp_scope)
         self.noise = float(noise)
         self.per_day = float(per_day)
         self.credit = 0.0
@@ -776,8 +823,14 @@ class SimulatedAnalyst:
             verdict = self._verdict(inc, truth)
             if self.rng.random() < self.noise:
                 verdict = "fp" if verdict != "fp" else "tp"
+            # an analyst dismisses a benign recurrence as a PATTERN (docs
+            # lib3 B23: only fp / benign_known labels with a widened scope
+            # become suppression policies; gate 12 measures that loop). With
+            # scope 'this' on every label the simulated analyst never
+            # exercised suppression, and gate 12 could not pass by design.
+            scope = self.fp_scope if verdict in ("fp", "benign_known") else "this"
             store.add_label(Label(system=inc.system, entity=inc.entity, target_type="incident",
-                                  target_id=inc.id, verdict=verdict, scope="this",
+                                  target_id=inc.id, verdict=verdict, scope=scope,
                                   analyst="sim", ts=now))
             self.labelled.add(inc.id)
             self.credit -= 1.0
@@ -1007,9 +1060,24 @@ def _holdout(store: MetricStore, ts: Optional[float], portraits: Dict[str, Any])
         except Exception:  # pragma: no cover
             cols = []
     nat: Dict[str, Any] = {}
+    grains: Dict[str, Dict[str, Any]] = {"h": {}, "q": {}}
     for s in store.systems():
         for e in store.entities(s):
             t, m = store.vec_since(s, e, FEATURE_NAT, ts + 1e-6)
             if len(t):
                 nat[f"{s}|{e}"] = {"ts": t, "values": m}
-    return {"ts": ts, "portraits": portraits, "feature_names": list(cols), "nat": nat}
+            # spec v2.1 (cadence.md §9.7): held-out grain rows (active only)
+            for g in ("h", "q"):
+                tg, mg = store.vec_since(s, e, f"feature.nat.{g}", ts + 1e-6)
+                if not len(tg):
+                    continue
+                ta, ma = store.vec_since(s, e, f"feature.meta.{g}", ts + 1e-6)
+                act = {float(a): float(r[0]) > 0.5 for a, r in zip(ta, ma)}
+                keep = [i for i, x in enumerate(tg) if act.get(float(x), False)]
+                if keep:
+                    grains[g][f"{s}|{e}"] = {"ts": np.asarray(tg)[keep],
+                                             "values": np.asarray(mg)[keep]}
+    out = {"ts": ts, "portraits": portraits, "feature_names": list(cols), "nat": nat}
+    if grains["h"] or grains["q"]:
+        out["grains"] = grains
+    return out

@@ -30,7 +30,8 @@ def _gen(name, seed=0):
 # Timelines
 # --------------------------------------------------------------------------- #
 def test_pack_timelines():
-    ticks = {"A": 912, "B": 1680, "C": 1200, "D": 1248, "E": 2112, "smoke": 180, "mini": 200}
+    # spec v2.1 (cadence.md §10, deliberate): warm-ups by packs.warmup_phases
+    ticks = {"A": 984, "B": 1824, "C": 1416, "D": 1104, "E": 2112, "smoke": 180, "mini": 200}
     for name in ALL:
         p = P.get_pack(name)
         assert p.n_ticks == ticks[name], name
@@ -38,7 +39,7 @@ def test_pack_timelines():
         assert p.start_epoch + sum(n * d for n, d, _ in p.phases) == pytest.approx(p.end_epoch)
         assert p.scenario_start == pytest.approx(p.end_epoch - p.phases[-1][0] * p.phases[-1][1])
         assert p.config["tz"] == p.tz and p.seeds == [0, 1, 2, 3, 4]
-    assert [p[:2] for p in P.get_pack("A").phases] == [(336, 3600.0), (192, 900.0), (384, 900.0)]
+    assert [p[:2] for p in P.get_pack("A").phases] == [(312, 3600.0), (288, 900.0), (384, 900.0)]
     e = P.get_pack("E").phases
     assert e[-1] == (1440, 60.0, False) and e[0][:2] == (672, 900.0)
     assert P.get_pack("C").tz == "Europe/Berlin"
@@ -46,6 +47,37 @@ def test_pack_timelines():
     first = Clock(a.tz).local(a.scenario_start)
     assert first.weekday() == 0 and first.hour == 0
     assert Clock(a.tz).local(a.scenario("T1").t_start).hour == 10     # tick 40 = 10:00
+
+
+def test_warmup_phases_rule():
+    """cadence.md §10: every live <= 900 pack's last warm-up phase runs at the
+    live cadence over >= 1 full workday and >= 1 full non-workday; 16 d in
+    all; D (live 3600) is 16 d at 3600; smoke keeps 120 warm-up ticks."""
+    for name in ("A", "B", "C", "D"):
+        p = P.get_pack(name)
+        warm = p.phases[:-1]
+        live = p.phases[-1][1]
+        assert sum(n * d for n, d, _ in warm) == pytest.approx(16 * 86400.0), name
+        if live <= 900.0:
+            n, d, _ = warm[-1]
+            assert d == live and n * d % 86400.0 == 0.0, name
+            c = Clock(p.tz, p.calendar)
+            d0 = c.local(p.scenario_start).date()
+            k = int(n * d // 86400)
+            kinds = [c.day_kind(d0 - dt.timedelta(days=i))[0] for i in range(1, k + 1)]
+            assert any(kinds) and not all(kinds), name
+            # k is the smallest such span (>= 2)
+            assert k == 2 or all(kinds[:k - 1]) or not any(kinds[:k - 1]), name
+        else:
+            assert [w[:2] for w in warm] == [(384, 3600.0)]
+    assert [w[:2] for w in P.get_pack("B").phases] == [(288, 3600.0), (384, 900.0), (1152, 900.0)]
+    assert [w[:2] for w in P.get_pack("C").phases] == [(264, 3600.0), (480, 900.0), (672, 900.0)]
+    sm = P.get_pack("smoke")
+    assert sum(n for n, _, _ in sm.phases[:-1]) == 120
+    c = Clock(sm.tz, sm.calendar)
+    days = {c.day_kind(c.local(sm.start_epoch + h * 3600.0).date())[0]
+            for h in range(int((sm.scenario_start - sm.start_epoch) // 3600))}
+    assert days == {True, False}
 
 
 def _days(p):
@@ -382,7 +414,10 @@ def test_t2_low_and_slow_per_tick_z_below_2_5_on_days_1_2():
         ref = pre & act & work & (np.abs(hrs - hrs[i]) <= 1)
         zs.append((x1[i] - x0[ref].mean()) / x0[ref].std())
     zs = np.array(zs)
-    assert len(zs) > 60
+    # sessions are a continuous-time process since round 2 (a working 15-min
+    # tick with no session start and no carried session is idle): ~48 active
+    # working ticks in the two days instead of ~70 with per-tick sessions
+    assert len(zs) > 40
     assert np.mean(np.abs(zs) < 2.5) >= 0.95          # invisible to per-tick detectors
     assert np.median(zs) > 0.5                         # ... but a real, growing shift
     ups = [o for r in att for o in r[3] if o.http_host == "ext-store.example.net"]

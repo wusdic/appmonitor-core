@@ -207,7 +207,11 @@ def test_e_cadence_switch_blends_with_pm_for_64_ticks():
         conf = calib.p_from_ring(ring if ring is not None else calib.Ring(), x, u)
         if k < 64:
             assert n < 64
-            assert p == m_calib.issued(calib.blend_small_sample(conf, pm, n))
+            want = calib.blend_small_sample(conf, pm, n)
+            above = 0 if ring is None else int(np.sum(ring.scores > calib._r32(x)))
+            if above:                          # own-history floor of the blend
+                want = max(want, above / (n + 1.0))
+            assert p == m_calib.issued(want)
             blended += 1
             if n == 0:
                 assert p == pytest.approx(pm, rel=1e-6)

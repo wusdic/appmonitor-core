@@ -856,8 +856,12 @@ class TimingEngine(Engine):
                 acc_alarm={DETECTOR: r.alarm} if r.alarm is not None else None,
                 window_s=win)
         per, pp = TM.period(model, now)
-        if r.summ is None and not pp == pp:
+        if r.summ is None and not pp == pp and r.status != _OK:
             return 1 if r.score == r.score else 0
+        # an active tick whose 6-h window holds no true gap yet (lone events:
+        # a session carried over from the previous tick) writes undefined
+        # descriptors instead of nothing, so the series is not stale while
+        # the entity is active (contract M; integration round 2)
         desc = r.summ.descriptors() if r.summ is not None else dict(_NO_DESC)
         desc["period"], desc["period_p"] = per, pp
         model["live"]["recent"] = desc

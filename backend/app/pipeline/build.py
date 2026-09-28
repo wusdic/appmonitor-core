@@ -26,10 +26,12 @@ One-tick lags the spec allows (and the engines are written for):
 """
 from __future__ import annotations
 
+import datetime as _dt
+import logging
 import os
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
@@ -92,6 +94,9 @@ DATA_DIR = os.environ.get(
 
 # B29 explain (docs/lib3/engines.md B29) runs right after B28 governor.
 EXPLAIN_SLOT_AFTER = "behavior.governor"
+
+
+_LOG = logging.getLogger(__name__)
 
 
 def limit_blas_threads(n: int = 1) -> None:
@@ -192,14 +197,25 @@ class Runtime:
     in a background thread. The API reads the store this exposes.
 
     Contract I: the pipeline config carries tz, calendar and strict; warm-up
-    runs with training=True at Δt = 900 s, the live loop at the runtime's
-    window, and every tick is stamped `now = gen.vt` (architecture §10)."""
+    runs with training=True over the warm-up plan, the live loop at the
+    runtime's window, and every tick is stamped `now = gen.vt` (architecture
+    §10).
+
+    Warm-up plan (spec v2.1, docs/lib3/cadence.md §10): a list of (ticks, Δt)
+    phases, default [(120, 3600), (192, 900)] (5 d at H, then 2 d at 900 s so
+    the Q grain and the cadence-class calibration rings are native before the
+    live phase). `warmup_ticks=n` without a plan keeps the v2 plan
+    [(n, 900)]. A warning is logged when the last warm-up phase at Δt ≤ 900
+    does not cover a full workday and a full non-workday."""
 
     WARMUP_DT = 900.0
+    DEFAULT_WARMUP_PLAN: Tuple[Tuple[int, float], ...] = ((120, 3600.0), (192, 900.0))
 
-    def __init__(self, window_s: int = 60, warmup_ticks: int = 180, live_period_s: float = 3.0,
+    def __init__(self, window_s: int = 60, warmup_ticks: Optional[int] = None,
+                 live_period_s: float = 3.0,
                  config: Optional[Dict[str, Any]] = None, seed: int = 42,
-                 strict: bool = False, pack: Any = None):
+                 strict: bool = False, pack: Any = None,
+                 warmup_plan: Optional[Sequence[Tuple[int, float]]] = None):
         self.store = MetricStore()
         self.sig_store, self.composite_rules = load_signatures()
         self.gen = TrafficGenerator(seed=seed, window_s=window_s, pack=pack)
@@ -214,7 +230,12 @@ class Runtime:
         self.pipeline = Pipeline(self.store, self.registry, window_s=window_s,
                                  config=self.config)
         self.window_s = window_s
-        self.warmup_ticks = warmup_ticks
+        if warmup_plan is None:
+            warmup_plan = (self.DEFAULT_WARMUP_PLAN if warmup_ticks is None
+                           else ((int(warmup_ticks), self.WARMUP_DT),))
+        self.warmup_plan: List[Tuple[int, float]] = [(int(n), float(d)) for n, d in warmup_plan
+                                                     if int(n) > 0]
+        self.warmup_ticks = sum(n for n, _ in self.warmup_plan)
         self.live_period_s = live_period_s
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -222,16 +243,53 @@ class Runtime:
         self.warmed = False
         self.live_ticks = 0
 
+    def warmup_span_s(self) -> float:
+        return float(sum(n * d for n, d in self.warmup_plan))
+
+    def plan_text(self) -> str:
+        """'120 x 3600 s + 192 x 900 s (7.0 d)' (scripts/smoke.py prints it)."""
+        parts = " + ".join(f"{n} x {d:g} s" for n, d in self.warmup_plan) or "none"
+        return f"{parts} ({self.warmup_span_s() / 86400.0:.1f} d)"
+
+    def plan_warnings(self, t_end: float) -> List[str]:
+        """The last warm-up phase at Δt <= 900 should hold >= 1 full workday
+        and >= 1 full non-workday (local days fully inside the phase)."""
+        if not self.warmup_plan:
+            return []
+        n, d = self.warmup_plan[-1]
+        if d > 900.0:
+            return []
+        clock = self.gen.clock
+        t0 = t_end - n * d
+        day = clock.local(t0).date()
+        kinds = set()
+        while True:
+            a = clock.epoch(day, 0.0)
+            b = clock.epoch(day + _dt.timedelta(days=1), 0.0)
+            if b > t_end + 1e-6:
+                break
+            if a >= t0 - 1e-6:
+                kinds.add(bool(clock.day_kind(day)[0]))
+            day += _dt.timedelta(days=1)
+        if kinds != {True, False}:
+            return [f"warm-up plan {self.plan_text()}: the {d:g}-s phase does not cover "
+                    "a full workday and a full non-workday (Q-grain / cadence-class "
+                    "calibration start on the transfer path)"]
+        return []
+
     def warmup(self) -> None:
         """Synthesise multi-day history quickly to seed the models."""
-        # the virtual clock starts warmup_ticks x 900 s in the past; the live
-        # phase then continues from wherever warm-up ended (≈ now)
+        # the virtual clock starts the plan's span in the past; the live phase
+        # then continues from wherever warm-up ended (≈ now)
         if self.gen.pack is None:
-            self.gen.vt = time.time() - self.warmup_ticks * self.WARMUP_DT
+            self.gen.vt = time.time() - self.warmup_span_s()
+        for w in self.plan_warnings(self.gen.vt + self.warmup_span_s()):
+            _LOG.warning(w)
         with self._lock:
-            for _ in range(self.warmup_ticks):
-                obs = self.gen.step(dt=self.WARMUP_DT, live=False)
-                self.pipeline.run_tick(obs, now=self.gen.vt, training=True, dt=self.WARMUP_DT)
+            for n, d in self.warmup_plan:
+                for _ in range(n):
+                    obs = self.gen.step(dt=d, live=False)
+                    self.pipeline.run_tick(obs, now=self.gen.vt, training=True, dt=d)
         self.warmed = True
 
     def _tick_live(self) -> dict:

@@ -364,6 +364,9 @@ def new_fit() -> Dict[str, Any]:
         "rp99": np.full((NQ, NH), nan), "pmh": np.full((NQ, NH, 2, 24), nan),
         "rthr": np.full((NQ, NH, 2, 24), nan),        # log(B / peer median) threshold at q
         "unit": np.full(NQ, nan),                     # offset of log(W + unit) at the fit
+        # 7-d day-type composition (round 2): per day type the median hourly
+        # rate profile, and per phase the usual expected 7-d sum
+        "prof": np.full((NQ, 2, 24), nan), "e7bar": np.full((NQ, 24), nan),
     }
 
 
@@ -495,6 +498,61 @@ def window_sums(v: np.ndarray) -> np.ndarray:
     return out.reshape(NH + 1, HIST_DAYS, 24)
 
 
+def day_type_profile(v: np.ndarray, dtypes: np.ndarray) -> np.ndarray:
+    """(2, 24) median hourly rate per day type (0 workday, 1 other) over the
+    history; a type with fewer than 2 valid days takes the all-day profile.
+    NaN where no day has a value for that hour."""
+    vv = v.reshape(HIST_DAYS, 24)
+    out = np.full((2, 24), np.nan)
+    allp, _ = _nanmed(vv, 0)
+    for t in (0, 1):
+        sel = dtypes == t
+        if sel.sum() >= 2:
+            pt, n = _nanmed(vv[sel], 0)
+            out[t] = np.where(n >= 2, pt, allp)
+        else:
+            out[t] = allp
+    return out
+
+
+def expected_7d(prof: np.ndarray, types: np.ndarray, h: int) -> float:
+    """Expected 7-d sum ending with local hour h of the LAST day of `types`
+    (8 day types, oldest first: the window is hours h+1..23 of the first day,
+    the 6 full days between and hours 0..h of the last)."""
+    P = np.nan_to_num(prof, nan=0.0)
+    t = np.asarray(types, dtype=np.int64)
+    return float(P[t[0], h + 1:].sum() + sum(P[t[k]].sum() for k in range(1, 7))
+                 + P[t[7], :h + 1].sum())
+
+
+def composition_7d(v: np.ndarray, dtypes: np.ndarray, unit: float
+                   ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Day-type composition of the history's 7-d windows (eval round 2).
+
+    Returns (profile (2, 24), log correction (days, 24) to subtract from the
+    7-d log windows, usual expected sum per phase (24,)). The 7-d horizon
+    compared a window with the same-phase windows of 28 days, which almost
+    always held 5 workdays: a make-up working Saturday (调休) put a 6th
+    workday in the next seven 7-d windows, +20 % volume that was a 20-sigma
+    residual (pack B: writes / bytes / objs 7-d p < 1e-6 on ~2,400 clean
+    control ticks, all within a week of the make-up day). Each window is now
+    measured against its own expected composition (the sum of the day-type
+    hourly profiles over its hours) rescaled to the usual one, so a window
+    with one more workday expects one more workday of volume."""
+    prof = day_type_profile(v, dtypes)
+    X = np.nan_to_num(prof[np.asarray(dtypes, dtype=np.int64)], nan=0.0).reshape(-1)
+    c = np.concatenate(([0.0], np.cumsum(X)))
+    end = np.arange(1, NHIST + 1)
+    start = end - 168
+    good = start >= 0
+    E = np.where(good, c[end] - c[np.maximum(start, 0)], np.nan).reshape(HIST_DAYS, 24)
+    ebar, _ = _nanmed(E, 0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        corr = np.log(E + unit) - np.log(ebar[None, :] + unit)
+    corr = np.where(np.isfinite(corr), corr, 0.0)
+    return prof, corr, ebar
+
+
 def _robust(sub: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(median, robust scale, n) along axis 1 of (NH, days, 24)."""
     med, n = _nanmed(sub, 1)
@@ -573,11 +631,28 @@ _SMOOTH_IDX = np.clip(np.arange(24)[None, :] + np.arange(-PHASE_SMOOTH, PHASE_SM
                       0, 23)                      # (2k+1, 24) clamped neighbour phases
 
 
-def floor_scale(med: np.ndarray, scale: np.ndarray, floor: float = LOG_SCALE_MIN
-                ) -> np.ndarray:
-    """Log scales never below `floor` (a 2 % relative spread)."""
-    with np.errstate(invalid="ignore"):
-        out = np.where(np.isnan(scale), np.nan, np.maximum(scale, floor))
+def floor_scale(med: np.ndarray, scale: np.ndarray, floor: float = LOG_SCALE_MIN,
+                count_unit: Optional[float] = None) -> np.ndarray:
+    """Log scales never below `floor` (a 2 % relative spread) and, for a
+    COUNT quantity (count_unit = its log offset), never below the counting
+    noise of its level: L = log(W + unit) of a count W ~ Poisson(m) has
+    sd ~ sqrt(m + 1) / (m + 1 + unit) (the +1 keeps a level of 0 finite).
+
+    Why: a count quantity whose history is constant at one phase (0 writes
+    at 03:00, 5 destinations in 7 d, 4 active slots in an hour) has a robust
+    log scale of ~0, floored at 0.02, so one more request, destination or
+    slot was a 20-50 sigma residual and a tail p of 1e-10 ... 1e-38 (pack B:
+    budget_breadth / budget_vol p < 1e-6 on ~400 / ~250 clean control ticks,
+    against 0.03 expected; the pooled tails were fitted with z_q of 20-270
+    robust-scale units). Bytes quantities are unaffected (their level makes
+    this floor negligible)."""
+    with np.errstate(invalid="ignore", over="ignore"):
+        fl = floor
+        if count_unit is not None:
+            u = float(count_unit)
+            m = np.maximum(np.exp(med) - u, 0.0)
+            fl = np.maximum(floor, np.sqrt(m + 1.0) / (m + 1.0 + u))
+        out = np.where(np.isnan(scale), np.nan, np.maximum(scale, fl))
     return np.where(np.isnan(med), np.nan, out)
 
 
@@ -855,6 +930,7 @@ class BudgetEngine(Engine):
         today = a // 24
         tick = {"now": now, "dt": dt, "tz": tz, "cal": cal, "off": off, "a": a,
                 "today": today, "h": a % 24, "dti": self._dtype(today, cal),
+                "types8": np.array([self._dtype(today - k, cal) for k in range(7, -1, -1)]),
                 "floors": floors, "training": bool(ctx.training),
                 "org": list(ctx.config.get("org_domains") or []),
                 "b01_failed": store.engine_failed(B01_ENGINE, now),
@@ -1259,10 +1335,13 @@ class BudgetEngine(Engine):
                 return
         W = window_sums(v)
         L = log_windows(W, unit)
+        prof, corr7, e7bar = composition_7d(v, dtypes, unit)
+        L[H_7D] = L[H_7D] - corr7                         # each window at the usual composition
+        cu = unit if Q_UNIT[q] != "bytes" else None      # counting-noise floor (counts)
         if n_days >= MATURE_DAYS:
             src = SRC_OWN
             med, scale = phase_stats(L, dtypes, MIN_PHASE_N)
-            scale = floor_scale(med, scale)
+            scale = floor_scale(med, scale, count_unit=cu)
             tl = self._own_tail(L, med, scale, dtypes, MIN_POOL)
         if tl is None:
             if pool is None:
@@ -1274,17 +1353,18 @@ class BudgetEngine(Engine):
                 m_own, s_own = phase_stats(L, dtypes, MIN_PHASE_N_YOUNG)
                 med = np.where(np.isnan(m_own), pool["level"], m_own)
                 scale = floor_scale(med, np.where(np.isnan(pool["scale"]), s_own,
-                                                  pool["scale"]))
+                                                  pool["scale"]), count_unit=cu)
                 tl = np.broadcast_to(pool["tail"], (NH, pool["tail"].shape[-1]))
             elif n_days >= MIN_OWN_DAYS:
                 src = SRC_OWN_IMMATURE
                 med, scale = phase_stats(L, dtypes, MIN_PHASE_N_YOUNG)
-                scale = floor_scale(med, scale)
+                scale = floor_scale(med, scale, count_unit=cu)
                 tl = self._own_tail(L, med, scale, dtypes, MIN_POOL_IMMATURE)
         if tl is None or med is None:
             self._clear_fit(fit, q)
             return
         fit["src"][q], fit["unit"][q] = src, unit
+        fit["prof"][q], fit["e7bar"][q] = prof, e7bar
         fit["med"][q], fit["scale"][q] = med, scale
         fit["tail"][q], fit["body"][q] = tl[:, :5], tl[:, 5:]
         fit["rp99"][q], fit["pmh"][q], fit["rthr"][q] = np.nan, np.nan, np.nan
@@ -1318,8 +1398,9 @@ class BudgetEngine(Engine):
     @staticmethod
     def _clear_fit(fit: Dict[str, Any], q: int) -> None:
         fit["src"][q] = SRC_NONE
-        for k in ("med", "scale", "tail", "body", "pmh", "rp99", "rthr"):
-            fit[k][q] = np.nan
+        for k in ("med", "scale", "tail", "body", "pmh", "rp99", "rthr", "prof", "e7bar"):
+            if k in fit:
+                fit[k][q] = np.nan
 
     @staticmethod
     def _pool(store: Any, s: str, peers: Sequence[str], q: int, unit: float
@@ -1412,10 +1493,23 @@ class BudgetEngine(Engine):
         dti, h = tick["dti"], tick["h"]
         floors = tick["floors"]
         Bt = B.T                                                   # (NQ, NH)
-        lm = fit["med"][:, :, dti, h]                             # log(W + unit) space
+        lm = fit["med"][:, :, dti, h].copy()                      # log(W + unit) space
         sc = fit["scale"][:, :, dti, h]
         tl = fit["tail"]
         unit = fit["unit"][:, None]
+        # the current 7-d window's day-type composition (see composition_7d)
+        types = tick.get("types8")
+        if types is not None and "prof" in fit:
+            u1 = fit["unit"]
+            for q in range(NQ):
+                eb = fit["e7bar"][q, h]
+                if not (eb == eb and u1[q] == u1[q]):
+                    continue
+                en = expected_7d(fit["prof"][q], types, h)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    adj = math.log(en + u1[q]) - math.log(eb + u1[q])
+                if math.isfinite(adj):
+                    lm[q, H_7D] += adj
         with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
             zthr = np.exp(lm + sc * tl[..., 4]) - unit             # natural units
             m = np.exp(lm) - unit                                  # the usual level

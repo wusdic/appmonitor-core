@@ -17,17 +17,39 @@ producer failed this tick" from "nothing happened".
 """
 from __future__ import annotations
 
+import gc
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.engine import Context, Engine, Registry, default_config
 from ..core.store import MetricStore
 from ..models.schema import SYSTEM_ENTITY, DerivedMetric, MetricKind, Observation
 
+# Cyclic-GC thresholds for the pipeline process (perf, docs/lib3/integration.md
+# §9). The store and the lib-3 models are a large, mostly long-lived heap
+# (~0.9 M tracked objects on pack A) that grows steadily, so at the
+# interpreter defaults (700, 10, 10) a full collection runs every few ticks
+# and scans all of it: ~8 % of pack A's wall time, in 0.3-1.3 s pauses that
+# set the per-tick p95. Almost all garbage here is freed by reference
+# counting; the cyclic collector only changes WHEN unreachable cycles are
+# reclaimed, never a computed value.
+GC_THRESHOLDS: Tuple[int, int, int] = (10000, 20, 50)
+_GC_DEFAULTS = (700, 10, 10)
+
+
+def configure_gc(thresholds: Tuple[int, int, int] = GC_THRESHOLDS) -> bool:
+    """Raise the cyclic-GC thresholds unless the process already chose its
+    own (anything but the interpreter defaults). Returns True if it set them."""
+    if tuple(gc.get_threshold()) != _GC_DEFAULTS:
+        return False
+    gc.set_threshold(*thresholds)
+    return True
+
 
 class Pipeline:
     def __init__(self, store: MetricStore, registry: Registry, window_s: int = 60,
                  config: Optional[Dict[str, Any]] = None):
+        configure_gc()
         self.store = store
         self.registry = registry
         self.window_s = window_s

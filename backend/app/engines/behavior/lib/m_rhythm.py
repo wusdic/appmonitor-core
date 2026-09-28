@@ -38,6 +38,7 @@ Model layout, model.rhythm@(s, e | class:<rid> | __system__):
       'prior': {'tier': 'class:<rid>' | 'system' | 'hyper',
                 'pi48': float64[192] | None (None = HYPER_PI), 's': strength},
       'entropy168': float, 'machine_like': bool,       # refreshed hourly
+      'automation': float, 'auto_A': float | None,     # index / B02 A used (entity)
       'desc': descriptors(model) as of the last refresh,
       'shifts': [schedule-shift records],
       entity only: 'gate' (lib/gating GateState), 'ledger' (per-slot activity,
@@ -88,7 +89,11 @@ Accessor signatures (pure; missing data gives the documented default):
     hourly48(model) -> float64[48]              expected active slots per bin (0..4)
     shape48(model) -> float64[48];  shape168(model) -> float64[168]   (sum 1; NaN if
                                                 never active)
-    entropy168(model) -> float;  machine_like(model) -> bool
+    entropy168(model) -> float
+    automation_components(model) -> {offhours, week, regular}   rhythm evidence
+    automation_index(model, a_b02=None) -> float       mean with B02's A (NaN: unknown)
+    machine_decision(index, previous, regular) -> bool hysteresis 0.6 / 0.4, regular >= 0.5
+    machine_like(model) -> bool                        the decision kept by B07
     expected_volume(model, c48) -> float        mean events of an active slot (NaN)
     loglik_terms(model, active_slots, tctx) -> float64[n]   nats per slot
     loglik(model, active_slots, tctx) -> float  sum of the finite terms (NaN if none)
@@ -143,7 +148,8 @@ VM_MAX_DH = 2
 P0_MAX = RHYTHM_P0_MAX             # offhours bins (0.3)
 P_SIL_MIN = 0.95                   # silence bins
 P_USUAL = 0.5                      # "usual window" / "new window" split (schedule shift)
-ENTROPY_MAX = 0.8                  # machine-like: normalised 168-bin entropy <= 0.8
+ENTROPY_MAX = 0.8                  # v2 machine-like rule (entropy <= 0.8); superseded by
+                                   # automation_index, kept for reference
 N_OBS_MIN = 0.25                   # a cell with less decayed weight counts as unobserved
 LL_CLIP = 1e-4                     # p clip inside loglik
 ARL_DAYS = 100.0                   # offhours / silence in-control ARL (B07 spec)
@@ -527,9 +533,105 @@ def entropy168(model: Mapping[str, Any]) -> float:
     return float(-(q * np.log(q)).sum() / _LN168)
 
 
+# ------------------------------------------------------------ automation
+BIZ_HOURS = (8, 19)                # local workday business hours [8, 19)
+AUTO_ENTER, AUTO_LEAVE = 0.6, 0.4  # machine_like hysteresis (B02's super level)
+AUTO_MIN_SPAN_S = 7 * 86400.0      # one week: both day types seen at least once
+REGULAR_MIN = 0.5                  # machine_like needs mean 4 r (1 - r) <= 0.5 where active
+_BIZ48 = np.zeros(N48, dtype=bool)
+_BIZ48[BIZ_HOURS[0] * QUARTERS:BIZ_HOURS[1] * QUARTERS] = True      # workday half only
+_BIZ48.flags.writeable = False
+
+
+def automation_components(model: Mapping[str, Any]) -> Dict[str, float]:
+    """Rhythm evidence of automation, each in [0, 1] (1 = machine), NaN when
+    not identified (MLE activity rates, activity48):
+
+      offhours  min(1, r_off / r_biz): the active rate outside workday
+                business hours relative to inside. An office worker is ~0,
+                a 24/7 client ~1, a nightly job (never active in business
+                hours) 1.
+      week      min(r_wd, r_nwd) / max(r_wd, r_nwd): non-workdays look like
+                workdays. A person ~0, a scheduled job or 24/7 client ~1.
+      regular   1 - sum_c r_c 4 r_c (1 - r_c) / sum_c r_c over the observed
+                cells: presence is all-or-nothing where the entity is
+                active (a schedule, a poller: r ~ 1) rather than a coin
+                flip (a person's 55 % of daytime slots gives ~0.1). This
+                is also what silence needs: cells with p_hat >= 0.95.
+
+    Both need a model spanning AUTO_MIN_SPAN_S (a week holds both day types).
+    Normalised entropy is deliberately not used: it is not monotone in
+    automation (a 24/7 client is near 1, a nightly job ~0.5 and an office
+    worker 0.7 - the old 'entropy <= 0.8' rule called most office workers
+    machine-like and no 24/7 client)."""
+    out = {"offhours": math.nan, "week": math.nan, "regular": math.nan}
+    st = model.get("state") or {}
+    t0, t1 = st.get("t_first", math.nan), st.get("t_last", math.nan)
+    if not (math.isfinite(t0) and math.isfinite(t1) and t1 - t0 >= AUTO_MIN_SPAN_S):
+        return out
+    a = activity48(model)
+    biz = a[_BIZ48]
+    off = a[~_BIZ48]
+    r_biz = float(np.nanmean(biz)) if np.isfinite(biz).any() else math.nan
+    r_off = float(np.nanmean(off)) if np.isfinite(off).any() else math.nan
+    if r_biz == r_biz and r_off == r_off and (r_biz > 0.0 or r_off > 0.0):
+        out["offhours"] = 1.0 if r_biz <= 0.0 else min(1.0, r_off / r_biz)
+    wd, nwd = a[:N48 // 2], a[N48 // 2:]
+    r_wd = float(np.nanmean(wd)) if np.isfinite(wd).any() else math.nan
+    r_nwd = float(np.nanmean(nwd)) if np.isfinite(nwd).any() else math.nan
+    if r_wd == r_wd and r_nwd == r_nwd and max(r_wd, r_nwd) > 0.0:
+        out["week"] = min(r_wd, r_nwd) / max(r_wd, r_nwd)
+    r = a[np.isfinite(a)]
+    m = float(r.sum())
+    if m > 0.0:
+        out["regular"] = 1.0 - float(np.sum(r * 4.0 * r * (1.0 - r))) / m
+    return out
+
+
+def automation_index(model: Mapping[str, Any], a_b02: Any = None) -> float:
+    """Automation index in [0, 1]: the mean of the identified rhythm
+    components (automation_components) and B02's per-IP automation index A
+    (timing regularity, periodicity, non-browser share, think time, path
+    entropy; m_class assignment 'A') when given. NaN when nothing is
+    identified. machine_like applies hysteresis to it."""
+    vals = [v for v in automation_components(model).values() if v == v]
+    try:
+        a = float(a_b02) if a_b02 is not None else math.nan
+    except (TypeError, ValueError):
+        a = math.nan
+    if a == a:
+        vals.append(min(1.0, max(0.0, a)))
+    return float(np.mean(vals)) if vals else math.nan
+
+
+def machine_decision(index: float, previous: bool = False, regular: float = math.nan) -> bool:
+    """machine_like with hysteresis: enter at index >= AUTO_ENTER, leave at
+    index < AUTO_LEAVE (in between, and on a NaN index, keep `previous`).
+    A known `regular` (automation_components) below REGULAR_MIN is never
+    machine-like: silence and a missed usual window only mean something for
+    all-or-nothing presence, not for cells an entity fills like a coin flip
+    (an irregular person active every day 07-23 has offhours ~0.6 and week
+    ~1, but regular ~0.15)."""
+    if regular == regular and regular < REGULAR_MIN:
+        return False
+    if not index == index:
+        return bool(previous)
+    if index >= AUTO_ENTER:
+        return True
+    if index < AUTO_LEAVE:
+        return False
+    return bool(previous)
+
+
 def machine_like(model: Mapping[str, Any]) -> bool:
-    h = entropy168(model)
-    return bool(math.isfinite(h) and h <= ENTROPY_MAX)
+    """The automation decision B07 keeps in the model (model['machine_like'],
+    refreshed hourly from automation_index with hysteresis); for a model
+    without it, the rhythm-only index against AUTO_ENTER."""
+    v = model.get("machine_like") if isinstance(model, Mapping) else None
+    if isinstance(v, (bool, np.bool_)):
+        return bool(v)
+    return machine_decision(automation_index(model),
+                            regular=automation_components(model)["regular"])
 
 
 def expected_volume(model: Mapping[str, Any], c48: int) -> float:
@@ -663,7 +765,9 @@ def descriptors(model: Mapping[str, Any]) -> Dict[str, Any]:
         "window80": None, "active_window": None,
         "active_slots_wd": _f(mass_wd, 3), "active_slots_nwd": _f(mass_nwd, 3),
         "wd_we_ratio": _f(mass_wd / mass_nwd, 3) if mass_nwd > 0.0 else None,
-        "entropy168": _f(h), "machine_like": bool(math.isfinite(h) and h <= ENTROPY_MAX),
+        "entropy168": _f(h), "machine_like": machine_like(model),
+        "automation": _f(automation_index(model, model.get("auto_A") if isinstance(
+            model, Mapping) else None), 3),
         "mature168": mature168(model), "n_slots": int(st.get("n_slots", 0) or 0),
         "span_days": _f((st.get("t_last", math.nan) - st.get("t_first", math.nan)) / 86400.0, 2),
         "tier": (model.get("prior") or {}).get("tier", "hyper"),

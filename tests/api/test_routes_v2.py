@@ -121,6 +121,18 @@ def test_entity_detail_features_and_legacy(client, target):
     f0 = d["features"][0]
     _has(f0, ["name", "current", "p5", "p50", "p95", "z", "zr",
               "baseline", "spread", "stable"])                               # legacy names kept
+    # spec v2.1 (cadence.md §9.5): the runtime runs the canonical grain mode,
+    # so every feature row carries the per-grain block, with the live H value
+    rows = [f for f in d["features"] if "grains" in f]
+    assert rows and len(rows) == len(d["features"])
+    for f in rows:
+        assert "h" in f["grains"]
+        _has(f["grains"]["h"], ["current", "p5", "p50", "p95", "z", "zr"])
+        if "q" in f["grains"]:
+            _has(f["grains"]["q"], ["current", "p5", "p50", "p95", "z", "zr", "provisional"])
+    req = next(f for f in rows if f["name"] == "http_requests")
+    assert req["unit"] in ("per 15 min", "per 60 min")
+    assert req["grains"]["h"]["current"] is not None
     _no_nan(d)
 
 
@@ -163,6 +175,47 @@ def test_entity_portrait_diff(client, target, rt):
         return
     assert resp.status_code == 200, resp.text[:300]
     _has(resp.json(), ["system", "entity", "from", "to", "diff", "text_from", "text_to"])
+    assert resp.json()["method"] == "b30.diff_signatures"
+
+
+def test_portrait_diff_and_masking_use_the_public_b30_module():
+    """W7: the API compares portrait versions and masks adoption templates
+    through lib/m_portrait (B30's public signature / diff / safe_token)."""
+    from app.api import views as V
+    from app.engines.behavior import portrait as P
+    from app.engines.behavior.lib import m_portrait
+    js_a = {"kind": "entity", "rhythm": {"workday": {"start_h": 8.0, "len_h": 9.0,
+                                                     "window": "08:00-17:00"}},
+            "workload": {"http_requests": {"workday": {"p10": 1.0, "p50": 10.0, "p90": 30.0}}},
+            "top_templates": [{"template": "GET h /a", "share": 1.0}]}
+    js_b = {"kind": "entity", "rhythm": {"workday": {"start_h": 11.0, "len_h": 9.0,
+                                                     "window": "11:00-20:00"}},
+            "workload": {"http_requests": {"workday": {"p10": 1.0, "p50": 20.0, "p90": 30.0}}},
+            "top_templates": [{"template": "GET h /a", "share": 1.0}]}
+    diff = V.portrait_diff({"json": js_a}, {"json": js_b})
+    assert {d["field"] for d in diff} == {"rhythm.window", "workload"}
+    assert diff == m_portrait.diff_signatures(m_portrait.signature(js_a),
+                                              m_portrait.signature(js_b))
+    assert P._signature is m_portrait.signature and P.diff_signatures is m_portrait.diff_signatures
+    assert V.mask_template("GET h /orders/view/88231?id=7&x=y|200") == \
+        "GET h /orders/view/{num}?id&x|200"
+    assert V.mask_template(None) is None
+
+
+def test_incident_narrative_reads_b29_explanation_fields():
+    """W7: B29 writes narrative_zh / narrative_en / headline_* into the
+    explanation; Incident.narrative (the zh copy) is only a fallback."""
+    from app.api import views as V
+    inc = Incident(system="s", entity="e", narrative="中文",
+                   explanation={"narrative_zh": "中文", "narrative_en": "English",
+                                "headline_zh": "标题", "headline_en": "Headline"})
+    assert V.narrative(inc) == {"zh": "中文", "en": "English", "headline_zh": "标题",
+                                "headline_en": "Headline"}
+    only_zh = Incident(system="s", entity="e", narrative="中文",
+                       explanation={"narrative_zh": "中文"})
+    assert V.narrative(only_zh)["en"] is None           # never the zh text labelled en
+    legacy = Incident(system="s", entity="e", narrative="plain")
+    assert V.narrative(legacy)["zh"] == V.narrative(legacy)["en"] == "plain"
 
 
 def test_entity_timeline_scores_identity(client, target):
@@ -266,6 +319,8 @@ def test_feedback_round_trip_creates_label(client, rt, incident_id):
     rt.step_once()
     fb = (st.profile(inc.system, inc.entity).extra or {}).get("feedback") or {}
     assert fb.get("last_verdict") == "fp" and fb.get("n_labels", 0) >= 1
+    # W7: the summary is written after B23's refit, so it counts this label
+    assert fb.get("n_labelled", 0) >= 1
 
 
 def test_event_feedback_and_validation(client, rt, incident_id):
@@ -311,8 +366,30 @@ def test_detectors_health(client, rt):
         assert s in rt.store.systems()
         for row in rows:
             _has(row, ["detector", "family", "ks", "rate_ratio", "weight_mult",
-                       "degraded_share"])
+                       "degraded_share", "degraded_causes", "n_keys"])
     _no_nan(d)
+
+
+def test_detector_health_degraded_share_counts_keys_running_the_detector(rt):
+    """W7: behavior.degraded written through lib/emit shows up per detector
+    over the keys that ran it (entities and class keys), with cause kinds."""
+    from app.api import views as V
+    from app.engines.behavior.lib import emit
+    st = rt.store
+    s = st.systems()[0]
+    base = V.degraded_counts(st, s)
+    e = next(x for x in st.entities(s)
+             if V.latest_vec(st, s, x, "behavior.score")[0] is not None)
+    ts, row = V.latest_vec(st, s, e, "behavior.score")
+    emit.write_degraded(st, s, e, ts, {"offhours": emit.cause(emit.FALLBACK, "system"),
+                                       "t2_q": emit.cause(emit.PROVISIONAL, "q_transfer")})
+    got = V.degraded_counts(st, s)
+    for d, kind in (("offhours", "fallback"), ("t2_q", "provisional")):
+        b = base.get(d) or {"n": 0, "degraded": 0, "causes": {}}
+        assert got[d]["degraded"] >= 1 and got[d]["causes"].get(kind, 0) >= 1
+        assert got[d]["n"] >= got[d]["degraded"] and got[d]["n"] >= b["n"]
+    with pytest.raises(ValueError):
+        emit.cause("bogus")
 
 
 def test_store_memory(client):

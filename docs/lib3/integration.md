@@ -353,7 +353,9 @@ single-threaded BLAS). Budget = architecture §7 at 40 entities, halved for 20.
    entity) and PPM scoring (B10, B16) are the floor of the current design.
    Getting further needs vectorised BB and NB mid-p kernels across features,
    or a compiled PPM. The B18 author made the same point about the §7 line
-   (R17.3).
+   (R17.3). Update: §9 has the exact (results-unchanged) performance pass. It
+   cut about 20 % of pack A / B wall time and brought memory under the gate,
+   and it lists what is still needed for gate 14.
 6. **Deferred requests.** R0.2, R6.1, R17.1, R20.3 and R21.3 are optional or
    owner-side. The B29 parts of R5.3 and R15.3 wait for B29.
 
@@ -417,3 +419,309 @@ Tuning / design candidates found in the run (not changed):
   needs the cadence-aware windows of open issue 4 before its power can be
   judged.
 - Perf (gate 14): lib-3 p95 ≈ 1.3 s per tick scaled to 35 entities.
+
+### 8.1 spec v2.1: canonical grain mode (docs/lib3/cadence.md)
+
+Pack A seed 0, strict, `grain_mode='canonical'` (the default since M8) and
+the §10 warm-up (312 × 3600 s + 288 × 900 s, Fri–Sun at the live cadence),
+through `scripts/evaluate.py` (runner → metrics → report). Scenario phase,
+seeds and onsets unchanged. "A after" is the column above.
+
+| | A after (v2, tick) | A, spec v2.1 |
+|---|---|---|
+| threats detected / within deadline | 1/12, 1/12 | 12/12, 6/12 |
+| FAR ≥ LOW / ≥ MEDIUM per entity-day | 0.25 / 0.197 | 0.30 / 0.197 |
+| HIGH / CRITICAL control incidents | 10 / 6 | 2 / 1 |
+| single-tick e_day ≤ 0.03 on clean control ticks (expected) | 1142 (2.3) | 12 (2.3); H ticks 2 (1.5), Q ticks 10 (0.8) |
+| evidence-CUSUM alarms | 49 | 14 |
+| B14 "change"-path accumulator onsets | — | 11 |
+| worst detector KS D (n ≥ 100) | — | 0.42 (spe) |
+| portrait p5–p95 coverage: ticks / H rows / Q rows | — | 0.98 / 0.96 / 0.97 |
+| stale lib-3 series / exceptions | 0 / 0 | 0 / 0 |
+| wall time (ticks) | 850 s (912) | 939 s (984) |
+
+The cadence switch no longer dominates: the single-tick rate on clean control
+ticks is within ~5x of nominal (it was ~500x), the CUSUM bank no longer
+latches on the distinct-count bias, and every threat opens its own incident.
+The FAR ≥ LOW rate is now spread over the control population (about one incident per
+entity, mostly MEDIUM, axes shape / volume / identity) instead of a few
+entities latched from the first live hour. Two defects were found and fixed on
+the way (cadence.md §17): the H-stream evidence reset at the first live tick
+was lost when that tick was not an H tick, and B14 did not report a latched
+alarm between H ticks. Open (cadence.md §17): B11 timing p on warm-ups whose
+live-cadence days are a weekend (B24's pm prior), and B06 densities that keep
+zi rows scored before the entity's own baseline existed (short warm-ups:
+mini / smoke).
+
+`scripts/smoke.py --strict` (Runtime plan 120 × 3600 s + 192 × 900 s, 16 live
+ticks at 60 s): SMOKE OK; 10 open incidents (v2: 16), 5 of them on the 5 demo
+threat entities, the other 5 LOW except one MEDIUM (api-gateway/10.40.9.9).
+The Runtime warm-up ends at the wall clock, so the day types its 900-s phase
+covers depend on the weekday it is run (it warns when one is missing).
+
+### 8.2 W7 tuning fixes (root causes of §8's design candidates)
+
+Each fix is at its root cause, with a regression test; no constant was set
+from a pack-seed outcome. Pack A seed 0 was used to measure, with every fix
+switchable by monkeypatch (scratch driver), so each row below is an
+ablation on the same tree; "baseline" (all fixes off) reproduces §8.1
+exactly.
+
+| Candidate (§8) | Root cause | Fix | Tests |
+|---|---|---|---|
+| B24: a sparse entity's p at the floor every night; creep KS D = 1.0, budget_* conservative | The small-sample prior was behavior.pm, a p-value with two atoms: an accumulator's stationary p_eq is exactly 1 at a zero statistic, and a sparse nightly host scored against its peers had pm at the float floor on every null night. As a logit prior an atom puts the issued p back in a point mass at 1, or at the floor | `m_calib.pm_prior`: a tie at an atom is randomised with the mid-p rule, pm = 1 → 1 − π1 + u·π1, pm at the floor → u·π0 (u the score's seeded U), π the atom's share of the entity's admitted pm history (ring `<d>@pm\|<cc>`, canonical H / Q `<d>@pm\|g:<g>`; below 16 entries π1 Laplace, an unseen floor kept). The body of pm is used as is. B29 replays it (`p_replay`) | `test_b24_b25_tuning.py` (floor, atom, rules); tick-mode golden |
+| B25: warm-up extremes in the meta rings (ξ ≈ 0.3, q_all saturating near 5e-4; T17 family p 1e-37 → e_day 0.05); a release admitted a breadth accumulator at p 1e-28 | −log10 of a valid p has an exponential tail, so a heavy fitted tail is contamination; releases commit with trust_prov, which has no accumulator factor | Tail: exceedances beyond the 99.9 % bound of the maximum of n_u exponential excesses (rank-based scale) are replaced by their expected order statistics before the PWM fit (`calib.winsorise_exceedances`, `fusion.META_WINSOR_ALPHA`; a clean fit is touched in ~1 % of refits). Release: B28 writes `behavior.trust_evidence` on live ticks (no alarm, no finding ≥ MEDIUM, every accumulator < h/2) and B24 / B25 admit with min(weight, `m_governor.evidence_weight`), which binds for released rows | `test_b24_b25_tuning.py` (winsorised tail, null touch rate, release caps, warm-up not gated), `test_b28_governor_paths.py` |
+| B07: `machine_like` true for most office workers | Normalised 168-bin entropy is not monotone in automation: office worker ~0.75 (≤ 0.8), 24/7 client ~1.0, nightly job ~0.45 | Automation index `m_rhythm.automation_index` = mean of the off-hours activity ratio, the non-workday / workday ratio, presence regularity 1 − Σr·4r(1−r)/Σr, and B02's per-IP A; B02's hysteresis (0.6 / 0.4); never machine-like when regularity < 0.5 (silence and a missed window mean nothing for coin-flip presence) | `test_b07_automation.py`; `test_b07_rhythm.py::test_b/test_c` (assertions moved from entropy to the index); slow `tests/test_b07_automation_generator.py` |
+| B28: REJECT + freeze on the first live tick (rhythm suspect + lib-4 HIGH: prior 0 − 2.3 → P = 0.09) | REJECT had no persistence requirement, unlike ACCEPT (T_type) and SUSPECT → DRIFTING (1 h, 4 ticks) | `m_governor.reject_corroborated`: a REJECT needs the episode's own alarm / accumulator evidence on ≥ 4 ticks spanning ≥ 1 h, or two independent malicious sources, or a tp label; otherwise it holds and returns once quiet | `test_b28_governor_paths.py` (3 new) |
+| W7: profile.extra.feedback.n_labelled 0 after a label | B23 wrote the profile summary inside `_apply_label`, before `_relearn` updated n_labelled | Profiles written after the refit | `test_b23_feedback.py::test_profile_feedback_summary_counts_the_label_just_applied`, API round trip |
+| W7: behavior.degraded never written | Only NaN-producing failures wrote it | `emit.cause` / `emit.write_degraded`, kinds stale / producer_error / unscorable (NaN) and insufficient_support / fallback / provisional (still scored). B07 offhours judged mostly by its tier prior (`fallback:<tier>`), B18 class_int / class_shape before the reference anchor holds data, B24 for Q scores on the provisional transfer. `/api/detectors/health` reports the degraded share over the keys running each detector, with cause kinds; the eval stale checker treats behavior.degraded as sparse by contract | `tests/api` |
+| W7: portrait internals used by the API | `routes_v2` imported `portrait._signature` / `_safe_token` | `lib/m_portrait` (signature, diff_signatures, safe_token, …), re-exported by portrait.py; `views.portrait_diff` / `views.mask_template` | `tests/api` |
+| W7: narrative | `views.narrative` labelled the zh fallback as en when only zh existed | reads narrative_zh / narrative_en / headline_* from B29's explanation; Incident.narrative only when neither language exists | `tests/api` |
+
+Pack A seed 0 (strict, canonical; single-tick exceedance = realised /
+expected count of e_day ≤ 0.03 on clean control ticks, expected 2.28, H
+1.52, Q 0.76; CUSUM = evidence-CUSUM alarms per control entity-day):
+
+| Variant | exceed ≤ 0.03 all / H / Q | ≤ 0.003 | CUSUM | FAR ≥ LOW / ≥ MED | HIGH+ / CRIT |
+|---|---|---|---|---|---|
+| baseline (all off) = §8.1 | 5.3 / 1.3 / 13.2 | 43.9 | 0.18 | 0.303 / 0.197 | 3 / 1 |
+| **final** | 8.8 / 0.7 / 25.0 | 39.5 | 0.28 | 0.303 / 0.224 | 3 / 0 |
+| final without the release cap | 5.3 / 1.3 / 13.2 | 21.9 | 0.25 | 0.303 / 0.184 | 2 / 0 |
+| rejected: warm-up rows also gated by their own evidence | 18.4 / 7.2 / 40.8 | 74.6 | 0.28 | 0.289 / 0.224 | 3 / 0 |
+| rejected: … and by the q_inst evidence factor | 61.8 / 75.7 / 34.2 | 342 | 2.45 | 0.316 / 0.224 | 6 / 2 |
+| rejected: whole of pm calibrated on its ring (B25 fixes off) | 34.2 / 44.1 / 14.5 | 219 | 1.66 | 0.303 / 0.211 | 1 / 1 |
+
+- Per detector (KS D on trusted ticks, baseline → final): creep 0.227 →
+  0.046, novelty 0.058 → 0.009, silence 0.019 → 0.009, offhours 0.045 →
+  0.033, budget_vol 0.078 → 0.053; spe / identity / mcusum / bocpd / t2 /
+  jsd stay 0.24 – 0.41 (their live score distribution differs from their
+  warm-up rings: B04 / B06 / B14 / B16). Accumulator-path alarm rates per
+  control entity-day: budget 0.039 → 0.013, change 0.145 → 0.118,
+  temporal_categorical 0.066 → 0.039. Threat detection unchanged (12
+  scenarios, same within-deadline set); T12 TTD 9 → 5 ticks.
+- Two designs were measured and rejected. (1) Gating the meta rings' warm-up
+  rows by their own evidence, as live learning does: any gate that depends
+  on the row's evidence (the q_inst factor is the rings' own output; even
+  accumulator ≥ h/2 alone) truncates the null tail the ring estimates, and
+  every threshold then fires too often live. (2) Calibrating the whole of pm
+  on the pm ring: per detector it was uniform, but the meta rings had been
+  absorbing the live miscalibration of spe / identity / mcusum / bocpd
+  (KS 0.24 – 0.41) through the extreme warm-up pm; with those gone the
+  fused single-tick rate rose 34 – 60x. The atoms-only rule keeps what the
+  candidate named (the floor and p_eq = 1 point masses).
+- The release cap is kept for consistency with the live gate (a normal
+  live commit's trust already excludes rows with an accumulator ≥ h/2);
+  on this seed it costs 8 single-tick exceedances (Q ticks 10 → 19) and
+  3 MEDIUM incidents over 76 control entity-days, the truncation effect
+  above on the few released rows. Worth re-measuring on seeds 1 – 4.
+
+B07 on the generator population (37 base personas, 10 clean warm-up days at
+3600 s, seeds 0 and 1; reproduced by the slow test): every human persona
+(interactive, search, NAT; 36 entity-runs) indexes 0.14 – 0.33, every
+machine persona (API, integration, health, backup; 38) 0.73 – 0.93. The v2
+rule called 22 of the 36 human runs and 4 of the 38 machine runs
+machine-like (it missed every 24/7 client).
+
+Tick-mode golden (`tests/test_tick_mode_golden.py`): with these fixes
+switched off by monkeypatch the fingerprint matched the recorded one
+exactly, so its difference is only the deliberate changes above, and it
+was regenerated. Of the 4719 issued p in its 48 live ticks, 1632 were
+exactly 1 before (the p_eq = 1 point masses of the small-sample blend) and
+53 after; 1579 p changed; alarm paths / severities and the 8 incidents are
+unchanged.
+
+`scripts/smoke.py --strict` (Runtime plan 120 × 3600 s + 192 × 900 s, 16
+live ticks at 60 s). Its warm-up ends at the wall clock, so runs differ by
+the day they are made; compare runs made together.
+- Sunday run, before vs after (an intermediate B25 variant): 12 → 8 open
+  incidents; the backup host 10.20.9.5 temporal incident, two LOW "change"
+  incidents and a LOW categorical on 10.40.4.51 were gone.
+- Monday 09:13 (Asia/Shanghai) run, baseline vs final side by side: 12
+  incidents each, on the same 12 keys (5 demo threats, 7 clean). Both are
+  led by class:r3 (humans) temporal HIGH on two systems at the
+  Monday-morning start after a Fri–Sun 900-s phase (B18 class_rhythm), not
+  by these engines.
+- The remaining post-switch risk on clean keys is the two health checkers
+  (10.40.9.9 / 10.30.9.9, risk 64 – 72, their class keys with them): 78 %
+  of it is the lib-4 signature `c2_beacon` (HIGH, `data/signatures/
+  primitives.yaml`), whose clause `http.requests ≤ 10` is a per-tick count.
+  A 30-s poller makes 30 requests per 900-s tick (no match in the whole
+  warm-up) and 2 per 60-s tick (a match on every live tick), so the rule is
+  cadence-dependent; B08 then scores the lib-4 category token 'beacon' as
+  first_seen at system tier (the other 20 %), and B26 counts HIGH lib-4
+  matches without habituation. The fix belongs to the signature rule
+  (express the volume clause as a rate) — not in B24 / B25 / B28.
+
+## 9. Performance pass (results unchanged)
+
+Scope: lib-3 CPU and memory measured after the cadence refactor (§8.1),
+without changing any result. The method was:
+
+- cProfile of the whole of pack A (seed 0) and of the smoke pack.
+- The runner's per-engine timings.
+- A side-by-side harness: the pre-pass tree and the same tree plus the
+  changed files, run on the same host at the same time.
+
+Every change below is exact. The checks were:
+
+- **mini pack:** every vector-ring write, derived point, event, incident,
+  model object, profile and stale-series record is identical at relative
+  tolerance 0.
+- **packs A and B (20 and 29 simulated days):** events, incidents (with
+  history and explanations), the collected per-tick series, portraits and
+  the held-out snapshots are identical at tolerance 0.
+- **Unit equivalence tests:** each rewritten routine is compared with its
+  reference (old) implementation on random inputs:
+  - `tests/engines/test_b04_batched.py`
+  - `tests/lib/test_perf_equivalence.py`
+  - `tests/core/test_store_perf_paths.py`
+  - `tests/eval/test_runner_perf.py`
+  - `tests/engines/test_identity_bg_memo.py`
+  - `tests/engines/test_b10_tier_reuse.py`
+  - `tests/core/test_gc_config.py`
+
+### 9.1 Changes
+
+| Where | What | Why it is exact |
+|---|---|---|
+| B04 likelihood | One batch per tick. The engine collects the rows it scores (H and Q, every entity). It builds all predictives at once (`m_baseline.predictive_set_many` / `predictive_q_many`: the per-entity chain / join / leave-one-out assembly is unchanged, and `_params`, `_refine_par`, `_ebar`, `_mean` run once on the stacked rows). The NB mid-p of every row, anchor and count feature is one call to the array kernel. The model_state quantiles of every due row are one `m_baseline.quantiles_many`, and the BB quantile groups of a call share one zero-padded pmf pass (`bayes._bb_ppf_small_many`). The PIT seed prefix is rendered once per row. | Parameter maps and quantile searches are element-wise per row. The array NB kernel is bit-identical to the scalar one. A row cumsum over zero padding is the same sequential sum. The BB mid-p / pmf, the NB pmf and the observation transform stay on their scalar per-element paths (see 9.3). |
+| m_identity (B15, B16, B17) | `Background.term` computes the candidate-independent background side of every modality LLR (system seq loglik, vocab, client, rhythm, timing) once per (data, tick) instead of once per candidate. | The same computation. The memo holds the data object, so its id is never reused within a tick. |
+| m_seq.top_ngrams (B10 describe, B30 portraits) | A stable descending argsort of the scaled counts. Only the k winners are turned back into n-grams. | `heapq.nlargest` is `sorted(..., reverse=True)[:k]`, which is stable, so ties keep dict order in both. The values are the same products. |
+| ppm.merge | An order-0 target (the B10 system tier) reads only the empty context instead of skipping every longer one. | The skipped contexts were `continue`d before. |
+| B10 tiers | `_build_tier` republishes the previous tier (a new version at now) when no member's learned state changed since this key's last build. A per-entity marker (state identity, journal head and length, last_ts, version, branch, held, link, frozen, rollback and applied directives) moves on every gated update. | A tier is a pure function of its members' states in member order. `test_b10_tier_reuse` compares against an engine that always rebuilds, tick by tick. |
+| store | `vec_at` answers the newest row, or a ts past it, without a search. An unwrapped ring is searched in one `searchsorted`. `drop_before` returns at once when the oldest row is still inside the retention. The pseudo-entity test is memoised. There is a new `names_signature` (contract.md store API). | The same rows are returned or kept (`test_store_perf_paths`, including wrapped rings). |
+| eval runner | The stale checker's O(derived × vector names) scan per entity and tick is cached on `store.names_signature`. It took 91 of the 1775 profiled seconds of pack A. | The name sets only grow, so equal sizes mean equal sets (`test_runner_perf`). |
+| pipeline (orchestrator) | `configure_gc` raises the cyclic-GC thresholds to (10000, 20, 50) when the process kept the interpreter defaults (700, 10, 10). The store and the models form a large heap of mostly long-lived objects (about 0.9 M tracked objects on pack A). At the defaults a full collection ran every few ticks: 56 full collections and 31 s of GC in the first 400 s of pack A, with 0.3–1.3 s pauses that were charged to whichever engine was running at the time (the B08 "spikes" at the live p95). With the new thresholds the same window has 0 full collections and 8 s of GC. | The collector only decides when unreachable cycles are freed, and almost everything here is freed by reference counting. Every id()-keyed cache in lib-3 also keys on a version or holds its object. Pack A is identical. |
+| retention audit (contract B table) | `behavior.acc_alarm`, `rhythm`, `timing`, `id`, `class`, `behavior.common.*` (not `common.q.*`), `behavior.cp.*` and `behavior.seq.class_llr` had no rule, so they kept up to 20000 points (208 d at 900 s). They now keep 8 d. | Every reader looks at most a few points back. The deepest is B10's gated-learner clock `seq.class_llr`, with 192 h of replay like `feature.nat`. Packs A (20 d) and B (29 d) are identical. The API history of these series is now bounded at 8 d, like the other lib-3 long rings. |
+
+### 9.2 Before / after
+
+Pack A, seed 0, strict (984 ticks: 312 × 3600 s + 288 × 900 s of warm-up
+and 384 live × 900 s; 43 entities; one core; single-threaded BLAS). The
+pre-pass tree and the final tree ran at the same time on the same host, and
+their outputs are identical. Mean ms per tick by phase; the live p95 is per
+engine.
+
+| Engine | warm-up 3600 s (ms) | warm-up 900 s (ms) | live 900 s (ms) | live p95 (ms) | pack total (s) |
+|---|---|---|---|---|---|
+| B10 sequence | 170.0 → 120.6 | 110.7 → 65.0 | 125.5 → 98.8 | 198.6 → 231.1 | 133.1 → 94.3 |
+| B30 portrait | 184.8 → 160.2 | 78.4 → 53.6 | 85.1 → 54.9 | 144.6 → 103.9 | 112.9 → 86.5 |
+| B04 likelihood | 99.8 → 42.8 | 80.3 → 38.3 | 121.1 → 54.7 | 292.2 → 128.3 | 100.8 → 45.4 |
+| B13 budget | 48.6 → 47.9 | 38.9 → 37.8 | 62.0 → 58.9 | 102.3 → 90.5 | 50.2 → 48.5 |
+| B06 multivariate | 71.4 → 69.1 | 34.0 → 33.1 | 43.4 → 41.4 | 113.2 → 111.6 | 48.7 → 47.0 |
+| B16 attribution | 60.6 → 54.6 | 18.0 → 16.7 | 29.4 → 27.2 | 159.2 → 148.6 | 35.4 → 32.3 |
+| B01 feature_vector | 26.9 → 25.6 | 32.7 → 32.5 | 41.8 → 39.7 | 68.0 → 59.5 | 33.8 → 32.6 |
+| B24 calibration | 30.8 → 30.1 | 31.4 → 32.4 | 33.1 → 30.8 | 59.8 → 55.5 | 31.4 → 30.5 |
+| B03 baseline | 35.6 → 34.2 | 24.8 → 24.4 | 28.5 → 27.4 | 59.7 → 55.8 | 29.2 → 28.2 |
+| B08 novelty | 21.7 → 20.2 | 17.5 → 15.1 | 41.8 → 28.8 | 61.1 → 48.6 | 27.9 → 21.7 |
+| B29 explain | 0.0 → 0.0 | 0.0 → 0.0 | 62.1 → 56.0 | 282.3 → 249.3 | 23.9 → 21.5 |
+| B07 rhythm | 28.3 → 23.5 | 19.1 → 16.2 | 24.4 → 17.6 | 33.0 → 25.9 | 23.7 → 18.7 |
+| B25 fusion | 16.2 → 14.8 | 16.0 → 15.6 | 23.0 → 18.0 | 31.5 → 27.9 | 18.5 → 16.0 |
+| B15 identity_model | 35.3 → 32.0 | 12.2 → 11.3 | 10.1 → 7.6 | 33.2 → 26.5 | 18.4 → 16.1 |
+| B14 changepoint | 31.2 → 30.4 | 9.2 → 9.0 | 11.1 → 10.6 | 51.8 → 46.3 | 16.6 → 16.1 |
+| B11 timing | 15.4 → 15.3 | 11.5 → 11.4 | 17.0 → 16.3 | 26.3 → 26.2 | 14.7 → 14.3 |
+| B18 class_monitor | 16.6 → 16.4 | 10.4 → 10.2 | 12.2 → 11.5 | 24.2 → 22.2 | 12.9 → 12.5 |
+| B28 governor | 8.7 → 7.9 | 10.2 → 9.5 | 16.9 → 14.6 | 28.7 → 23.2 | 12.2 → 10.8 |
+| B09 client_identity | 7.8 → 7.6 | 5.8 → 5.6 | 9.3 → 9.0 | 13.9 → 14.3 | 7.6 → 7.4 |
+| B26 risk | 5.9 → 5.6 | 6.8 → 6.7 | 9.1 → 8.2 | 14.8 → 11.9 | 7.3 → 6.8 |
+| B05 common_mode | 4.9 → 4.4 | 6.7 → 5.7 | 9.2 → 7.2 | 22.1 → 13.1 | 7.0 → 5.8 |
+| B17 entity_link | 9.7 → 9.2 | 2.8 → 2.7 | 4.8 → 4.5 | 30.6 → 25.1 | 5.7 → 5.4 |
+| B02 peer_group | 7.4 → 6.9 | 3.4 → 3.4 | 4.1 → 3.4 | 32.4 → 28.9 | 4.9 → 4.4 |
+| B12 beacon | 1.3 → 1.2 | 1.2 → 1.1 | 8.4 → 7.7 | 15.0 → 12.1 | 3.9 → 3.6 |
+| B27 incident | 0.1 → 0.1 | 0.1 → 0.2 | 4.3 → 3.9 | 8.2 → 6.7 | 1.7 → 1.6 |
+| B23 feedback | 0.1 → 0.1 | 0.1 → 0.1 | 3.7 → 3.6 | 7.0 → 6.8 | 1.5 → 1.4 |
+| **lib-3 total** | 939.2 → 780.7 | 581.9 → 457.4 | 841.5 → 662.0 | 1657.1 → 1117.0 | 783.8 → 629.5 |
+| **pipeline** | 1017.7 → 854.6 | 652.0 → 526.6 | 971.2 → 777.0 | 1854.9 → 1242.3 | 878.2 → 716.6 |
+
+| Pack A (seed 0) | before | after | gate |
+|---|---|---|---|
+| wall time (s) | 932 | 740 (−21 %) | 360 |
+| lib-3 CPU (s) | 784 | 630 (−20 %) | — |
+| eval-harness collect time (s) | 31.0 | 6.8 | — |
+| live lib-3 p95 per tick (ms) | 1657 | 1117 | — |
+| … scaled to 35 entities (ms) | 1349 | 909 (−33 %) | 80 |
+| memory per entity at the end (MB, store.memory_report) | 10.7 | 9.4 | 12 |
+| … projected to 8 live days (MB) | 13.4 | 11.7 (passes) | 12 |
+
+Pack B, seed 0 (1824 ticks, 40 entities, 12 live days), same set-up;
+outputs identical:
+
+| Pack B (seed 0) | before | after | gate |
+|---|---|---|---|
+| wall time (s) | 1650 | 1315 (−20 %) | 360 |
+| lib-3 CPU (s) | 1405 | 1126 | — |
+| live lib-3 p95 scaled to 35 entities (ms) | 1381 | 919 | 80 |
+| memory per entity at the end (MB) | 16.1 | 11.6 (passes) | 12 |
+| … projected to 8 live days (MB) | 13.7 | 10.4 | 12 |
+
+Pack B's end-of-run 16 MB was the unbounded dict series of the retention
+audit: 12 live days of per-tick dicts, on top of the warm-up.
+
+The smoke pack (20 entities; 96 × 3600 s + 24 × 900 s): two concurrent
+base / final pairs.
+
+| | before | after |
+|---|---|---|
+| lib-3 warm-up total (s) | 40.8 / 39.9 | 35.5 / 35.7 |
+| lib-3 per tick, warm-up / live (ms) | 340 / 262, 333 / 259 | 296 / 233, 298 / 217 |
+| B04 per tick, warm-up / live / live p95 (ms) | 44 / 54 / 121 | 24 / 27 / 55 |
+| wall (s) | 69.9 / 68.6 | 59.8 / 59.2 |
+
+B04 is about 2.3x faster. B10 is 1.4x faster in the warm-up, where its
+class tiers were rebuilt from unchanged members every hour. The runner's
+collection step is 4.5x faster. The GC change reaches every engine
+(B07 / B25 / B28 are faster without being touched), and it removed the
+largest p95 spikes. B30's gain comes from `m_seq.top_ngrams` and the GC
+change; B30's own code was not touched.
+
+### 9.3 Tried and not kept
+
+- **A vectorised Beta-Binomial mid-p** (gammaln log-pmf, tail sums in a
+  padded matrix, grouped by side length). It ran about 5x faster than the
+  scalar path and agreed with it to about 1e-11. That is enough to flip a
+  float32 ring value now and then: on pack A, B06's Q T² and SPE then
+  drifted on one entity from scenario tick 210, and e_day, risk and one
+  incident's explanation fidelity followed. The engine now uses the scalar
+  BB path, which is bit-identical. The batched observe was dropped for the
+  same reason: its CLR centring is a row mean, and numpy reduces a batch in
+  a different order.
+- **Faster `ppm.merge` loops** (dict comprehensions; C-level map / zip).
+  Contexts hold 1–2 symbols on average, so the per-context overhead
+  dominates. Both variants were 3–40 % slower on 25k-context models.
+- **Precomputed context tuples in `ppm.loglik`.** No gain.
+- **An early exit in `gating.commit_candidates` via `store.last_write_ts`.**
+  It is not a store call the gating contract allows
+  (`test_only_contract_store_calls`).
+
+### 9.4 Where the time is now, and what is left
+
+Where the time goes now (pack A totals):
+- **B10, 94 s.** When a member has changed, a class tier is still rebuilt in
+  full from every member's dict-of-dict PPM (about 1 µs per context and
+  about 25k contexts per model). Checkpoint pickling is the other large
+  part.
+- **B30, 86 s.** `_workload_block`, `_grid_quantiles` and `_nb_cdf_rows`
+  (owner: the portrait workstream).
+- **B13, 49 s.** Round-robin tail and guard fits.
+- **B06, 47 s.** Robust refits (C-step, OAS, EM).
+- **B04, 45 s.** Predictive assembly and the scalar BB tails.
+- **Smaller:** B01 (33 s), D0 aggregation (31 s), B16 (32 s) and B29
+  (22 s, counterfactual replays, 0.25–0.4 s bursts).
+- **The gated learners' per-step overhead** (commit candidates, checkpoint
+  dumps, control): about 10 % spread over 12 learners.
+
+Gate 14 still fails. The wall time is 740 s against 360 s, and the lib-3
+p95 at 35 entities is 0.9 s against 80 ms. Every remaining cost is Python
+work in the current algorithms, and none of it can be made several times
+faster without changing a result. Each of the next steps needs a decision:
+- **Compiled kernels.** PPM scoring and merging and the BB tail sums, in C
+  or numba. This is a new dependency, and the summation order would have to
+  be kept for bit-identity.
+- **Incremental tier statistics** for B10 and B08. Members would add their
+  committed rows to the class and system tiers at commit time instead of
+  the hourly rebuild. The float summation order changes, so this is a spec
+  change with a tolerance, not a refactor.
+- **B30 and B29 off the tick path.** A portrait refresh on read, and a
+  counterfactual explanation computed asynchronously per incident.
+- **A per-tick CPU budget for B13 / B06 refits.** It would bound the
+  per-tick share instead of the per-day share.

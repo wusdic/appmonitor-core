@@ -548,3 +548,20 @@ def test_perf_40_entities():
         ms.append((time.perf_counter() - t0) * 1000.0)
     per_entity = float(np.median(ms[4:])) / len(ents)
     assert per_entity < 2.0, per_entity
+
+
+def test_active_tick_without_a_true_gap_writes_undefined_descriptors():
+    """An active tick whose window holds no true gap yet (a lone event, e.g.
+    the first event of a new entity or a sampled tick) used to write no
+    behavior.timing at all, so the series went stale while the entity was
+    active (pack C, round 2). It now writes undefined (NaN) descriptors."""
+    st, eng = make_store(), TimingEngine()
+    feed = Feed(st)
+    feed.tick(E, T0, [T0 - 100.0])
+    run_engine(eng, st, T0, training=True, dt=DT)
+    d = timing(st, T0)
+    assert d is not None and set(d) >= {"B", "M", "think_mu", "think_sigma", "period"}
+    assert all(not (v == v) for k, v in d.items() if k in ("B", "M", "think_mu", "think_sigma"))
+    feed.tick(E, T0 + DT, [])                           # a silent tick writes nothing
+    run_engine(eng, st, T0 + DT, training=True, dt=DT)
+    assert timing(st, T0 + DT) is None

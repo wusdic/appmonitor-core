@@ -96,7 +96,6 @@ Store:
 from __future__ import annotations
 
 import math
-import re
 from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
@@ -105,6 +104,7 @@ from scipy import special as sp
 from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile
 from .lib import features as F
+from .lib import grains as GR
 from .lib import m_baseline as MB
 from .lib import m_class
 from .lib import m_client
@@ -115,7 +115,11 @@ from .lib import m_seq
 from .lib import m_timing as MT
 from .lib import m_vocab as MV
 from .lib.classkeys import class_id, class_kind
-from .lib.template import channel_of, mask_segment
+from .lib.m_portrait import (DIFF_JSD, DIFF_QSHIFT, DIFF_WINDOW_H, LABELS,  # noqa: F401
+                             MEMBER_MIN_SHARE, PLACEHOLDER as _PLACEHOLDER, diff_signatures,
+                             hdist as _hdist, jsd_dicts as _jsd_dicts, safe_family as _safe_family,
+                             safe_path as _safe_path, safe_token as _safe_token,
+                             signature as _signature, top_items as _top_items)
 
 PORTRAIT = "portrait"
 CLASSAGG = "model.classagg"
@@ -137,10 +141,7 @@ GRID_N = 40                        # log-spaced grid points of the mixture CDF
 R_POISSON = 1e12                   # NB size standing for a Poisson bucket (bayes.nb_cdf)
 MIN_BUCKET_W = 1e-3                # buckets below this share of the weight are dropped
 
-# diff thresholds (engines.md B30)
-DIFF_JSD = 0.1
-DIFF_QSHIFT = 0.25
-DIFF_WINDOW_H = 1.0
+# diff thresholds (engines.md B30): lib/m_portrait (DIFF_JSD, DIFF_QSHIFT, DIFF_WINDOW_H)
 CAT_TOP = 20                       # values kept per categorical signature
 
 # display sizes
@@ -149,14 +150,12 @@ TOP_DEST = 5
 TOP_NGRAMS = 3
 COMMON_DF = 0.5                    # common token: held by >= 50 % of the members
 MEMBER_TOP = 32                    # member values considered for df
-MEMBER_MIN_SHARE = 0.01
 OUTLIER_JSD_MIN = 0.2
 WILSON_Z = 1.96
 
 BROWSERS = frozenset({"chrome", "edge", "firefox", "safari"})
 LIBRARIES = frozenset({"python-requests", "curl", "go-http-client", "java", "okhttp",
                        "wget", "postman"})
-_PLACEHOLDER = re.compile(r"^\{[a-z0-9_]+\}$")
 
 SUPER_ZH = {"human": "人工交互用户", "machine": "自动化程序"}
 SUPER_EN = {"human": "human-interactive user", "machine": "automated client"}
@@ -168,15 +167,6 @@ FEATURE_ZH = {"http_requests": "请求", "flows": "连接", "bytes_up": "上行�
 FEATURE_EN = {"http_requests": "requests", "flows": "flows", "bytes_up": "bytes up",
               "bytes_down": "bytes down"}
 DAYTYPE_ZH = {"workday": "工作日", "nonworkday": "休息日"}
-LABELS = {  # diff field -> (zh, en)
-    "rhythm.window": ("活跃时段", "active window"),
-    "workload": ("工作负载", "workload"),
-    "top_templates": ("常用模板", "top templates"),
-    "activity_mix": ("活动构成", "activity mix"),
-    "client": ("终端栈", "client stacks"),
-    "members": ("成员", "members"),
-    "class_path": ("类别", "class path"),
-}
 _NAN = math.nan
 
 
@@ -281,7 +271,8 @@ def entity_portrait(c: _SysCtx, e: str) -> Tuple[Dict[str, Any], Dict[str, Any]]
         "role": _role_block(c, e, vm, timing, client),
         "rhythm": rhythm,
         "active_hours": (rhythm.get("workday") or rhythm.get("any") or {}).get("window"),
-        "workload": _workload_block(_anchor(bm), _p_active_hourly(p48), c.dt, per_tick=True),
+        "workload": _workload_block(_anchor(bm), _p_active_hourly(p48), c.dt, per_tick=True,
+                                    q_anc=MB.q_anchor(bm)),
         "client": client,
         "top_templates": _top_templates(vm, now),
         "top_sni": _top_values(vm, "sni", now),
@@ -767,13 +758,24 @@ def _anchor(model: Any) -> Optional[Any]:
 
 
 def _workload_block(anc: Optional[Any], pa: Optional[np.ndarray], dt: float,
-                    per_tick: bool) -> Dict[str, Any]:
+                    per_tick: bool, q_anc: Optional[Any] = None) -> Dict[str, Any]:
     """Natural-unit workload bands (see module doc). Only buckets holding
     committed data (weight >= HAS_DATA_W) enter a mixture: an unvisited
-    bucket's predictive is the hyperprior and would read like a measurement."""
+    bucket's predictive is the hyperprior and would read like a measurement.
+
+    spec v2.1 (cadence.md §9.5): an H-grain anchor (canonical mode, v15 > 1)
+    also gives per-grain bands under 'grains': 'h' per hour (the H anchor's
+    own predictive, exposure 3600) and 'q' per 15 min (the Q transfer of the
+    H anchor, sigma15 scaled by v15; `provisional` while the native Q anchor
+    q_anc holds fewer than KAPPA_T rows in the weighted buckets). The legacy
+    per-tick band is then the Q band at exposure 900 (a tick band below the Q
+    grain would need sub-grain predictives that no model holds)."""
     if anc is None:
         return {}
-    mean, sd15 = MB.bucket_means(anc)
+    v15 = float(getattr(anc, "v15", 1.0) or 1.0)
+    grained = v15 != 1.0
+    mean, sd15 = MB.bucket_means(anc, v=v15 if grained else None)
+    sd_h = MB.bucket_means(anc)[1] if grained else None
     w_data = MB.n_eff_by_bucket(anc)
     has = w_data >= HAS_DATA_W
     w_act = (pa if pa is not None else w_data) * has
@@ -782,25 +784,55 @@ def _workload_block(anc: Optional[Any], pa: Optional[np.ndarray], dt: float,
         w_tick, w0 = occ * pa * has, float(np.sum(occ * (1.0 - pa)))
     else:
         w_tick, w0 = w_data * has, 0.0
+    prov = None
+    if grained:
+        nq = MB.n_eff_by_bucket(q_anc) if q_anc is not None else np.zeros(48)
+        ww = np.where(np.isfinite(w_tick) & (w_tick > 0.0), w_tick, 0.0)
+        if float(ww.sum()) > 0.0:
+            pi = nq / (nq + GR.KAPPA_T)
+            prov = bool(float(np.sum(ww * pi) / float(ww.sum())) < 0.5)
+    tick_dt = BAND_EXPOSURE_S if grained else float(dt)
     out: Dict[str, Any] = {}
     for name, f in zip(WORKLOAD_FEATURES, WORKLOAD_IDX):
         ok = has & np.isfinite(mean[:, f]) & np.isfinite(sd15[:, f])
         if not ok.any():
             continue
+        fam = int(MB.FAMILY[f])
         blk: Dict[str, Any] = {"unit": f"per {int(BAND_EXPOSURE_S // 60)} min"}
-        g15 = _cdf_grid(int(MB.FAMILY[f]), mean[:, f], sd15[:, f], BAND_EXPOSURE_S / 60.0, ok)
+        g15 = _cdf_grid(fam, mean[:, f], sd15[:, f], BAND_EXPOSURE_S / 60.0, ok)
         for dtp, lo in (("workday", 0), ("nonworkday", 24)):
             w = np.zeros(48)
             w[lo:lo + 24] = w_act[lo:lo + 24]
             q = _grid_quantiles(g15, w, 0.0, Q_DAYTYPE)
             blk[dtp] = None if q is None else {"p10": q[0], "p50": q[1], "p90": q[2]}
         if per_tick:
-            gt = g15 if abs(dt - BAND_EXPOSURE_S) < 1e-6 else \
-                _cdf_grid(int(MB.FAMILY[f]), mean[:, f], sd15[:, f], dt / 60.0, ok)
+            gt = g15 if abs(tick_dt - BAND_EXPOSURE_S) < 1e-6 else \
+                _cdf_grid(fam, mean[:, f], sd15[:, f], tick_dt / 60.0, ok)
             q = _grid_quantiles(gt, w_tick, w0, Q_TICK)
             if q is not None:
-                blk.update(p5=q[0], p50=q[1], p95=q[2], exposure_s=float(dt),
+                blk.update(p5=q[0], p50=q[1], p95=q[2], exposure_s=float(tick_dt),
                            includes_inactive=pa is not None)
+        if grained:
+            ok_h = ok & np.isfinite(sd_h[:, f])
+            gh = _cdf_grid(fam, mean[:, f], sd_h[:, f], GR.GRAIN_S["h"] / 60.0, ok_h) \
+                if ok_h.any() else None
+            grains: Dict[str, Any] = {}
+            for g, grid, unit in (("h", gh, "per 60 min"), ("q", g15, "per 15 min")):
+                if grid is None:
+                    continue
+                gb: Dict[str, Any] = {"unit": unit, "exposure_s": float(GR.GRAIN_S[g])}
+                q = _grid_quantiles(grid, w_tick, w0, Q_TICK)
+                if q is not None:
+                    gb.update(p5=q[0], p50=q[1], p95=q[2], includes_inactive=pa is not None)
+                for dtp, lo in (("workday", 0), ("nonworkday", 24)):
+                    w = np.zeros(48)
+                    w[lo:lo + 24] = w_act[lo:lo + 24]
+                    qd = _grid_quantiles(grid, w, 0.0, Q_DAYTYPE)
+                    gb[dtp] = None if qd is None else {"p10": qd[0], "p50": qd[1], "p90": qd[2]}
+                if g == "q":
+                    gb["provisional"] = prov
+                grains[g] = gb
+            blk["grains"] = grains
         out[name] = blk
     return out
 
@@ -904,88 +936,6 @@ def _mixture_quantiles(means: np.ndarray, r: np.ndarray, w: np.ndarray, w0: floa
 
 
 # ================================================================ versioning
-def _signature(js: Mapping[str, Any]) -> Dict[str, Any]:
-    """Compact state the diffs compare (see module doc)."""
-    rh = js.get("rhythm") or {}
-    win = {}
-    for dtp in ("workday", "nonworkday"):
-        b = rh.get(dtp)
-        if isinstance(b, Mapping) and b.get("start_h") is not None and b.get("len_h") is not None:
-            win[dtp] = [float(b["start_h"]), float(b["len_h"]), b.get("window")]
-    wl = {}
-    for f, b in (js.get("workload") or {}).items():
-        wl[f] = {dtp: [b[dtp]["p10"], b[dtp]["p50"], b[dtp]["p90"]]
-                 for dtp in ("workday", "nonworkday") if isinstance(b.get(dtp), Mapping)}
-    cats: Dict[str, Dict[str, float]] = {
-        "top_templates": {d["template"]: d["share"] for d in js.get("top_templates") or []
-                          if d.get("share") is not None},
-        "client": dict((js.get("client") or {}).get("shares") or {}),
-    }
-    role = js.get("role") or {}
-    if role.get("activity_mix"):
-        cats["activity_mix"] = {f: v for f, v in role["activity_mix"]}
-    if js.get("kind") == "class":
-        n = max(1, len(js.get("members") or []))
-        cats["members"] = {m["ip"]: 1.0 / n for m in js.get("members") or []}
-    return {"window": win, "workload": wl, "cats": cats,
-            "class_path": (js.get("identity") or {}).get("class_path")
-            if js.get("kind") == "entity" else None}
-
-
-def diff_signatures(old: Mapping[str, Any], new: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    """Material changes between two signatures (engines.md B30 thresholds)."""
-    out: List[Dict[str, Any]] = []
-    ow, nw = old.get("window") or {}, new.get("window") or {}
-    for dtp in ("workday", "nonworkday"):
-        a, b = ow.get(dtp), nw.get(dtp)
-        if a is None and b is None:
-            continue
-        if a is None or b is None:
-            sh = math.inf
-        else:
-            d0 = abs(_hdist(a[0], b[0]))
-            d1 = abs(_hdist(a[0] + a[1], b[0] + b[1]))
-            sh = max(d0, d1)
-        if sh > DIFF_WINDOW_H:
-            out.append(_item("rhythm.window", kind="window", day_type=dtp,
-                             before=a[2] if a else None, after=b[2] if b else None,
-                             shift_h=None if math.isinf(sh) else round(sh, 2)))
-    for f, nb in (new.get("workload") or {}).items():
-        ob = (old.get("workload") or {}).get(f) or {}
-        for dtp, qn in nb.items():
-            qo = ob.get(dtp)
-            if qo is None:
-                continue
-            rel = max(abs(x - y) / max(abs(y), 1.0) for x, y in zip(qn, qo))
-            if rel > DIFF_QSHIFT:
-                out.append(_item("workload", kind="quantile", feature=f, day_type=dtp,
-                                 before=list(qo), after=list(qn), max_rel_shift=round(rel, 3)))
-    for key, nd in (new.get("cats") or {}).items():
-        od = (old.get("cats") or {}).get(key)
-        if od is None or (not od and not nd):
-            continue
-        j = _jsd_dicts(od, nd)
-        if j > DIFF_JSD:
-            added = [v for v, _ in _top_items(nd, 5) if od.get(v, 0.0) < MEMBER_MIN_SHARE]
-            removed = [v for v, _ in _top_items(od, 5) if nd.get(v, 0.0) < MEMBER_MIN_SHARE]
-            inc = sorted(((x - od.get(v, 0.0), v) for v, x in nd.items()), reverse=True)
-            gained = [v for dx, v in inc[:3] if dx > 0.05]
-            out.append(_item(key, kind="categorical", jsd=round(j, 4), added=added,
-                             removed=removed, gained=gained,
-                             before=[v for v, _ in _top_items(od, 3)],
-                             after=[v for v, _ in _top_items(nd, 3)]))
-    if old.get("class_path") != new.get("class_path") and new.get("class_path") is not None \
-            and old.get("class_path") is not None:
-        out.append(_item("class_path", kind="categorical", before=old.get("class_path"),
-                         after=new.get("class_path")))
-    return out
-
-
-def _item(field: str, **kw: Any) -> Dict[str, Any]:
-    zh, en = LABELS[field]
-    return {"field": field, "label_zh": zh, "label_en": en, **kw}
-
-
 def _publish(store: Any, s: str, key: str, js: Dict[str, Any], sig: Dict[str, Any],
              now: float) -> None:
     prof = store.profile(s, key) or EntityProfile(system=s, entity=key, updated=now)
@@ -1050,6 +1000,10 @@ def render_zh(js: Mapping[str, Any], diff: Sequence[Mapping[str, Any]] = ()) -> 
     if isinstance(wd, Mapping) and wd.get("p10") is not None:
         agg = "聚合" if js.get("kind") == "class" else ""
         parts.append(f"{agg}典型每刻{_n(wd['p10'])}–{_n(wd['p90'])}请求")
+        wh = (((wl.get("grains") or {}).get("h") or {}).get("workday")
+              or ((wl.get("grains") or {}).get("h") or {}).get("nonworkday"))
+        if isinstance(wh, Mapping) and wh.get("p10") is not None:
+            parts.append(f"每小时{_n(wh['p10'])}–{_n(wh['p90'])}请求")
     tt = js.get("top_templates") or []
     if tt:
         parts.append("常用" + "、".join(d["template"] for d in tt[:2]))
@@ -1115,6 +1069,10 @@ def render_en(js: Mapping[str, Any], diff: Sequence[Mapping[str, Any]] = ()) -> 
     if isinstance(wd, Mapping) and wd.get("p10") is not None:
         agg = "aggregate " if js.get("kind") == "class" else ""
         parts.append(f"typically {agg}{_n(wd['p10'])}-{_n(wd['p90'])} requests per 15 min")
+        wh = (((wl.get("grains") or {}).get("h") or {}).get("workday")
+              or ((wl.get("grains") or {}).get("h") or {}).get("nonworkday"))
+        if isinstance(wh, Mapping) and wh.get("p10") is not None:
+            parts.append(f"{_n(wh['p10'])}-{_n(wh['p90'])} per hour")
     tt = js.get("top_templates") or []
     if tt:
         parts.append("top " + ", ".join(d["template"] for d in tt[:2]))
@@ -1179,45 +1137,6 @@ def _diff_en(d: Mapping[str, Any]) -> str:
 
 
 # ================================================================== helpers
-def _safe_token(tok: Any) -> str:
-    """Re-mask an HTTP token / template so no path or query VALUE survives
-    (placeholders kept, other segments through mask_segment, query -> names)."""
-    if not isinstance(tok, str):
-        return "" if tok is None else str(tok)
-    if not tok or tok[:1] == "{" or channel_of(tok) != "http":
-        return tok
-    parts = tok.split(" ", 2)
-    if len(parts) < 3:
-        return tok
-    meth, host, rest = parts
-    path, sep, status = rest.partition("|")
-    return f"{meth} {host} {_safe_path(path)}" + (sep + status if sep else "")
-
-
-def _safe_path(path: str) -> str:
-    p, _, query = path.partition("?")
-    segs = []
-    for seg in p.split("/"):
-        if not seg:
-            continue
-        segs.append(seg if _PLACEHOLDER.match(seg) else mask_segment(seg)[0])
-    out = "/" + "/".join(segs)
-    if query:
-        names = sorted({n if _PLACEHOLDER.match(n) else mask_segment(n)[0]
-                        for n in (x.split("=", 1)[0] for x in query.split("&")) if n})
-        if names:
-            out += "?" + "&".join(names)
-    return out
-
-
-def _safe_family(fam: str) -> str:
-    """'http|read|host|seg0': seg0 is the first template segment; re-masked."""
-    ps = str(fam).split("|")
-    if len(ps) == 4 and ps[0] == "http" and ps[3] and not _PLACEHOLDER.match(ps[3]):
-        ps[3] = mask_segment(ps[3])[0]
-    return "|".join(ps)
-
-
 def _wilson(p: Any, n: Any, z: float = WILSON_Z) -> Optional[List[float]]:
     """Wilson score interval of a proportion estimated from n held-out windows."""
     p, n = _num(p), _num(n)
@@ -1228,22 +1147,6 @@ def _wilson(p: Any, n: Any, z: float = WILSON_Z) -> Optional[List[float]]:
     c = (p + z * z / (2.0 * n)) / d
     h = z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n)) / d
     return [round(max(0.0, c - h), 4), round(min(1.0, c + h), 4)]
-
-
-def _jsd_dicts(a: Mapping[str, float], b: Mapping[str, float]) -> float:
-    """JSD (bits) of two top-k share maps, each completed with an '__other__' mass."""
-    keys = sorted(set(a) | set(b))
-    pa = [max(0.0, float(a.get(k, 0.0))) for k in keys]
-    pb = [max(0.0, float(b.get(k, 0.0))) for k in keys]
-    pa.append(max(0.0, 1.0 - sum(pa)))
-    pb.append(max(0.0, 1.0 - sum(pb)))
-    j = MT.jsd_bits(pa, pb)
-    return j if j == j else (0.0 if not (sum(pa) or sum(pb)) else 1.0)
-
-
-def _top_items(d: Mapping[str, float], k: int) -> List[Tuple[str, float]]:
-    return sorted(((str(v), float(x)) for v, x in d.items() if x == x),
-                  key=lambda t: (-t[1], t[0]))[:k]
 
 
 def _longest_run(on: np.ndarray) -> Optional[Tuple[int, int]]:
@@ -1285,10 +1188,6 @@ def _win_str(w: Any) -> Optional[str]:
         return None
     h0 = float(w["start_h"])
     return _fmt_window(h0, h0 + float(w["len_h"]))
-
-
-def _hdist(a: float, b: float) -> float:
-    return ((float(b) - float(a) + 12.0) % 24.0) - 12.0
 
 
 def _sev(x: Any) -> Any:

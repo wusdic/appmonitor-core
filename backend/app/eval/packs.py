@@ -585,8 +585,39 @@ def l16(tl: Timeline) -> Scenario:
 # --------------------------------------------------------------------------- #
 # Packs
 # --------------------------------------------------------------------------- #
-WARMUP_528 = [(336, 3600.0, True), (192, 900.0, True)]
+WARMUP_528 = [(336, 3600.0, True), (192, 900.0, True)]      # v2 (kept for reference)
 SHANGHAI, BERLIN = "Asia/Shanghai", "Europe/Berlin"
+WARMUP_DAYS = 16
+
+
+def warmup_phases(scen_date: _dt.date, calendar: Dict[str, List[str]], tz: str,
+                  live_dt: float, total_days: int = WARMUP_DAYS
+                  ) -> List[Tuple[int, float, bool]]:
+    """Warm-up phases before a scenario phase at `live_dt` (spec v2.1,
+    docs/lib3/cadence.md §10; a pack-definition rule, not seed tuning).
+
+    live_dt <= 900: [((total - k) x 24, 3600), (k x 86400 / live_dt, live_dt)]
+    where k >= 2 is the smallest number of local days before the scenario
+    start whose span holds >= 1 full workday and >= 1 full non-workday under
+    the pack's calendar (holidays and make-up workdays included), so the
+    last warm-up phase runs at the live cadence over both day types (the Q
+    grain and the cadence-class B24 rings are native before the scenario).
+    live_dt = 3600: total_days at 3600."""
+    live_dt = float(live_dt)
+    if live_dt >= 3600.0:
+        return _phases((int(total_days) * 24, 3600.0))
+    clock = Clock(tz, calendar)
+    kinds = []
+    k = 0
+    while True:
+        k += 1
+        kinds.append(clock.day_kind(scen_date - _dt.timedelta(days=k))[0])
+        if k >= 2 and any(kinds) and not all(kinds):
+            break
+        if k >= total_days - 1:
+            raise ValueError("warmup_phases: no workday / non-workday pair before the start")
+    return _phases(((int(total_days) - k) * 24, 3600.0),
+                   (int(round(k * 86400.0 / live_dt)), live_dt))
 
 
 def _fixtures(population: Sequence[str]) -> Dict[str, Any]:
@@ -635,8 +666,9 @@ def _phases(*spec: Tuple[int, float]) -> List[Tuple[int, float, bool]]:
 def pack_a() -> Pack:
     """Short / identity. Scenario phase Mon 2025-03-10 .. Thu (4 d at 900 s)."""
     cal = {"holidays": [], "makeup_workdays": []}
-    tl = Timeline(SHANGHAI, cal, _dt.date(2025, 3, 10),
-                  WARMUP_528 + _phases((384, 900.0)))
+    d0 = _dt.date(2025, 3, 10)
+    tl = Timeline(SHANGHAI, cal, d0, warmup_phases(d0, cal, SHANGHAI, 900.0)
+                  + _phases((384, 900.0)))
     def on(k: int, *who: Any) -> float:
         return tl.active_onset(tl.tick(k), who)
 
@@ -663,7 +695,9 @@ def pack_b() -> Pack:
     """Long horizon. 12 d at 900 s from Thu 2025-06-12: day 3 is a 调休
     make-up Saturday, day 4 a Sunday, day 5 a holiday, days 10-11 a weekend."""
     cal = {"holidays": ["2025-06-16"], "makeup_workdays": ["2025-06-14"]}
-    tl = Timeline(SHANGHAI, cal, _dt.date(2025, 6, 12), WARMUP_528 + _phases((1152, 900.0)))
+    d0 = _dt.date(2025, 6, 12)
+    tl = Timeline(SHANGHAI, cal, d0, warmup_phases(d0, cal, SHANGHAI, 900.0)
+                  + _phases((1152, 900.0)))
     scs = [
         t2(tl, tl.day(2, 9.0)),
         t3(tl, tl.day(2, 0.0)),
@@ -684,7 +718,8 @@ def pack_c() -> Pack:
     """Class-wide legitimate changes and DST. Europe/Berlin, 7 d at 900 s
     from Fri 2025-03-28; the DST switch (Sun 03-30) is scenario day 3."""
     cal = {"holidays": [], "makeup_workdays": []}
-    tl = Timeline(BERLIN, cal, _dt.date(2025, 3, 28), WARMUP_528 + _phases((672, 900.0)))
+    d0 = _dt.date(2025, 3, 28)
+    tl = Timeline(BERLIN, cal, d0, warmup_phases(d0, cal, BERLIN, 900.0) + _phases((672, 900.0)))
     scs = [l2(tl, 4), l3(tl, 5), l10(tl, 2, 3), l13(tl, 3)]
     return _pack("C", tl, BASE_KEYS, scs, "class-wide legitimate changes + DST (Europe/Berlin)")
 
@@ -695,7 +730,9 @@ def pack_d() -> Pack:
     holiday from 10-01."""
     cal = {"holidays": [f"2025-10-0{d}" for d in range(1, 9)],
            "makeup_workdays": ["2025-09-28", "2025-10-11"]}
-    tl = Timeline(SHANGHAI, cal, _dt.date(2025, 9, 4), WARMUP_528 + _phases((720, 3600.0)))
+    d0 = _dt.date(2025, 9, 4)
+    tl = Timeline(SHANGHAI, cal, d0, warmup_phases(d0, cal, SHANGHAI, 3600.0)
+                  + _phases((720, 3600.0)))
     scs = [
         t20(tl, tl.day(12, 9.0)),
         t21(tl, tl.day(20, 10.0)),
@@ -731,9 +768,12 @@ def _retime(sc: Scenario, **truth: Any) -> Scenario:
 
 
 def pack_smoke() -> Pack:
-    """Smoke persona set (20) for the CPU gate: 180 x 900 s (120 warm-up)."""
+    """Smoke persona set (20) for the CPU gate: 120 warm-up ticks (spec v2.1:
+    96 x 3600 s Wed 18:00 .. Sun 18:00 + 24 x 900 s Sun evening, so both day
+    types are seen and the Q grain starts on the transfer path) + 60 x 900 s."""
     cal = {"holidays": [], "makeup_workdays": []}
-    tl = Timeline(SHANGHAI, cal, _dt.date(2025, 3, 10), _phases((120, 900.0), (60, 900.0)))
+    tl = Timeline(SHANGHAI, cal, _dt.date(2025, 3, 10),
+                  _phases((96, 3600.0), (24, 900.0), (60, 900.0)))
     scs = [t1(tl, tl.tick(40)), t12(tl, tl.tick(44), tl.tick(60))]
     scs[1].entities = ["10.30.2.22"]
     return _pack("smoke", tl, SMOKE_KEYS, scs, "smoke (20 personas, 180 x 900 s)")

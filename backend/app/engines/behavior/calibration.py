@@ -31,10 +31,26 @@ How (docs/lib3/engines.md B24):
     beyond the ring maximum.
   * Small samples (|C| < 64, e.g. a new stratum after a cadence switch): the
     conformal p is logit-blended with weight n/(n+64) against the first
-    usable prior of behavior.pm[d] (exposure-exact model p; accumulators write
-    their stationary-tail p_eq there), the class-pooled ring (the union of the
-    role members' rings for the same key, >= 64 entries) and, for identity
-    only, the entity's own settled-regime ring of the same daypart.
+    usable prior of the entity's own rings of the other dayparts (pooled),
+    the pm prior, the class-pooled ring (the union of the role members'
+    rings for the same key, >= 64 entries) and, for identity only, the
+    entity's own settled-regime ring of the same daypart.
+  * pm prior (m_calib.pm_prior). behavior.pm[d] is a p-value with atoms:
+    an accumulator's stationary p_eq is exactly 1 whenever its statistic is
+    0 (the blend re-created a point mass at p = 1: creep KS D = 1.0,
+    budget_* conservative), and a sparse nightly host scored against its
+    peers had pm at the float floor on every null night (its issued p sat
+    at the floor every night). The prior randomises the two atoms over
+    their null mass - pm = 1 -> 1 - pi1 + u pi1, pm at the floor -> u pi0
+    (the mid-p rule for a tie, u the score's own seeded U) - with pi the
+    atom's share of the entity's admitted pm history: a ring
+    '<d>@pm|<cc>' (canonical H / Q detectors '<d>@pm|g:<g>') of -log10 pm,
+    same admission as the score rings. Below 16 entries pi1 is the Laplace
+    (k + 1) / (n + 2) and an unseen floor keeps its evidence. Any other pm
+    is used as is. Calibrating the whole of pm on that ring was tried
+    (integration §8.2): per detector it was uniform, but it removed the
+    extreme warm-up p that B25's meta rings had been absorbing live
+    detector miscalibration with (pack A: single-tick exceedance 34-60x).
   * Admission (contract H). Rings learn through lib/gating: a scored tick is
     committed D = max(4 ticks, 600 s) later with its trust weight, held while
     the entity is quarantined, released / rebased / frozen by model.control.
@@ -44,7 +60,14 @@ How (docs/lib3/engines.md B24):
     out of the ring and make p anti-conservative. Admission also needs entity
     maturity n_eff >= 48 (model.baseline n_eff, or the engine's own count of
     trusted commits in 15-minute equivalents, whichever is larger): scores
-    of an immature model do not describe the entity's null.
+    of an immature model do not describe the entity's null. On live ticks a
+    commit's weight is also capped by the governor's evidence weight of the
+    row (m_governor.evidence_weight): live trust already contains it, but a
+    release commits held rows with trust_prov, which has no accumulator
+    factor, so without the cap an accumulator at alarm level entered its
+    own null ring. Warm-up commits keep trust 1 (the reference period fills
+    the rings; with the cap an entity whose first p are extreme could never
+    learn the null that would calibrate them).
   * Rollback deletes ring entries with ts > rollback_to (the ring carries
     ts). Checkpoint + replay, the generic GatedLearner route, cannot work
     here: behavior.score is retained for 1 d, so replaying committed rows
@@ -67,10 +90,22 @@ How (docs/lib3/engines.md B24):
     "impossible" downstream. B24 emits no events, so training mode only
     changes the trust default of gating.
 
+spec v2.1 strata (docs/lib3/cadence.md §9.1; canonical grain mode). H-stream
+detectors are stratified by (daypart of the H row's midpoint, 'h'): their
+rings fill at 24 entries a day at every cadence and are NOT reset or
+thinned by a cadence switch; identity by (daypart, tercile, 'h'); Q-stream
+detectors by (daypart of the Q row, 'q', prov) with prov = 1 while B04 / B06
+report a native share pi < 0.5 (behavior.prov); T-stream detectors keep
+(daypart, cadence class). A grain detector's score exists only on its
+decision ticks, so admission happens there only. The health rate uses
+e_day = p * 86400 / period_s(d).
+
 Store: reads behavior.score, behavior.pm, behavior.p (own, at commit time,
 for health), behavior.trust / trust_prov / quarantine (via gating),
+behavior.trust_evidence (m_governor.evidence_weight, live commits),
 feature.tctx, behavior.regime, model.control, model.link, model.class,
 model.baseline (n_eff only); writes behavior.p (emit.write_pvalues),
+behavior.degraded {Q detector: 'provisional:q_transfer'} (canonical mode),
 model.calib@(s, e | class:<id>) and @(s, __system__) (health state),
 behavior.calib_health@(s, __system__) (dict series, one point per tick,
 the value object changes only when re-evaluated, hourly) and
@@ -91,9 +126,10 @@ import numpy as np
 
 from ...core.engine import Context, Engine
 from ...models.schema import DerivedMetric, EntityProfile, MetricKind
-from .lib import calib, combine, emit, gating, m_calib, m_class, timebins
+from .lib import calib, combine, emit, gating, m_calib, m_class, m_governor, timebins
+from .lib import grains as GR
 from .lib.classkeys import CLASS_PREFIX, SYSTEM_KEY
-from .lib.detectors import DETECTOR_INDEX, DETECTORS, N_DETECTORS
+from .lib.detectors import DETECTOR_INDEX, DETECTOR_INFO, DETECTORS, N_DETECTORS, Q_DETECTORS
 
 MODEL = m_calib.MODEL
 RINGS = m_calib.RINGS
@@ -124,6 +160,21 @@ P_ISSUED_FLOOR = m_calib.P_ISSUED_FLOOR  # behavior.p is float32: no stored 0 (m
 _ID_IDX = DETECTOR_INDEX["identity"]
 _DP_INDEX = {d: i for i, d in enumerate(timebins.DAYPARTS)}
 _NAN = math.nan
+PROV = "behavior.prov"
+PROV_MIN = 0.5
+_PROV_CAUSE = emit.cause(emit.PROVISIONAL, "q_transfer")
+_STREAM = [str(DETECTOR_INFO[d]["stream"]) for d in DETECTORS]
+_Q_POS = {d: i for i, d in enumerate(Q_DETECTORS)}
+_PM_KEYS: Dict[Tuple[int, bool], List[str]] = {}
+
+
+def _pm_keys(cc: int, canonical: bool) -> List[str]:
+    """pm-ring key of every detector at cadence class cc (m_calib.pm_stratum)."""
+    k = (int(cc), bool(canonical))
+    keys = _PM_KEYS.get(k)
+    if keys is None:
+        keys = _PM_KEYS[k] = [m_calib.pm_ring_key(d, cc, canonical) for d in DETECTORS]
+    return keys
 
 
 class _Row(NamedTuple):
@@ -131,11 +182,14 @@ class _Row(NamedTuple):
     s: str
     e: str
     ts: float
-    scores: np.ndarray          # behavior.score row (float32[31])
+    scores: np.ndarray          # behavior.score row (float32[35])
     pvals: Optional[np.ndarray]  # behavior.p issued at ts (health)
     daypart: str
     tercile: int
     dt: float
+    grain: Optional[Dict[str, Any]] = None     # spec v2.1: {'dp_h', 'dp_q', 'prov'}
+    pm: Optional[np.ndarray] = None            # behavior.pm row at ts (pm rings)
+    wev: float = 1.0                           # governor evidence weight (live commits)
 
 
 # ----------------------------------------------------------------- pending
@@ -240,7 +294,8 @@ def _ensure_layout(model: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     # JSON round trips turn the float ts keys into strings and non-finite
     # numbers into None; keep ts order and restore the defaults
     pend = model["pending"] or {}
-    model["pending"] = {t: int(c) for t, c in sorted((float(k), c) for k, c in pend.items())}
+    model["pending"] = {t: (tuple(int(x) for x in c) if isinstance(c, (list, tuple)) else int(c))
+                        for t, c in sorted((float(k), c) for k, c in pend.items())}
     for k, v in new_model().items():
         if isinstance(v, (int, float)) and not isinstance(model[k], (int, float)):
             model[k] = v
@@ -298,8 +353,10 @@ def _ensure_health(hs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def health_add(hs: Dict[str, Any], ts: float, dt: float, pvals: np.ndarray,
-               trusted: bool) -> None:
-    """Fold one committed tick's p-values into the system health state."""
+               trusted: bool, canonical: bool = False) -> None:
+    """Fold one committed tick's p-values into the system health state.
+    spec v2.1: in canonical mode the e_day of a grain detector counts its
+    periods, e_day = p 86400 / period_s(d)."""
     p = np.asarray(pvals, dtype=np.float64).reshape(-1)
     fin = np.isfinite(p)
     if not fin.any():
@@ -315,7 +372,11 @@ def health_add(hs: Dict[str, Any], ts: float, dt: float, pvals: np.ndarray,
         w = 1.0
     else:                                   # a released (older) row arrives decayed
         w = 2.0 ** (-(t0 - ts) / HEALTH_RATE_HL_S)
-    thr = HEALTH_E_DAY * dt / 86400.0      # p <= thr  <=>  e_day <= 0.03
+    if canonical:
+        per = np.array([GR.period_s(DETECTORS[i], dt, GR.CANONICAL) for i in idx.tolist()])
+        thr = HEALTH_E_DAY * per / 86400.0
+    else:
+        thr = HEALTH_E_DAY * dt / 86400.0  # p <= thr  <=>  e_day <= 0.03
     pv = p[idx]
     hs["exc"][idx] += w * (pv <= thr)
     hs["exp"][idx] += w * thr
@@ -398,9 +459,9 @@ class CalibrationEngine(Engine):
     name = "behavior.calibration"
     layer = "behavior"
     consumes = ["behavior.score", "behavior.pm", "behavior.trust", "behavior.trust_prov",
-                "behavior.quarantine", "feature.tctx", "behavior.regime", "model.control",
+                "behavior.quarantine", "behavior.trust_evidence", "feature.tctx", "behavior.regime", "model.control",
                 "model.link", "model.class", "model.baseline"]
-    produces = ["behavior.p", "model.calib", "behavior.calib_health",
+    produces = ["behavior.p", "behavior.degraded", "model.calib", "behavior.calib_health",
                 "profile.extra.calibration"]
     description = ("Randomised, Mondrian-stratified conformal p-values with a GPD tail per "
                    "(entity, detector, daypart x cadence); trust-gated, reversible rings; "
@@ -416,6 +477,7 @@ class CalibrationEngine(Engine):
         self._config: Dict[str, Any] = {}
         self._ret_store: Optional[weakref.ref] = None
         self._keys: Dict[Tuple[str, str], List[str]] = {}
+        self._training = False
 
     # ------------------------------------------------------------- plumbing
     def _learner(self, d_min_s: Any) -> _RingLearner:
@@ -446,6 +508,41 @@ class CalibrationEngine(Engine):
                                     for i, d in enumerate(DETECTORS)]
         return keys
 
+    def _keys_grain(self, dp: str, cc: int, terc: int, grain: Mapping[str, Any]) -> List[str]:
+        """spec v2.1 ring keys of every detector (module docstring)."""
+        prov = grain.get("prov") or {}
+        k = ("g", dp, cc, terc, grain["dp_h"], grain["dp_q"],
+             tuple(int(prov.get(d, 0)) for d in Q_DETECTORS))
+        keys = self._keys.get(k)
+        if keys is None:
+            keys = []
+            for i, d in enumerate(DETECTORS):
+                st = _STREAM[i]
+                if i == _ID_IDX:
+                    keys.append(calib.ring_key(d, calib.grain_stratum_key(grain["dp_h"], "h",
+                                                                          tercile=terc)))
+                elif st == "h":
+                    keys.append(calib.ring_key(d, calib.grain_stratum_key(grain["dp_h"], "h")))
+                elif st == "q":
+                    keys.append(calib.ring_key(d, calib.grain_stratum_key(
+                        grain["dp_q"], "q", prov=int(prov.get(d, 0)))))
+                else:
+                    keys.append(calib.ring_key(d, calib.stratum_key(dp, cc)))
+            self._keys[k] = keys
+        return keys
+
+    def _grain_ctx(self, store, s: str, e: str, now: float, dt: float) -> Dict[str, Any]:
+        """{'dp_h', 'dp_q', 'prov'} of the grain rows scored at now: the
+        dayparts of the H / Q windows' midpoints and the provisional flag of
+        each Q detector (behavior.prov pi < 0.5)."""
+        dp_h = GR.row_tctx(now, "h", dt, self._config)["daypart"]
+        dp_q = (GR.row_tctx(now, "q", dt, self._config)["daypart"]
+                if GR.observable("q", dt, GR.CANONICAL) else dp_h)
+        pv = emit.read_dict(store, s, e, PROV, now)
+        prov = {d: int(float(pv[d]) < PROV_MIN) for d in Q_DETECTORS
+                if d in pv and isinstance(pv[d], (int, float)) and math.isfinite(float(pv[d]))}
+        return {"dp_h": dp_h, "dp_q": dp_q, "prov": prov}
+
     def _daypart(self, store, s: str, e: str, ts: float, dt: float, search: int = 1) -> Tuple[str, Optional[float]]:
         """(daypart, B01 cadence class or None) at ts: feature.tctx, else config."""
         t = _tctx_at(store, s, e, ts, search)
@@ -461,18 +558,29 @@ class CalibrationEngine(Engine):
             return None                     # pruned (score retention) or never scored
         model = store.get_model(s, e, MODEL)
         code = model.get("pending", {}).get(ts) if isinstance(model, Mapping) else None
+        grain = None
         if code is not None:
-            dp, terc, dt = _decode(code)
+            dp, terc, dt, grain = m_calib.decode_pending(code)
         else:                               # restart / lost bookkeeping: rebuild from tctx
             dt0 = model.get("dt") if isinstance(model, Mapping) else None
             dt0 = float(dt0) if isinstance(dt0, (int, float)) and dt0 > 0 else MATURITY_UNIT_S
             dp, cc = self._daypart(store, s, e, ts, dt0, search=64)
             dt, terc = (cc if cc else dt0), 0
-        return _Row(s, e, ts, row, store.vec_at(s, e, P, ts), dp, terc, dt)
+            if GR.canonical(self._config):
+                grain = self._grain_ctx(store, s, e, ts, dt)
+        # the governor's row-evidence cap (live rows only; it binds for a
+        # release, whose trust_prov has no accumulator factor - live trust
+        # already contains it). Warm-up rows carry none: rings must fill from
+        # the reference period or the entity's own null is never learnt.
+        wev = 1.0 if self._training else m_governor.evidence_weight(store, s, e, ts)
+        return _Row(s, e, ts, row, store.vec_at(s, e, P, ts), dp, terc, dt, grain,
+                    store.vec_at(s, e, PM, ts), wev)
 
     def _update(self, model: Dict[str, Any], row: _Row, w: float) -> Dict[str, Any]:
         w = float(w)
         w = 0.0 if not w > 0.0 else (1.0 if w > 1.0 else w)     # NaN -> 0
+        if row.wev < w:
+            w = row.wev
         mature = max(self._n_base, float(model["n_own"])) >= MATURITY_N_EFF
         model["n_own"] = float(model["n_own"]) + w * row.dt / MATURITY_UNIT_S
         if w >= 1.0:
@@ -483,8 +591,11 @@ class CalibrationEngine(Engine):
             admit = False
         if admit and mature:
             cc = timebins.cadence_class(row.dt)
-            keys = self._keys_for(calib.stratum_key(row.daypart, cc),
-                                  calib.identity_stratum_key(row.daypart, row.tercile, cc))
+            if row.grain is not None:
+                keys = self._keys_grain(row.daypart, cc, row.tercile, row.grain)
+            else:
+                keys = self._keys_for(calib.stratum_key(row.daypart, cc),
+                                      calib.identity_stratum_key(row.daypart, row.tercile, cc))
             rings, refit = model[RINGS], model["refit"]
             ts = row.ts
             for i, x in enumerate(row.scores.tolist()):
@@ -497,9 +608,22 @@ class CalibrationEngine(Engine):
                 r.add(x, ts)
                 c = refit.get(key)
                 refit[key] = (_phase(row.e, key) if c is None else c) + 1   # fit is lazy (_score)
+            if row.pm is not None:
+                # the pm ring: this entity's null history of -log10 pm[d]
+                # (m_calib.pm_prior), per detector and cadence / grain
+                pkeys = _pm_keys(cc, row.grain is not None)
+                for i, v in enumerate(row.pm.tolist()):
+                    x = m_calib.pm_score(v)
+                    if x != x:
+                        continue
+                    key = pkeys[i]
+                    r = rings.get(key)
+                    if r is None:
+                        r = rings[key] = calib.Ring()
+                    r.add(x, ts)            # atom masses only: never tail-fitted
             model["n_admit"] = int(model["n_admit"]) + 1
         if row.pvals is not None:
-            self._sink.append((row.ts, row.dt, row.pvals, admit))
+            self._sink.append((row.ts, row.dt, row.pvals, admit, row.grain is not None))
         return model
 
     def _on_rebase(self, model: Dict[str, Any], tau: float) -> Dict[str, Any]:
@@ -528,6 +652,7 @@ class CalibrationEngine(Engine):
             raise ValueError(f"calibration: ctx.window_s={ctx.window_s!r} is not a positive cadence")
         cc = timebins.cadence_class(dt)
         self._config = ctx.config or {}
+        self._training = bool(ctx.training)
         self._ensure_retention(store)
         learner = self._learner(self._config.get("D_min_s", gating.D_MIN_S))
         n_out = 0
@@ -548,8 +673,8 @@ class CalibrationEngine(Engine):
                         sysm = sysm if isinstance(sysm, dict) else {"layout": m_calib.LAYOUT}
                         hs = sysm[m_calib.HEALTH] = new_health()
                         store.put_model(s, SYSTEM_KEY, MODEL, sysm, ts=now)
-                    for ts, dt_r, pv, trusted in self._sink:
-                        health_add(hs, ts, dt_r, pv, trusted)
+                    for ts, dt_r, pv, trusted, canon in self._sink:
+                        health_add(hs, ts, dt_r, pv, trusted, canon)
             self._sink = []
             if hs is not None:
                 self._write_health(store, s, hs, now, dt)
@@ -621,7 +746,12 @@ class CalibrationEngine(Engine):
         terc = m_calib.regime_tercile(_latest_value(store, s, e, REGIME))
         st = calib.stratum_key(dp, cc)
         st_id = calib.identity_stratum_key(dp, terc, cc)
-        keys = self._keys_for(st, st_id)
+        grain = self._grain_ctx(store, s, e, now, dt) if GR.canonical(self._config) else None
+        if grain is not None:
+            keys = self._keys_grain(dp, cc, terc, grain)
+            st_id = calib.grain_stratum_key(grain["dp_h"], "h", tercile=terc)
+        else:
+            keys = self._keys_for(st, st_id)
         rings, refit = model[RINGS], model["refit"]
         pm = store.vec_at(s, e, PM, now)
         out: Dict[str, float] = {}
@@ -643,13 +773,26 @@ class CalibrationEngine(Engine):
                     refit[key] = 0
                 p = calib.p_from_ring(r, x, u)          # = m_calib.p_value without a prior
             else:
-                prior = self._prior(i, d, x, u, pm, pool, e, key, rings, dp, terc, cc)
+                prior = self._prior(i, d, x, u, pm, pool, e, key, rings, dp, terc, cc, grain)
                 p = m_calib.p_value(r, x, u, prior)
             out[d] = p if p >= P_ISSUED_FLOOR else P_ISSUED_FLOOR   # float32 ring
             sizes[d] = n
         if out:
             emit.write_pvalues(store, s, e, now, out, window_s=int(dt))
-        model["pending"][now] = _encode(dp, terc, dt)
+            if grain is not None and grain["prov"]:
+                # a Q score on the provisional H -> Q transfer (behavior.prov
+                # pi < 0.5) is calibrated in its own 'p:1' stratum: a degraded
+                # detector run (contract M, lib/emit causes). Written here, where
+                # the flag is resolved per detector; merging is idempotent if
+                # B04 / B06 also write it.
+                dg = {d: _PROV_CAUSE for d, v in grain["prov"].items() if v and d in out}
+                if dg:
+                    emit.write_degraded(store, s, e, now, dg, window_s=int(dt))
+        code = _encode(dp, terc, dt)
+        if grain is not None:
+            mask = sum(1 << _Q_POS[d] for d, v in grain["prov"].items() if v)
+            code = (code, _DP_INDEX[grain["dp_h"]], _DP_INDEX[grain["dp_q"]], mask)
+        model["pending"][now] = code
         pts = float(model["profile_ts"])
         if now - pts >= PROFILE_EVERY_S or now < pts:
             self._profile(store, s, e, now, model, st, st_id, sizes, health_out)
@@ -657,11 +800,12 @@ class CalibrationEngine(Engine):
 
     def _prior(self, i: int, d: str, x: float, u: float, pm: Optional[np.ndarray],
                pool: _PoolCache, e: str, key: str, rings: Mapping, dp: str, terc: int,
-               cc: int = 0) -> float:
+               cc: int = 0, grain: Optional[Mapping[str, Any]] = None) -> float:
         """Small-sample prior: the entity's own rings of the other dayparts at
-        this cadence (pooled, >= 64 entries), else pm[d], else the
-        class-pooled ring, else (identity) the settled-regime ring; NaN when
-        none is usable (conformal p alone).
+        this cadence (pooled, >= 64 entries), else the pm prior (pm[d] with
+        its atoms randomised over their mass in the entity's pm ring,
+        m_calib.pm_prior), else the class-pooled ring, else (identity) the
+        settled-regime ring; NaN when none is usable (conformal p alone).
 
         The own-daypart pool comes first (integration): the first workday
         after a weekend warm-up, or the first night, is a new stratum for
@@ -669,8 +813,21 @@ class CalibrationEngine(Engine):
         (timing's overdispersed G test, novelty's bits, the accumulators'
         stationary tails); the entity's own null of the same score at the same
         cadence is a better prior than any of them. A cadence switch still
-        falls through to pm (no ring of the new cadence exists)."""
-        if i != _ID_IDX and cc:
+        falls through to pm (no ring of the new cadence exists; its pm ring
+        is new too, so the atoms use the Laplace mass for 16 admitted ticks)."""
+        if i != _ID_IDX and grain is not None and _STREAM[i] != "t":
+            # spec v2.1: the other dayparts of the same grain stratum
+            g = _STREAM[i]
+            dpg = grain["dp_h"] if g == "h" else grain["dp_q"]
+            pv = int((grain.get("prov") or {}).get(d, 0))
+            own = [r for r in (rings.get(calib.ring_key(d, calib.grain_stratum_key(
+                p, g, prov=pv if g == "q" else None))) for p in timebins.DAYPARTS if p != dpg)
+                if r is not None]
+            if own:
+                p, _ = m_calib.pooled_p(own, x, u)
+                if p == p:
+                    return p
+        elif i != _ID_IDX and cc:
             own = [r for r in (rings.get(self._ring_key(d, calib.stratum_key(p, cc)))
                                for p in timebins.DAYPARTS if p != dp) if r is not None]
             if own:
@@ -678,8 +835,9 @@ class CalibrationEngine(Engine):
                 if p == p:
                     return p
         if pm is not None:
-            v = float(pm[i])
-            if 0.0 <= v <= 1.0:
+            r_pm = rings.get(_pm_keys(cc, grain is not None)[i])
+            v = m_calib.pm_prior(r_pm, float(pm[i]), u)
+            if v == v:
                 return v
         ck = pool.class_key(e)
         if ck is not None:
@@ -687,7 +845,9 @@ class CalibrationEngine(Engine):
             if p == p:
                 return p
         if i == _ID_IDX and terc != 0:
-            r0 = rings.get(self._ring_key(d, calib.identity_stratum_key(dp, 0, cc)))
+            st0 = (calib.grain_stratum_key(grain["dp_h"], "h", tercile=0) if grain is not None
+                   else calib.identity_stratum_key(dp, 0, cc))
+            r0 = rings.get(self._ring_key(d, st0))
             if r0 is not None and len(r0) >= SMALL_N:
                 return m_calib.p_value(r0, x, u)
         return _NAN

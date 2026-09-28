@@ -26,6 +26,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from ...core.engine import Context, Engine
+from ..behavior.lib import grains as GR
 from .aggregation import (ACTIVE_HORIZON_S, SPAN_S, active_mask, emit_window, ensure_retention,
                           grid_many, nan_cv, recently_active, tick_durations, window_dims)
 
@@ -115,6 +116,10 @@ class PeriodicityEngine(Engine):
         return n
 
     def _entity(self, ctx: Context, system: str, entity: str) -> int:
+        if GR.canonical(ctx.config):
+            n = self._entity_slots(ctx, system, entity)
+            if n is not None:
+                return n
         store, now, dt, span = ctx.store, ctx.now, float(ctx.window_s), self.span_s
         ts, clock, names, mat = grid_many(store, system, entity, self.targets,
                                           {t: "counter" for t in self.targets}, now, span, dt)
@@ -155,3 +160,75 @@ class PeriodicityEngine(Engine):
                         [names[0]])
             n += 1
         return n
+
+    # ------------------------------------------------------ spec v2.1 slots
+    def _entity_slots(self, ctx: Context, system: str, entity: str) -> Optional[int]:
+        """Canonical grain mode (cadence.md §3.3): periodicity, beacon_lag and
+        timing_regularity from the entity's events per 15-min slot over the
+        trailing 6 h (24 complete slots), built from act.slot_events, so they
+        are the same at 60, 900 and 3600 s and defined at 3600 s too. None
+        (fall back to the v2 tick grid) when the span holds no slot record."""
+        store, now, span = ctx.store, float(ctx.now), self.span_s
+        nb = int(round(span / SLOT_S))
+        end = math.floor((now + 1e-3) / SLOT_S) * SLOT_S          # exclusive: complete slots
+        lo = end - nb * SLOT_S
+        st = self.__dict__.setdefault("_slot_state", {})
+        key = (system, entity)
+        rec = st.get(key)
+        if rec is None or now < rec[0]:
+            rec = st[key] = [-math.inf, {}]
+        # incremental: fold only the act.slot_events points written since the last call
+        for ts, v in _raw_after(store, system, entity, SLOT_EVENTS, max(rec[0], lo - 3600.0), now):
+            acc = rec[1]
+            for k, c in v.items():
+                try:
+                    kf, cf = float(k), float(c)
+                except (TypeError, ValueError):
+                    continue
+                if cf > 0.0 and math.isfinite(cf):
+                    acc[kf] = acc.get(kf, 0.0) + cf
+            rec[0] = max(rec[0], ts)
+        acc = rec[1]
+        if acc and min(acc) < lo - 3600.0:
+            for k in [k for k in acc if k < lo - 3600.0]:
+                del acc[k]
+        if not math.isfinite(rec[0]):
+            return None
+        counts = np.zeros(nb)
+        for k, c in acc.items():
+            j = int(round((k - lo) / SLOT_S))
+            if 0 <= j < nb:
+                counts[j] += c
+        act = counts > 0.0
+        if not act.any():
+            return 0
+        dims = window_dims(span, int(act.sum()))
+        n = 0
+        lags, scores = autocorr_rows(counts[None, :])
+        sc = float(scores[0])
+        lag = float(lags[0]) * SLOT_S if sc > 0.0 else 0.0
+        emit_window(ctx, system, entity, "derived.periodicity_score", sc, dims, [SLOT_EVENTS])
+        emit_window(ctx, system, entity, "derived.beacon_lag", lag, dims, [SLOT_EVENTS])
+        n = 2
+        if int(act.sum()) >= 2:
+            regularity = max(0.0, 1.0 - min(nan_cv(counts[act]), 1.0))
+            emit_window(ctx, system, entity, "derived.timing_regularity", regularity, dims,
+                        [SLOT_EVENTS])
+            n += 1
+        return n
+
+
+SLOT_S = 900.0
+SLOT_EVENTS = "act.slot_events"
+
+
+def _raw_after(store, s: str, e: str, name: str, after: float, now: float):
+    """(ts, dict value) of raw `name` with after < ts <= now (short tail reads)."""
+    n = 4
+    while True:
+        tail = store.raw_tail(s, e, name, n)
+        if not tail or len(tail) < n or tail[0].ts <= after or n >= 1 << 16:
+            break
+        n *= 4
+    return [(float(m.ts), m.value) for m in tail
+            if after < m.ts <= now and isinstance(m.value, dict)]

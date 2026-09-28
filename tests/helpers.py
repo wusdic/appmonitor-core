@@ -32,8 +32,9 @@ def make_store() -> MetricStore:
 
 def ctx(store: MetricStore, now: float, training: bool = False, window_s: float = 60,
         config: Optional[Dict[str, Any]] = None) -> Context:
-    return Context(store=store, now=now, window_s=window_s, training=training,
-                   config=dict(config or {}))
+    cfg = {"grain_mode": "tick"}          # engine unit tests: v2 tick grains (cadence.md M8)
+    cfg.update(config or {})
+    return Context(store=store, now=now, window_s=window_s, training=training, config=cfg)
 
 
 def add_raw_series(store: MetricStore, system: str, entity: str, name: str,
@@ -170,9 +171,16 @@ def run_engine(engine: Engine, store: MetricStore, now: float, training: bool = 
     """Run one engine for one tick with ctx.config['strict'] = True, so any
     exception fails the test. By default it bypasses interval/period
     scheduling (calls engine.run); scheduled=True goes through safe_run."""
-    cfg = {"strict": True}
+    cfg = {"strict": True, "grain_mode": "tick"}
     cfg.update(config or {})
     c = Context(store=store, now=now, window_s=dt, training=training, config=cfg)
     if scheduled:
         return engine.safe_run(c, observations)
     return engine.run(c, observations)
+
+
+def tick_mode_default(monkeypatch) -> None:
+    """Make 'tick' the default grain mode for the calling test (engine unit
+    tests; docs/lib3/cadence.md §12 M8). A caller's explicit config wins."""
+    from app.core import engine as _eng
+    monkeypatch.setitem(_eng.DEFAULT_CONFIG, "grain_mode", "tick")

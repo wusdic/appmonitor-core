@@ -210,6 +210,33 @@ def render_html(report: Dict[str, Any]) -> str:
         ["Pack", "Seed", "Scenario", "Max severity", "Allowed", "Max risk", "Result"], rows,
         (1, 5)))
 
+    # ablation (gate 13): per engine, the scenarios it is the sole / main
+    # detector of and the FAR change with it disabled
+    abl = ((gates.get("13_ablation") or {}).get("details") or {}).get("table") or []
+    if abl:
+        rows = []
+        for r in abl:
+            worse = sorted(k for k, d in (r.get("delta_recall") or {}).items()
+                           if d is not None and d < 0)
+            better = sorted(k for k, d in (r.get("delta_recall") or {}).items()
+                            if d is not None and d > 0)
+            rows.append([_e(r.get("engine")), _e(", ".join(r.get("sole_detector_of") or []) or "–"),
+                         _e(", ".join(r.get("main_detector_of") or []) or "–"),
+                         _e(", ".join(worse) or "–"), _e(", ".join(better) or "–"),
+                         _num(r.get("delta_far_low"), 3)])
+        parts.append("<h2>Ablation (one engine disabled)</h2>" + _table(
+            ["Engine off", "Sole detector of", "Main detector of", "Recall lost",
+             "Recall gained", "ΔFAR ≥ LOW / e-day"], rows, (5,)))
+
+    # free-form sections the caller adds through meta['sections'] (e.g. the
+    # before / after comparison of an evaluation round)
+    for sec in (report.get("meta") or {}).get("sections") or []:
+        hdr = [str(h) for h in sec.get("headers") or []]
+        body = [[_e(c) if not isinstance(c, (int, float)) or isinstance(c, bool) else _num(c, 4)
+                 for c in row] for row in sec.get("rows") or []]
+        note = f'<p class="muted">{_e(sec.get("note"))}</p>' if sec.get("note") else ""
+        parts.append(f"<h2>{_e(sec.get('title', ''))}</h2>{note}" + _table(hdr, body))
+
     rows = [[_e(r["pack"]), _e(r["seed"]), _num(r.get("wall_s"), 4), _num(r.get("exceptions")),
              _e(r.get("aborted") or "")] for r in report.get("runs", [])]
     parts.append("<h2>Runs</h2>" + _table(["Pack", "Seed", "Wall s", "Engine exceptions",

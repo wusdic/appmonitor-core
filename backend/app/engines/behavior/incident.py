@@ -102,6 +102,8 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, Incident, Severity
 from .lib import emit, m_class, m_feedback
+from .lib import grains as GR
+from .lib import stages as STG
 from .lib.classkeys import CLASS_PREFIX, SYSTEM_KEY, class_kind, is_class
 from .lib.detectors import (ACC_DETECTORS, DETECTOR_INDEX, DETECTORS, FAMILY_DEFAULT_AXES,
                             acc_level)
@@ -110,6 +112,7 @@ ALARM = "behavior.alarm"
 P_FAMILY = "behavior.p_family"
 E_DAY = "behavior.e_day"
 Q_INST = "behavior.q_inst"
+Q_INST_H = "behavior.q_inst.h"          # spec v2.1: H-stream instantaneous evidence
 RISK = "behavior.risk"
 REGIME = "behavior.regime"
 P = emit.P
@@ -167,6 +170,7 @@ DISCRETE_KINDS = frozenset({
 })
 _REGIME_CLOSE = {"returned": "returned", "accepted": "accepted"}
 _ACC_IDX = [(d, DETECTOR_INDEX[d]) for d in ACC_DETECTORS]
+_CANON = [False]                # spec v2.1: set per run (the grain mode of the tick)
 _NAN = math.nan
 
 
@@ -206,10 +210,12 @@ def canonical_axes(axes: Any) -> Set[str]:
     return {canonical_axis(a) for a in (axes or ()) if a}
 
 
-def acc_level_from_p(p: float, detector: str, dt_s: float) -> float:
+def acc_level_from_p(p: float, detector: str, dt_s: float,
+                     period_s: Optional[float] = None) -> float:
     """Approximate S/h of an accumulator from its calibrated p (the shared
-    lib/detectors.acc_level scale, also used by B28)."""
-    return acc_level(p, detector, dt_s)
+    lib/detectors.acc_level scale, also used by B28). spec v2.1: period_s
+    counts the ARL in the detector's grain periods (grains.period_s)."""
+    return acc_level(p, detector, dt_s, period_s)
 
 
 class TokenBucket:
@@ -299,7 +305,7 @@ class _Live:
     """Per live incident bookkeeping (reconstructible from the Incident)."""
     __slots__ = ("id", "s", "key", "last_hit", "since", "announced", "supp", "pbd", "axes",
                  "feats", "new", "tokens", "tok_dirty", "ev_ts", "held_sent", "regime_ts",
-                 "event_ids")
+                 "event_ids", "lib4")
 
     def __init__(self, inc: Incident, now: float, announced: bool = False) -> None:
         self.id = inc.id
@@ -320,6 +326,7 @@ class _Live:
         self.held_sent = False
         self.regime_ts = -math.inf
         self.event_ids: List[str] = []
+        self.lib4: Dict[str, float] = {}     # signature -> last lib-4 evidence entry ts
         for ent in inc.evidence or []:
             if not isinstance(ent, Mapping):
                 continue
@@ -334,6 +341,9 @@ class _Live:
             self.new.update(str(t) for t in ent.get("new_tokens") or ())
             if ent.get("source") == "alarm":
                 self.ev_ts = max(self.ev_ts, _f(ent.get("ts")))
+            if ent.get("source") == "lib4" and ent.get("signature_id"):
+                sid = str(ent["signature_id"])
+                self.lib4[sid] = max(self.lib4.get(sid, -math.inf), _f(ent.get("ts")))
             if ent.get("event_id"):
                 self.event_ids.append(str(ent["event_id"]))
             st = ent.get("state")
@@ -374,20 +384,24 @@ class _StoreState:
         self.b_ent: Dict[Tuple[str, str], TokenBucket] = {}
         self.b_sys: Dict[str, TokenBucket] = {}
         self.pending: Dict[str, Dict[str, List[Any]]] = {}     # s -> {inc id: [state, t_q]}
+        # (s, e, signature) -> [first_ts, n_ticks, last_ts]: lib/stages habit rule
+        self.habits: Dict[Tuple[str, str, str], List[float]] = {}
 
 
 class _Trig:
-    __slots__ = ("alarm", "findings", "risk", "matches")
+    __slots__ = ("alarm", "findings", "risk", "matches", "habitual")
 
     def __init__(self) -> None:
         self.alarm: Optional[Dict[str, Any]] = None
         self.findings: List[BehaviorEvent] = []
         self.risk: Optional[Dict[str, Any]] = None
         self.matches: List[Any] = []
+        self.habitual: List[bool] = []           # aligned with matches
 
 
 # ====================================================================== engine
 class IncidentEngine(Engine):
+    _canon = False
     name = "behavior.incident"
     layer = "behavior"
     consumes = ["behavior.alarm", "behavior.p_family", "behavior.e_day", "behavior.q_inst",
@@ -411,6 +425,8 @@ class IncidentEngine(Engine):
         store = ctx.store
         now = float(ctx.now)
         dt = float(ctx.window_s)
+        self._canon = GR.canonical(ctx.config)
+        _CANON[0] = self._canon
         if not (math.isfinite(dt) and dt > 0.0):
             raise ValueError(f"incident: ctx.window_s={ctx.window_s!r} is not a positive cadence")
         training = bool(ctx.training)
@@ -558,7 +574,12 @@ class IncidentEngine(Engine):
             if mk in st.seen_m or mt.ts > now:
                 continue
             st.seen_m[mk] = mt.ts
-            T(mt.entity).matches.append(mt)
+            tr = T(mt.entity)
+            tr.matches.append(mt)
+            # habits are learnt from every tick, warm-up included (as in B26)
+            tr.habitual.append(STG.habit_step(st.habits, (s, mt.entity, str(mt.signature_id)),
+                                              float(mt.ts))
+                               and LEVELS[sev_rank(mt.severity)] in STG.HABIT_SEVERITIES)
         regime_ev: Dict[str, List[BehaviorEvent]] = {}
         for ev in store.events(s, since=lo, kinds=("regime",), limit=1000):
             if ev.id in st.seen_ev:
@@ -992,10 +1013,26 @@ class IncidentEngine(Engine):
             self._evidence(inc, {"ts": now, "source": "risk", "risk": rk["risk"],
                                  "families": rk["families"], "axes": sorted(ax),
                                  "e_day": rk.get("e_day"), "family_hit_ts": rk["hit_ts"]})
-        for mt in t.matches:
+        for mt, habitual in zip(t.matches, t.habitual or [False] * len(t.matches)):
             r = sev_rank(mt.severity)
-            if r >= OPEN_FINDING_RANK:
+            # a HABITUAL match (lib/stages: the entity's routine activity, e.g.
+            # an integration host's 'high_error_backend' medium match every
+            # tick) joins as evidence but does not restart the quiet clock: it
+            # kept FP incidents open for days, and a threat that started
+            # during that time only escalated them instead of opening its own
+            if r >= OPEN_FINDING_RANK and not habitual:
                 hit = True
+            # a signature that matches every tick (routine health_check /
+            # api_client info matches of a poller) used to add an entry per
+            # tick and evicted the alarm evidence from the capped list (512
+            # entries: 477 lib-4 info entries on a health checker's week-long
+            # incident). An entry per signature: >= MEDIUM at most hourly,
+            # below MEDIUM once per (re)opening.
+            sid = str(mt.signature_id)
+            last = lv.lib4.get(sid, -math.inf)
+            if last >= lv.since and (r < OPEN_FINDING_RANK or now - last < EVIDENCE_EVERY_S):
+                continue
+            lv.lib4[sid] = now
             self._evidence(inc, {"ts": float(mt.ts), "source": "lib4",
                                  "signature_id": mt.signature_id, "category": mt.category,
                                  "severity": LEVELS[r], "confidence": _f(mt.confidence)})
@@ -1024,8 +1061,12 @@ class IncidentEngine(Engine):
         ok = np.flatnonzero(np.isfinite(p))
         if not ok.size:
             return {}
-        thr = PBD_E_DAY * dt / DAY
-        sel = [i for i in ok[np.argsort(p[ok], kind="stable")] if p[i] <= thr][:PBD_MAX]
+        if _CANON[0]:                             # spec v2.1: each detector's own period
+            thr_i = {i: PBD_E_DAY * GR.period_s(DETECTORS[i], dt, GR.CANONICAL) / DAY
+                     for i in ok.tolist()}
+        else:
+            thr_i = {i: PBD_E_DAY * dt / DAY for i in ok.tolist()}
+        sel = [i for i in ok[np.argsort(p[ok], kind="stable")] if p[i] <= thr_i[int(i)]][:PBD_MAX]
         if not sel:
             sel = [int(ok[np.argmin(p[ok])])]
         out = {DETECTORS[i]: _sig(float(p[i])) for i in sel}
@@ -1060,13 +1101,20 @@ class IncidentEngine(Engine):
     def _quiet(self, store, s: str, inc: Incident, lv: _Live, now: float, dt: float) -> bool:
         """(d): quiet for max(8 ticks, 2 h), accumulators < h/4, and
         e_day(q_inst) >= 1 on the last 4 rows (NaN rows are neutral)."""
-        if now - lv.last_hit < max(QUIET_TICKS * dt, QUIET_S):
+        win = max(QUIET_TICKS * dt, QUIET_S)
+        if now - lv.last_hit < win:
             return False
         k = inc.entity
         ts, M = store.vec_tail(s, k, Q_INST, Q_TICKS + 1)
         if len(ts):
             q = M[:, 0].astype(np.float64)
             for i in range(max(0, len(ts) - Q_TICKS), len(ts)):
+                if ts[i] <= now - win:
+                    # a row older than the quiet window is not current
+                    # evidence: an entity that went idle (a weekend, a
+                    # holiday) kept its last alarming rows as its "latest"
+                    # q_inst for days, and its incident could never close
+                    continue
                 qi = q[i]
                 if not math.isfinite(qi):
                     continue
@@ -1076,6 +1124,8 @@ class IncidentEngine(Engine):
         acc = emit.read_dict(store, s, k, ACC_ALARM, now)
         if any(_f(v) >= 0.5 for v in acc.values()):
             return False
+        if self._canon:
+            return self._quiet_h(store, s, k, now, dt)
         # every accumulator, cusum / mcusum included, on the calibrated-p scale
         # (integration R13.2 / R14.4: m_cp.level, the raw max S/h over 48
         # charts, is >= h/4 on ~88 % of null ticks, so '< h/4' on it would
@@ -1085,6 +1135,34 @@ class IncidentEngine(Engine):
             for d, i in _ACC_IDX:
                 if acc_level_from_p(float(row[i]), d, dt) >= ACC_QUIET_LEVEL:
                     return False
+        return True
+
+    @staticmethod
+    def _quiet_h(store, s: str, k: str, now: float, dt: float) -> bool:
+        """spec v2.1 (cadence.md §9.3): the latest H-stream evidence (<= 1 h
+        old) must be quiet too, and every accumulator's LATEST p (H ones are
+        written hourly) below the quiet level on its own period's ARL."""
+        lo = now - GR.GRAIN_S["h"] - 1e-3
+        ts, M = store.vec_since(s, k, Q_INST_H, lo)
+        if len(ts):
+            qh = float(M[-1, 0])
+            if math.isfinite(qh) and qh * GR.n_per_day("h", dt, GR.CANONICAL) < Q_E_DAY_MIN:
+                return False
+        tsp, MP = store.vec_since(s, k, P, lo)
+        if len(tsp):
+            MP = np.asarray(MP, dtype=np.float64)
+            for d, i in _ACC_IDX:
+                col = MP[:, i]
+                fin = np.flatnonzero(np.isfinite(col))
+                if not fin.size:
+                    continue
+                per = GR.period_s(d, dt, GR.CANONICAL)
+                if acc_level_from_p(float(col[fin[-1]]), d, dt, per) >= ACC_QUIET_LEVEL:
+                    return False
+        tail = store.derived_tail(s, k, ACC_ALARM, 1)
+        if tail and tail[-1].ts >= lo and isinstance(tail[-1].value, dict) \
+                and any(_f(v) >= 0.5 for v in tail[-1].value.values()):
+            return False                         # the latest accumulator latch still holds
         return True
 
     # ------------------------------------------------------------- actions

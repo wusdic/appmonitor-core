@@ -32,6 +32,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from ...core.engine import Context, Engine
+from ..behavior.lib import grains as GR
+from ..behavior.lib import sketch as SK
 from ...models.schema import (AcquisitionMethod, MetricKind, Observation, RawMetric,
                               is_pseudo_entity)
 from ..behavior.lib.names import etld1
@@ -201,6 +203,7 @@ class TLSEngine(Engine):
 
         add = ctx.store.add_raw
         now = ctx.now
+        canon = GR.canonical(ctx.config)
         method = AcquisitionMethod.PASSIVE_SPAN
         C, G, R, K = MetricKind.COUNTER, MetricKind.GAUGE, MetricKind.RATE, MetricKind.CATEGORICAL
         n = 0
@@ -218,6 +221,8 @@ class TLSEngine(Engine):
             if a.sni:
                 out.append(("tls.sni_set", _full_set(a.sni), K, ""))
                 out.append(("tls.sni_etld1_set", _full_set(_by_etld1(a.sni)), K, ""))
+            if canon:                       # spec v2.1: distinct JA3 sketch (cadence.md §3.2)
+                out.append(("tls.ja3_ids", SK.set_sketch("tls.ja3_ids", a.ja3.keys()), K, ""))
             for mname, dist in (("tls.ja3_set", a.ja3), ("tls.ja3s_set", a.ja3s),
                                 ("tls.cipher_set", a.ciphers)):
                 if dist:

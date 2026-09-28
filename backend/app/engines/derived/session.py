@@ -53,6 +53,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import DerivedMetric, MetricKind
 from ..behavior.lib import m_seq as MS
 from ..behavior.lib import m_template as MT
+from ..behavior.lib import grains as GR
 from .fresh import CLOCK
 
 DAY = 86400.0
@@ -67,6 +68,11 @@ OUT_SESSIONS = "derived.session_count"
 OUT_RPS = "derived.req_per_session"
 OUT_THINK = "derived.think_time_s_avg"
 OUT_DUTY = "derived.activity_duty_cycle"
+# spec v2.1 (cadence.md §3.1, §3.3): additive think-time parts, the slot grid
+OUT_THINK_LS = "derived.think_log_sum"
+OUT_THINK_N = "derived.think_gaps"
+SLOT_EVENTS = "act.slot_events"
+SLOT_S = 900.0
 
 _RETAINED: "weakref.WeakSet" = weakref.WeakSet()
 
@@ -92,7 +98,7 @@ class _EntityState:
     """Incremental per-entity state: the 24 h activity clock and sessions."""
 
     __slots__ = ("last_now", "clock_ts", "clock", "tot", "act", "nact",
-                 "stream_ts", "open", "done", "done_w", "last_full")
+                 "stream_ts", "open", "done", "done_w", "last_full", "slots")
 
     def __init__(self) -> None:
         self.last_now = -math.inf
@@ -106,6 +112,38 @@ class _EntityState:
         self.done: Deque[Tuple[float, float]] = deque()   # (end_ts, weight)
         self.done_w = 0.0
         self.last_full = False                  # previous stream tick unsampled
+        self.slots: Dict[float, bool] = {}      # spec v2.1: covered slot -> active
+
+    # ------------------------------------------------------ slot grid (v2.1)
+    def push_slots(self, ts: float, dur: float, active_slots: Optional[List[float]],
+                   active: bool) -> None:
+        """Covered 15-min slots of the clock tick (ts - dur, ts], and which of
+        them had events (act.slot_events; without it an active tick marks
+        every slot it covers active: the tick-grid fallback)."""
+        k = math.floor((ts - dur) / SLOT_S) * SLOT_S
+        last = math.floor((ts - 1e-6) / SLOT_S) * SLOT_S
+        sl = self.slots
+        while k <= last:
+            if k not in sl:
+                sl[k] = False
+            k += SLOT_S
+        if active_slots is not None:
+            for k in active_slots:
+                sl[k] = True
+        elif active:
+            k = math.floor((ts - dur) / SLOT_S) * SLOT_S
+            while k <= last:
+                sl[k] = True
+                k += SLOT_S
+
+    def slot_duty(self, now: float) -> float:
+        lo = now - SPAN_S
+        sl = self.slots
+        for k in [k for k in sl if k < lo]:
+            del sl[k]
+        if not sl:
+            return math.nan
+        return sum(1 for v in sl.values() if v) / float(len(sl))
 
     # ---------------------------------------------------------------- clock
     def push_tick(self, ts: float, dur: float, active: bool) -> None:
@@ -149,7 +187,7 @@ class SessionEngine(Engine):
     name = "derived.session"
     layer = "derived"
     consumes = ["act.events", "act.stream", "act.stream_frac", "model.seq"]
-    produces = [OUT_SESSIONS, OUT_RPS, OUT_THINK, OUT_DUTY]
+    produces = [OUT_SESSIONS, OUT_RPS, OUT_THINK, OUT_DUTY, OUT_THINK_LS, OUT_THINK_N]
     description = ("Wall-clock duty cycle (24 h act.events grid), sessions from act.stream "
                    "timestamps split at model.seq session_gap, fresh median think time.")
     interval = 1
@@ -158,11 +196,13 @@ class SessionEngine(Engine):
         super().__init__(**p)
         self._state: Dict[Tuple[str, str], _EntityState] = {}
         self._swept: Optional[float] = None
+        self._canon = False
 
     # ------------------------------------------------------------------- run
     def run(self, ctx: Context, observations=None) -> int:
         store, now = ctx.store, float(ctx.now)
         ensure_retention(store)
+        self._canon = GR.canonical(ctx.config)
         dt = float(ctx.window_s) if ctx.window_s and ctx.window_s > 0 else 60.0
         n = 0
         for system in store.systems():
@@ -189,6 +229,8 @@ class SessionEngine(Engine):
 
         # 1) activity clock (the act.events grid)
         prev = st.clock_ts if math.isfinite(st.clock_ts) else None
+        canon = self._canon
+        slot_pts = _slot_points(store, s, e, clock_new) if canon and clock_new else {}
         for i, (ts, v) in enumerate(clock_new):
             if prev is None:
                 dur = (clock_new[i + 1][0] - ts) if i + 1 < len(clock_new) else dt
@@ -197,11 +239,23 @@ class SessionEngine(Engine):
             dur = min(max(dur, 1.0), MAX_TICK_S)
             active = isinstance(v, (int, float)) and math.isfinite(v) and v > 0.0
             st.push_tick(ts, dur, bool(active))
+            if canon:
+                sv = slot_pts.get(ts)
+                act_slots = ([float(k) for k, c in sv.items() if _pos(c)]
+                             if isinstance(sv, dict) else None)
+                d_s = dur
+                if prev is None and act_slots:
+                    # the entity's first clock tick: coverage starts at its first
+                    # event's slot (a long first tick must not cover the time
+                    # before the entity existed; cadence invariance)
+                    d_s = max(1.0, ts - min(act_slots))
+                st.push_slots(ts, d_s, act_slots, bool(active))
             prev = ts
 
         # 2) sessions and think time from the new act.stream ticks
         G = session_gap(store, s, e)
         think: Optional[Tuple[float, int]] = None
+        think_ls: Optional[Tuple[float, int]] = None
         since = st.stream_ts if math.isfinite(st.stream_ts) else now - SPAN_S
         head = store.raw_tail(s, e, "act.stream", 1)
         ticks = MT.stream_ticks(store, s, e, since, now) \
@@ -213,6 +267,8 @@ class SessionEngine(Engine):
             gaps = self._consume(st, rows, frac, G)
             if tick_ts == now and gaps is not None and gaps.size >= MIN_THINK_GAPS:
                 think = (float(np.median(gaps)), int(gaps.size))
+            if canon and tick_ts == now and gaps is not None and gaps.size >= 1:
+                think_ls = (float(np.sum(np.log(gaps))), int(gaps.size))
         if st.open is not None and now - st.open[1] > G:
             st.close(st.open[1], st.open[2])
             st.open = None
@@ -224,9 +280,22 @@ class SessionEngine(Engine):
             self._emit(ctx, s, e, OUT_THINK, think[0], MetricKind.GAUGE,
                        {"n": think[1], "session_gap_s": G}, ["act.stream", "act.stream_frac"])
             n += 1
+        if think_ls is not None:
+            self._emit(ctx, s, e, OUT_THINK_LS, think_ls[0], MetricKind.GAUGE,
+                       {"n": think_ls[1]}, ["act.stream"])
+            self._emit(ctx, s, e, OUT_THINK_N, float(think_ls[1]), MetricKind.COUNTER,
+                       {"n": think_ls[1]}, ["act.stream"])
+            n += 2
         if clock_new and clock_new[-1][0] == now and st.clock:
             dims = {"span_s": SPAN_S, "n_active": int(st.nact)}
-            self._emit(ctx, s, e, OUT_DUTY, st.duty(), MetricKind.RATE, dims, [CLOCK])
+            duty = st.duty()
+            if canon:
+                # spec v2.1: active / covered 15-min slots of the trailing 24 h
+                # (the same number at 60, 900 and 3600 s for the same events)
+                d2 = st.slot_duty(now)
+                if d2 == d2:
+                    duty = d2
+            self._emit(ctx, s, e, OUT_DUTY, duty, MetricKind.RATE, dims, [CLOCK])
             k = len(st.done)
             sdims = dict(dims, n_sessions=k, session_gap_s=G)
             src = ["act.stream", "act.stream_frac", "model.seq"]
@@ -305,6 +374,27 @@ class SessionEngine(Engine):
         return {"duty": st.duty(), "n_active": st.nact, "n_ticks": len(st.clock),
                 "sessions": len(st.done), "events": st.done_w,
                 "open": None if st.open is None else list(st.open)}
+
+
+def _pos(c) -> bool:
+    return isinstance(c, (int, float)) and math.isfinite(c) and c > 0.0
+
+
+def _slot_points(store, s: str, e: str, clock_new) -> Dict[float, dict]:
+    """{tick ts: act.slot_events value} for the new clock ticks (R2 writes
+    it with every non-empty act.events point)."""
+    lo = clock_new[0][0]
+    out: Dict[float, dict] = {}
+    n = 4
+    while True:
+        tail = store.raw_tail(s, e, SLOT_EVENTS, n)
+        if not tail or len(tail) < n or tail[0].ts < lo or n >= 1 << 16:
+            break
+        n *= 4
+    for m in tail:
+        if m.ts >= lo and isinstance(m.value, dict):
+            out[float(m.ts)] = m.value
+    return out
 
 
 def _points_after(store, s: str, e: str, name: str, after: float,

@@ -104,6 +104,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import m_class
 from .lib import m_client as MC
+from .lib import grains as GR
 from .lib import m_identity as MI
 from .lib import m_link as ML
 from .lib import m_seq as MS
@@ -175,16 +176,40 @@ def _lse(xs: Sequence[float]) -> float:
     return m + math.log(sum(math.exp(x - m) for x in xs))
 
 
+# spec v2.1 (docs/lib3/cadence.md §8): in canonical grain mode the rows are the
+# H rows (clock feature.meta.h, m_identity.grain_row / grain_modal_data) and
+# B17 runs on H decision ticks; set per run by the engine.
+_MODE: Dict[str, Any] = {"canon": False, "cfg": {}, "dt": 900.0}
+
+
+def _clock() -> str:
+    return "feature.meta.h" if _MODE["canon"] else ACTIVE
+
+
+def _row(store: Any, s: str, e: str, t: float) -> Optional[np.ndarray]:
+    if _MODE["canon"]:
+        return MI.grain_row(store, s, e, t, config=_MODE["cfg"], dt=_MODE["dt"])
+    return MI.tick_row(store, s, e, t)
+
+
+def _modal(store: Any, s: str, e: str, t: float, smap: Any) -> Any:
+    if _MODE["canon"]:
+        return MI.grain_modal_data(store, s, e, t, smap=smap, config=_MODE["cfg"],
+                                   dt=_MODE["dt"])
+    return MI.tick_modal_data(store, s, e, t, smap=smap)
+
+
 def _active(store: Any, s: str, e: str, ts: float) -> bool:
-    a = store.vec_at(s, e, ACTIVE, ts)
+    a = store.vec_at(s, e, _clock(), ts)
     return a is not None and float(a[0]) >= 0.5
 
 
 def _active_ts(store: Any, s: str, e: str, since: float) -> List[float]:
-    ts, A = store.vec_since(s, e, ACTIVE, since)
+    ts, A = store.vec_since(s, e, _clock(), since)
     if not len(ts):
         return []
-    a = np.asarray(A, dtype=np.float64).reshape(-1)
+    A = np.asarray(A, dtype=np.float64)
+    a = A[:, 0] if A.ndim == 2 else A.reshape(-1)
     return [float(t) for t, v in zip(ts, a) if v >= 0.5]
 
 
@@ -379,7 +404,7 @@ class _Sys:
         c = MI.entity_mean(self.idm, e) if self.fitted else None
         if c is None and self.fitted:
             ts = _active_ts(self.store, self.s, e, self.now - LOOKBACK_S)[-CENTRE_TICKS:]
-            rows = [r for r in (MI.tick_row(self.store, self.s, e, t) for t in ts)
+            rows = [r for r in (_row(self.store, self.s, e, t) for t in ts)
                     if r is not None]
             if len(rows) >= 2:
                 ck = m_class.class_key(self.store, self.s, e)
@@ -432,6 +457,12 @@ class EntityLinkEngine(Engine):
         now, dt = float(ctx.now), float(ctx.window_s)
         if not (math.isfinite(dt) and dt > 0.0):
             raise ValueError(f"EntityLinkEngine: bad ctx.window_s {ctx.window_s!r}")
+        canon = GR.canonical(ctx.config)
+        _MODE.update(canon=canon, cfg=ctx.config, dt=dt)
+        if canon and not GR.decision(now, dt, "h", GR.CANONICAL):
+            return 0                              # spec v2.1: H rows only
+        if canon:
+            dt = max(dt, GR.GRAIN_S["h"])         # the rows' period
         return sum(self._system(ctx, s, now, dt) for s in store.systems())
 
     def _system(self, ctx: Context, s: str, now: float, dt: float) -> int:
@@ -583,7 +614,7 @@ class EntityLinkEngine(Engine):
         return [a for _, a in pre[:N_CAND]]
 
     def _z_now(self, sc: _Sys, b: str) -> Optional[np.ndarray]:
-        row = MI.tick_row(sc.store, sc.s, b, sc.now)
+        row = _row(sc.store, sc.s, b, sc.now)
         if row is None:
             return None
         z = MI.transform(sc.idm, MI.window_vector(row.reshape(1, -1)))
@@ -600,11 +631,11 @@ class EntityLinkEngine(Engine):
             cache[k] = {t: v for t, v in cache[k].items() if t in keep}
         for t in wts:
             if t not in cache["rows"]:
-                r = MI.tick_row(store, s, b, t)
+                r = _row(store, s, b, t)
                 if r is not None:
                     cache["rows"][t] = r
             if t not in cache["md"] and now - t <= 3600.0:   # raw sets are kept 1 h
-                cache["md"][t] = MI.tick_modal_data(store, s, b, t, smap=sc.smap)
+                cache["md"][t] = _modal(store, s, b, t, sc.smap)
         windows = [tuple(wts[i:i + K]) for i in range(0, len(wts), K)]
         cache["win"] = {w: v for w, v in cache["win"].items() if w in set(windows)}
         beh = {a: [] for a in cands}

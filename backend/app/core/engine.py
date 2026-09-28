@@ -46,6 +46,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # B13 absolute floors per quantity {Q: natural units per horizon}; keys
     # override the engine's built-in defaults one by one (integration R12.2)
     "budget_abs_floor": {},
+    # spec v2.1 (docs/lib3/cadence.md D11): 'tick' reproduces v2 exactly
+    # (G_h := dt, no Q grain); 'canonical' (the default since M8) is the
+    # cadence-invariant grain mode. Engine unit tests default to 'tick'
+    # (tests/engines|lib|core/conftest.py), whose maths is cadence-agnostic
+    "grain_mode": "canonical",
 }
 
 

@@ -36,6 +36,14 @@ How:
      12 seeds x 2e5 ticks, one M = 256 ring, 4-tick commit delay): realised
      rate at q <= 1e-3 is 1.19x nominal with the xi >= 0 floor and 1.01x
      (0.90 - 1.11) with the predictive floor; 0.97x at 1e-4. Raw HMP: 1.09x.
+     Robust fit: excesses beyond the 99.9 % bound of the maximum of n_u
+     exponential excesses (scale estimated from ranks) are replaced by
+     their expected order statistics before the PWM fit
+     (calib.winsorise_exceedances): -log10 of a valid p has an exponential
+     tail, so a heavier fitted tail only comes from contaminating extremes
+     (warm-up p_all of 1e-21 .. 1e-37 gave xi ~ 0.3 - 0.5 and saturated
+     q_all near 5e-4, integration §8). A clean ring's fit is touched in
+     ~1 % of refits (META_WINSOR_ALPHA).
   3. Evidence CUSUM over instantaneous evidence only: S = max(0, S - ln q_inst - 3)
      (lib/seq), alarm while S >= h = (ln ARL - 3.07)/0.94 with ARL = 33 d in
      ticks (h = 5.31 at 900 s, 8.19 at 60 s). S is not reset on alarm (it
@@ -82,7 +90,20 @@ Meta rings learn through lib/gating exactly as B24's rings (contract H):
 row t is committed D = max(4 ticks, D_min_s) later, admitted with
 probability trust(t) (seeded thinning: a ring cannot take a fractional
 weight, and dropping partially trusted ticks would cut the null's tail),
-held while quarantined, released / rebased / frozen by model.control. A
+held while quarantined, released / rebased / frozen by model.control.
+Every admission weight is capped by the governor's row-evidence weight
+(m_governor.evidence_weight, behavior.trust_evidence: no alarm, no finding
+>= MEDIUM, every accumulator < h/2 at the row; written on live ticks only).
+A normal live commit's trust already contains it; it binds for a release,
+which commits held rows with trust_prov (no accumulator factor): without
+the cap a breadth accumulator at p 1e-28 entered a live meta_all ring
+(integration §8). Warm-up rows are not gated by their own evidence: a
+version of this cap that also gated warm-up rows (their trust is 1 by
+definition) truncated each ring's null tail - pack A seed 0 single-tick
+e_day <= 0.03 on clean control ticks rose from 5.3x to 18x nominal, and a
+q_inst-based factor on top (the rings' own output) to 62x (integration
+§8.2). Warm-up extremes are handled by the robust tail fit instead.
+ A
 rollback deletes ring entries after the onset (the rings carry ts) and moves
 the journal rows after it to held; a version change resets the rings. Row
 values are kept 1 d (the same horizon B24 has for behavior.score), so rows
@@ -92,10 +113,29 @@ pipeline_degraded (contract M): when more than 30 % of an entity's families
 in play are degraded, one system event (entity '__system__', extra.entity)
 is emitted per entity per hour.
 
+spec v2.1 streams (docs/lib3/cadence.md §7.3-§7.5; canonical grain mode).
+Every detector belongs to a stream: h (scored on H rows at H decision
+ticks), q (Q rows at Q decision ticks) or t (every tick). Each tick has a
+type tau (h on an H decision tick, else q on a Q decision tick, else t);
+p_all is the wHMP of whatever was scored (NaN = not scored, never
+degraded), meta-calibrated in the stratum (daypart, tau[, cc for t]), and
+    e_day = q_all n_tau / beta_tau          (lib/grains.e_day_tick)
+so the single-tick budget stays 0.03 per entity-day at every cadence and
+equals q 86400 / dt at 3600 s. There is one evidence CUSUM per stream: S_t
+(behavior.evidence) over the T-stream instantaneous detectors every tick and
+S_h (behavior.evidence.h) over the H-stream instantaneous detectors except
+identity (whose windows overlap) on H ticks, each with half of the evidence
+budget (ARL 66 d in its own periods). Q evidence enters no CUSUM (it is
+nested in the hour's H evidence). Accumulator and family e_days count the
+detector's own periods; the corroboration window is max(4 dt, 1 h) and
+"consecutive" means consecutive decision ticks of the same type. A Q
+detector with a provisional score (behavior.prov < 0.5) enters its family
+at half weight and an alarm that needs it is capped at MEDIUM.
+
 Store: reads behavior.p, behavior.axes, behavior.acc_alarm, behavior.degraded,
 behavior.common.flag, behavior.calib_health@(s, __system__), feature.tctx,
 behavior.trust / trust_prov / quarantine and model.control / model.link (via
-gating), model.feedback (m_feedback), store.events, store.matches; writes
+gating), behavior.trust_evidence (m_governor.evidence_weight), model.feedback (m_feedback), store.events, store.matches; writes
 behavior.p_family (dict), behavior.q_inst / q_all / e_day / evidence
 (1-element float32 vec rings), behavior.alarm (dict, alarm ticks only),
 model.calib['meta'] (meta rings and B25 bookkeeping), pipeline_degraded events.
@@ -112,10 +152,12 @@ import numpy as np
 
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, MetricKind, Severity
-from .lib import calib, combine, emit, gating, m_calib, m_feedback, seq, timebins
+from .lib import calib, combine, emit, gating, m_calib, m_feedback, m_governor, seq, timebins
+from .lib import grains as GR
 from .lib.classkeys import CLASS_PREFIX, SYSTEM_KEY
 from .lib.detectors import (ACC_DETECTORS, DETECTOR_INDEX, DETECTOR_INFO, DETECTORS, FAMILIES,
-                            FAMILY_IDX, INSTANT_FAMILIES, N_DETECTORS, family_members)
+                            FAMILY_IDX, INSTANT_FAMILIES, N_DETECTORS, Q_DETECTORS,
+                            family_members)
 
 MODEL = m_calib.MODEL
 META = m_calib.META
@@ -124,6 +166,10 @@ Q_INST = "behavior.q_inst"
 Q_ALL = "behavior.q_all"
 E_DAY = "behavior.e_day"
 EVIDENCE = "behavior.evidence"
+Q_INST_H = "behavior.q_inst.h"            # spec v2.1: H-stream instantaneous evidence
+EVIDENCE_H = "behavior.evidence.h"
+PROV = "behavior.prov"
+META_INST_H, META_INST_T = "meta_inst_h", "meta_inst_t"
 P_FAMILY = "behavior.p_family"
 ALARM = "behavior.alarm"
 COMMON_FLAG = "behavior.common.flag"
@@ -200,6 +246,13 @@ _ORDER = range(N_DETECTORS)
 _DEFAULT_AXES: List[Tuple[str, ...]] = [tuple(DETECTOR_INFO[d]["axes"]) for d in DETECTORS]
 _ACC_SET = frozenset(ACC_DETECTORS)
 _ONES = [1.0] * N_DETECTORS
+_STREAM: List[str] = [str(DETECTOR_INFO[d]["stream"]) for d in DETECTORS]
+# spec v2.1 evidence streams: instantaneous detectors of the T stream, and of
+# the H stream except identity (overlapping windows: single-tick only)
+_INST_T_IDX = [i for i, d in enumerate(DETECTORS) if _INST[i] and _STREAM[i] == "t"]
+_INST_H_IDX = [i for i, d in enumerate(DETECTORS)
+               if _INST[i] and _STREAM[i] == "h" and not DETECTOR_INFO[d]["overlap"]]
+_Q_IDX = [DETECTOR_INDEX[d] for d in Q_DETECTORS]
 
 
 def _f(x: Any) -> float:
@@ -296,13 +349,21 @@ def meta_score(p: float) -> float:
     return -math.log10(p)
 
 
+# meta tail: winsorise exceedances beyond the (1 - alpha) bound of the max of
+# n_u exponential excesses (calib.winsorise_exceedances). With the rank-based
+# scale estimate the realised touch rate on a clean exponential tail is 1.0 %
+# at n_u = 26 (a full M = 256 ring) and 3 % at n_u = 10 (2e4 simulated fits).
+META_WINSOR_ALPHA = 0.001
+
+
 def meta_tail(ring: calib.Ring, ts: float = _NAN) -> Optional[calib.GPDTail]:
-    """GPD tail of a meta ring with the predictive xi floor 1/n_u (module docstring)."""
+    """GPD tail of a meta ring with the predictive xi floor 1/n_u, fitted to
+    winsorised exceedances (module docstring, "Tail shape")."""
     n = len(ring)
     if n < calib.MIN_EXCEED:
         return None
     n_u = max(calib.MIN_EXCEED, n - 1 - int(math.floor(calib.TAIL_Q * (n - 1))))
-    return calib.fit_tail(ring, now_ts=ts, xi_min=1.0 / n_u)
+    return calib.fit_tail(ring, now_ts=ts, xi_min=1.0 / n_u, winsor_alpha=META_WINSOR_ALPHA)
 
 
 def meta_add(ring: calib.Ring, score: float, ts: float, count: int) -> int:
@@ -401,6 +462,22 @@ def bh_threshold(pvals: Iterable[float], q: float = BH_Q) -> float:
 
 
 # ================================================================ severity
+def _stream_p(row: Sequence[float], idx: Sequence[int], fw: Mapping[str, float],
+              wm: Sequence[float]) -> float:
+    """spec v2.1: the instantaneous p of one stream: fuse() restricted to the
+    stream's instantaneous detectors (the others NaN)."""
+    r = [_NAN] * N_DETECTORS
+    any_ = False
+    for i in idx:
+        v = row[i]
+        if 0.0 <= v <= 1.0:
+            r[i] = v
+            any_ = True
+    if not any_:
+        return _NAN
+    return fuse(r, fw, wm).p_inst
+
+
 def lower(sev: Optional[str], floor: str = "low") -> Optional[str]:
     """One level down, never below `floor` (an alarm stays an alarm)."""
     if sev is None:
@@ -486,6 +563,8 @@ class _MRow(NamedTuple):
     s_inst: float
     s_all: float
     stratum: str
+    grain: Optional[Tuple] = None     # spec v2.1: (s_inst_h, st_all, st_inst_t, st_inst_h)
+    wev: float = 1.0                  # governor evidence weight at ts (m_governor.evidence_weight)
 
 
 class _MetaLearner(gating.GatedLearner):
@@ -515,12 +594,13 @@ class _SysCtx(NamedTuple):
     h_base: float
     daypart: str
     b24_failed: bool
+    grain: Optional[Dict[str, Any]] = None    # spec v2.1 tick context (canonical mode)
 
 
 class _Rec:
     """Phase-1 result of one key, finalised after the system-wide BH."""
     __slots__ = ("e", "is_class", "st", "q_all", "e_day", "S", "S_prev", "h", "updated",
-                 "ev_alarm", "fused", "sig", "fam_axes", "acc", "e_acc", "row")
+                 "ev_alarm", "fused", "sig", "fam_axes", "acc", "e_acc", "row", "gx")
 
     def __init__(self, **kw: Any) -> None:
         for k in self.__slots__:
@@ -533,7 +613,7 @@ class FusionEngine(Engine):
     consumes = ["behavior.p", "behavior.axes", "behavior.acc_alarm", "behavior.degraded",
                 "behavior.common.flag", "behavior.calib_health", "feature.tctx",
                 "behavior.trust", "behavior.trust_prov", "behavior.quarantine",
-                "model.feedback", "model.control", "model.link", "store.events",
+                "behavior.trust_evidence", "model.feedback", "model.control", "model.link", "store.events",
                 "store.matches"]
     produces = ["behavior.p_family", "behavior.q_inst", "behavior.q_all", "behavior.e_day",
                 "behavior.evidence", "behavior.alarm", "model.calib.meta",
@@ -591,11 +671,18 @@ class FusionEngine(Engine):
         v = meta[STATE]["pending"].get(ts)
         if v is None:
             return None                              # older than the value horizon
-        return _MRow(s, e, ts, v[0], v[1], v[2])
+        wev = m_governor.evidence_weight(store, s, e, ts)
+        if len(v) > 3:                               # spec v2.1 row
+            return _MRow(s, e, ts, v[0], v[1], v[2], (v[3], v[4], v[5], v[6]), wev)
+        return _MRow(s, e, ts, v[0], v[1], v[2], None, wev)
 
     def _update(self, meta: Dict[str, Any], row: _MRow, w: float) -> Dict[str, Any]:
         w = float(w)
         w = 0.0 if not w > 0.0 else (1.0 if w > 1.0 else w)     # NaN -> 0
+        # the governor's row-evidence cap: binds for released rows (trust_prov
+        # has no accumulator factor); module docstring "Meta rings learn ..."
+        if row.wev < w:
+            w = row.wev
         if w >= 1.0:
             admit = True
         elif w > 0.0:
@@ -606,10 +693,16 @@ class FusionEngine(Engine):
             return meta
         st = meta[STATE]
         refit = st["refit"]
-        for kind, x in ((META_INST, row.s_inst), (META_ALL, row.s_all)):
-            if not x == x:
+        if row.grain is not None:
+            s_h, st_all, st_t, st_h = row.grain
+            items = ((META_INST_T, row.s_inst, st_t), (META_ALL, row.s_all, st_all),
+                     (META_INST_H, s_h, st_h))
+        else:
+            items = ((META_INST, row.s_inst, row.stratum), (META_ALL, row.s_all, row.stratum))
+        for kind, x, stratum in items:
+            if not x == x or stratum is None:
                 continue
-            key = self._ring_key(kind, row.stratum)
+            key = self._ring_key(kind, stratum)
             r = meta.get(key)
             if r is None:
                 r = meta[key] = calib.Ring()
@@ -654,6 +747,22 @@ class FusionEngine(Engine):
         b24_failed = store.engine_failed(B24_ENGINE, now)
         fw = m_feedback.family_weights(store)
         h_base = evidence_h(dt)
+        gctx = None
+        if GR.canonical(config):
+            tau = GR.tick_type(now, dt, GR.CANONICAL)
+            dp_h = GR.row_tctx(now, "h", dt, config)["daypart"]
+            dp_q = (GR.row_tctx(now, "q", dt, config)["daypart"]
+                    if GR.observable("q", dt, GR.CANONICAL) else dp_h)
+            gctx = {
+                "tau": tau, "cc": cc, "dp_t": daypart, "dp_h": dp_h, "dp_q": dp_q,
+                "h_due": GR.decision(now, dt, "h", GR.CANONICAL),
+                "mult": GR.e_day_mult(tau, dt, GR.CANONICAL),
+                "h_t": seq.h_evidence(GR.evidence_arl_ticks("t", dt, GR.CANONICAL)),
+                "h_h": seq.h_evidence(GR.evidence_arl_ticks("h", dt, GR.CANONICAL)),
+                "per": [GR.period_s(d, dt, GR.CANONICAL) for d in DETECTORS],
+                "corr_s": max(CORR_TICKS * dt, GR.GRAIN_S["h"]),
+            }
+            h_base = gctx["h_t"]
         n_out = 0
         for s in store.systems():
             keys = store.entities(s) + [k for k in store.pseudo_entities(s)
@@ -663,7 +772,8 @@ class FusionEngine(Engine):
             ch = store.latest_derived(s, SYSTEM_KEY, CALIB_HEALTH)
             chv = ch.value if ch is not None and isinstance(ch.value, Mapping) else None
             wm = [m_calib.weight_mult(chv, d) for d in DETECTORS] if chv else _ONES
-            sc = _SysCtx(s, fw, m_feedback.alpha_mult(store, s), wm, h_base, daypart, b24_failed)
+            sc = _SysCtx(s, fw, m_feedback.alpha_mult(store, s), wm, h_base, daypart, b24_failed,
+                         gctx)
             recs: List[_Rec] = []
             for e in keys:
                 rec = self._phase1(ctx, store, sc, e, now, dt, cc, learner)
@@ -673,7 +783,7 @@ class FusionEngine(Engine):
                 bh = bh_threshold(r.q_all for r in recs)
                 for rec in recs:
                     n_out += self._finalise(ctx, store, sc, rec, now, dt, bh)
-            self._audit(store, s, keys, now, dt, h_base)
+            self._audit(store, s, keys, now, dt, h_base, gctx)
         return n_out
 
     # -------------------------------------------------------------- phase 1
@@ -723,6 +833,9 @@ class FusionEngine(Engine):
         st["warm"] = bool(ctx.training)
         h = sc.h_base * float(st.get("h_mult", 1.0))
         win = int(dt)
+        if sc.grain is not None:
+            return self._phase1_grain(ctx, store, sc, e, now, dt, st, meta, pend, row,
+                                      S_prev, h, win)
         if row is None:                              # fused before, unscored now
             nan1 = [_NAN]
             store.add_vec(s, e, Q_INST, now, nan1, window_s=win)
@@ -781,6 +894,121 @@ class FusionEngine(Engine):
                     S=S, S_prev=S_prev, h=h, updated=updated, ev_alarm=ev_alarm, fused=fz,
                     sig=sig, fam_axes=None, acc=acc, e_acc=e_acc, row=row)
 
+    # ------------------------------------------------------ spec v2.1 streams
+    def _phase1_grain(self, ctx: Context, store, sc: _SysCtx, e: str, now: float, dt: float,
+                      st: Dict[str, Any], meta: Dict[str, Any], pend: Dict[float, Any],
+                      row: Optional[np.ndarray], S_prev: float, h: float,
+                      win: int) -> Optional[_Rec]:
+        """Canonical mode: tick types, per-stream evidence CUSUMs (module docstring)."""
+        s, gx = sc.s, sc.grain
+        tau = gx["tau"]
+        Sh_prev = _f(st.get("S_h"))
+        Sh_prev = Sh_prev if Sh_prev == Sh_prev else 0.0
+        if st.get("warm_h") and not ctx.training:
+            # warm-up evidence ends at the first live tick; stored at once, since
+            # S_h is otherwise written on H ticks only and the first live tick
+            # need not be one (the warm-up S_h would then resume on the next H tick)
+            Sh_prev = 0.0
+            st["S_h"] = 0.0
+        st["warm_h"] = bool(ctx.training)
+        h_h = gx["h_h"] * float(st.get("h_mult_h", 1.0))
+        if row is None:                              # fused before, unscored now
+            nan1 = [_NAN]
+            store.add_vec(s, e, Q_INST, now, nan1, window_s=win)
+            store.add_vec(s, e, Q_ALL, now, nan1, window_s=win)
+            store.add_vec(s, e, E_DAY, now, nan1, window_s=win)
+            store.add_vec(s, e, EVIDENCE, now, [S_prev], window_s=win)
+            if gx["h_due"]:
+                store.add_vec(s, e, Q_INST_H, now, nan1, window_s=win)
+                store.add_vec(s, e, EVIDENCE_H, now, [Sh_prev], window_s=win)
+            return None
+        rowl = row.tolist() if isinstance(row, np.ndarray) else list(row)
+        # provisional Q scores: half weight in their family (cadence.md §7.5)
+        prov = emit.read_dict(store, s, e, PROV, now) if tau != "t" else {}
+        prov_q = [DETECTOR_INDEX[d] for d in Q_DETECTORS
+                  if 0.0 <= _f(rowl[DETECTOR_INDEX[d]]) <= 1.0 and _f(prov.get(d)) < 0.5]
+        wm = list(sc.wm)
+        for i in prov_q:
+            wm[i] = wm[i] * 0.5
+        fz = fuse(row, sc.fw, wm)
+        degraded = self._degraded_families(store, s, e, now, fz)
+        dp_t = self._daypart(store, s, e, now, sc.daypart)
+        dp_tau = gx["dp_h"] if tau == "h" else gx["dp_q"] if tau == "q" else dp_t
+        st_all = calib.meta_stratum_key(dp_tau, tau, gx["cc"] if tau == "t" else None)
+        st_t = calib.meta_stratum_key(dp_t, "t", gx["cc"])
+        st_h = calib.meta_stratum_key(gx["dp_h"], "h")
+        # stream-wise instantaneous evidence
+        p_t = _stream_p(rowl, _INST_T_IDX, sc.fw, wm)
+        p_h = _stream_p(rowl, _INST_H_IDX, sc.fw, wm) if gx["h_due"] else _NAN
+        s_t, s_h, s_all = meta_score(p_t), meta_score(p_h), meta_score(fz.p_all)
+        q_t = meta_q(meta.get(self._ring_key(META_INST_T, st_t)), s_t,
+                     m_calib.uniform(s, e, META_INST, now), p_t)
+        q_h = meta_q(meta.get(self._ring_key(META_INST_H, st_h)), s_h,
+                     m_calib.uniform(s, e, META_INST_H, now), p_h)
+        q_all = meta_q(meta.get(self._ring_key(META_ALL, st_all)), s_all,
+                       m_calib.uniform(s, e, META_ALL, now), fz.p_all)
+        if s_t == s_t or s_all == s_all or s_h == s_h:
+            pend[now] = (s_t, s_all, st_all, s_h, st_all, st_t, st_h)
+        e_day = q_all * gx["mult"] if q_all == q_all else _NAN
+        # evidence CUSUMs: S_t every tick, S_h on H ticks
+        S, upd_t, al_t = evidence_update(S_prev, q_t, h)
+        st["S"] = S
+        Sh, upd_h, al_h = Sh_prev, False, False
+        if gx["h_due"]:
+            Sh, upd_h, al_h = evidence_update(Sh_prev, q_h, h_h)
+            st["S_h"] = Sh
+        store.add_vec(s, e, Q_INST, now, [m_calib.issued(q_t)], window_s=win)
+        store.add_vec(s, e, Q_ALL, now, [m_calib.issued(q_all)], window_s=win)
+        store.add_vec(s, e, E_DAY, now, [e_day], window_s=win)
+        store.add_vec(s, e, EVIDENCE, now, [S], window_s=win)
+        if gx["h_due"]:
+            store.add_vec(s, e, Q_INST_H, now, [m_calib.issued(q_h)], window_s=win)
+            store.add_vec(s, e, EVIDENCE_H, now, [Sh], window_s=win)
+        pf_out: Dict[str, float] = dict(fz.p_family)
+        for f in degraded:
+            pf_out[f] = _NAN
+        if pf_out:
+            store.add_derived(DerivedMetric(name=P_FAMILY, value=pf_out, ts=now, system=s,
+                                            entity=e, window_s=win, kind=MetricKind.CATEGORICAL))
+        if degraded:
+            self._maybe_degraded_event(store, s, e, now, st, fz, degraded)
+        # significant families on their own periods' e_day scale
+        per = gx["per"]
+        sig: List[str] = []
+        for f, p in fz.p_family.items():
+            mem = [per[i] for i in FAMILY_IDX[f] if 0.0 <= _f(rowl[i]) <= 1.0]
+            if mem and p * 86400.0 / min(mem) <= AXIS_E_DAY:
+                sig.append(f)
+        acc: List[Tuple[str, float]] = []
+        aa = emit.read_dict(store, s, e, emit.ACC_ALARM, now)
+        e_acc = _NAN
+        if aa:
+            for d, v in aa.items():
+                if d in _ACC_SET and _f(v) >= 0.5:
+                    pv = _f(rowl[DETECTOR_INDEX[d]])
+                    acc.append((d, pv if 0.0 <= pv <= 1.0 else _NAN))
+            fin = [p * 86400.0 / per[DETECTOR_INDEX[d]] for d, p in acc if p == p]
+            if fin:
+                e_acc = min(fin)
+        # which stream's evidence alarm (S_h is judged on H ticks only)
+        ev_alarm = al_t or al_h
+        S_rep, S_prev_rep, h_rep, stream = S, S_prev, h, "t"
+        if al_h and (not al_t or Sh / h_h > S / h):
+            S_rep, S_prev_rep, h_rep, stream = Sh, Sh_prev, h_h, "h"
+        # an alarm that needs provisional Q evidence is capped at MEDIUM
+        prov_cap = False
+        if prov_q and tau == "q":
+            r2 = list(rowl)
+            for i in prov_q:
+                r2[i] = _NAN
+            fz2 = fuse(r2, sc.fw, sc.wm)
+            prov_cap = not (fz2.p_all == fz2.p_all and fz2.p_all * gx["mult"] <= SINGLE_E_DAY)
+        return _Rec(e=e, is_class=e.startswith(CLASS_PREFIX), st=st, q_all=q_all, e_day=e_day,
+                    S=S_rep, S_prev=S_prev_rep, h=h_rep, updated=upd_t or upd_h,
+                    ev_alarm=ev_alarm, fused=fz, sig=sig, fam_axes=None, acc=acc, e_acc=e_acc,
+                    row=row, gx={"tau": tau, "stream": stream, "prov_cap": prov_cap,
+                                 "per": per, "corr_s": gx["corr_s"]})
+
     def _daypart(self, store, s: str, e: str, now: float, fallback: str) -> str:
         """daypart from B01's feature.tctx at now (dict or vec form), else config."""
         m = store.latest_derived(s, e, TCTX)
@@ -832,13 +1060,18 @@ class FusionEngine(Engine):
         of its driving members = members at e_day <= 0.03, else the smallest p."""
         axd = emit.read_dict(store, s, rec.e, emit.AXES, now)
         vals = rec.row.tolist() if isinstance(rec.row, np.ndarray) else list(rec.row)
+        per = rec.gx["per"] if rec.gx is not None else None
         thr = AXIS_E_DAY * dt / 86400.0
         out: Dict[str, Set[str]] = {}
         for f in fams:
             members = [(vals[i], i) for i in FAMILY_IDX[f] if 0.0 <= vals[i] <= 1.0]
             if not members:
                 continue
-            drivers = [i for p, i in members if p <= thr] or [min(members)[1]]
+            if per is not None:                  # spec v2.1: each member's own period
+                drivers = [i for p, i in members if p * 86400.0 / per[i] <= AXIS_E_DAY] \
+                    or [min(members)[1]]
+            else:
+                drivers = [i for p, i in members if p <= thr] or [min(members)[1]]
             ax: Set[str] = set()
             for i in drivers:
                 ax |= self._axes_of(axd, i)
@@ -890,16 +1123,29 @@ class FusionEngine(Engine):
             paths[PATH_ACC] = combine.e_day_severity(rec.e_acc, alpha) or "low"
 
         # corroboration history (every scored tick, alarm or not)
-        hist = [h for h in (st.get("hist") or []) if now - CORR_TICKS * dt < _f(h[0]) < now]
-        prev = hist[-1] if hist and _f(hist[-1][0]) >= now - 1.5 * dt else None
-        st["hist"] = (hist + [[now, e_path, sorted(sig_axes)]])[-CORR_TICKS:]
+        gx = rec.gx
+        if gx is None:
+            hist = [h for h in (st.get("hist") or []) if now - CORR_TICKS * dt < _f(h[0]) < now]
+            prev = hist[-1] if hist and _f(hist[-1][0]) >= now - 1.5 * dt else None
+            st["hist"] = (hist + [[now, e_path, sorted(sig_axes)]])[-CORR_TICKS:]
+        else:
+            # spec v2.1: wall-clock window max(4 dt, 1 h); "consecutive" = the
+            # previous decision tick of the same type
+            win_s = gx["corr_s"]
+            hist = [h for h in (st.get("hist") or []) if now - win_s < _f(h[0]) < now]
+            tau = gx["tau"]
+            per_tau = GR.GRAIN_S.get(tau, dt) if tau != "t" else dt
+            same = [h for h in hist if (h[3] if len(h) > 3 else "t") == tau]
+            prev = same[-1] if same and _f(same[-1][0]) >= now - 1.5 * max(per_tau, dt) else None
+            keep = max(CORR_TICKS, int(math.ceil(win_s / dt)) + 1)
+            st["hist"] = (hist + [[now, e_path, sorted(sig_axes), tau]])[-keep:]
         if not paths:
             return 0
 
         # --- 5) corroboration limit (store lookups only when a level above
         # MEDIUM is at stake: a HIGH+ candidate or a possible self/peer raise)
         axes4 = set(sig_axes)
-        for h in hist[-(CORR_TICKS - 1):]:
+        for h in (hist[-(CORR_TICKS - 1):] if gx is None else hist):
             axes4.update(h[2])
         n_axes = len(axes4)
         consec = (prev is not None and _f(prev[1]) <= CONSEC_E_DAY * alpha
@@ -914,6 +1160,10 @@ class FusionEngine(Engine):
                 allowed = "high"
             if n_axes >= 3 or self._lib4_high(store, s, e, now, dt):
                 allowed = "critical"
+        if gx is not None and gx.get("prov_cap") and PATH_SINGLE in paths \
+                and _RANK[allowed] > _RANK["medium"]:
+            allowed = "medium"                 # provisional Q evidence: never HIGH
+            rules.append("provisional_q")
         capped = {p: cap(v, allowed) for p, v in paths.items()}
         path = min(capped, key=lambda p: (-_RANK[capped[p]], _PATH_ORDER[p]))
         sev = capped[path]
@@ -941,6 +1191,11 @@ class FusionEngine(Engine):
                 rules.append("self_peer_down")
         if rule_axes and rule_axes <= COMMON_MODE_AXES:
             flags = emit.read_dict(store, s, e, COMMON_FLAG, now)
+            if gx is not None and gx["tau"] != "h":
+                flags = dict(flags or {})
+                for g, v in (emit.read_dict(store, s, e, COMMON_FLAG + ".q", now) or {}).items():
+                    flags[g] = max(_f(flags.get(g, 0.0)) if flags.get(g) is not None else 0.0,
+                                   _f(v))
             flagged = {canonical_axis(g) for g, v in (flags or {}).items() if _f(v) >= 0.5}
             if rule_axes <= flagged:
                 sev = lower(sev)
@@ -983,6 +1238,10 @@ class FusionEngine(Engine):
             "n_axes": n_axes,
             "rules": rules,
         }
+        if gx is not None:
+            alarm["tau"] = gx["tau"]
+            if PATH_EVIDENCE in paths:
+                alarm["stream"] = gx["stream"]
         store.add_derived(DerivedMetric(name=ALARM, value=alarm, ts=now, system=s, entity=e,
                                         window_s=int(dt), kind=MetricKind.CATEGORICAL))
         return 1
@@ -1003,8 +1262,11 @@ class FusionEngine(Engine):
 
     # ---------------------------------------------------------------- audit
     def _audit(self, store, s: str, keys: Sequence[str], now: float, dt: float,
-               h_base: float) -> None:
-        """Hourly block-bootstrap audit of one key's evidence-alarm rate (round robin)."""
+               h_base: float, gctx: Optional[Mapping[str, Any]] = None) -> None:
+        """Hourly block-bootstrap audit of one key's evidence-alarm rate (round
+        robin). spec v2.1 canonical mode: per stream, the T stream on its
+        q_inst ticks against its own ARL (EVIDENCE_ARL_DAYS / share), and the
+        H stream on behavior.q_inst.h (one row per hour) with h_h / h_mult_h."""
         if not self.entity_due(("fusion.audit", s), now, AUDIT_PERIOD_S):
             return
         cand = []
@@ -1018,8 +1280,21 @@ class FusionEngine(Engine):
         st = store.get_model(s, e, MODEL)[META].get(STATE)
         if not isinstance(st, dict):
             return
-        ts, M = store.vec_since(s, e, Q_INST, now - AUDIT_WINDOW_S)
-        if ts.size * dt < AUDIT_MIN_S:
+        if gctx is None:
+            self._audit_stream(store, s, e, st, now, Q_INST, dt, h_base, "h_mult", "audit",
+                               1.0 / EVIDENCE_ARL_DAYS)
+            return
+        self._audit_stream(store, s, e, st, now, Q_INST, dt, gctx["h_t"], "h_mult", "audit",
+                           1.0 / GR.evidence_arl_days("t", GR.CANONICAL))
+        per_h = GR.stream_period_s("h", dt, GR.CANONICAL)
+        self._audit_stream(store, s, e, st, now, Q_INST_H, per_h, gctx["h_h"], "h_mult_h",
+                           "audit_h", 1.0 / GR.evidence_arl_days("h", GR.CANONICAL))
+
+    def _audit_stream(self, store, s: str, e: str, st: Dict[str, Any], now: float, name: str,
+                      per_s: float, h_base: float, mult_key: str, rec_key: str,
+                      target: float) -> None:
+        ts, M = store.vec_since(s, e, name, now - AUDIT_WINDOW_S)
+        if ts.size * per_s < AUDIT_MIN_S:
             return
         q = M[:, 0].astype(np.float64)
         tt, TM = store.vec_since(s, e, gating.TRUST, now - AUDIT_WINDOW_S)
@@ -1030,17 +1305,16 @@ class FusionEngine(Engine):
             tv = np.full(ts.size, _NAN)
             tv[ok] = TM[idx[ok], 0]
             q = q[tv >= AUDIT_TRUST_MIN]
-        if q.size * dt < AUDIT_MIN_S:
+        if q.size * per_s < AUDIT_MIN_S:
             return
-        h_mult = float(st.get("h_mult", 1.0))
+        h_mult = float(st.get(mult_key, 1.0))
         rng = np.random.default_rng(zlib.crc32(f"{s}|{e}|{int(now)}".encode("utf-8")))
-        rate = audit_rate(q, h_base * h_mult, dt, rng)
+        rate = audit_rate(q, h_base * h_mult, per_s, rng)
         if not rate == rate:
             return
-        target = 1.0 / EVIDENCE_ARL_DAYS
         if rate > 2.0 * target:
             h_mult = min(H_MULT_MAX, h_mult + H_MULT_STEP_UP)
         elif rate <= target:
             h_mult = max(1.0, h_mult - H_MULT_STEP_DOWN)
-        st["h_mult"] = h_mult
-        st["audit"] = {"ts": now, "rate": rate, "h_mult": h_mult, "n": int(q.size)}
+        st[mult_key] = h_mult
+        st[rec_key] = {"ts": now, "rate": rate, "h_mult": h_mult, "n": int(q.size)}

@@ -252,6 +252,7 @@ class FeedbackEngine(Engine):
         self._seen: Optional[set] = None
         self._seen_for: Optional[int] = None
         self._tick_systems: set = set()
+        self._profile_todo: List[Tuple[str, str, Label]] = []
 
     # ------------------------------------------------------------------ run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
@@ -270,12 +271,18 @@ class FeedbackEngine(Engine):
 
         labels = self._new_labels(store, model)
         relearn = False
+        self._profile_todo = []
         for lb in labels:
             relearn |= self._apply_label(ctx, model, lb)
         if labels:
             changed = True
         if relearn:
             self._relearn(model, now)
+        # profile.extra.feedback after the refit: its summary (n_labelled,
+        # stacker, isotonic) must describe the model this label produced
+        for system, entity, lb in self._profile_todo:
+            self._write_profile(store, model, system, entity, lb, now)
+        self._profile_todo = []
         n += len(labels)
 
         if st.get("sweep_ts") is None or now - st["sweep_ts"] >= SWEEP_EVERY_S:
@@ -567,7 +574,7 @@ class FeedbackEngine(Engine):
 
         if lb.target_type == "incident":
             model["queue"] = [it for it in model["queue"] if it.get("incident_id") != lb.target_id]
-        self._write_profile(store, model, system, entity, lb, now)
+        self._profile_todo.append((system, entity, lb))      # written after _relearn (run)
         return relearn
 
     @staticmethod

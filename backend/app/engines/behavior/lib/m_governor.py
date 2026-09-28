@@ -54,7 +54,7 @@ Layout of model.governor@(s, e | class:<id>) (a dict, stored by reference):
     }
 model.control@(s, e | class:<id>): {version, branch, rebase_from, rollback_to,
 release [t0, t1], frozen, allow_drift, accepted_class_change} (contract C, H).
-Series: behavior.trust / trust_prov / quarantine are 1-element float32 vec
+Series: behavior.trust / trust_prov / quarantine / trust_evidence are 1-element float32 vec
 rings (every tick, every key); behavior.regime is a dict derived series
 {state, type, onset, p_legit, logodds, version, branch, since} written on
 every non-normal tick, on every transition and at least hourly while normal,
@@ -69,6 +69,7 @@ Accessors (all read-only; absent model -> neutral defaults):
     is_quarantined(store, s, e, at=None) -> bool       # latest defined value <= at
     trust(store, s, e, at=None) -> float               # NaN when none / degraded
     trust_prov(store, s, e, at=None) -> float
+    evidence_weight(store, s, e, at) -> float     # behavior.trust_evidence, 1.0 if absent
     regime_at(store, s, e, ts) -> str                  # from the transition history
     episodes(store, s, e, since=None) -> [{onset, start, end, state, type}]  # open one: end None
     in_regime_window(store, s, e, ts, window_s=86400) -> bool   # B03 reference admission
@@ -100,6 +101,8 @@ REGIME = "behavior.regime"
 TRUST = gating.TRUST
 TRUST_PROV = gating.TRUST_PROV
 QUARANTINE = gating.QUARANTINE
+# the live trust's gates on the row itself (see evidence_weight), live ticks only
+TRUST_EVIDENCE = "behavior.trust_evidence"
 
 HOUR = 3600.0
 DAY = 86400.0
@@ -190,7 +193,7 @@ def p_from_logodds(x: float) -> float:
 
 
 def decide(typ: Optional[str], x: float, duration_s: float, malicious: bool, negative: bool,
-           ramp_blocked: bool = False) -> Optional[str]:
+           ramp_blocked: bool = False, corroborated: bool = True) -> Optional[str]:
     """The verdict of one evaluation: 'accept', 'reject' or None (hold).
 
     accept: P >= 0.9 and duration >= T_type and no malicious-type evidence and
@@ -198,7 +201,10 @@ def decide(typ: Optional[str], x: float, duration_s: float, malicious: bool, neg
             after NEW_ENTITY_ACCEPT_S with no malicious evidence and no
             negative term.
     reject: P <= 0.2 with malicious-type evidence or a negative term (the
-            prior alone never rejects: it holds as DRIFTING for a label).
+            prior alone never rejects: it holds as DRIFTING for a label),
+            and the episode is `corroborated` (reject_corroborated): a
+            REJECT freezes every learner, so, like ACCEPT's T_type, it needs
+            more than one tick of one source.
     """
     p = p_from_logodds(x)
     dur = _f(duration_s)
@@ -209,9 +215,45 @@ def decide(typ: Optional[str], x: float, duration_s: float, malicious: bool, neg
             return "accept"
         if typ == NEW_ENTITY and not negative and dur >= NEW_ENTITY_ACCEPT_S:
             return "accept"
-    if p <= P_REJECT and (malicious or negative):
+    if p <= P_REJECT and (malicious or negative) and corroborated:
         return "reject"
     return None
+
+
+# REJECT corroboration (governor): the anomaly itself must persist as long as
+# SUSPECT -> DRIFTING requires, unless independent malicious evidence agrees
+REJECT_MIN_TICKS = 4
+REJECT_MIN_S = 3600.0
+MALICIOUS_SOURCES = ("lib4_high", "id_mismatch", "client_concurrency", "beacon",
+                     "exfil_budget", "sys_sensitive")
+
+
+def reject_corroborated(flags: Mapping[str, Any], evidence_ticks: int,
+                        evidence_span_s: float) -> bool:
+    """May an episode with these sticky flags be REJECTED (frozen)?
+
+    True when an analyst labelled it malicious ('malicious_label'), when at
+    least two independent malicious-type sources agree (MALICIOUS_SOURCES:
+    lib-4 >= HIGH, identity mismatch / client concurrency, beacon, exfil
+    budget, system-tier sensitive novelty; id_mismatch and
+    client_concurrency are one source), or when the entity's own anomaly
+    evidence (a fusion alarm or an accumulator alarm) persisted on >=
+    REJECT_MIN_TICKS ticks spanning >= REJECT_MIN_S, the persistence
+    SUSPECT -> DRIFTING requires. Otherwise one lib-4 HIGH match meeting a
+    one-tick alarm (the first live tick after a warm-up, a rhythm blip)
+    would discard the entity's held rows on its first live tick; it holds
+    in SUSPECT / DRIFTING instead and returns once quiet."""
+    if not isinstance(flags, Mapping):
+        flags = {}
+    if flags.get("malicious_label"):
+        return True
+    src = {("id_mismatch" if k == "client_concurrency" else k)
+           for k in MALICIOUS_SOURCES if flags.get(k)}
+    if len(src) >= 2:
+        return True
+    n = int(_f(evidence_ticks)) if _f(evidence_ticks) == _f(evidence_ticks) else 0
+    span = _f(evidence_span_s)
+    return n >= REJECT_MIN_TICKS and span == span and span >= REJECT_MIN_S
 
 
 # ================================================================ accessors
@@ -288,6 +330,26 @@ def trust(store: Any, s: str, e: str, at: Optional[float] = None) -> float:
 
 def trust_prov(store: Any, s: str, e: str, at: Optional[float] = None) -> float:
     return _exact(store, s, e, TRUST_PROV, at)
+
+
+def evidence_weight(store: Any, s: str, e: str, at: float) -> float:
+    """The governor's row-evidence weight of the row at `at`, in [0, 1]:
+    behavior.trust_evidence = [no alarm] x [no discrete finding >= MEDIUM] x
+    [every accumulator < h/2], written on live ticks only - the live trust's
+    gates on the row itself, without the regime / incident state and without
+    the q_inst evidence factor. B24 detector rings and B25 meta rings admit a
+    row with min(gate weight, this): a normal live commit's trust already
+    contains it, so it binds for a release (weight trust_prov, which has no
+    accumulator factor), which cannot then commit a row whose accumulators
+    were at alarm level. 1.0 when the series is absent (warm-up rows, governor
+    not running) or NaN (degraded: the gate's own weight decides)."""
+    row = store.vec_at(s, e, TRUST_EVIDENCE, float(at))
+    if row is None:
+        return 1.0
+    v = float(np.asarray(row).reshape(-1)[0])
+    if not v == v:
+        return 1.0
+    return 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
 
 
 def _exact(store: Any, s: str, e: str, name: str, at: Optional[float]) -> float:

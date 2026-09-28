@@ -33,6 +33,15 @@ through lib/gating: late (D), trust-weighted, checkpointed and reversible
 under model.control. Detection statistics are not learned state; they reset
 when the governor releases (RETURNED) or rebases (ACCEPTED) an episode, and
 by the 2 (t - tau-hat) clean-time rule.
+
+spec v2.1 (docs/lib3/cadence.md §7.2; canonical grain mode): the charts
+sample ONE row per hour, the H rows of B04 (behavior.zr / wh written on H
+decision ticks), so they run only on H decision ticks with the grain period
+as their tick: thresholds come from ARLs counted in hours (cusum h = 16.60,
+mcusum 22.72 at every cadence), phi is learned on H lag-1 pairs (clock
+feature.meta.h), BOCPD takes one value per hour and creep the daily means of
+H rows. Between H ticks nothing moves and nothing is written (the H stream
+is unscored there, not degraded).
 """
 from __future__ import annotations
 
@@ -50,6 +59,7 @@ from scipy.special import gammaln
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import combine, emit, m_class, m_cp, robustcov, seq, timebins
+from .lib import grains as GR
 from .lib.features import (FEATURE_DIM, FEATURE_GROUP, FEATURE_INDEX, FEATURE_KIND,
                            FEATURE_NAMES_V2, GROUP_ORDER, KEY_FEATURES, VEC_TX)
 from .lib.gating import GatedLearner, GateState
@@ -236,6 +246,23 @@ def _fetch(store: Any, s: str, e: str, ts: float) -> Optional[Tuple]:
             store.vec_at(s, e, VEC, ts), store.vec_at(s, e, VEC, prev_ts))
 
 
+def _fetch_h(store: Any, s: str, e: str, ts: float) -> Optional[Tuple]:
+    """spec v2.1: the committed H row at ts and the previous H row (G +- dt
+    apart) for the AR(1) pair; feature.vec.h at both for the scale."""
+    zr = store.vec_at(s, e, ZR, ts)
+    if zr is None:
+        return None
+    tc, _ = store.vec_range(s, e, "feature.meta.h", ts - 5400.0, ts)
+    k = int(np.searchsorted(tc, ts - 1e-6, side="left"))
+    prev_ts = float(tc[k - 1]) if k > 0 else math.nan
+    if not math.isfinite(prev_ts):
+        return (float(ts), math.nan, zr, None, store.vec_at(s, e, "feature.vec.h", ts), None)
+    # adjacent H rows are one grain apart (their gap is the chart's tick)
+    gap = 3600.0 if abs((ts - prev_ts) - 3600.0) <= 1800.0 else float(ts - prev_ts)
+    return (float(ts), gap, zr, store.vec_at(s, e, ZR, prev_ts),
+            store.vec_at(s, e, "feature.vec.h", ts), store.vec_at(s, e, "feature.vec.h", prev_ts))
+
+
 def _copy_state(st: Dict[str, Any]) -> Dict[str, Any]:
     return copy.deepcopy(st)
 
@@ -344,14 +371,44 @@ class ChangepointEngine(Engine):
 
     def __init__(self, **params: Any) -> None:
         super().__init__(**params)
-        self.learner: GatedLearner = GatedLearner(
+        self.learner_tick: GatedLearner = GatedLearner(
             name="cp", init=_learn_init, update=_learn_update, fetch=_fetch,
             dump=_copy_state, load=_copy_state, merge=_learn_merge)
+        # spec v2.1: H rows (clock feature.meta.h, the hour's minimum trust)
+        self.learner_h: GatedLearner = GatedLearner(
+            name="cp", init=_learn_init, update=_learn_update, fetch=_fetch_h,
+            dump=_copy_state, load=_copy_state, merge=_learn_merge, clock="feature.meta.h",
+            window_s=3600.0)
+        self.learner = self.learner_tick
         self._audit_next = -math.inf
         self._wcache: Dict[Tuple[str, str], Tuple[Any, np.ndarray, np.ndarray]] = {}
+        self._set_mode(False)
+
+    def _set_mode(self, canon: bool) -> None:
+        self._canon = canon
+        self.learner = self.learner_h if canon else self.learner_tick
+        self._VEC = "feature.vec.h" if canon else VEC
+        self._NAT = "feature.nat.h" if canon else NAT
+        self._ACTIVE = "feature.meta.h" if canon else ACTIVE
 
     # ------------------------------------------------------------------ run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
+        canon = GR.canonical(ctx.config)
+        self._set_mode(canon)
+        if canon:
+            dt0 = float(ctx.window_s)
+            if not GR.decision(float(ctx.now), dt0, "h", GR.CANONICAL):
+                # the H stream moves only on H ticks; a latched episode keeps
+                # reporting its accumulator alarms in between (as on an idle
+                # tick), so B25 / B27 / B28 and the eval see one continuous
+                # alarm instead of an on-off train at the H period
+                return self._hold_latches(ctx.store, float(ctx.now), dt0)
+            if getattr(self, "_ret_store", None) is not ctx.store:
+                ctx.store.ensure_retention(m_cp.CUSUM_STATE, max_age_s=4 * 86400.0)
+                self._ret_store = ctx.store
+            # the chart's tick is the grain period (ARLs in hours)
+            ctx = Context(store=ctx.store, now=ctx.now, window_s=max(dt0, GR.GRAIN_S["h"]),
+                          training=ctx.training, config=ctx.config)
         store = ctx.store
         now, dt = float(ctx.now), float(ctx.window_s)
         self.learner.d_min_s = float(ctx.config.get("D_min_s", 600) or 600)
@@ -508,7 +565,7 @@ class ChangepointEngine(Engine):
         model = store.get_model(s, e, BASELINE)
         if not isinstance(model, Mapping) or "current" not in model:
             return xk                      # no B03 in this pipeline: support unknown
-        tc = timebins.tctx_from_config(float(ctx.now), ctx.config, float(ctx.window_s))
+        tc = GR.row_tctx(float(ctx.now), "h", float(ctx.window_s), ctx.config)
         W, expo = _m_baseline.own_support(model, tc)
         if expo < SUPPORT_MIN_EXPO_MIN:
             return np.full_like(xk, np.nan)
@@ -669,8 +726,8 @@ class ChangepointEngine(Engine):
         ex["z"] = ex["z"] + np.where(live & fin, xk, 0.0)
         if not live.any():
             return
-        vec = store.vec_at(s, e, VEC, now)
-        nat = store.vec_at(s, e, NAT, now)
+        vec = store.vec_at(s, e, self._VEC, now)
+        nat = store.vec_at(s, e, self._NAT, now)
         if vec is None or nat is None:
             return
         v = np.asarray(vec, dtype=np.float64)[m_cp.KEY_IDX]
@@ -727,13 +784,28 @@ class ChangepointEngine(Engine):
                           if any(on.values()) else {})
         self._write_delta(store, s, e, run, bank, mc, on)
 
+    def _hold_latches(self, store: Any, now: float, dt: float) -> int:
+        """spec v2.1: between H decision ticks, re-emit the latched
+        acc_alarm of every entity whose last H tick left one on."""
+        n = 0
+        for s in store.systems():
+            for e in store.entities(s):
+                m = store.get_model(s, e, m_cp.MODEL)
+                run = m.get("run") if isinstance(m, dict) else None
+                alarm = (run or {}).get("alarm") or {}
+                if any(alarm.values()):
+                    emit.write_scores(store, s, e, now, {}, acc_alarm=dict(alarm),
+                                      window_s=int(dt))
+                    n += 1
+        return n
+
     def _idle_outputs(self, ctx: Context, s: str, e: str, run: Dict[str, Any]) -> None:
         """No zr at now. An ACTIVE tick without zr means B04 is stale or failed:
         NaN + behavior.degraded (contract M). An inactive tick is not scored;
         a latched episode keeps reporting its alarm and onset (the evidence
         is still there, silence is B07's business)."""
         store, now, dt = ctx.store, float(ctx.now), float(ctx.window_s)
-        act = store.vec_at(s, e, ACTIVE, now)
+        act = store.vec_at(s, e, self._ACTIVE, now)
         if act is not None and len(act) and float(act[0]) > 0.5:
             emit.write_scores(store, s, e, now, {d: None for d in DETS},
                               degraded={d: "stale:behavior.zr" for d in DETS}, window_s=int(dt))

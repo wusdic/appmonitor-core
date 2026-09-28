@@ -265,6 +265,107 @@ def test_aggregated_equals_raw_events_for_the_same_draws():
             assert t0 <= o.ts < ga.vt and not o.extra
 
 
+def test_human_traffic_mix_does_not_depend_on_the_tick_length():
+    """Sessions are a continuous-time process carried across ticks. They used
+    to be laid out inside each tick, so at dt = 60 s every minute started a
+    session: ~4x the login redirects and DNS lookups, ~2.5x the POST share and
+    a median inter-request gap of ~50 s instead of ~9 s, relative to 900 s
+    (pack E and the Runtime then compared two populations)."""
+    keys = HUMANS
+
+    def mix(dt_s):
+        acc = {"http": 0, "post": 0, "r3xx": 0, "dns": 0}
+        gaps: List[float] = []
+        for seed in range(2):
+            g = TrafficGenerator(seed=seed, pack=MiniPack(population=keys,
+                                                          start_epoch=local_epoch(MONDAY, 7.0)))
+            last: Dict[str, float] = {}
+            for o in run(g, int(12 * 3600 / dt_s), dt_s, aggregated=False):
+                if o.app_proto == "http":
+                    acc["http"] += 1
+                    acc["post"] += o.http_method != "GET"
+                    acc["r3xx"] += 300 <= o.http_status < 400
+                    if o.entity in last and o.ts > last[o.entity]:
+                        gaps.append(o.ts - last[o.entity])
+                    last[o.entity] = o.ts
+                elif o.app_proto == "dns":
+                    acc["dns"] += 1
+        return ({k: acc[k] / acc["http"] for k in ("post", "r3xx", "dns")},
+                float(np.median(gaps)))
+    (f60, g60), (f900, g900) = mix(60.0), mix(900.0)
+    for k in f60:
+        assert 0.7 < f60[k] / f900[k] < 1.4, (k, f60[k], f900[k])
+    assert 0.7 < g60 / g900 < 1.4
+
+
+def test_machine_dns_does_not_depend_on_the_tick_length():
+    """An API client's resolver clock was skipped on ticks without a poll
+    (half its lookups lost at 60 s) and a backup host resolved once per tick
+    of its window (~60 lookups per run at 60 s, 4 at 900 s)."""
+    keys = ["api-gateway|10.40.4.51", "erp-prod|10.20.9.5"]
+
+    def dns(dt_s):
+        g = TrafficGenerator(seed=2, pack=MiniPack(population=keys,
+                                                   start_epoch=local_epoch(MONDAY, 0.0)))
+        out: Dict[str, int] = {}
+        for o in run(g, int(24 * 3600 / dt_s), dt_s, aggregated=False):
+            if o.app_proto == "dns":
+                out[o.entity] = out.get(o.entity, 0) + 1
+        return out
+    d60, d900 = dns(60.0), dns(900.0)
+    assert set(d60) == set(d900) == {"10.40.4.51", "10.20.9.5"}
+    for k in d900:
+        assert abs(d60[k] - d900[k]) <= 2, (k, d60[k], d900[k])
+    assert d900["10.20.9.5"] <= 2                        # one lookup per backup run
+
+
+def test_human_sessions_carry_across_tick_boundaries():
+    g = TrafficGenerator(seed=1, pack=MiniPack(population=HUMANS[:2],
+                                               start_epoch=local_epoch(MONDAY, 9.0)))
+    for _ in range(30):
+        t0 = g.vt
+        for o in g.step(60.0, aggregated=False):
+            assert t0 <= o.ts < g.vt                   # carried events land in their own tick
+    assert any(k.startswith("hs|") and v for k, v in g._state.items())
+
+
+def test_aggregated_retransmits_are_a_total_that_r1_does_not_reweight():
+    """An aggregate's per-record fields are per-flow values (R1 adds w x
+    field); the group's retransmit total travels in extra['retransmits_total'].
+    It used to sit in the per-flow field, so R1 counted it w times and
+    l4.retransmit_rate of aggregated ticks was ~w x the event-mode rate
+    (pack E: warm-up aggregated, live in event mode)."""
+    from helpers import make_store, run_engine
+    from app.engines.raw.l4flow import L4FlowEngine
+    pk = get_pack("mini")
+    ga = TrafficGenerator(seed=3, pack=pk)
+    gr = TrafficGenerator(seed=3, pack=get_pack("mini"))
+    ga.vt = gr.vt = local_epoch(MONDAY, 8.0)
+    sa, sr = make_store(), make_store()
+    rates = {"agg": [0.0, 0.0], "raw": [0.0, 0.0]}
+    for _ in range(16):
+        agg = ga.step(900.0)
+        raw = gr.step(900.0, aggregated=False)
+        for o in agg:
+            if o.app_proto == "http":
+                assert o.extra["retransmits_total"] >= 0
+                assert o.retransmits == round(o.extra["retransmits_total"] / o.extra["count"])
+            else:
+                assert "retransmits_total" not in o.extra
+        for tag, st, obs in (("agg", sa, agg), ("raw", sr, raw)):
+            run_engine(L4FlowEngine(), st, ga.vt, observations=obs)
+            for s in st.systems():
+                for e in st.entities(s):
+                    m = st.raw_tail(s, e, "l4.retransmit_rate", 1)
+                    n = st.raw_tail(s, e, "l4.pkts_total", 1)
+                    if m and n and m[-1].ts == ga.vt:
+                        rates[tag][0] += m[-1].value * n[-1].value
+                        rates[tag][1] += n[-1].value
+    ra = rates["agg"][0] / rates["agg"][1]
+    rr = rates["raw"][0] / rates["raw"][1]
+    assert rr > 0 and 0.7 < ra / rr < 1.4
+
+
 def test_aggregated_counts_match_fine_cadence_in_expectation():
     keys = HUMANS + ["erp-prod|10.20.4.30", "api-gateway|10.40.4.53"]
 

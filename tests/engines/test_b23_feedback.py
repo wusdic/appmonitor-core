@@ -566,3 +566,20 @@ def test_perf_many_live_incidents_and_labels():
         run_engine(eng, st, T0 + (100 + k) * DT)
         quiet.append((time.perf_counter() - t0) * 1000)
     assert float(np.median(quiet)) < 2.0
+
+
+def test_profile_feedback_summary_counts_the_label_just_applied():
+    """W7: profile.extra.feedback was written before the refit, so after the
+    first label its summary said n_labelled = 0 while n_labels = 1."""
+    st = make_store()
+    st.register_entity(S, E)
+    eng = FeedbackEngine()
+    t = T0
+    put_z(st, E, t, BACKUP)
+    a = mk_inc(st, E, t)
+    run_engine(eng, st, t + DT)
+    label(st, a.id, "tp", ts=t + DT)
+    run_engine(eng, st, t + 2 * DT)
+    fb = st.profile(S, E).extra["feedback"]
+    assert fb["n_labels"] == 1 and fb["last_verdict"] == "tp"
+    assert fb["n_labelled"] == 1 == model(st)["n_labelled"]

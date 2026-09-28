@@ -350,9 +350,32 @@ def _lookup(store: "MetricStore", s: str, e: str, name: str, ts: List[float],
     return np.clip(out_a, 0.0, 1.0).tolist()
 
 
+def _lookup_min(store: "MetricStore", s: str, e: str, name: str, ts: List[float],
+                default: float, window_s: float) -> List[float]:
+    """spec v2.1: the MINIMUM of the 1-element ring `name` over (t - window_s, t]
+    for each t (NaN / missing ticks read as `default`; no tick at all in the
+    window -> default), clipped to [0, 1]. A grain row is only as trusted as
+    its least trusted minute."""
+    tq = np.asarray(ts, dtype=np.float64)
+    w = float(window_s)
+    t, M = store.vec_since(s, e, name, float(tq[0]) - w - _TS_EPS)
+    t = np.asarray(t, dtype=np.float64)
+    out: List[float] = []
+    if not t.size:
+        return [_clip01(default, default)] * len(ts)
+    v = _col0(M)
+    v = np.where(np.isfinite(v), v, float(default))
+    lo = np.searchsorted(t, tq - w + _TS_EPS, side="left")
+    hi = np.searchsorted(t, tq + _TS_EPS, side="right")
+    for a, b in zip(lo.tolist(), hi.tolist()):
+        out.append(_clip01(float(v[a:b].min()), default) if b > a else _clip01(default, default))
+    return out
+
+
 def commit_candidates(store: "MetricStore", s: str, e: str, learner: str, last_ts: float,
                       now: float, dt_s: float, *, d_min_s: float = D_MIN_S,
-                      clock: str = DEFAULT_CLOCK, training: bool = False
+                      clock: str = DEFAULT_CLOCK, training: bool = False,
+                      window_s: Optional[float] = None
                       ) -> List[Tuple[float, float, float]]:
     """Rows eligible at `now`: [(ts, w_eff, w_prov)] ascending, for every clock
     ts in (last_ts, commit_frontier(now)].
@@ -362,6 +385,10 @@ def commit_candidates(store: "MetricStore", s: str, e: str, learner: str, last_t
     (fail safe; the row is still returned so it can be held and released
     later). `learner` is only used for diagnostics. Whether a row is
     committed or held is decided by the caller (see is_quarantined).
+
+    spec v2.1: with `window_s` (a grain learner: clock feature.meta.<g>,
+    window_s = G) w_eff / w_prov are the MINIMUM trust / trust_prov over
+    (ts - window_s, ts]; None keeps v2.
     """
     frontier = commit_frontier(now, dt_s, d_min_s)
     lo = _dec_f(last_ts)
@@ -375,6 +402,10 @@ def commit_candidates(store: "MetricStore", s: str, e: str, learner: str, last_t
     if not ts:
         return []
     default = 1.0 if training else 0.0
+    if window_s is not None and float(window_s) > 0.0:
+        w_eff = _lookup_min(store, s, e, TRUST, ts, default, float(window_s))
+        w_prov = _lookup_min(store, s, e, TRUST_PROV, ts, default, float(window_s))
+        return list(zip(ts, w_eff, w_prov))
     w_eff = _lookup(store, s, e, TRUST, ts, default)
     w_prov = _lookup(store, s, e, TRUST_PROV, ts, default)
     return list(zip(ts, w_eff, w_prov))
@@ -483,6 +514,7 @@ class GatedLearner(Generic[S]):
     d_min_s: float = D_MIN_S
     ckpt_every_s: float = CKPT_EVERY_S
     clock: str = DEFAULT_CLOCK
+    window_s: Optional[float] = None     # spec v2.1: grain learners (min trust over the grain)
 
     # ------------------------------------------------------------------ step
     def step(self, store: "MetricStore", s: str, e: str, state: S, gate: GateState,
@@ -509,7 +541,8 @@ class GatedLearner(Generic[S]):
         state, gate = self.apply_control(store, s, e, state, gate, control, now, dt_s)
         g = gate._copy(now=float(now))
         rows = commit_candidates(store, s, e, self.name, g.last_ts, now, dt_s,
-                                 d_min_s=self.d_min_s, clock=self.clock, training=training)
+                                 d_min_s=self.d_min_s, clock=self.clock, training=training,
+                                 window_s=self.window_s)
         if rows:
             q = False if g.frozen else is_quarantined(store, s, e, now, dt_s)
             for ts, w_eff, w_prov in rows:

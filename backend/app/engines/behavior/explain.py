@@ -121,12 +121,13 @@ from scipy import special as sp
 
 from ...core.engine import Context, Engine
 from .lib import bayes, calib, combine, emit, m_calib, m_class, m_client, m_cp, m_density
+from .lib import grains as GR
 from .lib import m_baseline as MB
 from .lib import m_feedback, m_rhythm, m_seq, m_vocab, seq, timebins
 from .lib import replay as RP
 from .lib.classkeys import CLASS_PREFIX, SYSTEM_KEY, is_class
 from .lib.detectors import (ACC_DETECTORS, DETECTOR_INDEX, DETECTOR_INFO, DETECTORS, FAMILIES,
-                            N_DETECTORS)
+                            N_DETECTORS, Q_DETECTORS)
 from .lib.features import (FEATURE_DIM, FEATURE_GROUP, FEATURE_INDEX, FEATURE_KIND,
                            FEATURE_NAMES_V2, GROUP_ORDER, GROUPS, KEY_FEATURE_IDX)
 
@@ -158,6 +159,14 @@ COMMON_GROUPS = ("volume", "transport", "app_error", "probe")
 RHYTHM_SERIES = "behavior.rhythm"
 CLASS_AGG = "behavior.class.agg"
 CLASSAGG_MODEL = "model.classagg"
+# spec v2.1 grain series (docs/lib3/cadence.md §9.4)
+CLASS_AGG_H = "behavior.class.agg.h"
+Q_INST_H = "behavior.q_inst.h"
+EVIDENCE_H = "behavior.evidence.h"
+PROV = "behavior.prov"
+DENSITY_Q = m_density.MODEL + ".q"
+META_INST_T, META_INST_H, META_ALL = "meta_inst_t", "meta_inst_h", "meta_all"
+PROV_MIN = 0.5
 STACK_SET = "client.stack_set"
 
 # ---- B25 / B27 constants the decision recompute mirrors (engines.md B25, B27)
@@ -195,6 +204,15 @@ SEED_TAG = "B04"
 
 _B04_DETS = ("marg_int", "marg_shape", "peer")
 _B06_DETS = ("t2", "spe")
+_B04Q_DETS = ("marg_int_q", "marg_shape_q")
+_B06Q_DETS = ("t2_q", "spe_q")
+_STREAM = [str(DETECTOR_INFO[d].get("stream", "t")) for d in DETECTORS]
+_INST_T_IDX = [i for i, d in enumerate(DETECTORS)
+               if DETECTOR_INFO[d]["kind"] == "inst" and _STREAM[i] == "t"]
+_INST_H_IDX = [i for i, d in enumerate(DETECTORS)
+               if DETECTOR_INFO[d]["kind"] == "inst" and _STREAM[i] == "h"
+               and not DETECTOR_INFO[d].get("overlap")]
+_Q_IDX = [DETECTOR_INDEX[d] for d in Q_DETECTORS]
 _B14_DETS = ("cusum", "mcusum")
 _ACC_SET = frozenset(ACC_DETECTORS)
 _FAMILY_OF = [str(DETECTOR_INFO[d]["family"]) for d in DETECTORS]
@@ -300,11 +318,13 @@ def feature_unit(name: str) -> Tuple[str, float, bool]:
     return "", 1.0, False
 
 
-def fmt_range(name: str, obs: float, lo: float, mid: float, hi: float
-              ) -> Dict[str, Any]:
-    """Display strings of an observed natural value and its usual band."""
+def fmt_range(name: str, obs: float, lo: float, mid: float, hi: float,
+              band_s: float = BAND_DT_S) -> Dict[str, Any]:
+    """Display strings of an observed natural value and its usual band
+    (band_s: the exposure of count / bytes values; spec v2.1 H rows 3600)."""
     unit, scale, per15 = feature_unit(name)
-    suffix = "/15 min" if per15 else ""
+    suffix = (f"/{int(band_s // 60)} min" if band_s < 3600.0 else
+              ("/h" if band_s == 3600.0 else f"/{band_s / 3600.0:g} h")) if per15 else ""
     if unit == "B":
         u, sc = _bytes_scale([obs, lo, hi, mid])
         f = lambda v: _fmt_num(v / sc)                       # noqa: E731
@@ -482,10 +502,25 @@ class _Tick:
     """Factual inputs of one tick of the replay window, read once."""
 
     __slots__ = ("ts", "dt", "nat", "z", "zi", "pf", "p", "pm", "score", "tc", "strat",
-                 "preds", "has_tier", "fact")
+                 "preds", "has_tier", "fact", "dt_tick", "grain", "qv")
 
     def __init__(self) -> None:
         self.preds: Optional[Dict[str, Any]] = None
+        self.dt_tick = _NAN
+        self.grain: Optional[Dict[str, Any]] = None   # spec v2.1: {dp_h, dp_q, prov}
+        self.qv: Optional["_QView"] = None
+
+
+class _QView:
+    """spec v2.1: the Q-grain row of a Q decision tick (B04 / B06 Q pass inputs)."""
+
+    __slots__ = ("nat", "dt", "tc", "z", "zi", "pf", "preds", "med", "obs", "fact")
+
+    def __init__(self) -> None:
+        self.preds: Optional[Dict[str, Any]] = None
+        self.med: Optional[np.ndarray] = None
+        self.obs: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
+        self.fact: Dict[str, Any] = {}
 
 
 class _Neutral:
@@ -524,6 +559,18 @@ class Counterfactual:
         self.density = None if self.is_class else m_density.get(store, s, e)
         if self.density is not None and not m_density.is_fitted(self.density):
             self.density = None
+        # spec v2.1 canonical grain mode (docs/lib3/cadence.md §9.4)
+        self.canon = GR.canonical(config)
+        self.cp_dt = max(self.dt, GR.GRAIN_S["h"]) if self.canon else self.dt
+        mst0 = mst if isinstance(mst, Mapping) else {}
+        hmh = _f(mst0.get("h_mult_h", 1.0))
+        self.h_mult_h = hmh if hmh == hmh else 1.0
+        bp = mst0.get("pending")
+        self.b25_pend = bp if isinstance(bp, Mapping) else {}
+        self.density_q = None
+        if self.canon and not self.is_class:
+            dq = store.get_model(s, e, DENSITY_Q)
+            self.density_q = dq if isinstance(dq, Mapping) and m_density.is_fitted(dq) else None
         self.layout = _Layout(m_density.groups(store, s, split_by_feature_group=True))
         self.ticks: Dict[float, _Tick] = {}
         self._pred_cache: Dict[Tuple[int, int, str], Tuple[Dict[str, Any], bool]] = {}
@@ -585,8 +632,75 @@ class Counterfactual:
             t.zi = _vec(st, s, e, ZI, ts)
             t.pf = _vec(st, s, e, PF, ts)
         t.has_tier = False
+        t.dt_tick = t.dt
+        if self.canon:
+            self._grain_views(t)
         self.ticks[ts] = t
         return t
+
+    def _grain_views(self, t: _Tick) -> None:
+        """spec v2.1: the numeric recompute of tick t uses the grain rows B04 /
+        B06 / B18 scored there: the H row on H decision ticks (feature.nat.h
+        masked like B04, exposure = its coverage, the window-midpoint tctx),
+        the Q row on Q decision ticks (t.qv); between decision ticks the grain
+        detectors were not scored (their p is NaN) and nothing is recomputed."""
+        st, s, e, ts, dtk = self.store, self.s, self.e, t.ts, t.dt_tick
+        cfg = self.config
+        dp_t = str(t.tc.get("daypart", "wd_day"))
+        g = m_calib.issued_grain(self.calib, ts)
+        if g is None:
+            dp_h = GR.row_tctx(ts, "h", dtk, cfg)["daypart"]
+            dp_q = (GR.row_tctx(ts, "q", dtk, cfg)["daypart"]
+                    if GR.observable("q", dtk, GR.CANONICAL) else dp_h)
+            pv = emit.read_dict(st, s, e, PROV, ts)
+            prov = {d: int(_f(pv[d]) < PROV_MIN) for d in Q_DETECTORS
+                    if d in pv and _f(pv[d]) == _f(pv[d])}
+            g = {"dp_h": dp_h, "dp_q": dp_q, "prov": prov}
+        g = dict(g)
+        g["dp_t"] = dp_t
+        t.grain = g
+        h_due = GR.decision(ts, dtk, "h", GR.CANONICAL)
+        if self.is_class:
+            t.nat = None
+            if h_due:
+                agg = _vec(st, s, e, CLASS_AGG_H, ts)
+                cov = _NAN
+                for m in m_class.class_members(st, s, e):
+                    mh = st.vec_at(s, m, "feature.meta.h", ts)
+                    if mh is not None and st.vec_at(s, m, "feature.nat.h", ts) is not None:
+                        cov = float(mh[1]) if not cov >= float(mh[1]) else cov
+                if agg is not None and cov > 0.0:
+                    t.nat, t.dt = agg, cov
+                    t.tc = GR.row_tctx(ts, "h", dtk, cfg)
+            return
+        t.nat = None
+        if h_due:
+            meta = _vec(st, s, e, "feature.meta.h", ts)
+            nat = _vec(st, s, e, "feature.nat.h", ts)
+            if meta is not None and float(meta[0]) > 0.5 and nat is not None:
+                x = nat.copy()
+                x[~GR.scored_mask(ts, dtk, "h", cfg)] = np.nan
+                t.nat, t.dt = x, float(meta[1])
+                t.tc = GR.row_tctx(ts, "h", dtk, cfg)
+        if t.nat is None:
+            t.z = t.zi = t.pf = None
+        if GR.decision(ts, dtk, "q", GR.CANONICAL) and GR.observable("q", dtk, GR.CANONICAL):
+            meta = _vec(st, s, e, "feature.meta.q", ts)
+            nat = _vec(st, s, e, "feature.nat.q", ts)
+            if meta is not None and float(meta[0]) > 0.5 and nat is not None:
+                v = _QView()
+                v.tc = GR.row_tctx(ts, "q", dtk, cfg)
+                v.preds = MB.predictive_q(st, s, e, v.tc)
+                x = nat.copy()
+                x[~GR.scored_mask(ts, dtk, "q", cfg)] = np.nan
+                cur = v.preds["current"]
+                if cur.scored is not None:
+                    x = np.where(cur.scored, x, np.nan)
+                v.nat, v.dt = x, float(meta[1])
+                v.z = _vec(st, s, e, Z + ".q", ts)
+                v.zi = _vec(st, s, e, ZI + ".q", ts)
+                v.pf = _vec(st, s, e, PF + ".q", ts)
+                t.qv = v
 
     def _preds(self, t: _Tick) -> Dict[str, Any]:
         if t.preds is None:
@@ -645,12 +759,15 @@ class Counterfactual:
         st, s, e = self.store, self.s, self.e
         if st.vec_latest(s, e, m_cp.CUSUM_STATE) is None:
             return None
-        params = m_cp.replay_params(st, s, e, dt=self.dt)
+        # spec v2.1: B14 steps on H decision ticks (period max(dt, 3600)), so
+        # the replay covers <= 96 H states (the 4-d cusum_state ring)
+        cdt = self.cp_dt
+        params = m_cp.replay_params(st, s, e, dt=cdt)
         tau = m_cp.onset(st, s, e)
         opened = float(self.inc.opened)
-        start = tau - self.dt if tau == tau else opened - 4.0 * self.dt
-        start = min(start, opened - self.dt)
-        start = max(start, self.now - self.max_ticks * self.dt)
+        start = tau - cdt if tau == tau else opened - 4.0 * cdt
+        start = min(start, opened - cdt)
+        start = max(start, self.now - self.max_ticks * cdt)
         s0 = m_cp.replay_state(st, s, e, start)
         if s0 is None:                        # the ring does not reach back: its oldest row
             t, _ = st.vec_range(s, e, m_cp.CUSUM_STATE, -math.inf, self.now)
@@ -660,7 +777,7 @@ class Counterfactual:
             if s0 is None:
                 return None
         ts0, state0 = s0
-        rows = m_cp.replay_rows(st, s, e, ts0, self.now, dt=self.dt, dt_of=self._dt_of)
+        rows = m_cp.replay_rows(st, s, e, ts0, self.now, dt=cdt, dt_of=self._dt_of)
         if not rows:
             return None                       # (an idle tick keeps the last row's state)
         rows, info = m_cp.mark_resets(params, state0, rows)
@@ -671,7 +788,10 @@ class Counterfactual:
     def _dt_of(self, ts: float) -> Optional[float]:
         """Cadence of tick ts as B24 recorded it (None when not recorded)."""
         strat = m_calib.issued_stratum(self.calib, ts)
-        return float(strat[2]) if strat is not None and strat[2] > 0 else None
+        v = float(strat[2]) if strat is not None and strat[2] > 0 else None
+        if v is not None and self.canon:
+            v = max(v, GR.GRAIN_S["h"])
+        return v
 
     def _cusum_run(self, zr_cf: Mapping[float, Dict[int, float]]) -> Dict[str, Any]:
         """Replay the bank with the neutralised key residuals; returns the
@@ -719,11 +839,14 @@ class Counterfactual:
                           > float(self.inc.opened) - 4 * HOUR]}
 
     # ---------------------------------------------------- evidence window
-    def _evidence_window(self) -> List[float]:
+    def _evidence_window(self, name: str = EVIDENCE) -> List[float]:
         """Ticks of the evidence CUSUM's current excursion (after its last
-        stored zero, <= max_ticks), ending at now; [now] when S is 0."""
-        ts, M = self.store.vec_range(self.s, self.e, EVIDENCE,
-                                     self.now - (self.max_ticks + 1) * self.dt, self.now)
+        stored zero, <= max_ticks), ending at now; [now] when S is 0.
+        spec v2.1: name = behavior.evidence.h for the H stream (rows on H
+        ticks, so the look-back is max_ticks H periods)."""
+        per = self.cp_dt if name == EVIDENCE_H else self.dt
+        ts, M = self.store.vec_range(self.s, self.e, name,
+                                     self.now - (self.max_ticks + 1) * per, self.now)
         if not len(ts) or float(ts[-1]) != self.now:
             return [self.now]
         ts, M = ts[-(self.max_ticks + 1):], M[-(self.max_ticks + 1):]
@@ -735,8 +858,8 @@ class Counterfactual:
         out.reverse()
         return out
 
-    def _s_before(self, ts: float) -> float:
-        t, M = self.store.vec_range(self.s, self.e, EVIDENCE, -math.inf, ts - 1e-6)
+    def _s_before(self, ts: float, name: str = EVIDENCE) -> float:
+        t, M = self.store.vec_range(self.s, self.e, name, -math.inf, ts - 1e-6)
         if not len(t):
             return 0.0
         v = float(M[-1, 0])
@@ -754,16 +877,33 @@ class Counterfactual:
                                if isinstance(x, Mapping)]
         dp, terc, dtc = t.strat
         cc = timebins.cadence_class(dtc)
-        key = m_calib.ring_key_for(d, dp, cc, terc)
+        gr, dp, prov = self._grain_of(d, t, dp)
+        key = m_calib.ring_key_for(d, dp, cc, terc, grain=gr, prov=prov)
         return [r for r in ((m.get(m_calib.RINGS) or {}).get(key) for m in self._cls_rings)
                 if r is not None]
+
+    def _grain_of(self, d: str, t: _Tick, dp: str) -> Tuple[Optional[str], str, int]:
+        """(grain, daypart, prov) of detector d's B24 stratum at tick t: spec
+        v2.1 H / Q stream detectors use their grain row's daypart (and Q the
+        provisional flag B24 recorded); T-stream detectors and tick mode keep
+        the tick's daypart and cadence class."""
+        if not self.canon or t.grain is None:
+            return None, dp, 0
+        stv = _STREAM[DETECTOR_INDEX[d]]
+        if stv == "h":
+            return "h", str(t.grain.get("dp_h", dp)), 0
+        if stv == "q":
+            return "q", str(t.grain.get("dp_q", dp)), int((t.grain.get("prov") or {}).get(d, 0))
+        return None, dp, 0
 
     def p_of(self, d: str, t: _Tick, score: float, pm: float) -> float:
         dp, terc, dtc = t.strat
         cc = timebins.cadence_class(dtc)
-        return m_calib.p_replay(self.calib, d, dp, cc, score,
+        gr, dpg, prov = self._grain_of(d, t, dp)
+        return m_calib.p_replay(self.calib, d, dpg, cc, score,
                                 m_calib.uniform(self.s, self.e, d, t.ts), tercile=terc,
-                                pm=pm, class_rings=self._class_rings(d, t))
+                                pm=pm, class_rings=self._class_rings(d, t),
+                                grain=gr, prov=prov)
 
     def _check_p(self, d: str, t: _Tick, score: float, pm: float) -> None:
         """Fidelity: the factual score's recomputed p against the stored p."""
@@ -873,6 +1013,81 @@ class Counterfactual:
                 self.recomputed.update(_B06_DETS)
         return scores, pms, zr_cf
 
+    def _numeric_q(self, t: _Tick, feats: Sequence[int], check: bool
+                   ) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """spec v2.1: (scores, pm) of the Q-grain detectors (B04 marg_*_q,
+        B06 t2_q / spe_q) of tick t's Q row with `feats` reset to the Q
+        predictive's bucket median (cadence.md §9.4: Q attribution when a _q
+        detector drove the decision)."""
+        v = t.qv
+        scores: Dict[str, float] = {}
+        pms: Dict[str, float] = {}
+        if v is None:
+            return scores, pms
+        if check:
+            self._check_factual_q(t)
+        if not feats:
+            return scores, pms
+        pc, pr = v.preds["current"], v.preds["reference"]
+        if v.med is None:
+            v.med = MB.quantiles(pc, [0.5], dt_s=v.dt, nat=v.nat)[0]
+        if v.obs is None:
+            v.obs = MB.observe(v.nat, v.dt)
+        nat_cf = v.nat.copy()
+        for f in feats:
+            if v.nat[f] == v.nat[f] and v.med[f] == v.med[f]:
+                nat_cf[f] = v.med[f]
+        n0, d0, w0 = v.obs
+        n1, d1, w1 = MB.observe(nat_cf, v.dt)
+        changed = np.flatnonzero((n0 != n1) | (d0 != d1) | (w0 != w1))
+        if not changed.size:
+            return scores, pms
+        u_c, p_c = MB.midp(pc, nat_cf, v.dt)
+        if pr is not None:
+            _, p_r = MB.midp(pr, nat_cf, v.dt)
+            pfc = np.asarray(bayes.combine_anchors(p_c, p_r), dtype=np.float64)
+        else:
+            pfc = p_c
+        if v.pf is not None:
+            pf_cf = v.pf.copy()
+            pf_cf[changed] = pfc[changed]
+            a, b, _ = channels(pf_cf, self.layout)
+            scores["marg_int_q"], pms["marg_int_q"] = _neglog10(a), a
+            scores["marg_shape_q"], pms["marg_shape_q"] = _neglog10(b), b
+            self.recomputed.update(_B04Q_DETS)
+        if self.density_q is not None and v.zi is not None and v.z is not None:
+            with np.errstate(all="ignore"):
+                zc = sp.ndtri(np.clip(u_c, bayes.PHI_CLIP, 1.0 - bayes.PHI_CLIP))
+            zi_cf = v.zi.copy()
+            for f in changed.tolist():
+                if zi_cf[f] == zi_cf[f] and v.z[f] == v.z[f] and zc[f] == zc[f]:
+                    zi_cf[f] = zi_cf[f] + (zc[f] - v.z[f])
+            sc = m_density.score_model(self.density_q, zi_cf)
+            if sc.q > 0:
+                s0 = v.fact.get("b06")
+                if s0 is None:
+                    s0 = v.fact["b06"] = m_density.score_model(self.density_q, v.zi)
+                scores["t2_q"], pms["t2_q"] = self._anchor(t, "t2_q", _neglog10(s0.p_t2),
+                                                           _neglog10(sc.p_t2))
+                scores["spe_q"], pms["spe_q"] = self._anchor(t, "spe_q", _neglog10(s0.p_spe),
+                                                             _neglog10(sc.p_spe))
+                self.recomputed.update(_B06Q_DETS)
+        return scores, pms
+
+    def _check_factual_q(self, t: _Tick) -> None:
+        v = t.qv
+        if v is None:
+            return
+        if v.pf is not None:
+            a, b, _ = channels(v.pf, self.layout)
+            self._check_p("marg_int_q", t, _neglog10(a), a)
+            self._check_p("marg_shape_q", t, _neglog10(b), b)
+        if self.density_q is not None and v.zi is not None:
+            s0 = m_density.score_model(self.density_q, v.zi)
+            if s0.q > 0:
+                self._check_p("t2_q", t, _neglog10(s0.p_t2), s0.p_t2)
+                self._check_p("spe_q", t, _neglog10(s0.p_spe), s0.p_spe)
+
     def _anchor(self, t: _Tick, d: str, s_new_fact: float, s_new_cf: float
                 ) -> Tuple[float, float]:
         """(score, pm) of detector d in the counterfactual, anchored on the
@@ -962,6 +1177,10 @@ class Counterfactual:
         stateless detectors replaced."""
         p = t.p.copy()
         scores, pms, _ = self._numeric(t, nz.features, check)
+        if t.qv is not None:
+            sq, pq = self._numeric_q(t, nz.features, check)
+            scores.update(sq)
+            pms.update(pq)
         for d, sc in scores.items():
             p[DETECTOR_INDEX[d]] = self.p_of(d, t, sc, pms.get(d, _NAN))
         return p
@@ -1031,7 +1250,9 @@ class Counterfactual:
                     if check:
                         fr = self._fact_cusum
                         self._check_p(d, now_t, fr["score"][d], fr["pm"][d])
-                acc[d] = int(cr["latch"][d])
+                if not self.canon or d in self.acc:
+                    # spec v2.1: B14 writes its accumulator flags on H ticks only
+                    acc[d] = int(cr["latch"][d])
             self.replayed.update(_B14_DETS)
             out["cusum_max"] = cr["max"]
         # --- off-hours W
@@ -1051,13 +1272,17 @@ class Counterfactual:
             self._novelty(now_t, nz, p_now)
         # --- fuse and meta-calibrate now; paths that need only now
         wm = self._wmult()
-        h = seq.h_evidence(seq.arl_ticks(EVIDENCE_ARL_DAYS, self.dt)) * self.h_mult
+        h = self._h_t()
         paths: List[str] = []
         if p_now is not None:
-            pf, q_inst, q_all = self._q(now_t, p_now, wm)
-            out.update(q_all=q_all, q_inst=q_inst, p_family=pf, p_row=p_now)
-            if q_all == q_all:
-                e_day = combine.e_day(q_all, self.dt)
+            if self.canon:
+                pf, q_inst, q_all, q_h, e_day = self._q_canon(now_t, p_now, wm)
+                out.update(q_all=q_all, q_inst=q_inst, q_inst_h=q_h, p_family=pf, p_row=p_now)
+            else:
+                pf, q_inst, q_all = self._q(now_t, p_now, wm)
+                out.update(q_all=q_all, q_inst=q_inst, p_family=pf, p_row=p_now)
+                e_day = combine.e_day(q_all, self.dt) if q_all == q_all else _NAN
+            if q_all == q_all and e_day == e_day:
                 out["e_day"] = e_day
                 if e_day <= SINGLE_E_DAY * self.alpha:
                     sev = combine.e_day_severity(e_day, self.alpha)
@@ -1074,8 +1299,31 @@ class Counterfactual:
         out["risk"] = bool(self.risk_open)
         out["h"] = h
         quick = bool(paths or fnd or self.risk_open)
+        # --- spec v2.1: the H-stream evidence CUSUM (S_h) over its excursion
+        if self.canon and p_now is not None and self._ev_on_h and (full or not quick):
+            hh = self._h_h()
+            win_h = self._evidence_window(EVIDENCE_H)
+            S = self._s_before(win_h[0], EVIDENCE_H)
+            for ts in win_h:
+                if ts == self.now:
+                    q_h = out.get("q_inst_h", _NAN)
+                else:
+                    t = self.tick(ts)
+                    if t is None or t.p is None:
+                        continue
+                    p = self._p_row(t, nz, False)
+                    q_h = self._q_canon(t, p, wm)[3]
+                if q_h == q_h:
+                    S = seq.evidence_cusum_step(S, q_h)
+            out["S_h"] = S
+            if S >= hh:
+                paths.append("evidence_cusum")
+        elif self.canon and p_now is not None and self._ev_on_h:
+            out["complete"] = False
         # --- evidence CUSUM over its current excursion
-        if p_now is not None and self._ev_on and (full or not quick):
+        if "evidence_cusum" in paths:
+            pass
+        elif p_now is not None and self._ev_on and (full or not quick):
             S = self._s_before(self.ev_window[0])
             n_win = len(self.ev_window)
             for j, ts in enumerate(self.ev_window):
@@ -1090,7 +1338,8 @@ class Counterfactual:
                     if t is None or t.p is None:
                         continue
                     p = self._p_row(t, nz, False)
-                    _, q_inst, _ = self._q(t, p, wm)
+                    q_inst = (self._q_canon(t, p, wm)[1] if self.canon
+                              else self._q(t, p, wm)[1])
                 if q_inst == q_inst:
                     S = seq.evidence_cusum_step(S, q_inst)
             out["S"] = S
@@ -1111,9 +1360,87 @@ class Counterfactual:
         """The stored evidence statistic is at or above h at now (B25 wrote it)."""
         if self._ev_on_v is None:
             S = _scalar(self.store, self.s, self.e, EVIDENCE, self.now)
-            h = seq.h_evidence(seq.arl_ticks(EVIDENCE_ARL_DAYS, self.dt)) * self.h_mult
-            self._ev_on_v = bool(S == S and S >= h)
+            self._ev_on_v = bool(S == S and S >= self._h_t())
         return self._ev_on_v
+
+    @property
+    def _ev_on_h(self) -> bool:
+        """spec v2.1: the stored H-stream statistic S_h is at or above h_h at
+        now (B25 judges S_h on H decision ticks only)."""
+        if not self.canon or not GR.decision(self.now, self.dt, "h", GR.CANONICAL):
+            return False
+        S = _scalar(self.store, self.s, self.e, EVIDENCE_H, self.now)
+        return bool(S == S and S >= self._h_h())
+
+    def _h_t(self) -> float:
+        """Threshold of the (T-stream) evidence CUSUM B25 used at now."""
+        if self.canon:
+            return seq.h_evidence(GR.evidence_arl_ticks("t", self.dt, GR.CANONICAL)) \
+                * self.h_mult
+        return seq.h_evidence(seq.arl_ticks(EVIDENCE_ARL_DAYS, self.dt)) * self.h_mult
+
+    def _h_h(self) -> float:
+        return seq.h_evidence(GR.evidence_arl_ticks("h", self.dt, GR.CANONICAL)) * self.h_mult_h
+
+    def _q_canon(self, t: _Tick, p: np.ndarray, wm: Sequence[float]
+                 ) -> Tuple[Dict[str, float], float, float, float, float]:
+        """spec v2.1 (B25 canonical phase 1): (p_family, q_t, q_all, q_h,
+        e_day) of one p row: provisional Q detectors at half weight, the meta
+        strata B25 recorded in its pending entry (else rebuilt from the tick
+        type and the grain dayparts), e_day = q_all x n_tau / beta_tau."""
+        ts, dtk = t.ts, t.dt_tick
+        tau = GR.tick_type(ts, dtk, GR.CANONICAL)
+        row = [float(x) for x in p]
+        wm2 = list(wm)
+        if tau != "t":
+            pv = emit.read_dict(self.store, self.s, self.e, PROV, ts)
+            for i in _Q_IDX:
+                d = DETECTORS[i]
+                if 0.0 <= row[i] <= 1.0 and _f(pv.get(d)) < PROV_MIN:
+                    wm2[i] = wm2[i] * 0.5
+        pf, p_inst, p_all = fuse(row, self.fw, wm2)
+        g = t.grain or {}
+        pend = self.b25_pend.get(ts)
+        cc = timebins.cadence_class(dtk)
+        if isinstance(pend, (list, tuple)) and len(pend) >= 7:
+            st_all, st_t, st_h = str(pend[2]), str(pend[5]), str(pend[6])
+        else:
+            dp_t = str(g.get("dp_t", t.strat[0]))
+            dp_h = str(g.get("dp_h", dp_t))
+            dp_q = str(g.get("dp_q", dp_h))
+            dp_tau = dp_h if tau == "h" else dp_q if tau == "q" else dp_t
+            st_all = calib.meta_stratum_key(dp_tau, tau, cc if tau == "t" else None)
+            st_t = calib.meta_stratum_key(dp_t, "t", cc)
+            st_h = calib.meta_stratum_key(dp_h, "h")
+        if "|t:" in st_all:
+            tau = st_all.rsplit("|t:", 1)[1].split("|", 1)[0] or tau
+        p_t = self._stream_p(row, _INST_T_IDX, wm2)
+        p_h = (self._stream_p(row, _INST_H_IDX, wm2)
+               if GR.decision(ts, dtk, "h", GR.CANONICAL) else _NAN)
+        q_t = m_calib.p_value(m_calib.ring(self.meta, META_INST_T, st_t), _meta_score(p_t),
+                              m_calib.uniform(self.s, self.e, "meta_inst", ts), p_t)
+        q_h = m_calib.p_value(m_calib.ring(self.meta, META_INST_H, st_h), _meta_score(p_h),
+                              m_calib.uniform(self.s, self.e, META_INST_H, ts), p_h)
+        q_all = m_calib.p_value(m_calib.ring(self.meta, META_ALL, st_all), _meta_score(p_all),
+                                m_calib.uniform(self.s, self.e, "meta_all", ts), p_all)
+        mult = GR.e_day_mult(tau, dtk, GR.CANONICAL)
+        e_day = q_all * mult if q_all == q_all else _NAN
+        return pf, q_t, q_all, q_h, e_day
+
+    def _stream_p(self, row: Sequence[float], idx: Sequence[int], wm: Sequence[float]
+                  ) -> float:
+        """B25's instantaneous p of one stream: fuse() on the stream's
+        instantaneous detectors only."""
+        r = [_NAN] * N_DETECTORS
+        any_ = False
+        for i in idx:
+            v = row[i]
+            if 0.0 <= v <= 1.0:
+                r[i] = v
+                any_ = True
+        if not any_:
+            return _NAN
+        return fuse(r, self.fw, wm)[1]
 
     def _q(self, t: _Tick, p: np.ndarray, wm: Sequence[float]
            ) -> Tuple[Dict[str, float], float, float]:
@@ -1237,6 +1564,11 @@ class Counterfactual:
                  "held_triggers": (["risk"] if self.risk_open else []) + sorted(
                      {ev.kind for ev in self.findings
                       if not m_feedback.event_new_tokens(ev)}),
+                 "grains": sorted({_STREAM[DETECTOR_INDEX[d]] for d in
+                                   self.recomputed | self.replayed
+                                   if _STREAM[DETECTOR_INDEX[d]] in ("h", "q")}
+                                  | ({"h"} if self.canon and self.replayed & set(_B14_DETS)
+                                     else set())) if self.canon else [],
                  "fidelity": fid, "evaluations": n_eval, "blocking": blocking,
                  "ms": round(1000.0 * (time.perf_counter() - t0), 2)}
         return {"set": subset, "valid": valid, "reason": reason, "scope": scope,
@@ -1329,13 +1661,18 @@ class ExplainEngine(Engine):
     def explain(self, store, inc: Any, now: float, dt: float,
                 config: Mapping[str, Any]) -> Dict[str, Any]:
         s, k = inc.system, inc.entity
-        t_star = self._trigger_tick(store, s, k, inc, now)
+        canon = GR.canonical(config)
+        grain = self._driving_grain(store, s, k, inc, now) if canon else None
+        t_star = self._trigger_tick(store, s, k, inc, now, grain)
         tc = _tctx_at(store, s, k, t_star, config, dt)
+        if grain is not None:
+            tc = GR.row_tctx(t_star, grain, dt, config)       # the grain row's midpoint
         day_en, day_zh = _day_label(tc)
         if is_class(k):
-            attrs, deviation = self._class_attributions(store, s, k, t_star, dt, tc)
+            attrs, deviation = self._class_attributions(store, s, k, t_star, dt, tc,
+                                                        grain=grain)
         else:
-            attrs, deviation = self._attributions(store, s, k, t_star, dt, tc)
+            attrs, deviation = self._attributions(store, s, k, t_star, dt, tc, grain=grain)
         new_tokens = self._new_tokens(store, inc, now, dt)
         vanished = [] if is_class(k) else self._vanished(store, s, k, inc, now)
         stacks = {} if is_class(k) else self._stack_diff(store, s, k, inc, now, dt)
@@ -1357,14 +1694,32 @@ class ExplainEngine(Engine):
         strat = m_calib.issued_stratum(store.get_model(s, k, m_calib.MODEL), t_open)
         if strat is not None and strat[2] > 0:
             dt_open = float(strat[2])
-        if t_open == t_star:
-            attrs_open = attrs
-        elif is_class(k):
-            attrs_open, _ = self._class_attributions(store, s, k, t_open, dt_open, tc, bands=False)
+        if canon:
+            # spec v2.1: candidates from the grain rows scored at (or last
+            # before) the opening tick, both grains, by |z|
+            cand: Dict[str, float] = {}
+            for g in ("h", "q"):
+                tg = self._trigger_tick(store, s, k, inc, t_open, g)
+                if is_class(k):
+                    ao, _ = self._class_attributions(store, s, k, tg, dt_open, tc,
+                                                     bands=False, grain=g)
+                else:
+                    ao, _ = self._attributions(store, s, k, tg, dt_open, tc, bands=False,
+                                               grain=g)
+                for a in ao:
+                    if a.get("z") is not None and abs(float(a["z"])) >= CF_Z_MIN:
+                        cand[a["feature"]] = max(cand.get(a["feature"], 0.0), abs(float(a["z"])))
+            numeric = sorted(cand, key=lambda n: -cand[n])
         else:
-            attrs_open, _ = self._attributions(store, s, k, t_open, dt_open, tc, bands=False)
-        numeric = [a["feature"] for a in attrs_open
-                   if a.get("z") is not None and abs(float(a["z"])) >= CF_Z_MIN]
+            if t_open == t_star:
+                attrs_open = attrs
+            elif is_class(k):
+                attrs_open, _ = self._class_attributions(store, s, k, t_open, dt_open, tc,
+                                                         bands=False)
+            else:
+                attrs_open, _ = self._attributions(store, s, k, t_open, dt_open, tc, bands=False)
+            numeric = [a["feature"] for a in attrs_open
+                       if a.get("z") is not None and abs(float(a["z"])) >= CF_Z_MIN]
         toks_open = []
         for ev in store.events(s, k, since=t_open, kinds=NOVELTY_KINDS, limit=1000):
             if float(ev.ts) == t_open:
@@ -1434,8 +1789,29 @@ class ExplainEngine(Engine):
         return min(float(inc.opened), now)
 
     @staticmethod
-    def _trigger_tick(store, s: str, k: str, inc: Any, now: float) -> float:
-        name = CLASS_AGG if is_class(k) else Z
+    def _driving_grain(store, s: str, k: str, inc: Any, now: float) -> str:
+        """spec v2.1 (cadence.md §9.4): 'q' when a Q detector holds the
+        smallest p of the grain detectors over the incident (its p rows up to
+        now), else 'h'."""
+        lo = min(float(inc.opened), now) - 1.0
+        t, M = store.vec_range(s, k, P, lo, now)
+        best = {"h": math.inf, "q": math.inf}
+        for row in M[-96:]:
+            for i, st in enumerate(_STREAM):
+                v = float(row[i])
+                if st in best and v == v and v < best[st]:
+                    best[st] = v
+        return "q" if best["q"] < best["h"] else "h"
+
+    @staticmethod
+    def _trigger_tick(store, s: str, k: str, inc: Any, now: float,
+                      grain: Optional[str] = None) -> float:
+        if grain is None:
+            name = CLASS_AGG if is_class(k) else Z
+        elif is_class(k):
+            name = CLASS_AGG_H
+        else:
+            name = Z + (".q" if grain == "q" else "")
         if store.vec_at(s, k, name, now) is not None:
             return now
         lo = min(float(inc.opened), now) - 1.0
@@ -1484,11 +1860,28 @@ class ExplainEngine(Engine):
         ok = [i for i in np.argsort(p) if math.isfinite(p[i])][:6]
         return {DETECTORS[i]: _r(p[i], 4) for i in ok}
 
-    def _bands(self, store, s: str, e: str, tc: Mapping[str, Any]) -> Optional[np.ndarray]:
+    def _bands(self, store, s: str, e: str, tc: Mapping[str, Any],
+               grain: Optional[str] = None) -> Optional[np.ndarray]:
         """[3, 52] p5 / p50 / p95 per 15 min for tc's bucket: model_state when it
-        describes this bucket, else m_baseline.quantiles on the predictive."""
+        describes this bucket, else m_baseline.quantiles on the predictive.
+        spec v2.1: grain 'h' / 'q' gives the grain's band (per hour / per
+        15 min) from model_state['grains'][grain], else its predictive."""
         prof = store.profile(s, e)
         ms = ((prof.extra if prof is not None else {}) or {}).get("model_state") or {}
+        if grain is not None:
+            ms = ((ms.get("grains") or {}).get(grain) or {}) if isinstance(ms, Mapping) else {}
+            if grain == "q":
+                pred = MB.predictive_q(store, s, e, tc)["current"]
+            else:
+                pred = MB.predictive_set(store, s, e, tc)["current"]
+            if ms and int(_f(ms.get("bucket"))) == int(pred.bucket) and ms.get("features"):
+                out = np.full((3, NF), np.nan)
+                for i, n in enumerate(FEATURE_NAMES_V2):
+                    v = ms["features"].get(n)
+                    if v is not None and len(v) == 3:
+                        out[:, i] = [_f(x) for x in v]
+                return out
+            return MB.quantiles(pred, STATE_QS, dt_s=GR.GRAIN_S[grain])
         pred = MB.predictive_set(store, s, e, tc)["current"]
         if ms and int(_f(ms.get("bucket"))) == int(pred.bucket) and ms.get("features"):
             out = np.full((3, NF), np.nan)
@@ -1500,15 +1893,28 @@ class ExplainEngine(Engine):
         return MB.quantiles(pred, STATE_QS, dt_s=BAND_DT_S)
 
     def _attributions(self, store, s: str, e: str, ts: float, dt: float,
-                      tc: Mapping[str, Any], bands: bool = True
+                      tc: Mapping[str, Any], bands: bool = True, grain: Optional[str] = None
                       ) -> Tuple[List[Dict[str, Any]], List[float]]:
-        z = _vec(store, s, e, Z, ts)
-        zi = _vec(store, s, e, ZI, ts)
-        pf = _vec(store, s, e, PF, ts)
-        nat = _vec(store, s, e, NAT, ts)
+        """Numeric attribution of the row scored at ts. spec v2.1: grain
+        'h' / 'q' reads that grain's rows (feature.nat.<g>, behavior.z[.q],
+        zi, pf), its density and its band; values are per grain exposure."""
+        suf = ".q" if grain == "q" else ""
+        z = _vec(store, s, e, Z + suf, ts)
+        zi = _vec(store, s, e, ZI + suf, ts)
+        pf = _vec(store, s, e, PF + suf, ts)
+        band_s = BAND_DT_S
+        if grain is not None:
+            nat = _vec(store, s, e, f"feature.nat.{grain}", ts)
+            dt = band_s = GR.GRAIN_S[grain]
+        else:
+            nat = _vec(store, s, e, NAT, ts)
         if z is None:
             return [], [0.0] * NF
-        dens = m_density.get(store, s, e)
+        if grain == "q":
+            dens = store.get_model(s, e, DENSITY_Q)
+            dens = dens if isinstance(dens, Mapping) and m_density.is_fitted(dens) else None
+        else:
+            dens = m_density.get(store, s, e)
         zz = zi if zi is not None and np.isfinite(zi).any() else z
         share, p_rbc, rbc = gk_shares(dens, zz)
         if share is None:
@@ -1518,25 +1924,29 @@ class ExplainEngine(Engine):
             p_rbc = pf if pf is not None else np.full(NF, np.nan)
             rbc = np.full(NF, np.nan)
         bh = bh_flags(p_rbc, BH_ALPHA)
-        bands = self._bands(store, s, e, tc) if bands else None
+        bands = self._bands(store, s, e, tc, grain) if bands else None
         order = [i for i in np.argsort(-np.nan_to_num(share, nan=-1.0), kind="stable")
                  if math.isfinite(share[i])]
         out: List[Dict[str, Any]] = []
         for i in order[:TOP_ATTR]:
-            out.append(self._attr_item(i, share, p_rbc, rbc, bh, z, pf, nat, bands, dt))
+            it = self._attr_item(i, share, p_rbc, rbc, bh, z, pf, nat, bands, dt, band_s)
+            if grain is not None:
+                it["grain"] = grain
+            out.append(it)
         dev = [round(float(v), 3) if math.isfinite(v) else 0.0 for v in z]
         return out, dev
 
     @staticmethod
-    def _attr_item(i: int, share, p_rbc, rbc, bh, z, pf, nat, bands, dt) -> Dict[str, Any]:
+    def _attr_item(i: int, share, p_rbc, rbc, bh, z, pf, nat, bands, dt,
+                   band_s: float = BAND_DT_S) -> Dict[str, Any]:
         name = FEATURE_NAMES_V2[i]
         _, _, per15 = feature_unit(name)
         obs = _NAN if nat is None else float(nat[i])
         if per15 and obs == obs:
-            obs = obs * BAND_DT_S / dt
+            obs = obs * band_s / dt
         lo, mid, hi = (float(bands[0, i]), float(bands[1, i]), float(bands[2, i])) \
             if bands is not None else (_NAN, _NAN, _NAN)
-        rng = fmt_range(name, obs, lo, mid, hi)
+        rng = fmt_range(name, obs, lo, mid, hi, band_s)
         item = {"feature": name, "group": FEATURE_GROUP[name], "share": _r(share[i]),
                 "z": _r(z[i], 3) if z is not None else None,
                 "p": _r(p_rbc[i]) if p_rbc is not None else None,
@@ -1551,9 +1961,17 @@ class ExplainEngine(Engine):
         return item
 
     def _class_attributions(self, store, s: str, k: str, ts: float, dt: float,
-                            tc: Mapping[str, Any], bands: bool = True
+                            tc: Mapping[str, Any], bands: bool = True,
+                            grain: Optional[str] = None
                             ) -> Tuple[List[Dict[str, Any]], List[float]]:
-        agg = _vec(store, s, k, CLASS_AGG, ts)
+        """spec v2.1: in canonical mode the class row is B18's H row
+        (behavior.class.agg.h, per hour; there is no Q class row)."""
+        band_s = BAND_DT_S
+        if grain is not None:
+            agg = _vec(store, s, k, CLASS_AGG_H, ts)
+            dt = band_s = GR.GRAIN_S["h"]
+        else:
+            agg = _vec(store, s, k, CLASS_AGG, ts)
         model = store.get_model(s, k, CLASSAGG_MODEL)
         if agg is None or not isinstance(model, Mapping) or model.get("current") is None:
             return [], [0.0] * NF
@@ -1571,17 +1989,20 @@ class ExplainEngine(Engine):
         cm = ((prof.extra if prof is not None else {}) or {}).get("class_monitor") or {}
         bands = None
         aggq = (cm.get("aggregate") or {}).get("features") or {}
+        if _f((cm.get("aggregate") or {}).get("exposure_s", BAND_DT_S)) != band_s:
+            aggq = {}
         if aggq and int(_f(cm.get("bucket"))) == int(tc.get("bin48", -1)):
             bands = np.full((3, NF), np.nan)
             for n, v in aggq.items():
                 if n in FEATURE_INDEX and v is not None and len(v) == 3:
                     bands[:, FEATURE_INDEX[n]] = [_f(x) for x in v]
         if want_bands:
-            q = MB.quantiles(pc, STATE_QS, dt_s=BAND_DT_S, nat=agg)
+            q = MB.quantiles(pc, STATE_QS, dt_s=band_s, nat=agg)
             bands = q if bands is None else np.where(np.isfinite(bands), bands, q)
         order = [i for i in np.argsort(-np.nan_to_num(share, nan=-1.0), kind="stable")
                  if math.isfinite(share[i])]
-        out = [self._attr_item(i, share, p, np.full(NF, np.nan), bh, z, p, agg, bands, dt)
+        out = [self._attr_item(i, share, p, np.full(NF, np.nan), bh, z, p, agg, bands, dt,
+                               band_s)
                for i in order[:TOP_ATTR]]
         dev = [round(float(v), 3) if math.isfinite(v) else 0.0 for v in z]
         return out, dev

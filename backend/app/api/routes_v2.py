@@ -90,16 +90,30 @@ def _portrait_payload(pobj: Any) -> Dict[str, Any]:
 def _current_workload(st, system: str, entity: str, js: Dict[str, Any], dt: float,
                       tz: str) -> Dict[str, Any]:
     """Current per-15-min value of each workload feature of the portrait
-    (feature.nat is the raw per-tick count; bands are per 15 min)."""
+    (feature.nat is the raw per-tick count; bands are per 15 min). spec v2.1
+    (cadence.md §9.5): when B01 writes grain rows, per_15min / per_hour are
+    the live rolling Q / H values (feature.live.<g>), exact for every feature
+    class, and `grains` carries both; otherwise v2's tick scaling."""
     from ..engines.behavior.lib.features import FEATURE_INDEX
     wl = js.get("workload") if isinstance(js.get("workload"), dict) else {}
     ts, nat = V.latest_vec(st, system, entity, "feature.nat")
+    live = {g: V.latest_vec(st, system, entity, f"feature.live.{g}")[1] for g in ("h", "q")}
     out: Dict[str, Any] = {}
     for name in wl:
         i = FEATURE_INDEX.get(name)
         v = V.fnum(nat[i]) if nat is not None and i is not None and i < nat.size else None
-        out[name] = {"per_15min": V.rnd(v * 900.0 / dt, 3) if v is not None and dt > 0 else None,
-                     "per_tick": V.rnd(v, 3)}
+        gv = {g: (V.fnum(lv[i]) if lv is not None and i is not None and i < lv.size else None)
+              for g, lv in live.items()}
+        if live["q"] is not None or live["h"] is not None:
+            per15 = gv["q"]
+        else:
+            per15 = v * 900.0 / dt if v is not None and dt > 0 else None
+        item = {"per_15min": V.rnd(per15, 3), "per_tick": V.rnd(v, 3)}
+        if live["h"] is not None:
+            item["per_hour"] = V.rnd(gv["h"], 3)
+        if any(lv is not None for lv in live.values()):
+            item["grains"] = {g: V.rnd(x, 3) for g, x in gv.items() if live[g] is not None}
+        out[name] = item
     return {"ts": ts, "ts_local": V.iso(ts, tz), "window_s": dt, "features": out}
 
 
@@ -177,10 +191,7 @@ def entity_portrait_diff(system: str, entity: str,
         diff: List[Dict[str, Any]] = []
         method = "b30.diff_signatures"
         try:
-            from ..engines.behavior import portrait as P
-            sa = a.get("sig") or P._signature(a.get("json") or {})
-            sb = b.get("sig") or P._signature(b.get("json") or {})
-            diff = P.diff_signatures(sa, sb)
+            diff = V.portrait_diff(a, b)
         except Exception:
             method = "stored"
             diff = list(b.get("diff") or []) if from_ != to else []
@@ -441,11 +452,7 @@ def class_detail(system: str, cid: str):
         # adoption history (B08 class vocab adoption records) with risk flags
         adoption = []
         if key.startswith("class:"):
-            try:
-                from ..engines.behavior.portrait import _safe_token as mask
-            except Exception:                 # privacy first: no masker, no values
-                def mask(v: Any) -> Any:
-                    return None
+            mask = V.mask_template
             try:
                 for rec in m_vocab.adoption_records(st, system, key)[:50]:
                     flags = rec.get("flags") or {}
@@ -753,7 +760,10 @@ def detectors_health():
     """Per engine: last run / error, error count and the staleness of each
     series it declares (now - last_write_ts). Per detector and system: KS D,
     realised rate against the e_day budget, weight_mult (B24 calib_health)
-    and the share of entities whose detector is degraded at their last tick."""
+    and the share of the keys running the detector (entities and class keys
+    that scored it or marked it degraded at their last scored tick) whose run
+    was degraded, with the causes by kind (lib/emit: stale, producer_error,
+    unscorable, insufficient_support, fallback, provisional)."""
     r = rt()
     st = r.store
     tz = V.runtime_tz(r)
@@ -798,26 +808,20 @@ def detectors_health():
         detectors: Dict[str, List[Dict[str, Any]]] = {}
         for s in st.systems():
             _, ch = V.latest_dict(st, s, SYSTEM_KEY, "behavior.calib_health")
-            ents = st.entities(s)
-            degraded: Dict[str, int] = {}
-            n_ent = 0
-            for e in ents:
-                ts, _row = V.latest_vec(st, s, e, "behavior.score")
-                if ts is None:
-                    continue
-                n_ent += 1
-                t_d, dg = V.latest_dict(st, s, e, "behavior.degraded")
-                if dg and t_d == ts:
-                    for d in dg:
-                        degraded[d] = degraded.get(d, 0) + 1
+            deg = V.degraded_counts(st, s)
             rows = []
             for d in DETECTORS:
                 c = ch.get(d) if isinstance(ch.get(d), dict) else {}
+                dc = deg.get(d) or {}
+                n_run = int(dc.get("n", 0))
+                n_deg = int(dc.get("degraded", 0))
                 rows.append({"detector": d, "family": fam.get(d),
                              "ks": V.rnd(c.get("ks")), "rate_ratio": V.rnd(c.get("rate_ratio")),
                              "weight_mult": V.rnd(c.get("weight_mult")),
                              "n": c.get("n"), "expected": V.rnd(c.get("expected")),
-                             "degraded_share": V.rnd(degraded.get(d, 0) / n_ent) if n_ent else None,
+                             "n_keys": n_run,
+                             "degraded_share": V.rnd(n_deg / n_run) if n_run else None,
+                             "degraded_causes": dict(dc.get("causes") or {}),
                              "monitored": bool(c)})
             detectors[s] = rows
         body = {"tz": tz, "now": now, "now_local": V.iso(now, tz),

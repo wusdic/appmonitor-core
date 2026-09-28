@@ -80,6 +80,16 @@ Per class and tick:
      exposure, current anchor, this bucket), active fraction by bin48, the
      adoption rate and recent adoptions, the last scores.
 
+spec v2.1 (docs/lib3/cadence.md §9; canonical grain mode): class_int,
+class_shape and class_coherence are H-stream detectors. On an H decision
+tick the members' H rows (feature.nat.h / feature.meta.h) are aggregated
+into behavior.class.agg.h, which the class anchors learn (exposure = the
+coverage, the window-midpoint bucket) and class_int / class_shape score;
+class_coherence reads the members' H-row behavior.z / pf. class_rhythm
+and class_novel stay per tick (slot / event clocks), and behavior.class.agg
+keeps the per-tick aggregate as the learner clock of the auxiliary
+statistics.
+
 NaN means unscored / degraded, never p = 1: an inactive class gets no
 class_int / class_shape; members without B04 rows give no class_coherence;
 B01 failing (or no feature.nat row for any member at now) writes NaN plus
@@ -118,6 +128,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, EntityProfile, MetricKind, Severity
 from .lib import bayes, calib, combine, emit, seq
 from .lib import features as F
+from .lib import grains as GR
 from .lib import gating as G
 from .lib import m_baseline as MB
 from .lib import m_class
@@ -129,6 +140,8 @@ from .lib.detectors import DETECTOR_INFO, arl_days
 MODEL = "model.classagg"
 FMT = 1
 AGG = "behavior.class.agg"
+AGG_H = "behavior.class.agg.h"        # spec v2.1: the H-grain class row
+META_H, NAT_H = "feature.meta.h", "feature.nat.h"
 CLASS = "behavior.class"
 NAT = "feature.nat"
 ACTIVE = "feature.active"
@@ -320,7 +333,21 @@ def _dec_true(d: Dict[str, Any], now: float, hl: float) -> np.ndarray:
     return d["v"] * 2.0 ** (-(now - d["T0"]) / hl)
 
 
+def _ref_degraded(model: Mapping[str, Any], p_int: float, p_shape: float) -> Dict[str, str]:
+    """behavior.degraded of class_int / class_shape (lib/emit causes): scored
+    against the current anchor alone because the reference anchor holds
+    fewer than REF_MIN_NEFF committed rows - the slow reference that makes
+    a drifting class visible is not in the p yet."""
+    ref = model.get("reference")
+    if ref is not None and not ref.empty and MB.n_eff(ref) >= REF_MIN_NEFF:
+        return {}
+    c = emit.cause(emit.INSUFFICIENT_SUPPORT, "reference")
+    return {d: c for d, p in (("class_int", p_int), ("class_shape", p_shape)) if p == p}
+
+
 # ================================================================ learner
+
+
 class _Row(NamedTuple):
     """One committed tick: the anchor row (None when the class was inactive)
     and its learning extras (meta tuple, see _meta_row)."""
@@ -424,12 +451,18 @@ def _load_cur(blob: Mapping[str, Any]) -> _Cur:
     return _Cur(MB.load(blob["anc"]), aux)
 
 
-def new_model(kind: Optional[str]) -> Dict[str, Any]:
-    """Empty model.classagg@(s, class:<id>) (hyperprior predictives)."""
+def new_model(kind: Optional[str], canon: bool = False) -> Dict[str, Any]:
+    """Empty model.classagg@(s, class:<id>) (hyperprior predictives).
+    spec v2.1: canonical-mode anchors hold H rows (sigma15 via the default
+    Q transfer, v15 = M)."""
     cur = _init_cur()
+    ref = _init_ref()
+    if canon:
+        cur.anc.v15 = ref.v15 = float(GR.M)
     return {
         "fmt": FMT, "kind": "classagg", "class_kind": kind, "version": 0, "branch": 0,
-        "current": cur.anc, "aux": cur.aux, "reference": _init_ref(),
+        "grain_mode": GR.CANONICAL if canon else GR.TICK,
+        "current": cur.anc, "aux": cur.aux, "reference": ref,
         "gate": G.GateState(), "gate_ref": G.GateState(),
         "meta": {}, "ref_elig": {}, "ctl_sig": None,
         "run": {"slot": None, "slot_bin": None, "slot_end": None, "slot_act": [],
@@ -522,6 +555,8 @@ class ClassMonitorEngine(Engine):
         super().__init__(**params)
         self.profile_period_s = float(profile_period_s)
         self.ref_period_s = float(ref_period_s)
+        self._canon = False
+        self._h_due = False
         self._cfg: Dict[str, Any] = {}
         self._now = 0.0
         self._tctx_cache: Dict[Tuple[float, float], Dict[str, Any]] = {}
@@ -546,6 +581,8 @@ class ClassMonitorEngine(Engine):
         if not (math.isfinite(dt) and dt > 0.0):
             raise ValueError(f"ClassMonitorEngine: bad ctx.window_s {ctx.window_s!r}")
         self._cfg, self._now = ctx.config, now
+        self._canon = GR.canonical(ctx.config)
+        self._h_due = self._canon and GR.decision(now, dt, "h", GR.CANONICAL)
         self._cur.d_min_s = float(ctx.config.get("D_min_s") or G.D_MIN_S)
         if id(store) not in self._ret_stores:           # the learner clock must cover replay
             store.ensure_retention(AGG, None, META_KEEP_S)
@@ -619,10 +656,12 @@ class ClassMonitorEngine(Engine):
             if a is not None and float(a[0]) > 0.5:
                 active_members.append(m)
         model = store.get_model(s, ck, MODEL)
+        if self._canon and _valid(model) and model.get("grain_mode") != GR.CANONICAL:
+            model = None                         # learnt from tick rows: not a grain model
         if not present and not seen_any and not _valid(model):
             return None                          # nothing ever observed for this class
         if not _valid(model):
-            model = new_model(class_kind(ck))
+            model = new_model(class_kind(ck), self._canon)
         model["members"], model["n_members"] = list(members), len(members)
         run = model["run"]
         scores: Dict[str, float] = {}
@@ -664,11 +703,43 @@ class ClassMonitorEngine(Engine):
                 else:
                     tok_row = tokens
 
+        # ---- spec v2.1: the H-grain class row on H decision ticks
+        agg_h, cov_h, active_h = None, _NAN, []
+        if self._h_due and not sc.b01_failed:
+            rows_h = []
+            for m in members:
+                nh = store.vec_at(s, m, NAT_H, now)
+                mh = store.vec_at(s, m, META_H, now)
+                if nh is None or mh is None:
+                    continue
+                rows_h.append(nh)
+                cov_h = float(mh[1]) if not cov_h >= float(mh[1]) else cov_h
+                if float(mh[0]) > 0.5:
+                    active_h.append(m)
+            if rows_h and cov_h > 0.0:
+                agg_h = aggregate(np.asarray(rows_h, dtype=np.float64))
+                store.add_vec(s, ck, AGG_H, now, agg_h.astype(np.float32),
+                              window_s=int(round(dt)))
+
         # ---- 3a) class_int / class_shape (active class only)
         if b01_bad:
             for d in ("class_int", "class_shape", "class_rhythm"):
                 scores[d] = _NAN
                 degraded[d] = cause
+        elif self._canon:
+            if agg_h is not None and active_h:
+                tc_h = GR.row_tctx(now, "h", dt, self._cfg)
+                p_int, ax_int, u_dir, p_shape, ax_shape, jsd = self._int_shape(
+                    s, ck, model, agg_h, tokens, now, cov_h, tc_h)
+                scores["class_int"], pm["class_int"] = _score(p_int), p_int
+                scores["class_shape"], pm["class_shape"] = _score(p_shape), p_shape
+                if p_int == p_int:
+                    axes["class_int"] = ax_int
+                if p_shape == p_shape:
+                    axes["class_shape"] = ax_shape
+                info["p_int"], info["p_shape"], info["dir_int"] = p_int, p_shape, u_dir
+                info["axes_shape"] = ax_shape
+                degraded.update(_ref_degraded(model, p_int, p_shape))
         elif active_members:
             p_int, ax_int, u_dir, p_shape, ax_shape, jsd = self._int_shape(
                 s, ck, model, agg, tokens, now, dt, tc_now)
@@ -680,6 +751,7 @@ class ClassMonitorEngine(Engine):
                 axes["class_shape"] = ax_shape
             info["p_int"], info["p_shape"], info["dir_int"] = p_int, p_shape, u_dir
             info["axes_shape"] = ax_shape
+            degraded.update(_ref_degraded(model, p_int, p_shape))
 
         # ---- 3b) class_rhythm (slot clock; silent members count)
         slot_obs = None
@@ -687,16 +759,19 @@ class ClassMonitorEngine(Engine):
             slot_obs = self._rhythm(s, ck, model, present, active_members, now, dt, tc_slot,
                                     scores, pm, axes, acc)
 
-        # ---- 3c) class_coherence (members' B04 rows)
-        coh = None if sc.b04_failed else self._coherence(store, s, active_members, now)
-        if coh is None:
+        # ---- 3c) class_coherence (members' B04 rows; spec v2.1: H rows on H ticks)
+        coh_members = active_h if self._canon else active_members
+        coh = None if sc.b04_failed else self._coherence(store, s, coh_members, now)
+        if self._canon and not self._h_due:
+            coh = None                            # H stream: unscored between H ticks
+        elif coh is None:
             # active members but no B04 row for any of them: degraded, not "coherent"
-            if sc.b04_failed or (len(active_members) >= 2 and not any(
-                    store.vec_at(s, m, Z, now) is not None for m in active_members)):
+            if sc.b04_failed or (len(coh_members) >= 2 and not any(
+                    store.vec_at(s, m, Z, now) is not None for m in coh_members)):
                 scores["class_coherence"] = _NAN
                 degraded["class_coherence"] = (f"producer_error:{B04_ENGINE}"
                                                if sc.b04_failed else "stale:behavior.z")
-        else:
+        if coh is not None:
             p_coh, ax_coh, frac = coh
             scores["class_coherence"], pm["class_coherence"] = _score(p_coh), p_coh
             axes["class_coherence"] = ax_coh
@@ -734,9 +809,16 @@ class ClassMonitorEngine(Engine):
 
         # ---- 2) learning (after scoring: the scores used the pre-commit model)
         if agg is not None or slot_obs is not None or tallies:
-            model["meta"][now] = (dt, len(active_members) if agg is not None else 0,
-                                  jsd if jsd == jsd else None, slot_obs, tuple(tallies),
-                                  tok_row)
+            if self._canon:
+                # spec v2.1: the anchor row of a tick is the H class row (if any)
+                model["meta"][now] = (cov_h if agg_h is not None else dt,
+                                      len(active_h) if agg_h is not None else 0,
+                                      jsd if jsd == jsd else None, slot_obs, tuple(tallies),
+                                      tok_row)
+            else:
+                model["meta"][now] = (dt, len(active_members) if agg is not None else 0,
+                                      jsd if jsd == jsd else None, slot_obs, tuple(tallies),
+                                      tok_row)
         self._learn(ctx, s, ck, model, now, dt)
         return model
 
@@ -1127,10 +1209,16 @@ class ClassMonitorEngine(Engine):
             return None
         base = None
         if meta[1] >= 1:
-            nat = store.vec_at(s, e, AGG, ts)
+            nat = store.vec_at(s, e, AGG_H if self._canon else AGG, ts)
             if nat is not None:
-                base = MB.make_row(ts, nat, meta[0], self._tctx(ts, meta[0]))
+                base = MB.make_row(ts, nat, meta[0], self._row_tctx(ts, meta[0]))
         return _Row(ts, base, meta)
+
+    def _row_tctx(self, ts: float, dt: float) -> Dict[str, Any]:
+        """spec v2.1: an H class row is bucketed at its window midpoint."""
+        if self._canon:
+            return GR.row_tctx(ts, "h", dt, self._cfg)
+        return self._tctx(ts, dt)
 
     def _fetch_ref(self, store: Any, s: str, e: str, ts: float) -> Optional[MB.Row]:
         """Active rows with no class incident / abnormal regime within +-24 h
@@ -1147,10 +1235,10 @@ class ClassMonitorEngine(Engine):
                 ok = el[ts] = not any(a <= ts + DAY and b >= ts - DAY for a, b in ivs)
             if not ok:
                 return None
-        nat = store.vec_at(s, e, AGG, ts)
+        nat = store.vec_at(s, e, AGG_H if self._canon else AGG, ts)
         if nat is None:
             return None
-        return MB.make_row(ts, nat, meta[0], self._tctx(ts, meta[0]), drift=drift)
+        return MB.make_row(ts, nat, meta[0], self._row_tctx(ts, meta[0]), drift=drift)
 
     def _on_rebase_cur(self, state: _Cur, tau: float) -> _Cur:
         """ACCEPTED: the new regime's rows are committed without the rate cap."""
@@ -1203,7 +1291,10 @@ class ClassMonitorEngine(Engine):
         names = [F.FEATURE_NAMES_V2[i] for i in VOL_IDX]
         # volume features only: the ratio ppf searches would cost ~5 ms
         pred = dataclasses.replace(pred, c=np.full(NF, np.nan))
-        Q = MB.quantiles(pred, [0.05, 0.5, 0.95], dt_s=900.0)
+        # spec v2.1: a canonical model's anchors hold H rows, so its bands are
+        # per hour (B30 class bands come from B18's H agg anchors, cadence.md §9.5)
+        band_s = GR.GRAIN_S["h"] if model.get("grain_mode") == GR.CANONICAL else 900.0
+        Q = MB.quantiles(pred, [0.05, 0.5, 0.95], dt_s=band_s)
         agg = {n: [_fin(Q[0, i]), _fin(Q[1, i]), _fin(Q[2, i])] for n, i in zip(names, VOL_IDX)}
         rh = _dec_true(model["aux"]["rh"], now, RHYTHM_HL_S)
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -1213,7 +1304,7 @@ class ClassMonitorEngine(Engine):
         extra = {
             "kind": model.get("class_kind"), "members": list(model["members"]),
             "n_members": int(model["n_members"]), "bucket": int(tc["bin48"]),
-            "aggregate": {"quantiles": [0.05, 0.5, 0.95], "exposure_s": 900.0,
+            "aggregate": {"quantiles": [0.05, 0.5, 0.95], "exposure_s": float(band_s),
                           "features": agg},
             "active_frac_by_bin": [_fin(x) for x in frac.tolist()],
             "adoption": {"rate": _fin((ad[1] + ADOPT_A0) / (ad[2] + ADOPT_A0 + ADOPT_B0)),

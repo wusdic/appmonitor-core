@@ -97,6 +97,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 from . import features as F
+from . import grains as GR
 from . import m_client, m_rhythm, m_seq, m_template, m_timing, m_vocab
 from .classkeys import SYSTEM_KEY
 from .names import etld1
@@ -311,11 +312,46 @@ def window_vector(rows: Any) -> np.ndarray:
     return out.astype(np.float32)
 
 
-def window_from_store(store, s: str, e: str, ts_list: Sequence[float]) -> Optional[np.ndarray]:
+def window_from_store(store, s: str, e: str, ts_list: Sequence[float], grain: Optional[str] = None,
+                      config: Optional[Mapping] = None, dt: Optional[float] = None
+                      ) -> Optional[np.ndarray]:
     """Window vector of the tick rows at ts_list (B16: the last K active ticks);
-    None when no row is available."""
-    rows = [r for r in (tick_row(store, s, e, float(t)) for t in ts_list) if r is not None]
+    None when no row is available. spec v2.1: grain='h' uses the H rows
+    (grain_row) at ts_list."""
+    if grain == "h":
+        rows = [r for r in (grain_row(store, s, e, float(t), config=config, dt=dt)
+                            for t in ts_list) if r is not None]
+    else:
+        rows = [r for r in (tick_row(store, s, e, float(t)) for t in ts_list) if r is not None]
     return window_vector(np.vstack(rows)) if rows else None
+
+
+def grain_row(store, s: str, e: str, ts: float, grain: str = "h", *,
+              config: Optional[Mapping] = None, dt: Optional[float] = None,
+              timing: Optional[Mapping] = None, depth: int = 64) -> Optional[np.ndarray]:
+    """spec v2.1 (cadence.md §8): float64[138] row of the H grain at ts, the
+    tick_row layout with feature.vec.h | feature.sketch.h | behavior.timing
+    at ts | the clock of the row's window midpoint. None without a
+    feature.vec.h row at ts (retained 2 d). In tick mode it is tick_row."""
+    if not GR.canonical(config):
+        return tick_row(store, s, e, ts, timing=timing, depth=depth)
+    v = store.vec_at(s, e, "feature.vec.h", ts)
+    if v is None:
+        return None
+    out = np.full(TICK_DIM, _NAN)
+    v = np.asarray(v, dtype=np.float64).reshape(-1)
+    if v.size == VEC_DIM:
+        out[T_VEC] = v
+    sk = store.vec_at(s, e, "feature.sketch.h", ts)
+    if sk is not None:
+        sk = np.asarray(sk, dtype=np.float64).reshape(-1)
+        if sk.size == SKETCH_DIM:
+            out[T_SK] = sk
+    tm = timing if timing is not None else _dict_at(store, s, e, "behavior.timing", ts, depth)
+    if isinstance(tm, Mapping):
+        out[T_TIM] = [_f(tm.get(k)) for k in TIMING_KEYS]
+    out[T_CLK] = clock_features(GR.row_tctx(ts, grain, float(dt or 900.0), config))
+    return out
 
 
 # ================================================================ transform
@@ -762,6 +798,26 @@ def tick_modal_data(store, s: str, e: str, ts: float, *, tctx: Optional[Mapping]
     return md
 
 
+def grain_modal_data(store, s: str, e: str, ts: float, *, smap: Optional[m_seq.SymbolMap] = None,
+                     config: Optional[Mapping] = None, dt: Optional[float] = None
+                     ) -> "ModalData":
+    """spec v2.1 (cadence.md §8): the modality evidence of the H window
+    (ts - 3600, ts]: every tick's tick_modal_data merged (vocab / client
+    counts and rhythm cells add up, tokens and gaps concatenate), the ticks
+    being the entity's feature.part rows of the window. In tick mode it is
+    tick_modal_data."""
+    if not GR.canonical(config):
+        return tick_modal_data(store, s, e, ts, smap=smap)
+    ts_w, _ = store.vec_since(s, e, "feature.part", float(ts) - GR.GRAIN_S["h"] + 1e-3)
+    md = ModalData()
+    for t in [float(x) for x in ts_w if x <= ts + 1e-6]:
+        a = store.vec_at(s, e, "feature.active", t)
+        if a is None or not float(a[0]) > 0.5:
+            continue                            # idle tick: no evidence, no rhythm cell
+        md.extend(tick_modal_data(store, s, e, t, smap=smap))
+    return md
+
+
 class Background:
     """Per-(system, tick) cache of the background tiers every candidate's
     modality log-likelihood is compared against, plus per-candidate model
@@ -778,6 +834,19 @@ class Background:
         self._rhythm_models: Optional[List[Mapping]] = None
         self._p_bg: Dict[Tuple[int, int], float] = {}
         self._cache: Dict[Tuple[str, str], Any] = {}
+        self._terms: Dict[Tuple[str, int], Tuple[Any, Any]] = {}
+
+    def term(self, kind: str, data: Any, fn: Any) -> Any:
+        """The background side of a modality LLR for `data` (the same for
+        every candidate), computed once per (kind, data) and tick (perf).
+        The entry keeps `data` alive, so its id is not reused."""
+        key = (kind, id(data))
+        hit = self._terms.get(key)
+        if hit is not None and hit[0] is data:
+            return hit[1]
+        v = fn()
+        self._terms[key] = (data, v)
+        return v
 
     def _model(self, name: str, cand: str) -> Any:
         key = (name, cand)
@@ -844,33 +913,40 @@ def modality_logliks(store, s: str, cand: str, data: ModalData, now: float,
         ent, cls, sys_ = m_vocab.backoff_models(store, s, cand)
         if ent is not None or cls is not None or sys_ is not None:
             out["vocab"] = (m_vocab.loglik_models(ent, cls, sys_, data.vocab, now)
-                            - m_vocab.loglik_models(None, None, bg.vocab_sys, data.vocab, now)
+                            - bg.term("vocab", data, lambda: m_vocab.loglik_models(
+                                None, None, bg.vocab_sys, data.vocab, now))
                             ) * vocab_factor(data)
     if data.cells:
         ll = _rhythm_ll(bg._model(m_rhythm.MODEL, cand), data.cells)
-        pb = [bg.rhythm_p(*c) for c in data.cells]
+        pb = bg.term("rhythm_p", data, lambda: [bg.rhythm_p(*c) for c in data.cells])
         if math.isfinite(ll) and all(math.isfinite(p) for p in pb):
-            lb = sum(math.log(min(1.0 - 1e-6, max(1e-6, p))) for p in pb)
+            lb = bg.term("rhythm", data, lambda: sum(
+                math.log(min(1.0 - 1e-6, max(1e-6, p))) for p in pb))
             out["rhythm"] = ll - lb
     if data.tokens:
         own = bg._model(m_seq.MODEL, cand)
         tiers = m_seq.backoff(store, s, cand) if cand != SYSTEM_KEY else []
         if m_seq.ppm(own) is not None or tiers:
             b_c = m_seq.loglik(own, data.tokens, tiers, bg.seq_V)
-            b_0 = m_seq.loglik(bg.seq_sys, data.tokens, (), bg.seq_V)
-            out["seq"] = float(np.nansum(b_0) - np.nansum(b_c)) * _LN2
+            s_0 = bg.term("seq", data, lambda: np.nansum(
+                m_seq.loglik(bg.seq_sys, data.tokens, (), bg.seq_V)))
+            out["seq"] = float(s_0 - np.nansum(b_c)) * _LN2
     if data.stacks:
         ent, cls, sys_ = m_client.backoff_models(store, s, cand)
         if ent is not None or cls is not None or sys_ is not None:
             out["client"] = (m_client.loglik(ent, data.stacks, sys_, cls, now)
-                             - m_client.loglik(None, data.stacks, bg.client_sys, None, now))
+                             - bg.term("client", data, lambda: m_client.loglik(
+                                 None, data.stacks, bg.client_sys, None, now)))
     if data.gaps.size:
         ll = m_timing.loglik(bg._model(m_timing.MODEL, cand), data.gaps)
         p0 = bg.timing_pmf()
         if math.isfinite(ll) and np.all(np.isfinite(p0)):
-            b = m_timing.bin_index(data.gaps)
-            b = b[b >= 0]
-            out["timing"] = ll - float(np.sum(np.log(p0[b]))) if b.size else _NAN
+            def _bg_timing() -> float:
+                b = m_timing.bin_index(data.gaps)
+                b = b[b >= 0]
+                return float(np.sum(np.log(p0[b]))) if b.size else _NAN
+            lb = bg.term("timing", data, _bg_timing)
+            out["timing"] = ll - lb if lb == lb else _NAN
     return out
 
 

@@ -849,3 +849,23 @@ def test_step_never_mutates_the_dict_its_gate_came_from():
     st, g2 = sim.L.seed_from_link(sim.store, S, E, st, g2, {A: sA}.get)
     assert json.dumps(d, allow_nan=False) == snap
     assert g2.journal is not d["journal"] and len(g2.journal) > len(d["journal"])
+
+
+# --------------------------------------------------- spec v2.1 window trust
+def test_window_min_trust_for_grain_learners():
+    """commit_candidates(window_s=G): a grain row's weight is the MINIMUM
+    trust over (ts - G, ts]; window_s=None keeps the per-row v2 lookup."""
+    st = MetricStore()
+    dt, G_h = 900.0, 3600.0
+    for k in range(12):
+        t = T0 + k * dt
+        st.add_vec(S, E, "feature.meta.h" if k % 4 == 3 else "clock.none", t, np.array([1.0]))
+        st.add_vec(S, E, G.TRUST, t, np.array([0.2 if k == 5 else 1.0], dtype=np.float32))
+        st.add_vec(S, E, G.TRUST_PROV, t, np.array([1.0], dtype=np.float32))
+    now = T0 + 20 * dt
+    rows = G.commit_candidates(st, S, E, "h", -INF, now, dt, clock="feature.meta.h",
+                               window_s=G_h)
+    assert [r[0] for r in rows] == [T0 + 3 * dt, T0 + 7 * dt, T0 + 11 * dt]
+    assert [round(r[1], 6) for r in rows] == [1.0, 0.2, 1.0]      # hour holding tick 5
+    v2 = G.commit_candidates(st, S, E, "h", -INF, now, dt, clock="feature.meta.h")
+    assert [round(r[1], 6) for r in v2] == [1.0, 1.0, 1.0]

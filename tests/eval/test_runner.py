@@ -257,7 +257,16 @@ def test_simulated_analyst_labels():
     res = _run(analyst=an, keep_store=True)
     assert res.labels_added == 1 and an.n == 1
     (lb,) = res.store.labels()
-    assert lb.verdict == "tp" and lb.target_type == "incident"
+    assert lb.verdict == "tp" and lb.target_type == "incident" and lb.scope == "this"
+
+
+def test_simulated_analyst_dismisses_fp_as_a_pattern():
+    """fp verdicts are labelled with scope 'pattern' (B23 turns only widened
+    scopes into suppression policies, which gate 12 measures)."""
+    an = SimulatedAnalyst(seed=0, noise=1.0, per_day=96.0)   # every verdict flipped: tp -> fp
+    res = _run(analyst=an, keep_store=True)
+    (lb,) = res.store.labels()
+    assert lb.verdict == "fp" and lb.scope == "pattern"
 
 
 def _pool_job(seed):

@@ -360,3 +360,326 @@ def features_in(groups: Union[str, Sequence[str]]) -> List[int]:
 def as_mapping(vec: Sequence[float]) -> Mapping[str, float]:
     """{name: value} view of a 52-vector (for profiles / explanations)."""
     return {n: float(vec[i]) for i, n in enumerate(FEATURE_NAMES_V2)}
+
+
+# ============================================================================
+# spec v2.1: grain additions (docs/lib3/cadence.md §3-§4)
+# ============================================================================
+# Additive per-tick parts. Each entry is (name, source, weight_source, rule):
+#   rule 'sum'  : part = fresh value of `source` (stale -> 0)
+#   rule 'prod' : part = source * weight_source when BOTH are fresh, else 0
+#                 (an average's / a fraction's sum; its weight is a separate part)
+#   rule 'when' : part = weight_source when `source` is fresh, else 0
+#                 (the weight of an average that exists this tick)
+#   rule 'dt' / 'active' : the tick length / feature.active
+PART_SPEC: List[Tuple[str, Optional[str], Optional[str], str]] = [
+    ("p_dt", None, None, "dt"),
+    ("p_active", None, None, "active"),
+    ("p_up", "l4.bytes_up", None, "sum"),
+    ("p_down", "l4.bytes_down", None, "sum"),
+    ("p_flows", _FLOWS, None, "sum"),
+    ("p_http", _HTTPR, None, "sum"),
+    ("p_dns", _DNSQ, None, "sum"),
+    ("p_tls", _TLSH, None, "sum"),
+    ("p_events", "act.events", None, "sum"),
+    ("p_l3b", "l3.bytes_total", None, "sum"),
+    ("p_newpeer", "derived.new_peer_count", None, "sum"),
+    ("p_write", "http.write_count", None, "sum"),
+    ("p_get", "http.get_count", None, "sum"),
+    ("p_4xx", "http.status_4xx", None, "sum"),
+    ("p_5xx", "http.status_5xx", None, "sum"),
+    ("p_3xx", "http.status_3xx", None, "sum"),
+    ("p_lat_s", "http.latency_ms_avg", _HTTPR, "prod"),
+    ("p_lat_n", "http.latency_ms_avg", _HTTPR, "when"),
+    ("p_resp_s", "http.resp_bytes_avg", _HTTPR, "prod"),
+    ("p_req_s", "http.req_bytes_avg", _HTTPR, "prod"),
+    ("p_ntr_k", "act.new_template_ratio", _HTTPR, "prod"),
+    ("p_ntr_n", "act.new_template_ratio", _HTTPR, "when"),
+    ("p_dga_s", "derived.dns_dga_score", "derived.dns_dga_named_n", "prod"),
+    ("p_dga_n", "derived.dns_dga_score", "derived.dns_dga_named_n", "when"),
+    ("p_nx_k", "derived.dns_fail_rate", "derived.dns_fail_rate.n", "prod"),
+    ("p_nx_n", "derived.dns_fail_rate", "derived.dns_fail_rate.n", "when"),
+    ("p_txt", "dns.txt_count", None, "sum"),
+    ("p_qlen_s", "dns.qname_len_avg", _DNSQ, "prod"),
+    ("p_qlen_n", "dns.qname_len_avg", _DNSQ, "when"),
+    ("p_weak_k", "tls.weak_version_ratio", _TLSH, "prod"),
+    ("p_hsms_s", "tls.handshake_ms_avg", _TLSH, "prod"),
+    ("p_hsms_n", "tls.handshake_ms_avg", _TLSH, "when"),
+    ("p_think_ls", "derived.think_log_sum", None, "sum"),
+    ("p_think_n", "derived.think_gaps", None, "sum"),
+    ("p_pkts", "l4.pkts_total", None, "sum"),
+    ("p_retx_k", "l4.retransmit_rate", "l4.pkts_total", "prod"),
+    ("p_rtt_s", "l4.rtt_ms_avg", _FLOWS, "prod"),
+    ("p_rtt_n", "l4.rtt_ms_avg", _FLOWS, "when"),
+    ("p_syn", "l4.syn_count", None, "sum"),
+    ("p_dur_s", "l4.flow_duration_ms_avg", _FLOWS, "prod"),
+    ("p_dur_n", "l4.flow_duration_ms_avg", _FLOWS, "when"),
+    ("p_probes", "probe.probes", None, "sum"),
+    ("p_reach_s", "probe.reachable", "probe.probes", "prod"),
+    ("p_loss_k", "probe.loss_ratio", "probe.probes", "prod"),
+    ("p_sni_n", "derived.sni_entropy_n", None, "sum"),
+    ("p_path_n", "derived.path_entropy_n", None, "sum"),
+    ("p_dnsent_n", "derived.dns_name_entropy_n", None, "sum"),
+]
+PART_NAMES: List[str] = [p[0] for p in PART_SPEC]
+PART_DIM: int = len(PART_SPEC)
+PART_INDEX: Dict[str, int] = {n: i for i, n in enumerate(PART_NAMES)}
+if PART_DIM != 47:                                        # contract (cadence.md §3.1)
+    raise ImportError(f"features.PART_SPEC must have 47 parts, has {PART_DIM}")
+
+# how the grain value of each feature is built (cadence.md §4)
+SET_SOURCES: Dict[str, str] = {
+    "distinct_peers": "l4.peer_ids", "distinct_dports": "l4.dport_ids",
+    "distinct_templates": "act.template_ids", "ja3_diversity": "tls.ja3_ids",
+}
+MAP_SOURCES: Dict[str, Tuple[str, ...]] = {
+    "dest_concentration": ("tls.sni_set", "dns.qname_set"),
+    "path_entropy": ("http.top_paths",),
+    "dns_name_entropy": ("dns.qname_set",),
+    "sni_entropy": ("tls.sni_set",),
+}
+MAP_RAW_SETS: Tuple[str, ...] = ("tls.sni_set", "http.top_paths", "dns.qname_set")
+SPAN_FEATURES: Dict[str, float] = {"periodicity": 21600.0, "timing_regularity": 21600.0,
+                                   "req_per_session": 86400.0, "duty_cycle": 86400.0}
+GRAIN_CLASS: Dict[str, str] = {
+    n: ("set" if n in SET_SOURCES else "map" if n in MAP_SOURCES
+        else "span" if n in SPAN_FEATURES else "add") for n in FEATURE_NAMES_V2}
+_T_JENSEN = {"bytes_up", "bytes_down", "bytes_per_flow", "http_latency", "resp_bytes_avg",
+             "req_bytes_avg", "dns_dga_score", "dns_qname_len", "tls_handshake_ms", "rtt",
+             "flow_duration"}
+_T_MEAN = {"updown_log", "think_time", "retransmit_rate", "probe_reachable", "probe_loss"}
+
+
+def _transfer_of(name: str) -> Optional[str]:
+    gc = GRAIN_CLASS[name]
+    if gc == "span":
+        return None
+    if gc in ("set", "map"):
+        return "none"
+    kind = FEATURE_KIND[name]
+    if name in _T_JENSEN:
+        return "jensen"
+    if name in _T_MEAN or kind == "clr":
+        return "mean"
+    if kind == "count":
+        return "rate"
+    if kind == "ratio":
+        return "ratio"
+    return "mean"
+
+
+TRANSFER: Dict[str, Optional[str]] = {n: _transfer_of(n) for n in FEATURE_NAMES_V2}
+SPAN_IDX: List[int] = [FEATURE_INDEX[n] for n in SPAN_FEATURES]
+SET_IDX: List[int] = [FEATURE_INDEX[n] for n in SET_SOURCES]
+MAP_IDX: List[int] = [FEATURE_INDEX[n] for n in MAP_SOURCES]
+NONE_TRANSFER_IDX: List[int] = [FEATURE_INDEX[n] for n in FEATURE_NAMES_V2
+                                if TRANSFER[n] == "none"]
+_P = PART_INDEX
+
+
+def compute_parts(get: Getter, dt_s: float, active: Optional[float] = None) -> np.ndarray:
+    """float64[47] additive parts of one tick (cadence.md §3.1). `get` is the
+    freshness-aware getter of compute_features (None when stale). A stale
+    source is a part of 0; an average's sum and weight are both 0 when the
+    average is absent. `active` defaults to get('feature.active')."""
+    out = np.zeros(PART_DIM)
+    for i, (name, src, wsrc, rule) in enumerate(PART_SPEC):
+        if rule == "dt":
+            out[i] = float(dt_s)
+        elif rule == "active":
+            a = _num(active) if active is not None else _num(get("feature.active"))
+            out[i] = 1.0 if (a is not None and a > 0.5) else 0.0
+        elif rule == "sum":
+            v = _num(get(src))
+            if v is None:
+                continue
+            # counts are >= 0; a sum of log gaps may be negative (sub-second gaps)
+            out[i] = v if (v > 0.0 or name == "p_think_ls") else 0.0
+        else:
+            v = _num(get(src))
+            w = _num(get(wsrc))
+            if v is None or w is None or not w > 0.0:
+                continue
+            if rule == "prod":
+                out[i] = v * w
+            else:                                           # 'when'
+                out[i] = w
+    return out
+
+
+def _avg(S: np.ndarray, s: str, n: str) -> Optional[float]:
+    w = S[_P[n]]
+    return float(S[_P[s]] / w) if w > 0.0 else None
+
+
+def _entropy_of(named: Mapping[str, float]) -> float:
+    vals = [c for c in named.values() if c > 0]
+    if len(vals) <= 1:
+        return 0.0 if vals else math.nan
+    tot = float(sum(vals))
+    h = -sum((c / tot) * math.log2(c / tot) for c in vals)
+    return h / math.log2(len(vals))
+
+
+def _split_map(m: Optional[Mapping[str, Any]]) -> Optional[Tuple[Dict[str, float], float]]:
+    """(named entries, total incl. '__other__') of a merged count map (D1's split_set)."""
+    if not isinstance(m, Mapping) or not m:
+        return None
+    named: Dict[str, float] = {}
+    total = 0.0
+    for k, v in m.items():
+        c = _num(v)
+        if c is None or not c > 0.0:
+            continue
+        total += c
+        if k != "__other__":
+            named[str(k)] = c
+    return (named, total) if total > 0.0 else None
+
+
+def map_value(feature: str, maps: Mapping[str, Any]) -> Optional[float]:
+    """D1's value of a map feature on merged count maps (None when undefined)."""
+    if feature == "dest_concentration":
+        for src in MAP_SOURCES[feature]:
+            sp = _split_map(maps.get(src))
+            if sp is None:
+                continue
+            named, total = sp
+            top = max(named.values()) if named else 0.0
+            if top > 0.0:
+                return top / total
+        return None
+    sp = _split_map(maps.get(MAP_SOURCES[feature][0]))
+    if sp is None:
+        return None
+    named, _total = sp
+    if not named:
+        return None
+    v = _entropy_of(named)
+    return v if math.isfinite(v) else None
+
+
+def grain_values(S: Sequence[float], cov_s: float, G: float,
+                 sets: Optional[Mapping[str, Optional[float]]] = None,
+                 maps: Optional[Mapping[str, Any]] = None,
+                 span: Optional[Mapping[str, Optional[float]]] = None
+                 ) -> Tuple[np.ndarray, np.ndarray]:
+    """(vec[52], nat[52]) of a grain window from the part sums S[47] and its
+    coverage cov_s (cadence.md §4): additive features from S with dt := cov,
+    set features from the SetSketch union sizes `sets` {feature: count},
+    map features from the merged raw maps `maps` {raw set name: {key: count}}
+    (D1's rules), span features from `span` {feature: value}. Set and map
+    features are NaN when their input is None or cov < COVER_MIN G. At
+    cov = dt with one tick and untruncated sets it equals compute_features
+    except think_time (geometric mean of the gaps instead of their median)
+    and ja3_diversity (exact distinct JA3 instead of named + 1)."""
+    S = np.asarray(S, dtype=np.float64).reshape(-1)
+    if S.size != PART_DIM:
+        raise ValueError(f"grain_values: S must have {PART_DIM} parts, got {S.size}")
+    cov = float(cov_s)
+    if not (cov > 0.0 and math.isfinite(cov)):
+        raise ValueError(f"grain_values: bad cov_s {cov_s!r}")
+    covered = cov >= 0.95 * float(G) * (1.0 - 1e-9)
+    sets = sets or {}
+    maps = maps or {}
+    span = span or {}
+    vals: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+
+    def s(name: str) -> float:
+        return float(S[_P[name]])
+
+    def ratio(k: str, n: str) -> Tuple[Optional[float], Optional[float]]:
+        return s(k), s(n)
+
+    vals["bytes_up"] = (s("p_up"), None)
+    vals["bytes_down"] = (s("p_down"), None)
+    vals["flows"] = (s("p_flows"), None)
+    vals["http_requests"] = (s("p_http"), None)
+    vals["dns_queries"] = (s("p_dns"), None)
+    vals["tls_handshakes"] = (s("p_tls"), None)
+    vals["intensity"] = (s("p_events"), None)
+    fl = s("p_flows")
+    vals["bytes_per_flow"] = ((s("p_l3b") / fl) if fl > 0.0 else None, fl)
+    vals["updown_log"] = ((math.log((max(s("p_up"), 0.0) + 1.0) / (max(s("p_down"), 0.0) + 1.0))
+                           if fl > 0.0 else None), fl)
+    vals["new_peer_count"] = (s("p_newpeer"), None)
+    ht = s("p_http")
+    vals["http_write_ratio"] = ratio("p_write", "p_http")
+    vals["http_get_ratio"] = ratio("p_get", "p_http")
+    vals["http_4xx_rate"] = ratio("p_4xx", "p_http")
+    vals["http_5xx_rate"] = ratio("p_5xx", "p_http")
+    vals["http_3xx_rate"] = ratio("p_3xx", "p_http")
+    vals["http_latency"] = (_avg(S, "p_lat_s", "p_lat_n"), s("p_lat_n"))
+    vals["resp_bytes_avg"] = (((s("p_resp_s") / ht) if ht > 0.0 else None), ht)
+    vals["req_bytes_avg"] = (((s("p_req_s") / ht) if ht > 0.0 else None), ht)
+    vals["new_template_ratio"] = ratio("p_ntr_k", "p_ntr_n")
+    vals["dns_dga_score"] = (_avg(S, "p_dga_s", "p_dga_n") if s("p_dns") >= 1.0 else None,
+                             s("p_dns"))
+    vals["dns_fail_rate"] = ratio("p_nx_k", "p_nx_n")
+    vals["dns_txt_ratio"] = ratio("p_txt", "p_dns")
+    vals["dns_qname_len"] = (_avg(S, "p_qlen_s", "p_qlen_n"), s("p_qlen_n"))
+    vals["tls_weak_ratio"] = ratio("p_weak_k", "p_tls")
+    vals["tls_handshake_ms"] = (_avg(S, "p_hsms_s", "p_hsms_n"), s("p_hsms_n"))
+    vals["retransmit_rate"] = ratio("p_retx_k", "p_pkts")
+    vals["rtt"] = (_avg(S, "p_rtt_s", "p_rtt_n"), s("p_rtt_n"))
+    vals["syn_ratio"] = ratio("p_syn", "p_flows")
+    vals["flow_duration"] = (_avg(S, "p_dur_s", "p_dur_n"), s("p_dur_n"))
+    pr = s("p_probes")
+    vals["probe_reachable"] = ((s("p_reach_s") / pr) if pr > 0.0 else None, None)
+    vals["probe_loss"] = ratio("p_loss_k", "p_probes")
+
+    vec = np.full(FEATURE_DIM, np.nan)
+    nat = np.full(FEATURE_DIM, np.nan)
+    for i, name in enumerate(FEATURE_NAMES_V2):
+        kind = FEATURE_KIND[name]
+        gc = GRAIN_CLASS[name]
+        if kind == "clr":
+            continue
+        if gc == "set":
+            c = sets.get(name)
+            v = _num(c) if covered else None
+            if v is None:
+                continue                                   # undefined, not 0
+            vec[i], nat[i] = transform(kind, v, None, cov, tx=VEC_TX.get(name))
+            continue
+        if gc == "map":
+            if not covered:
+                continue
+            if name == "dest_concentration":
+                n = s("p_tls") + s("p_dns")
+            elif name == "path_entropy":
+                n = s("p_path_n")
+            elif name == "sni_entropy":
+                n = s("p_sni_n")
+            else:
+                n = s("p_dnsent_n")
+            v = map_value(name, maps)
+            vec[i], nat[i] = transform(kind, v, n, cov, tx=VEC_TX.get(name))
+            continue
+        if gc == "span":
+            v = _num(span.get(name))
+            vec[i], nat[i] = transform(kind, v, None, cov, tx=VEC_TX.get(name))
+            continue
+        if name == "think_time":
+            n = s("p_think_n")
+            if n >= 2.0:
+                mlog = s("p_think_ls") / n
+                v = math.exp(mlog)
+                vec[i], nat[i] = max(mlog, math.log(AVG_FLOOR)), v
+            continue
+        v, n = vals[name]
+        vec[i], nat[i] = transform(kind, v, n, cov, tx=VEC_TX.get(name))
+    counts = [s("p_get"), s("p_write"), s("p_4xx"), s("p_5xx"), s("p_dns"), s("p_tls"),
+              s("p_flows"), s("p_syn")]
+    cv, cn = clr(counts, cov)
+    vec[CLR_IDX] = cv
+    nat[CLR_IDX] = cn
+    return vec, nat
+
+
+def grain_exposure(S: Sequence[float]) -> Dict[str, float]:
+    """feature.expo.<g> {channel: sum n} from the part sums."""
+    S = np.asarray(S, dtype=np.float64).reshape(-1)
+    return {"http": float(S[_P["p_http"]]), "dns": float(S[_P["p_dns"]]),
+            "tls": float(S[_P["p_tls"]]), "flows": float(S[_P["p_flows"]]),
+            "probe": float(S[_P["p_probes"]])}

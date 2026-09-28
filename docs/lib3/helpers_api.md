@@ -1,4 +1,6 @@
-# Behaviour library helpers — public API (frozen contract)
+# Behaviour library helpers — public API (frozen contract, v2.1)
+
+**v2.1** adds the cadence amendments of `docs/lib3/cadence.md`: the new module `grains` and additions to `features`, `sketch`, `detectors`, `gating`, `calib` / `m_calib`, `m_baseline` and `m_identity`. Every v2.1 item is marked **(spec v2.1)**. Its signatures and maths are frozen here, and it is implemented in the order of cadence.md §12. `grain_mode = 'tick'` (the default until step M8) makes every v2.1 function degenerate to its v2 behaviour.
 
 Package: `backend/app/engines/behavior/lib/` (import as `from app.engines.behavior.lib import bayes`).
 Every engine is written against the signatures below. The module docstrings hold the exact maths, and this page is the index. **Status**: **impl** means the module is implemented and tested (`tests/lib/test_lib_data.py` plus `tests/lib/test_<module>.py`). **stub** means the signature, dataclasses and maths are frozen, but the body raises `NotImplementedError` until the implementing wave lands. After wave 0 only `replay` and `featcache` are stubs.
@@ -70,6 +72,21 @@ For a ratio with a plain metric source, the metric is a fraction and k = fractio
 - `source_kind(src)` returns `'metric' | 'div' | 'logratio'`. `source_metrics(src)` returns the metric names a source reads, and `all_source_metrics()` returns every metric the spec reads.
 - `group_of(idx)`, `features_in(groups) -> [idx]`, `as_mapping(vec) -> {name: value}`.
 
+**(spec v2.1) Grain additions** (cadence.md §3–§4):
+- Tables:
+  - `PART_SPEC` / `PART_NAMES` / `PART_DIM = 47`: additive per-tick parts (name, source, weight rule);
+  - `GRAIN_CLASS {feature: 'add'|'set'|'map'|'span'}`;
+  - `TRANSFER {feature: 'rate'|'ratio'|'jensen'|'mean'|'none'|None}`;
+  - `SPAN_FEATURES {name: span_s}`;
+  - `SET_SOURCES {feature: raw *_ids series}`;
+  - `MAP_SOURCES {feature: raw set series}`.
+- `compute_parts(get, dt_s) -> float64[47]`: stale sources give 0. An average's sum and weight are both 0 when it is absent.
+- `grain_values(S[47], cov_s, G, sets=None, maps=None, span=None) -> (vec[52], nat[52])`:
+  - `add` features come from the part sums, with vec using dt := cov.
+  - `set` features are the size of the SetSketch unions. `map` features come from the merged count maps with D1's rules. Both are NaN when their inputs are None or cov < 0.95 G.
+  - `span` features are taken from `span`.
+  - At cov = Δt, with one tick and untruncated sets, the result equals `compute_features`.
+
 Cadence note: count, bytes, avg and clr columns are exactly cadence invariant. Ratio columns are not, because the +0.5/+1 smoothing depends on exposure n; the Beta-Binomial predictive in B04 is what handles exposure.
 
 ## detectors — registry (impl)
@@ -100,6 +117,15 @@ Constants:
 - `family_of(d)`, `is_instant(d)`, and `detectors_of(owner) -> [name]` (the detectors an engine writes).
 - `new_score_vector() -> float64[31]` returns an all-NaN row for score, pm or p.
 - `arl_days(d)` returns 1/budget_per_day for an accumulator, the value to pass to `seq.h_for`.
+
+**(spec v2.1)**
+- `DETECTORS` is append-only. `marg_int_q`, `marg_shape_q`, `t2_q` and `spe_q` are appended, so `N_DETECTORS` = 35 and `new_score_vector()` returns float64[35].
+- `DETECTOR_INFO[d]` gains:
+  - `stream` ∈ {'h', 'q', 't'};
+  - `overlap` (True for identity only);
+  - `strata` ∈ {'daypart_grain', 'daypart_regime_grain', 'daypart_cc'}.
+- `STREAM_DETECTORS {stream: [name]}` lists the detectors per stream.
+- `acc_level(p, d, dt_s)` counts the ARL in `grains.period_s(d, dt_s)` periods, which is dt_s in tick mode.
 
 ## stages — kill-chain map (impl)
 
@@ -230,7 +256,7 @@ Dataclasses:
 
 Functions:
 - `stratum_key(daypart, cc) -> 'wd_day|900'`, `identity_stratum_key(daypart, tercile) -> 'wd_day|r2'`, `ring_key(detector, stratum) -> 'd@stratum'`, `split_ring_key`. Malformed parts raise ValueError; cc and the tercile must be whole numbers (900 and 900.0 give the same key), and inf, NaN, None, strings and bools raise ValueError.
-- `fit_tail(ring, now_ts=nan, xi_min=XI_FLOOR) -> GPDTail | None` fits a PWM-GPD (evt.gpd_pwm_fit) to the entries strictly above u = q_0.90, needs at least 10 of them, rate = N_u/N. A ξ below `xi_min` is raised to `xi_min` keeping the mean excess (σ = mean(y)·(1 − xi_min)). With the default of 0, a spuriously bounded fit becomes the exponential tail. `xi_min=-0.5` gives the raw fitter. Pure: the caller assigns `ring.gpd`.
+- `fit_tail(ring, now_ts=nan, xi_min=XI_FLOOR, winsor_alpha=None) -> GPDTail | None` fits a PWM-GPD (evt.gpd_pwm_fit) to the entries strictly above u = q_0.90, needs at least 10 of them, rate = N_u/N. A ξ below `xi_min` is raised to `xi_min` keeping the mean excess (σ = mean(y)·(1 − xi_min)). With the default of 0, a spuriously bounded fit becomes the exponential tail. `xi_min=-0.5` gives the raw fitter. Pure: the caller assigns `ring.gpd`. `winsor_alpha` (W7; B25 meta rings pass 0.001) winsorises the exceedances first with `winsorise_exceedances(y, alpha)`: excesses beyond s·(ln n + ln 1/alpha), the (1 − alpha) bound of the maximum of n exponential excesses with a rank-based scale s = y_(m)/(H_n − H_{n−m}), are replaced by their expected order statistics s·(H_n − H_{r−1}). For scores whose null tail is exponential by construction (−log10 of a valid p); a clean fit is touched in ~1 % of refits at n = 26.
 - `p_from_ring(ring, s, u, tail=None)` uses `tail` (or `ring.gpd`) when s > tail.u: rate·gpd_sf, floored at 1e-300 and capped at 1/(n+1) when s is above every ring entry. Otherwise it returns the randomised conformal p (a private fast path, identical to `combine.randomized_conformal_p` for a ring that keeps its invariant; about 2.2 µs). s is float32-rounded first, and NaN gives NaN. O(log M).
 - `blend_small_sample(p_conf, p_model, n, n0=64)` logit-blends with weight n/(n+64) through combine.logit_blend. n ≤ 0 gives p_model, and a NaN on either side passes the other through.
 - `ks_uniform(ps) -> D` over the finite ps (NaN if none), and `health_weight(ks_d, rate_ratio) -> 0.5 | 1.0`, where a NaN input only neutralises its own check.
@@ -326,6 +352,10 @@ Dataclasses:
   - allow_drift is recorded.
 - `.seed_from_link(store, s, e, state, gate, load_other)` computes B := B_own + 0.5·A when `model.link.version` increases.
 
+**(spec v2.1)**
+- `commit_candidates(..., window_s=None)` and `GatedLearner(..., window_s=None)`: with window_s set, w_eff and w_prov are the minimum trust and trust_prov over (ts − window_s, ts]. Grain learners pass clock = `feature.meta.<g>` and window_s = G.
+- `None` keeps v2.
+
 Other functions:
 - `control_directives(control)` normalises `model.control`.
 - `reference_eligible(ts, w_eff, incident_or_regime_ts, window_s=86400)` is the reference-anchor admission rule.
@@ -350,6 +380,49 @@ Constants: `DEFAULT_TZ='Asia/Shanghai'`, `DEFAULT_DAY_HOURS=(8,20)`, `SLOT_S=900
 - DST: `slot_bounds` of a slot skipped at spring-forward is empty at the transition instant. A slot repeated at fall-back returns its first pass. A slot only partly skipped (a jump not aligned to 15 minutes) starts at the transition.
 - `parse_calendar` and `tctx_from_config` raise `ValueError` on a bad date, tz or `daypart_day_hours`. `daypart_day_hours` accepts `[8, 20]` or `"8-20"`, and a start > end wraps midnight. A non-finite ts or hour raises `ValueError`. For `cadence_class`, NaN raises, dt ≤ 0 gives 60 and +inf gives 3600. `decode_tctx` returns non-finite int fields as None, except hour_local, which stays NaN, and raises ValueError on a day_type or daypart index that is not an in-range integer. `encode_tctx` rounds hour_local down to the last float32 inside the same hour, so a stored row never contradicts its bin48.
 
+## grains — canonical grains, decision clocks, streams, transfer (spec v2.1)
+
+Pure module. The maths is in cadence.md §2, §6 and §7.
+
+Constants:
+- `GRAIN_S = {'h': 3600, 'q': 900}`, `M = 4`, `COVER_MIN = 0.95`;
+- `KAPPA_T = 16`, `KAPPA_OMEGA = 24`, `OMEGA_MAX = 8`, `C_T_MIN = 5`;
+- `BETA = {'h': .5, 'q': .25, 't': .25}`, `EVIDENCE_SHARE = {'h': .5, 't': .5}`;
+- `SPAN_S`, `MODES = ('tick', 'canonical')`.
+
+Clocks. `mode` is `config['grain_mode']` (default `'tick'`). In tick mode G_h = Δt and Q is never observable.
+- `mode_of(config) -> str`
+- `grain_s(g, dt_s, mode) -> float`
+- `observable(g, dt_s, mode) -> bool`: dt ≤ G(1 + 1e-6).
+- `decision(now, dt_s, g, mode) -> bool`: floor((now+ε)/G) > floor((now−dt+ε)/G), epoch-aligned.
+- `due(now, dt_s, mode) -> {'h': bool, 'q': bool}`
+- `last_decision(now, dt_s, g, mode) -> float`: the newest decision tick ≤ now, used for staleness.
+- `window(now, g, dt_s, mode) -> (lo, hi)`: (now − G, now].
+- `row_tctx(now, g, dt_s, config) -> tctx`: the tctx at now − G/2. In tick mode it is the end-stamp tctx.
+- `span_decision(now, dt_s, feature, config) -> bool`: local-time aligned.
+- `scored_mask(now, dt_s, g, config) -> bool[52]`: span features are True only on their span decision; `none` features are handled by the predictive.
+- `series(base, g, mode) -> str`: `'feature.nat'` → `'feature.nat.h'` / `'feature.nat.q'`; the H behaviour names are unchanged; tick mode returns base.
+
+Streams and budgets:
+- `stream_of(detector) -> 'h'|'q'|'t'`
+- `period_s(detector, dt_s, mode) -> float`
+- `tick_type(now, dt_s, mode) -> 'h'|'q'|'t'`
+- `n_per_day(tau, dt_s, mode) -> float`: Σ_τ = 86400/dt.
+- `beta(tau, dt_s, mode) -> float`: renormalised over the types present.
+- `e_day_tick(q, now, dt_s, mode) -> float`: q·n_τ/β_τ, which equals `combine.e_day(q, dt)` in tick mode and at dt = 3600.
+- `e_day_detector(p, detector, dt_s, mode) -> float`: p·86400/period_s.
+- `e_inst(q_by_stream, dt_s, mode) -> float`: min_s q_s·N_s.
+- `evidence_arl_ticks(stream, dt_s, mode) -> float`: (33 d / share) in the stream's periods.
+
+Transfer (cadence.md §6.2–§6.3):
+- `v_from_omega(omega) -> float`: 1 + ((M−1)/M)·clip(ω, 0, 2M).
+- `transfer_nb(mu, r, v) -> (mu, r/v)`
+- `transfer_bb(p, c, v) -> (p, max(C_T_MIN, (1+c)/v − 1))`
+- `transfer_t(loc, scale, df, v, delta) -> (loc+delta, scale·sqrt(v), df)`
+- `jensen_delta(scale, df, v) -> −(v−1)·σ²/2`
+- `omega_eb(A, B, W, omega_parent) -> omega` and `delta_eb(D, W, delta_parent) -> delta`: the EB formulas of cadence.md §6.3.
+- `paired_stats(family, q_vals, q_expo, h_val, h_expo, h_pred) -> (a, b, d)`: one paired hour, for one feature family, vectorised over features.
+
 ## sketch — hashing sketch and HLL (impl)
 
 Constants: `SKETCH_NAMESPACES` (act.tokens, client.stack_set, sni_etld1, dns_etld1, l4.dport_set), `SKETCH_BLOCK=16`, `SKETCH_DIM=80`, `HLL_P=10`, `HLL_M=1024`.
@@ -362,6 +435,11 @@ Constants: `SKETCH_NAMESPACES` (act.tokens, client.stack_set, sni_etld1, dns_etl
   - Items are hashed as str(item). `add_many` gives the same registers as repeated `add`, with the register update vectorised (≈0.07 s per 1e5 items).
   - `merge` is in-place, returns self and is lossless (the merged sketch equals the sketch of the union). `from_bytes` copies, and raises ValueError unless it gets exactly 1024 bytes with every register ≤ 55. Equality compares registers.
   - Accuracy is the textbook p = 10 figure, sd ≈ 3.25 %. Measured over 150 sets of n = 2000: rms 3.4 %, 86 % within 5 %. At n = 1e5 the rms is 3.1 %. `range(2000)` gives −1.3 % and `range(100000)` gives +0.1 %. **A single arbitrary id set misses a 5 % bound about 1 time in 8**, so engine tests should use a fixed set or a ≥ 4σ (13 %) bound. For example, ids 1000..2999 give −6.8 %.
+
+**(spec v2.1) SetSketch** (mergeable distinct counts for the H/Q grains, cadence.md §3.2):
+- `set_sketch(ns, keys) -> dict`: `{'n', 'h': sorted uint64}` for ≤ 256 keys, else `{'n', 'hll': 1024 B}`. The hash is blake2b-64 of `f'{ns}\x1f{key}'`.
+- `set_union(sketches) -> dict`: exact while |∪| ≤ 4096, else HLL (register max, lossless).
+- `set_count(sk) -> float`
 
 ## ppm — sequence model (impl)
 
@@ -480,7 +558,7 @@ Conjugate seasonal baseline maths and read accessors for model.baseline.
 
 - `anchor_predictive(anc, tctx, parent=None, anchor='current')`
 - `anchor_summary(model, anchor, feature)`
-- `bucket_means(anc, T=None)`
+- `bucket_means(anc, T=None, v=None)` — *spec v2.1*: `v` scales σ15 by the Q transfer factor (an H anchor's v15; None = own grain)
 - `commit(anc, row, w, cap=0.1, drift=0.0)`
 - `commit_many(ancs, rows, ws, caps, drifts)`
 - `descriptors(model, names=None, dt_s=900.0)`
@@ -525,6 +603,22 @@ Conjugate seasonal baseline maths and read accessors for model.baseline.
 - `vec_median_sd(pred)`
 - `version(model)`
 
+**(spec v2.1) grain parameters.** Every accessor taking a tctx or an anchor gains `grain='h'`: predictive, predictive_set, quantiles (dt_s defaults to G), mean_nat, own_support, n_eff, n_eff_by_bucket and descriptors. In tick mode the H grain is v2. New:
+- `new_model()` returns fmt 2 (cadence.md §5.3). `load` migrates fmt 1.
+- `Row` gains `grain` and `pair` (the Q rows of a paired hour). `make_row(ts, nat, cov_s, tctx, ..., pair=None)`.
+- `predictive_set(store, s, e, tctx, model=None, grain='q')`:
+  - `{'current'}` is the native Q stats ⊕ `pseudo_stats(transfer(H current), KAPPA_T)`;
+  - `{'reference'}` is the transfer of the H reference;
+  - there is no `'class'`.
+  - `Pred` gains `prov[52]` (π_nat) and `scored[52]`.
+- `omega_chain(store, s, e, model=None) -> (v[52], delta[52])`: EB over entity → class → system → org → default M.
+- `transfer_pred(pred_h, v, delta) -> Pred` and `pseudo_stats(pred, kappa, grain) -> ndarray[L]`.
+- `sd15` for H anchors is the sd of the transferred Q predictive.
+
+**Batched forms (perf, integration.md §9).** Bit-identical to the one-by-one calls (the parameter maps are element-wise per row; tests/engines/test_b04_batched.py):
+- `predictive_set_many(store, items)` and `predictive_q_many(store, items)`, items `[(s, e, tctx)]` -> one dict per item, as `predictive_set` / `predictive_q`.
+- `quantiles_many(preds, qs, dt_s)` -> `[len(preds), len(qs), 52]`, `dt_s` per pred.
+
 #### m_calib — B24 / B25 (model.calib)
 
 Read accessors for model.calib (owner: B24 CalibrationEngine; contract C).
@@ -533,7 +627,8 @@ Read accessors for model.calib (owner: B24 CalibrationEngine; contract C).
 - `describe(model)`
 - `health_of(calib_health, detector)`
 - `issued(p)`
-- `p_from_snapshot(model, detector, stratum, score, u, pm=None, pooled=None, settled=None)`
+- `p_from_snapshot(model, detector, stratum, score, u, pm=None, pooled=None, settled=None, pm_ring=None)` — pm is used as is (B25 meta rings: the raw HMP p) unless `pm_ring` is given, then `pm_prior(pm_ring, pm, u)` (B24 detectors).
+- `pm_stratum(detector, cc, grain=False)`, `pm_ring_key(detector, cc, grain=False)`, `pm_score(pm)` (floors at `PM_ATOM_FLOOR`, pm = 1 at `PM_ATOM_ONE`) and `pm_prior(pm_ring, pm, u, min_n=PM_RING_MIN=16)` (W7): B24's small-sample prior — pm with its atoms randomised (mid-p): pm = 1 → 1 − π1 + u·π1, pm at the float floor → u·π0, π the atom's share of the pm ring `'<d>@pm|<cc>'` (canonical H / Q `'<d>@pm|g:<g>'`) of admitted −log10 pm; below `min_n` π1 is Laplace and an unseen floor is kept; the body of pm is returned as is. `p_replay` applies it with the snapshot's pm ring.
 - `p_value(r, score, u, prior=nan)`
 - `pooled_p(rs, score, u, min_n=64)`
 - `quantile(model, detector, stratum, q)`
@@ -544,6 +639,7 @@ Read accessors for model.calib (owner: B24 CalibrationEngine; contract C).
 - `rings(model)`
 - `score_at_p(model, detector, stratum, p)`
 - `stratum_for(detector, daypart, cc, regime_tercile=0)`
+  - **(spec v2.1)** `stratum_for(detector, daypart, cc, regime_tercile=0, grain=None, prov=0)` and `ring_key_for(...)` with the same arguments. For an H or Q stream detector in canonical mode they give `'<daypart>|g:h'`, `'<daypart>|g:q|p:<prov>'` or `'<daypart>|r<k>|g:h'`; T-stream detectors keep `'<daypart>|<cc>'`. `calib.grain_stratum_key(daypart, grain, prov=None, tercile=None)` and `calib.meta_stratum_key(daypart, tau, cc=None)` build them. `issued_stratum` and `p_replay` carry grain and prov.
 - `tail(model, detector, stratum)`
 - `to_json(model)`
 - `uniform(system, entity, detector, ts)`
@@ -687,7 +783,9 @@ Read accessors for model.feedback (owner: B23 feedback; contract C).
 model.governor / model.control accessors and the legitimate-change arithmetic.
 
 - `control(store, s, e)`
-- `decide(typ, x, duration_s, malicious, negative, ramp_blocked=False)`
+- `decide(typ, x, duration_s, malicious, negative, ramp_blocked=False, corroborated=True)` — reject also needs `corroborated`.
+- `reject_corroborated(flags, evidence_ticks, evidence_span_s)` (W7): a tp label, two independent malicious sources (`MALICIOUS_SOURCES`; identity mismatch and client concurrency are one), or the episode's own alarm / accumulator evidence on ≥ `REJECT_MIN_TICKS` = 4 ticks spanning ≥ `REJECT_MIN_S` = 1 h.
+- `evidence_weight(store, s, e, at)` (W7): behavior.trust_evidence (`TRUST_EVIDENCE`) at `at`, clipped to [0, 1]; 1.0 when absent or NaN.
 - `descriptor(store, s, e)`
 - `episodes(store, s, e, since=None)`
 - `get(store, s, e)`
@@ -745,6 +843,12 @@ Read accessors and shared maths for model.identity / model.idwin (owner: B15.
 - `t99(model, e)`
 - `tick_modal_data(store, s, e, ts, tctx=None, smap=None)`
 - `tick_row(store, s, e, ts, tctx=None, timing=None, depth=64)`
+- **(spec v2.1)**
+  - `grain_row(store, s, e, ts, grain='h')` has the same 138-dim layout from feature.vec.h, feature.sketch.h, behavior.timing at ts and the clock of `row_tctx`. It is `tick_row` in tick mode.
+  - `grain_modal_data(store, s, e, ts)` merges act.tokens, client.stack_set and act.stream over the H window.
+  - `window_from_store(store, s, e, ts_list, grain='h')`.
+  - `K_WIN = 4` counts H rows.
+  - `FMT = 2`.
 - `to_natural(idx, v)`
 - `top_k(model, z, k=5, exclude=())`
 - `transform(model, x, class_key=None)`
@@ -803,7 +907,8 @@ Read accessors for model.rhythm (owner: B07 RhythmEngine; contract C, G, L).
 - `data_counts(model, at_ts=None)`
 - `day_info(day, calendar=None, healed=None)`
 - `decay_factor(t_from, t_to)`
-- `descriptors(model)`
+- `descriptors(model)` (also carries `automation`)
+- `automation_components(model) -> {offhours, week, regular}`, `automation_index(model, a_b02=None)`, `machine_decision(index, previous=False, regular=nan)`, `machine_like(model)` (W7): the calibrated automation index behind B07's `machine_like` (constants `BIZ_HOURS`, `AUTO_ENTER` 0.6, `AUTO_LEAVE` 0.4, `AUTO_MIN_SPAN_S` 7 d, `REGULAR_MIN` 0.5; engines.md B07 step 4).
 - `det_p(p_hat)`
 - `detector_state(model)`
 - `entropy168(model)`
@@ -965,3 +1070,13 @@ Shared write/read convention for detector outputs (contract B, J).
 - `scored_detectors(store, system, entity, ts)`
 - `write_pvalues(store, system, entity, ts, pvals, window_s=None)`
 - `write_scores(store, system, entity, ts, scores, pm=None, axes=None, acc_alarm=None, degraded=None, window_s=None)`
+- `write_degraded(store, system, entity, ts, degraded, window_s=None)` merges {detector: cause} into behavior.degraded (W7); `cause(kind, detail=None) -> 'kind[:detail]'` with kind in `CAUSES` = stale, producer_error, unscorable (a NaN score), insufficient_support, fallback, provisional (a detector that still scores on a weaker reference; contract M).
+
+#### m_portrait — B30 (portrait signatures)
+
+Signatures, diffs and value masking shared by B30 and the API (W7; previously the engine's private `_signature` / `_safe_token`).
+
+- `signature(portrait_json)`, `diff_signatures(old_sig, new_sig)`, `diff_item(field, **kw)`
+- `safe_token(tok)`, `safe_path(path)`, `safe_family(fam)`
+- `jsd_dicts(a, b)`, `top_items(d, k)`, `hdist(a_h, b_h)`
+- constants `DIFF_JSD`, `DIFF_QSHIFT`, `DIFF_WINDOW_H`, `MEMBER_MIN_SHARE`, `PLACEHOLDER`, `LABELS`

@@ -8,8 +8,9 @@ v2 (lib-3, R1). Why each rule exists:
 
 * Weighted records. A record may stand for w = extra['count'] flows (IPFIX
   aggregates, the generator's aggregated mode at dt >= 900 s). Every counter
-  adds w, bytes come from extra['bytes_up_total'/'bytes_down_total'] when
-  present (else w * bytes), averages are w-weighted. Without this, 15-minute
+  adds w, bytes come from extra['bytes_up_total'/'bytes_down_total'] and
+  retransmits from extra['retransmits_total'] when present (else w * field),
+  averages are w-weighted. Without this, 15-minute
   aggregated ticks would look ~50x quieter than 60 s ticks.
 * Full sets. l4.dport_set / l4.peer_set keep the top 64 values plus
   '__other__', so the values always sum to the true flow count (novelty,
@@ -34,6 +35,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from ...core.engine import Context, Engine
+from ..behavior.lib import grains as GR
+from ..behavior.lib import sketch as SK
 from ...models.schema import (AcquisitionMethod, MetricKind, Observation, RawMetric,
                               is_pseudo_entity)
 from ..behavior.lib.names import normalize_host
@@ -190,9 +193,13 @@ class L4FlowEngine(Engine):
             x = o.pkts_up + o.pkts_down
             if 0 < x < _INF:
                 a.pkts += w * x
-            x = o.retransmits
-            if 0 < x < _INF:
-                a.retx += w * x
+            rt = _total(ex.get("retransmits_total")) if ex else None
+            if rt is not None:
+                a.retx += rt                  # an aggregate's total (like the byte totals)
+            else:
+                x = o.retransmits
+                if 0 < x < _INF:
+                    a.retx += w * x
             fl = o.tcp_flags
             if fl:
                 fl = fl.upper()
@@ -221,6 +228,7 @@ class L4FlowEngine(Engine):
 
         add = ctx.store.add_raw
         now = ctx.now
+        canon = GR.canonical(ctx.config)
         method = AcquisitionMethod.PASSIVE_FLOW
         C, G, R, K = MetricKind.COUNTER, MetricKind.GAUGE, MetricKind.RATE, MetricKind.CATEGORICAL
         n = 0
@@ -250,6 +258,12 @@ class L4FlowEngine(Engine):
             if a.dports:
                 out.append(("l4.dport_set",
                             _full_set({str(p): c for p, c in a.dports.items()}), K, ""))
+            if canon:
+                # spec v2.1 (cadence.md §3.2): mergeable distinct-count sketches of
+                # the FULL per-tick sets, so an H / Q grain row can count the
+                # distinct peers / ports of its window exactly
+                out.append(("l4.peer_ids", SK.set_sketch("l4.peer_ids", a.peers.keys()), K, ""))
+                out.append(("l4.dport_ids", SK.set_sketch("l4.dport_ids", a.dports.keys()), K, ""))
             if a.peers:
                 ps: Dict[str, int] = {}
                 for p, c in a.peers.items():

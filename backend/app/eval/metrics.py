@@ -1040,6 +1040,36 @@ def calibration_stats(view: RunView) -> Dict[str, Any]:
     for x in (0.03, 3e-3):
         exceed[str(x)] = {"n": int(e.size), "k": int(np.sum(e <= x)),
                           "expected": float(e.size * x * view.dt / 86400.0)}
+    # spec v2.1 (cadence.md §9.7): exceedance per tick type in canonical mode;
+    # a tick of type tau has P(e_day <= x) = x beta_tau / n_tau under the null
+    exceed_tau: Dict[str, Dict[str, Dict[str, float]]] = {}
+    cfg = _get(view.run, "config", None) or {}
+    if isinstance(cfg, Mapping) and cfg.get("grain_mode") == "canonical" and view.dt > 0:
+        from ..engines.behavior.lib import grains as _GR
+        ts_all, e_tau = [], []
+        for k in view.control:
+            ser = view.series.get(k)
+            if ser is None:
+                continue
+            ts = np.asarray(ser.get("ts", []), dtype=float)
+            ee = np.asarray(ser.get("e_day", []), dtype=float)
+            if ts.size == 0 or ee.size != ts.size:
+                continue
+            m = _clean_mask(view, k, ts) & np.isfinite(ee)
+            ts_all.append(ts[m])
+            e_tau.append(ee[m])
+        if ts_all:
+            T = np.concatenate(ts_all)
+            E = np.concatenate(e_tau)
+            taus = np.array([_GR.tick_type(float(t), view.dt, _GR.CANONICAL) for t in T])
+            for tau in sorted(set(taus.tolist())):
+                sel = taus == tau
+                b, n = _GR.beta(tau, view.dt, _GR.CANONICAL), _GR.n_per_day(tau, view.dt,
+                                                                           _GR.CANONICAL)
+                exceed_tau[tau] = {str(x): {"n": int(sel.sum()), "k": int(np.sum(E[sel] <= x)),
+                                            "expected": float(sel.sum() * x * b / n)
+                                            if n > 0 else 0.0}
+                                   for x in (0.03, 3e-3)}
     # ACAT masking: family p > 0.5 while a member p < 1e-4
     acat_ticks = acat_incident_ticks = 0
     inc_ts: Dict[str, Set[float]] = {}
@@ -1066,7 +1096,8 @@ def calibration_stats(view: RunView) -> Dict[str, Any]:
         acat_ticks += int(bad.sum())
         its = inc_ts.get(k, set())
         acat_incident_ticks += int(sum(1 for t in ts[bad] if float(t) in its))
-    return {"ks": ks, "exceedance": exceed, "cc": cadence_class(view.dt), "dt": view.dt,
+    return {"ks": ks, "exceedance": exceed, "exceedance_tau": exceed_tau,
+            "cc": cadence_class(view.dt), "dt": view.dt,
             "entity_days": ent_days, "evidence_cusum_alarms": ev_alarms,
             "single_tick_alarms": st_alarms, "acc_path_alarms": path_edges,
             "acat_ticks": acat_ticks, "acat_incident_ticks": acat_incident_ticks}
@@ -1572,6 +1603,29 @@ def portrait_stats(view: RunView) -> Dict[str, Any]:
     cov = []
     ho = _get(view.run, "holdout", None) or {}
     names = list(ho.get("feature_names") or [])
+    # spec v2.1 (cadence.md §9.7): coverage per grain, held-out H rows against
+    # the portrait's H bands and Q rows against its Q bands
+    cov_g: Dict[str, List[bool]] = {"h": [], "q": []}
+    for g, rows_g in ((ho.get("grains") or {}).items()):
+        if g not in cov_g:
+            continue
+        for k, rows in (rows_g or {}).items():
+            if k not in view.control:
+                continue
+            j = _portrait_json((ho.get("portraits") or {}).get(k))
+            wl = j.get("workload") or {}
+            if not isinstance(wl, Mapping) or not names:
+                continue
+            V = np.asarray(rows.get("values"), dtype=float)
+            for f, b in wl.items():
+                fn = _norm_feature(f)
+                gb = ((b.get("grains") or {}).get(g) if isinstance(b, Mapping) else None) or {}
+                lo, hi = _f(gb.get("p5")), _f(gb.get("p95"))
+                if fn not in names or math.isnan(lo) or math.isnan(hi) or V.ndim != 2:
+                    continue
+                x = V[:, names.index(fn)]
+                x = x[np.isfinite(x)]
+                cov_g[g].extend(((x >= lo) & (x <= hi)).tolist())
     for k, rows in (ho.get("nat") or {}).items():
         if k not in view.control:
             continue
@@ -1603,6 +1657,8 @@ def portrait_stats(view: RunView) -> Dict[str, Any]:
             for ck in sorted(class_keys)]
     return {"jaccard": jac, "template_recall": trec,
             "coverage": float(np.mean(cov)) if cov else None, "n_coverage": len(cov),
+            "coverage_grain": {g: (float(np.mean(v)) if v else None) for g, v in cov_g.items()},
+            "n_coverage_grain": {g: len(v) for g, v in cov_g.items()},
             "class_portraits": have}
 
 
@@ -1986,6 +2042,20 @@ def gate_calibration(scores: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             ratio = k / e if e > 0 else None
             checks.append(check(f"exceedance e_day<={x} cc={cc} (observed/nominal)", ratio,
                                 [lo, hi], None if (ratio is None or e < 5) else lo <= ratio <= hi))
+    by_tau: Dict[Tuple[int, str], Dict[str, List[float]]] = {}
+    for s in scores:
+        c = s["calibration"]
+        for tau, xs in (c.get("exceedance_tau") or {}).items():
+            for x, v in xs.items():
+                agg = by_tau.setdefault((int(c["cc"]), tau), {}).setdefault(x, [0, 0.0])
+                agg[0] += v["k"]
+                agg[1] += v["expected"]
+    for (cc, tau), xs in sorted(by_tau.items()):
+        for x, (k, e) in sorted(xs.items()):
+            ratio = k / e if e > 0 else None
+            checks.append(check(f"exceedance e_day<={x} cc={cc} tick type {tau} "
+                                "(observed/nominal)", ratio, [lo, hi],
+                                None if (ratio is None or e < 5) else lo <= ratio <= hi))
     days = sum(s["calibration"]["entity_days"] for s in scores)
     ev = sum(s["calibration"]["evidence_cusum_alarms"] for s in scores)
     ev_rate = ev / days if days > 0 else None
@@ -2097,6 +2167,13 @@ def gate_portrait(scores: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
                     _ge(tr, TARGETS["template_recall"])),
               check("p5-p95 coverage of held-out ticks", cov, [lo, hi],
                     None if cov is None else lo <= cov <= hi),
+              *[check(f"p5-p95 coverage of held-out {g.upper()} rows (spec v2.1)", cg, [lo, hi],
+                      None if cg is None else lo <= cg <= hi)
+                for g, cg in (("h", _median((p.get("coverage_grain") or {}).get("h")
+                                            for p in ps)),
+                              ("q", _median((p.get("coverage_grain") or {}).get("q")
+                                            for p in ps)))
+                if cg is not None],
               check("class portraits exist", cp, TARGETS["class_portraits"],
                     _ge(cp, TARGETS["class_portraits"]))]
     return gate("Portrait", jac, TARGETS["portrait_jaccard"], checks)
@@ -2109,6 +2186,13 @@ def feedback_gate(base: Sequence[Dict[str, Any]], fb: Sequence[Dict[str, Any]]) 
     if not base or not fb:
         return gate("Feedback", None, TARGETS["feedback_cut"],
                     [check("paired feedback runs", None, "run with --feedback", None)])
+    # pair by (pack, seed): the feedback runs usually cover a subset of the
+    # full runs, and comparing all full runs with that subset inflated the cut
+    base = _paired(base, fb)
+    if not base:
+        return gate("Feedback", None, TARGETS["feedback_cut"],
+                    [check("paired feedback runs", None, "same (pack, seed) as a full run",
+                           None)])
     n_labels = sum(s.get("labels_added", 0) for s in fb)
     b_low = sum(s["far"]["n_low"] for s in base)
     f_low = sum(s["far"]["n_low"] for s in fb)
@@ -2126,6 +2210,17 @@ def feedback_gate(base: Sequence[Dict[str, Any]], fb: Sequence[Dict[str, Any]]) 
     return gate("Feedback", cut, TARGETS["feedback_cut"], checks)
 
 
+def _run_key(s: Mapping[str, Any]) -> Tuple[str, int]:
+    return str(s.get("pack")), int(s.get("seed", 0))
+
+
+def _paired(full: Sequence[Dict[str, Any]], other: Sequence[Dict[str, Any]]
+            ) -> List[Dict[str, Any]]:
+    """The full runs with the same (pack, seed) as a run in `other`."""
+    keys = {_run_key(s) for s in other}
+    return [s for s in full if _run_key(s) in keys]
+
+
 def ablation_table(full: Sequence[Dict[str, Any]],
                    ablated: Mapping[str, Sequence[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     """Per engine: Δrecall and ΔFAR (>= LOW) per scenario versus the full
@@ -2138,10 +2233,12 @@ def ablation_table(full: Sequence[Dict[str, Any]],
                 out.setdefault(f"{s['pack']}/{o['scenario_id']}", []).append(o["within_deadline"])
         return out
 
-    f = per_sid(full)
-    f_far = _pooled_far(full, "n_low")
     rows = []
     for eng, sc in sorted(ablated.items()):
+        # each engine against the full runs of the same (pack, seed) only
+        base = _paired(full, sc)
+        f = per_sid(base)
+        f_far = _pooled_far(base, "n_low")
         a = per_sid(sc)
         delta = {k: float(np.mean(a[k]) - np.mean(v)) for k, v in f.items() if k in a}
         sole = [k for k, v in f.items() if k in a and any(v) and not any(a[k])]

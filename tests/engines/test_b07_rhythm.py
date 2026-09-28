@@ -198,7 +198,7 @@ def test_a_offhours_third_active_slot_alarms_same_slot_and_W_at_60_and_900():
 # =================================================================== (b)-(e)
 def human(t: float) -> bool:
     """Irregular daytime activity every day (weekends too) plus the backup
-    slots 02:00-02:40, so only the entropy gate differs from `bk`."""
+    slots 02:00-02:40, so only the automation gate differs from `bk`."""
     d, h, _ = local(t)
     if in_window(h, 2.0, 2.67):
         return True
@@ -232,7 +232,7 @@ def sched():
 def test_b_backup_skip_gives_silence_p_le_1e4(sched):
     rig, out = sched
     m = rig.model("bk")
-    assert m["machine_like"] and m["entropy168"] <= R.ENTROPY_MAX
+    assert m["machine_like"] and R.automation_index(m) >= R.AUTO_ENTER
     rows = out["bk"]
     # p_hat of the three skipped slots as scored (the rows report the slot
     # just finalised; the model has since learned the miss)
@@ -256,8 +256,13 @@ def test_b_backup_skip_gives_silence_p_le_1e4(sched):
 def test_c_same_skip_for_a_human_rhythm_is_ineligible(sched):
     rig, out = sched
     m = rig.model("hu")
-    assert m["entropy168"] > R.ENTROPY_MAX and not m["machine_like"]
-    # the backup slots alone would qualify (p >= 0.95): only the entropy gate differs
+    # spec change (W7): machine_like is the automation index (m_rhythm), not
+    # entropy <= 0.8; this every-day 07-23 coin-flip rhythm fails its
+    # regularity requirement (the old rule failed it on entropy)
+    comps = R.automation_components(m)
+    assert comps["regular"] < R.REGULAR_MIN and not m["machine_like"]
+    assert R.automation_components(rig.model("bk"))["regular"] >= R.REGULAR_MIN
+    # the backup slots alone would qualify (p >= 0.95): only the automation gate differs
     assert min(R.p_cell(m, R.cell48(2, q)) for q in range(3)) >= R.P_SIL_MIN
     assert not R.silence_eligible(0.99, m["machine_like"])
     rows = out["hu"]

@@ -312,6 +312,10 @@ class SequenceEngine(Engine):
         self._learners: Dict[float, G.GatedLearner] = {}
         self._rows: Dict[float, _Row] = {}
         self._held: Dict[float, _Row] = {}
+        # perf: tier rebuilds whose members did not change are reused (_build_tier)
+        self._mark: Dict[Tuple[str, str], Tuple[Any, ...]] = {}
+        self._rev: Dict[Tuple[str, str], int] = {}
+        self._tier_sig: Dict[Tuple[str, str], Tuple[Any, ...]] = {}
 
     # ----------------------------------------------------------------- run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
@@ -389,6 +393,10 @@ class SequenceEngine(Engine):
                                              lambda src: _other_state(store, s, src))
         finally:
             self._rows, self._held = {}, {}
+        mark = _state_mark(state, gate)
+        if self._mark.get((s, e)) != mark:     # the learned state may have changed
+            self._mark[(s, e)] = mark
+            self._rev[(s, e)] = self._rev.get((s, e), 0) + 1
         _prune_rows(model, gate, now)
         self._publish(store, s, e, model, state, gate, run, ck, now, out)
         return n
@@ -653,29 +661,58 @@ class SequenceEngine(Engine):
                                       ORDER, CAT_ORDER, "class")
         return n
 
-    @staticmethod
-    def _build_tier(store, s: str, key: str, members: Sequence[str], now: float, order: int,
-                    cat_order: int, kind: str) -> int:
+    def _build_tier(self, store, s: str, key: str, members: Sequence[str], now: float,
+                    order: int, cat_order: int, kind: str) -> int:
+        """Rebuild a tier from its members' learned states. The build is a
+        pure function of the members' states (in member order), so when no
+        member's state changed since this key's last build (_state_mark,
+        tracked per entity tick) the previous tier's statistics are
+        republished as they are, as a new version at now (perf: the full
+        rebuild merges every member PPM, ~half of B10's cost on pack A)."""
+        states = [(m, _other_state(store, s, m)) for m in members]
+        sig = (order, cat_order, kind,
+               tuple((m, id(o), self._rev.get((s, m))) for m, o in states if o is not None))
+        prev = m_seq.get(store, s, key)
+        last = self._tier_sig.get((s, key))
+        if (last is not None and last[0] == sig and prev is not None
+                and prev.get("ppm") is last[1] and prev.get("kind") == kind):
+            ver = int(prev.get("version", 0)) + 1
+            model = dict(prev)
+            model.update(version=ver, ts=now)
+            store.put_model(s, key, MODEL, model, version=ver)
+            return 1
         st = _init_state(order, cat_order)
         k = 0
-        for m in members:
-            o = _other_state(store, s, m)
+        for m, o in states:
             if o is not None:
                 _merge_state(st, o, 1.0)
                 k += 1
         if not k:
+            self._tier_sig.pop((s, key), None)
             return 0
-        prev = m_seq.get(store, s, key)
         ver = int(prev.get("version", 0)) + 1 if prev else 1
         mu, sd = P.entropy_rate(st["ppm"])
         store.put_model(s, key, MODEL, {
             "kind": kind, "ppm": st["ppm"], "ppm_cat": st["ppm_cat"], "gap": st["gap"],
             "dwell": st["dwell"], "session_gap": float(st["session_gap"]),
             "entropy_rate": [mu, sd], "members": k, "version": ver, "ts": now}, version=ver)
+        self._tier_sig[(s, key)] = (sig, st["ppm"])
         return 1
 
 
 # ================================================================= helpers
+def _state_mark(state: Dict[str, Any], gate: G.GateState) -> Tuple[Any, ...]:
+    """A marker that changes whenever the gated learner may have changed the
+    learned state: every update is a committed journal row (the journal's
+    newest row or its length moves), a rollback / release / rebase / freeze /
+    link seed moves version, branch, last_rollback_ts, link_version, frozen
+    or the applied directives, and a reload replaces the state object."""
+    j = gate.journal
+    return (id(state), gate.version, gate.branch, gate.last_ts, len(j), j[-1] if j else None,
+            len(gate.held), gate.link_version, gate.frozen, gate.last_rollback_ts,
+            repr(sorted(gate.applied.items(), key=lambda kv: kv[0])))
+
+
 def _other_state(store, s: str, e: str) -> Optional[Dict[str, Any]]:
     m = m_seq.get(store, s, e)
     return m.get("_state") if m is not None and m.get("kind") == "entity" else None

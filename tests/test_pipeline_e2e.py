@@ -129,3 +129,27 @@ def test_timings_are_recorded_per_engine(run):
     assert np.all(np.isfinite(E)) and np.all(E >= 0.0)
     behavior = [i for i, n in enumerate(tm["engine_names"]) if n.startswith("behavior.")]
     assert E[:, behavior].sum(axis=1).max() > 0.0
+
+
+def test_runtime_warmup_plan():
+    """spec v2.1 (cadence.md §10): the Runtime warms up 120 x 3600 s + 192 x
+    900 s by default, `warmup_ticks=n` keeps the v2 plan n x 900 s, and a
+    warning names a last warm-up phase that misses a day type."""
+    import datetime as dt
+
+    from app.pipeline.generator import Clock
+    rt = build.Runtime(live_period_s=0.0)
+    assert rt.warmup_plan == [(120, 3600.0), (192, 900.0)]
+    assert rt.warmup_ticks == 312 and rt.warmup_span_s() == 7 * 86400.0
+    assert "120 x 3600 s + 192 x 900 s" in rt.plan_text()
+    assert rt.config["grain_mode"] == "canonical"
+    clk = Clock(rt.gen.clock.tz)
+    sun = clk.epoch(dt.date(2025, 3, 9), 0.0)        # Fri + Sat before: both day types
+    mon = clk.epoch(dt.date(2025, 3, 10), 0.0)       # Sat + Sun before: no workday
+    assert rt.plan_warnings(sun) == []
+    assert rt.plan_warnings(mon) and "workday" in rt.plan_warnings(mon)[0]
+    legacy = build.Runtime(warmup_ticks=5, live_period_s=0.0)
+    assert legacy.warmup_plan == [(5, 900.0)] and legacy.warmup_ticks == 5
+    custom = build.Runtime(warmup_plan=[(2, 3600.0), (4, 900.0)], live_period_s=0.0)
+    custom.warmup()
+    assert custom.pipeline.tick_count == 6

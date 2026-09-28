@@ -18,7 +18,9 @@ feature is scored under B03's conjugate predictive for its family
 
 Tails are exact on their own side (lib/bayes: betainc / summed BB tails /
 stdtr), scalar fast paths inside the per-feature loop (the numpy array path
-costs ~110 us of dispatch for 10 features).
+costs ~110 us of dispatch for 10 features). The engine scores all rows of a
+tick in one batch (score_features_many, m_baseline *_many): bit-identical to
+the per-entity path, ~2.3x cheaper (docs/lib3/integration.md §9).
 
 Dual anchor. The two-sided mid-p is taken against the CURRENT anchor (p_cur)
 and the REFERENCE / golden anchor (p_ref), and
@@ -64,6 +66,18 @@ their units) at the current anchor's bucket, refreshed once an hour per
 entity at a per-entity phase (the NB / BB ppf searches cost ~1 ms per
 entity, so not every tick, and not all entities on the same tick).
 
+spec v2.1 grains (docs/lib3/cadence.md §6.2, §7.1; canonical grain mode).
+On an H decision tick the H row (feature.nat.h, exposure = its coverage,
+the window-midpoint bucket) is scored exactly as above: behavior.z / zr / pf
+and marg_int / marg_shape / peer. On a Q decision tick the Q row is scored
+against m_baseline.predictive_q (native Q stats plus KAPPA_T pseudo-rows of
+the transferred H predictive; the transferred H reference): behavior.z.q /
+zr.q / pf.q and marg_int_q / marg_shape_q, plus behavior.prov {detector:
+pi_nat} (the median native share of the features scored). Span features are
+scored only on their span decision (H), and set / map features at Q only
+once the Q anchor holds KAPPA_T native rows of them. Nothing is scored on a
+non-decision tick (NaN = unscored, not degraded).
+
 Degraded (contract M): an active entity without a feature.nat row at now, or
 B01 / B03 failing at this tick, gets all-NaN z / zr / pf rows and NaN scores
 with behavior.degraded = {detector: cause}.
@@ -81,6 +95,7 @@ Store:
 """
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Mapping
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
@@ -93,6 +108,7 @@ from ...models.schema import EntityProfile
 from .lib import bayes
 from .lib import combine
 from .lib import emit
+from .lib import grains as GR
 from .lib import m_baseline as MB
 from .lib import m_density
 from .lib import timebins as TB
@@ -109,6 +125,9 @@ B01_ENGINE = "behavior.feature_vector"
 B03_ENGINE = "behavior.baseline"
 
 DETS = ("marg_int", "marg_shape", "peer")
+DETS_Q = ("marg_int_q", "marg_shape_q")
+PROV = "behavior.prov"
+PROV_MIN = 0.5
 INTENSITY_GROUP = "volume"
 AXIS_ALPHA = 0.01
 STATE_QS = (0.05, 0.5, 0.95)
@@ -123,6 +142,7 @@ _CNT = MB.CNT.tolist()
 _RAT = MB.RAT.tolist()
 _NIG = MB.NIG
 _DISCRETE = MB.FAMILY != MB.FAM_T
+_UNSET = object()                # _model_state: quantiles not precomputed
 _NAN_ROW = np.full(NF, np.nan, dtype=np.float32)
 _NAN_ROW.setflags(write=False)
 
@@ -235,6 +255,138 @@ def score_features(pred_cur: MB.Pred, pred_ref: Optional[MB.Pred], pred_cls: Opt
     else:
         p_k = np.full(NF, np.nan)
     v = pit_uniforms(keys, _DISCRETE & ((eq_c > 0.0) | (eq_r > 0.0)))
+    z = pit_z(u_c, p_c, eq_c, v)
+    zr = pit_z(u_r, p_r, eq_r, v)
+    pf = np.asarray(bayes.combine_anchors(p_c, p_r), dtype=np.float64)
+    return FeatureScores(z, zr, pf, p_c, p_r, p_k)
+
+
+# ======================================================= batched scoring
+# The engine scores every entity of a tick in one pass (perf, docs/lib3/
+# integration.md §9): the predictives of all rows are built in one pass
+# (m_baseline.predictive_set_many / predictive_q_many), and the per-feature
+# mid-p of all rows and anchors are evaluated together. The NB mid-p goes
+# through the array bayes kernel, which is bit-identical to the scalar path;
+# the NB / BB pmf, the BB mid-p (summed tails) and the observation transform
+# (whose CLR mean is a row reduction) stay on the scalar per-element paths of
+# family_midp / score_features, so every output is bit-identical to the
+# per-entity path (tests/engines/test_b04_batched.py). A vectorised BB tail
+# sum (gammaln / numpy log-exp instead of math.lgamma and the scalar loop)
+# agreed only to ~1e-11: enough to flip a float32 ring value now and then,
+# after which B06's T² drifted on pack A, so it was not kept.
+_PRED_FIELDS = ("mu", "r", "p", "c", "df", "loc", "scale")
+
+
+def stack_preds(preds: Sequence[MB.Pred]) -> Dict[str, np.ndarray]:
+    """Pred parameters stacked into [m, 52] arrays."""
+    return {f: np.stack([np.asarray(getattr(p, f), dtype=np.float64) for p in preds])
+            for f in _PRED_FIELDS}
+
+
+def family_midp_many(P: Mapping[str, np.ndarray], num: np.ndarray, den: np.ndarray,
+                     wf: np.ndarray, want_eq: bool = True
+                     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """family_midp for m rows at once: P holds [m, 52] predictive parameters
+    (stack_preds), num / den / wf the [m, 52] observation arrays. Returns
+    (u, p, eq) [m, 52], bit-identical to family_midp row by row."""
+    m = num.shape[0]
+    u = np.full((m, NF), np.nan)
+    p = np.full((m, NF), np.nan)
+    eq = np.zeros((m, NF))
+    rr, cc = np.nonzero(wf[:, MB.CNT] > 0.0)
+    if rr.size:
+        f = MB.CNT[cc]
+        k, mm, r = num[rr, f], P["mu"][rr, f] * den[rr, f], P["r"][rr, f]
+        uu, vv = bayes._nb_mid_a(k, mm, r)
+        with np.errstate(invalid="ignore"):
+            pp = np.clip(2.0 * np.minimum(uu, vv), _P_FLOOR, 1.0)
+        u[rr, f] = np.where(np.isnan(pp), np.nan, uu)
+        p[rr, f] = pp
+        if want_eq:
+            nb_pmf = bayes.nb_pmf
+            for i, j, kk, mj, rj, pj in zip(rr.tolist(), f.tolist(), k.tolist(), mm.tolist(),
+                                            r.tolist(), pp.tolist()):
+                if pj == pj:
+                    eq[i, j] = nb_pmf(kk, mj, rj)
+    rr, cc = np.nonzero(wf[:, MB.RAT] > 0.0)
+    if rr.size:
+        f = MB.RAT[cc]
+        pr, cr = P["p"][rr, f].tolist(), P["c"][rr, f].tolist()
+        k, n = num[rr, f].tolist(), den[rr, f].tolist()
+        bb_midp = bayes.bb_midp
+        for t, (i, j) in enumerate(zip(rr.tolist(), f.tolist())):
+            a, b = pr[t] * cr[t], (1.0 - pr[t]) * cr[t]
+            uu, pp = bb_midp(k[t], n[t], a, b)
+            u[i, j], p[i, j] = uu, pp
+            if want_eq and pp == pp:
+                eq[i, j] = _bb_pmf1(k[t], n[t], a, b)
+    ok = wf[:, _NIG] > 0.0
+    if ok.any():
+        df, loc, scale = P["df"][:, _NIG], P["loc"][:, _NIG], P["scale"][:, _NIG]
+        with np.errstate(all="ignore"):
+            zt = (num[:, _NIG] - loc) / scale
+            lo = sp.stdtr(df, zt)
+            hi = sp.stdtr(df, -zt)
+        good = np.isfinite(zt) & (scale > 0.0)
+        un = np.where(good, lo, np.nan)
+        pn = np.where(good, np.clip(2.0 * np.minimum(lo, hi), _P_FLOOR, 1.0), np.nan)
+        u[:, _NIG] = np.where(ok, un, u[:, _NIG])
+        p[:, _NIG] = np.where(ok, pn, p[:, _NIG])
+    eq = np.where(np.isfinite(eq), eq, 0.0)
+    return u, p, eq
+
+
+def pit_uniforms_many(keys: Sequence[Sequence[Any]], need: np.ndarray) -> np.ndarray:
+    """pit_uniforms for m rows: V[i, f] = combine.seeded_uniform(*keys[i], 'B04', f)
+    where need[i, f], 0.5 elsewhere. The key prefix is rendered once per row
+    (the same message bytes, so the same V)."""
+    v = np.full(need.shape, 0.5)
+    blake = hashlib.blake2b
+    rk = combine._repr_key
+    for i, row in enumerate(need):
+        fs = np.flatnonzero(row).tolist()
+        if not fs:
+            continue
+        pre = "|".join(map(rk, (*keys[i], SEED_TAG))) + "|"
+        for f in fs:
+            h = int.from_bytes(blake((pre + repr(f)).encode("utf-8"), digest_size=8).digest(),
+                               "big")
+            v[i, f] = combine._u_from_int(h)
+    return v
+
+
+def score_features_many(cur: Sequence[MB.Pred], ref: Sequence[Optional[MB.Pred]],
+                        cls: Sequence[Optional[MB.Pred]], nat: np.ndarray,
+                        dt_s: np.ndarray, keys: Sequence[Sequence[Any]]) -> FeatureScores:
+    """score_features for m rows at once (fields are [m, 52] arrays): row i is
+    scored against cur[i], ref[i] (None: NaN / fallback as in score_features)
+    and cls[i] (None: NaN) with exposure dt_s[i] and PIT seed keys[i]."""
+    nat = np.asarray(nat, dtype=np.float64).reshape(-1, NF)
+    dt = np.asarray(dt_s, dtype=np.float64).reshape(-1)
+    if not (np.all(dt > 0.0) and np.all(np.isfinite(dt))):
+        raise ValueError(f"m_baseline: bad dt_s {dt_s!r}")
+    m = nat.shape[0]
+    # per row: the CLR centring is a row mean, whose batched reduction order differs
+    obs = [MB.observe(nat[i], float(dt[i])) for i in range(m)]
+    num = np.stack([o[0] for o in obs])
+    den = np.stack([o[1] for o in obs])
+    wf = np.stack([o[2] for o in obs])
+    u_c, p_c, eq_c = family_midp_many(stack_preds(cur), num, den, wf)
+    u_r = np.full((m, NF), np.nan)
+    p_r = np.full((m, NF), np.nan)
+    eq_r = np.zeros((m, NF))
+    ir = [i for i, x in enumerate(ref) if x is not None]
+    if ir:
+        a = np.array(ir)
+        u_r[a], p_r[a], eq_r[a] = family_midp_many(stack_preds([ref[i] for i in ir]),
+                                                   num[a], den[a], wf[a])
+    p_k = np.full((m, NF), np.nan)
+    ik = [i for i, x in enumerate(cls) if x is not None]
+    if ik:
+        a = np.array(ik)
+        p_k[a] = family_midp_many(stack_preds([cls[i] for i in ik]), num[a], den[a], wf[a],
+                                  want_eq=False)[1]
+    v = pit_uniforms_many(keys, _DISCRETE[None, :] & ((eq_c > 0.0) | (eq_r > 0.0)))
     z = pit_z(u_c, p_c, eq_c, v)
     zr = pit_z(u_r, p_r, eq_r, v)
     pf = np.asarray(bayes.combine_anchors(p_c, p_r), dtype=np.float64)
@@ -367,8 +519,11 @@ class LikelihoodEngine(Engine):
         # entities get NaN rows rather than scores against a stale model.
         b01_err = f"producer_error:{B01_ENGINE}" if store.engine_failed(B01_ENGINE, now) else None
         b03_err = f"producer_error:{B03_ENGINE}" if store.engine_failed(B03_ENGINE, now) else None
+        if GR.canonical(ctx.config):
+            return self._run_grains(ctx, store, now, dt, b01_err, b03_err)
         tctx0: Optional[Dict[str, Any]] = None
         n = 0
+        jobs: List[_Job] = []
         for s in store.systems():
             ents = store.entities(s)
             if not ents:
@@ -391,8 +546,146 @@ class LikelihoodEngine(Engine):
                     if tctx0 is None:
                         tctx0 = TB.tctx_from_config(now, ctx.config, dt)
                     tctx = tctx0
-                n += self._entity(store, s, e, now, dt, nat, tctx, lay)
-        return n
+                jobs.append(_Job(s, e, dt, np.asarray(nat, dtype=np.float64), tctx, lay, None,
+                                 dt))
+        return n + self._score_jobs(store, now, jobs)
+
+    # ------------------------------------------------------ spec v2.1 grains
+    def _run_grains(self, ctx: Context, store: Any, now: float, dt: float,
+                    b01_err: Optional[str], b03_err: Optional[str]) -> int:
+        """Canonical grain mode: the H pass on H decision ticks, the Q pass on
+        Q decision ticks (module docstring)."""
+        due = GR.due(now, dt, GR.CANONICAL)
+        if not (due["h"] or due["q"]):
+            return 0
+        self._ensure_retention(store)
+        masks = {g: GR.scored_mask(now, dt, g, ctx.config) for g in GR.GRAINS if due[g]}
+        tcs = {g: GR.row_tctx(now, g, dt, ctx.config) for g in GR.GRAINS if due[g]}
+        n = 0
+        jobs: List[_Job] = []
+        for s in store.systems():
+            ents = store.entities(s)
+            if not ents:
+                continue
+            lay = self._layout(m_density.groups(store, s, split_by_feature_group=True))
+            for e in ents:
+                for g in GR.GRAINS:
+                    if not due[g]:
+                        continue
+                    dets = DETS if g == "h" else DETS_Q
+                    if b01_err is not None:
+                        self._degraded(store, s, e, now, dt, b01_err, rows=False, dets=dets)
+                        n += 1
+                        continue
+                    meta = store.vec_at(s, e, f"feature.meta.{g}", now)
+                    if meta is None or not float(meta[0]) > 0.5:
+                        continue
+                    nat = store.vec_at(s, e, f"feature.nat.{g}", now)
+                    if nat is None or b03_err is not None:
+                        self._degraded(store, s, e, now, dt, b03_err or f"stale:feature.nat.{g}",
+                                       rows=True, dets=dets, g=g)
+                        n += 1
+                        continue
+                    x = np.asarray(nat, dtype=np.float64).copy()
+                    x[~masks[g]] = np.nan
+                    cov = float(meta[1])
+                    jobs.append(_Job(s, e, cov, x, tcs[g], lay, g, dt))
+        return n + self._score_jobs(store, now, jobs)
+
+    def _ensure_retention(self, store: Any) -> None:
+        """H-grain behaviour rings: 4 d (96 H rows; B14 / B29 replay), raise-only."""
+        if getattr(self, "_ret_store", None) is store:
+            return
+        for name in (Z, ZR, PF):
+            store.ensure_retention(name, max_age_s=4 * 86400.0)
+        self._ret_store = store
+
+    def _score_jobs(self, store: Any, now: float, jobs: List["_Job"]) -> int:
+        """Score every collected row of this tick in one batch (perf): the
+        predictives per row (m_baseline), then score_features_many over all
+        rows, then the per-row writes of _entity / _entity_q. B04 reads
+        nothing it writes, so this is the per-entity loop reordered."""
+        if not jobs:
+            return 0
+        cur: List[MB.Pred] = []
+        ref: List[Optional[MB.Pred]] = []
+        cls: List[Optional[MB.Pred]] = []
+        X = np.empty((len(jobs), NF))
+        keys: List[Tuple[Any, ...]] = []
+        # predictives of every row, batched per kind (m_baseline *_many)
+        iq = [i for i, j in enumerate(jobs) if j.grain == "q"]
+        ih = [i for i, j in enumerate(jobs) if j.grain != "q"]
+        pset: List[Any] = [None] * len(jobs)
+        for idx, fn in ((iq, MB.predictive_q_many), (ih, MB.predictive_set_many)):
+            for i, d in zip(idx, fn(store, [(jobs[i].s, jobs[i].e, jobs[i].tctx) for i in idx])):
+                pset[i] = d
+        for i, j in enumerate(jobs):
+            if j.grain == "q":
+                preds = pset[i]
+                c = preds["current"]
+                X[i] = j.nat if c.scored is None else np.where(c.scored, j.nat, np.nan)
+                cur.append(c)
+                ref.append(preds["reference"])
+                cls.append(None)
+                keys.append((j.s, j.e, now, "q"))
+            else:
+                preds = pset[i]
+                has_tier = MB.tier_model(store, j.s, MB.parent_key(store, j.s, j.e)) is not None
+                X[i] = j.nat
+                cur.append(preds["current"])
+                ref.append(preds["reference"])
+                cls.append(preds["class"] if has_tier else None)
+                keys.append((j.s, j.e, now))
+        sc = score_features_many(cur, ref, cls, X, np.array([j.dt for j in jobs]), keys)
+        # model_state refreshes due at this tick: all quantiles in one batch
+        due = [i for i, j in enumerate(jobs) if self._state_take(j.s, j.e, now, j.grain)]
+        state_q: List[Optional[np.ndarray]] = [None] * len(jobs)
+        if due:
+            Q = MB.quantiles_many([cur[i] for i in due], STATE_QS,
+                                  [self._state_dt(jobs[i].grain) for i in due])
+            for k, i in enumerate(due):
+                state_q[i] = Q[k]
+        for i, j in enumerate(jobs):
+            row = FeatureScores(*(f[i] for f in sc))
+            if j.grain == "q":
+                self._write_q(store, j.s, j.e, now, row, cur[i], j.lay, j.w, state_q=state_q[i])
+            else:
+                self._write_h(store, j.s, j.e, now, j.dt, row, cur[i], cls[i] is not None,
+                              j.lay, grain=j.grain, state_q=state_q[i])
+        return len(jobs)
+
+    def _entity_q(self, store: Any, s: str, e: str, now: float, cov: float, nat: np.ndarray,
+                  tctx: Mapping[str, Any], lay: "GroupLayout", dt: float) -> int:
+        """The Q pass of one entity (m_baseline.predictive_q); the engine
+        batches the same steps in _score_jobs."""
+        preds = MB.predictive_q(store, s, e, tctx)
+        cur = preds["current"]
+        x = nat
+        if cur.scored is not None:
+            x = np.where(cur.scored, nat, np.nan)
+        sc = score_features(cur, preds["reference"], None, x, cov, (s, e, now, "q"))
+        self._write_q(store, s, e, now, sc, cur, lay, dt)
+        return 1
+
+    def _write_q(self, store: Any, s: str, e: str, now: float, sc: FeatureScores,
+                 cur: MB.Pred, lay: "GroupLayout", dt: float, state_q: Any = _UNSET) -> None:
+        w = int(round(dt))
+        store.add_vec(s, e, Z + ".q", now, sc.z.astype(np.float32), window_s=w)
+        store.add_vec(s, e, ZR + ".q", now, sc.zr.astype(np.float32), window_s=w)
+        store.add_vec(s, e, PF + ".q", now, sc.pf.astype(np.float32), window_s=w)
+        marg = channels(sc.pf, lay)
+        scores = {"marg_int_q": _neglog10(marg.p_int), "marg_shape_q": _neglog10(marg.p_shape)}
+        pm = {"marg_int_q": _fin(marg.p_int), "marg_shape_q": _fin(marg.p_shape)}
+        shape_names = [g for g in lay.fg_names if g != INTENSITY_GROUP]
+        axes = {"marg_int_q": _axes(marg.p_fg, [INTENSITY_GROUP]),
+                "marg_shape_q": _axes(marg.p_fg, shape_names)}
+        emit.write_scores(store, s, e, now, scores, pm=pm,
+                          axes={d: a for d, a in axes.items() if a} or None, window_s=w)
+        prov = cur.prov if cur.prov is not None else np.ones(NF)
+        used = np.isfinite(sc.pf)
+        pi = float(np.median(prov[used])) if used.any() else 1.0
+        store.upsert_dict(s, e, PROV, now, {d: pi for d in DETS_Q}, w)
+        self._model_state(store, s, e, now, cur, grain="q", prov=pi, q=state_q)
 
     def _layout(self, groups: List[List[int]]) -> GroupLayout:
         """GroupLayout per distinct partition (model.groups changes rarely)."""
@@ -406,12 +699,21 @@ class LikelihoodEngine(Engine):
 
     # --------------------------------------------------------- one entity
     def _entity(self, store: Any, s: str, e: str, now: float, dt: float, nat: np.ndarray,
-                tctx: Mapping[str, Any], lay: GroupLayout) -> int:
+                tctx: Mapping[str, Any], lay: GroupLayout, grain: Optional[str] = None) -> int:
+        """One scored row. v2: the tick row (dt = the tick). spec v2.1 H pass:
+        the H row with dt = its coverage (grain='h'). The engine batches the
+        same steps in _score_jobs."""
         preds = MB.predictive_set(store, s, e, tctx)
         has_tier = MB.tier_model(store, s, MB.parent_key(store, s, e)) is not None
         sc = score_features(preds["current"], preds["reference"],
                             preds["class"] if has_tier else None,
                             np.asarray(nat, dtype=np.float64), dt, (s, e, now))
+        self._write_h(store, s, e, now, dt, sc, preds["current"], has_tier, lay, grain=grain)
+        return 1
+
+    def _write_h(self, store: Any, s: str, e: str, now: float, dt: float, sc: FeatureScores,
+                 cur: MB.Pred, has_tier: bool, lay: GroupLayout,
+                 grain: Optional[str] = None, state_q: Any = _UNSET) -> None:
         w = int(round(dt))
         store.add_vec(s, e, Z, now, sc.z.astype(np.float32), window_s=w)
         store.add_vec(s, e, ZR, now, sc.zr.astype(np.float32), window_s=w)
@@ -430,40 +732,85 @@ class LikelihoodEngine(Engine):
                 "peer": _axes(peer.p_fg, lay.fg_names) if peer is not None else []}
         emit.write_scores(store, s, e, now, scores, pm=pm,
                           axes={d: a for d, a in axes.items() if a} or None, window_s=w)
-        self._model_state(store, s, e, now, preds["current"])
-        return 1
+        self._model_state(store, s, e, now, cur, grain=grain, q=state_q)
 
     def _degraded(self, store: Any, s: str, e: str, now: float, dt: float, cause: str,
-                  rows: bool) -> None:
+                  rows: bool, dets: Sequence[str] = DETS, g: Optional[str] = None) -> None:
         w = int(round(dt))
         if rows:
+            suf = ".q" if g == "q" else ""
             for name in (Z, ZR, PF):
-                store.add_vec(s, e, name, now, _NAN_ROW, window_s=w)
-        emit.write_scores(store, s, e, now, {d: None for d in DETS},
-                          degraded={d: cause for d in DETS}, window_s=w)
+                store.add_vec(s, e, name + suf, now, _NAN_ROW, window_s=w)
+        emit.write_scores(store, s, e, now, {d: None for d in dets},
+                          degraded={d: cause for d in dets}, window_s=w)
 
     # -------------------------------------------------------- model_state
-    def _model_state(self, store: Any, s: str, e: str, now: float, pred: MB.Pred) -> None:
+    def _state_take(self, s: str, e: str, now: float, grain: Optional[str]) -> bool:
+        """Whether model_state is refreshed for (s, e, grain) at now (marks it)."""
+        key = (s, e) if grain is None else (s, e, grain)
+        dkey = (s, e, "model_state") + ((grain,) if grain else ())     # v2 key in tick mode
+        due = self.entity_due(dkey, now, self.state_period_s)
+        if not due and key in self._state_seen:
+            return False
+        self._state_seen.add(key)
+        return True
+
+    @staticmethod
+    def _state_dt(grain: Optional[str]) -> float:
+        return STATE_DT_S if grain is None else GR.GRAIN_S[grain]
+
+    def _model_state(self, store: Any, s: str, e: str, now: float, pred: MB.Pred,
+                     grain: Optional[str] = None, prov: Optional[float] = None,
+                     q: Any = _UNSET) -> None:
         """profile.extra.model_state: once per state_period_s per entity, at a
         per-entity phase (entity_due) so refreshes spread over the hour
         instead of all landing on the bucket boundary; at once for an entity
-        without one. It describes the bucket current at the refresh."""
-        key = (s, e)
-        due = self.entity_due((s, e, "model_state"), now, self.state_period_s)
-        if not due and key in self._state_seen:
+        without one. It describes the bucket current at the refresh.
+
+        spec v2.1: per grain under 'grains' {h: {...}, q: {..., prov}} at
+        dt_s = 3600 / 900; the legacy top-level fields are those of Q when
+        Q is observable, else H."""
+        if q is _UNSET:                  # unbatched call: decide and compute here
+            if not self._state_take(s, e, now, grain):
+                return
+            q = state_quantiles(pred, STATE_QS, self._state_dt(grain))
+        elif q is None:                  # batched: _score_jobs found it not due
             return
-        self._state_seen.add(key)
-        q = state_quantiles(pred, STATE_QS, STATE_DT_S)
+        dt_s = self._state_dt(grain)
         feats = {name: [_js(q[0, i]), _js(q[1, i]), _js(q[2, i])]
                  for i, name in enumerate(FEATURE_NAMES_V2)}
+        block = {"ts": now, "bucket": int(pred.bucket), "mode": pred.mode, "tier": pred.tier,
+                 "anchor": pred.anchor, "dt_s": dt_s, "q": list(STATE_QS), "features": feats}
         prof = store.profile(s, e) or EntityProfile(system=s, entity=e, updated=now)
-        prof.extra["model_state"] = {
-            "ts": now, "bucket": int(pred.bucket), "mode": pred.mode, "tier": pred.tier,
-            "anchor": pred.anchor, "dt_s": STATE_DT_S, "q": list(STATE_QS), "features": feats}
+        if grain is None:
+            prof.extra["model_state"] = block
+        else:
+            if prov is not None:
+                block["prov"] = float(prov)
+                block["provisional"] = bool(prov < PROV_MIN)
+            ms = dict(prof.extra.get("model_state") or {})
+            grains = dict(ms.get("grains") or {})
+            grains[grain] = block
+            legacy = grains.get("q") or grains.get("h")
+            ms = dict(legacy)
+            ms["grains"] = grains
+            prof.extra["model_state"] = ms
         store.put_profile(prof)
 
 
 # ================================================================ helpers
+class _Job(NamedTuple):
+    """One row to score this tick (collected per entity, scored in a batch)."""
+    s: str
+    e: str
+    dt: float                    # exposure: the tick (v2) or the grain row's coverage
+    nat: np.ndarray              # [52] float64, masked for the grain
+    tctx: Mapping[str, Any]
+    lay: "GroupLayout"
+    grain: Optional[str]         # None (tick mode), 'h' or 'q'
+    w: float                     # the tick's dt (window_s of the Q writes)
+
+
 def _active(store: Any, s: str, e: str, now: float) -> bool:
     a = store.vec_at(s, e, ACTIVE, now)
     return a is not None and a.size > 0 and float(a[0]) > 0.5

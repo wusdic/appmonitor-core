@@ -253,7 +253,12 @@ def merge(own: PPMModel, other: PPMModel, w: float = 0.5) -> PPMModel:
     # else it would count as a distinct symbol in q and inflate every escape.
     # Counts shrink with context length, so the kept entries stay nested.
     thr = _DEAD * 2.0 ** own.g
-    for ctx, d in other.counts.items():
+    if order == 0:                        # unigram target: only the empty context (perf)
+        d0o = other.counts.get(())
+        src = (((), d0o),) if d0o is not None else ()
+    else:
+        src = other.counts.items()
+    for ctx, d in src:
         if len(ctx) > order:
             continue
         dst = counts.get(ctx)

@@ -81,8 +81,11 @@ from typing import Any, Deque, Dict, Iterable, List, Mapping, Optional, Set, Tup
 from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile
 from .lib import emit, m_class, m_feedback
+from .lib import grains as GR
+from .lib import stages as STG
 from .lib.classkeys import CLASS_PREFIX, STATIC_PREFIX, SYSTEM_KEY
-from .lib.detectors import DETECTOR_INFO, FAMILIES, FAMILY_DEFAULT_AXES
+from .lib.detectors import (DETECTOR_INDEX, DETECTOR_INFO, FAMILIES, FAMILY_DEFAULT_AXES,
+                            FAMILY_MEMBERS)
 from .lib.stages import FLAG_NAMES, stage_for_axis, stage_for_category, stage_for_event
 
 RISK = "behavior.risk"
@@ -157,12 +160,13 @@ _TIER_ALIASES = {"system": "system", "org": "system", "class": "class", "role": 
 
 SIG_W: Dict[str, float] = {"info": 0.0, "low": 5.0, "medium": 15.0, "high": 30.0,
                            "critical": 50.0}
-# habitual lib-4 activity (see module doc): discounted at these severities
-HABIT_SEVERITIES = frozenset({"info", "low", "medium"})
-HABIT_S = 86400.0              # first match of the (entity, signature) at least this old
-HABIT_MIN_TICKS = 4            # ... and matched on at least this many ticks
+# habitual lib-4 activity (see module doc): discounted at these severities;
+# the rule is shared with B27 (lib/stages.habit_step)
+HABIT_SEVERITIES = STG.HABIT_SEVERITIES
+HABIT_S = STG.HABIT_S
+HABIT_MIN_TICKS = STG.HABIT_MIN_TICKS
 HABIT_MULT = 0.0
-HABIT_FORGET_S = 30 * 86400.0  # a habit not seen for 30 d is forgotten
+HABIT_FORGET_S = STG.HABIT_FORGET_S
 _STAGE_DECAY = {"c2": "c2", "exfiltration": "exfil", "identity": "identity"}
 
 
@@ -179,6 +183,19 @@ def _finite(x: Any) -> bool:
 
 
 # ============================================================ evidence (pure)
+def _family_periods(store, s: str, e: str, now: float, dt: float,
+                    pf: Mapping[str, float]) -> Dict[str, float]:
+    """spec v2.1 (cadence.md §9.3): per family the smallest stream period
+    among its members scored at now (conservative e_day)."""
+    row = emit.read_array(store, s, e, emit.P, now)
+    out: Dict[str, float] = {}
+    for f in pf:
+        pers = [GR.period_s(d, dt, GR.CANONICAL) for d in FAMILY_MEMBERS.get(f, ())
+                if row[DETECTOR_INDEX[d]] == row[DETECTOR_INDEX[d]]]
+        out[f] = min(pers) if pers else dt
+    return out
+
+
 def excess_surprise(p: float, dt_s: float) -> float:
     """log10(1/e_day(p)) clipped at 0; NaN for NaN / missing p."""
     if p is None or not p == p:
@@ -354,7 +371,11 @@ class RiskState:
         for f, p in p_family.items():
             if f not in FAMILY_W:
                 continue
-            x = excess_surprise(p, dt_s)
+            # spec v2.1: a family's e_day counts its members' own period
+            dtf = float(dt_s.get(f, 0.0) or 0.0) if isinstance(dt_s, Mapping) else float(dt_s)
+            if not dtf > 0.0:
+                continue
+            x = excess_surprise(p, dtf)
             if not x == x:
                 continue                                   # unscored: no evidence either way
             if x <= 0.0:
@@ -373,7 +394,7 @@ class RiskState:
             decay = "critical" if critical and HALF_LIFE_S["critical"] > \
                 HALF_LIFE_S[FAMILY_DECAY[f]] else FAMILY_DECAY[f]
             self.add(f"family:{f}", b, decay, now, st, family=f,
-                     detail=f"e_day={max(float(p), E_DAY_FLOOR) * DAY / dt_s:.2g}")
+                     detail=f"e_day={max(float(p), E_DAY_FLOOR) * DAY / dtf:.2g}")
             out[f] = b
         return out
 
@@ -573,7 +594,10 @@ class RiskEngine(Engine):
             if p_min * DAY <= STAGE_E_DAY * dt:
                 alarm = emit.read_dict(store, s, e, ALARM, now)
                 crit = _sev(alarm.get("severity")) == "critical"
-            st.add_families(now, dt, pf, episode=episode, volume_common=vol, mult=mult,
+            per_f: Any = dt
+            if GR.canonical(ctx.config):
+                per_f = _family_periods(store, s, e, now, dt, pf)
+            st.add_families(now, per_f, pf, episode=episode, volume_common=vol, mult=mult,
                             critical=crit, stages_of=stages_of)
         # (no p_family: silent / unscored key -> only decay; streaks are kept)
 
@@ -621,17 +645,8 @@ class RiskEngine(Engine):
     def _habit(habits: Dict[Tuple[str, str, str], List[float]], s: str, e: str, sig: str,
                ts: float) -> bool:
         """Record one lib-4 match of (s, e, sig) at ts (once per tick) and say
-        whether the activity was already habitual before it."""
-        k = (s, e, sig)
-        h = habits.get(k)
-        if h is None or ts - h[2] > HABIT_FORGET_S:
-            habits[k] = [ts, 1.0, ts]
-            return False
-        habitual = h[1] >= HABIT_MIN_TICKS and ts - h[0] >= HABIT_S
-        if ts > h[2]:
-            h[1] += 1.0
-            h[2] = ts
-        return habitual
+        whether the activity was already habitual before it (lib/stages)."""
+        return STG.habit_step(habits, (s, e, sig), ts)
 
     # ------------------------------------------------------------ writing
     def _write(self, store, s: str, e: str, st: RiskState, now: float, dt: float, r: float,

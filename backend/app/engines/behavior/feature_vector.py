@@ -52,6 +52,29 @@ B24 has not described the entity yet there is no evidence of miscalibration
 and only n_eff decides); updated = now. The v1 12-sample flag is gone.
 
 B01 never emits events, so ctx.training changes nothing here.
+
+spec v2.1 grains (docs/lib3/cadence.md §2-§5; canonical grain mode only, tick
+mode writes nothing new). Every tick B01 also writes the 47 additive parts
+of the tick (feature.part, lib/features.compute_parts) and the ROLLING nat
+rows of each observable grain over (now - G, now] (feature.live.h, .q: the
+additive features every tick, set / map / span columns only on decision
+ticks). On a grain's DECISION tick (lib/grains.decision: the tick's
+interval holds an epoch multiple of G, the same for every entity) it writes
+the complete grain row that every learner and scorer consumes:
+
+  feature.nat.<g>[52]   grain values in natural units (features.grain_values:
+                        additive features from the part sums with dt := cov,
+                        distinct counts from the union of the per-tick
+                        SetSketches, entropies / concentration from the
+                        merged count maps, span features at their span
+                        decision ticks only)
+  feature.vec.<g>[52]   the FEATURE_SPEC transform with dt := cov
+  feature.meta.<g>[5]   [active, cov_s, n_ticks, n_active, G]
+  feature.expo.<g>      {http, dns, tls, flows, probe: sum n}
+  feature.sketch.h[80]  the categorical sketch of the merged H-window maps
+
+The presence of feature.nat.<g> at ts = now is the decision flag. A row is
+only as wide as the ticks it covers (cov = sum of their dt).
 """
 from __future__ import annotations
 
@@ -64,6 +87,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import DerivedMetric, EntityProfile, MetricKind
 from .lib import features as F
+from .lib import grains as GR
 from .lib import sketch as SK
 from .lib import timebins as TB
 
@@ -77,6 +101,12 @@ VIRTUAL_PREFIX = "feature."
 BASELINE = "model.baseline"
 
 STABLE_N_EFF = 96.0
+
+# spec v2.1 grain series (cadence.md §5.2)
+PART = "feature.part"
+LIVE = "feature.live"
+META = "feature.meta"
+RAW_SET_KEEP_S = 75 * 60.0      # map / sketch raw sets must cover G_h + max dt
 
 # sketch namespace -> raw series carrying its {token: count} set (R1-R3 names)
 SKETCH_SOURCES: Tuple[Tuple[str, str], ...] = (
@@ -144,16 +174,45 @@ class FeatureVectorEngine(Engine):
         # idempotent: feature.<name> becomes a virtual column of feature.vec
         store.register_vector_names(VEC, FEATURE_NAMES, VIRTUAL_PREFIX)
         tctx = TB.tctx_from_config(now, ctx.config, dt)   # same for every entity
+        grain = None
+        if GR.canonical(ctx.config):
+            self._ensure_grain_retention(store)
+            log = self.__dict__.setdefault("_tick_log", [])
+            if not log or now > log[-1][0]:
+                log.append((now, dt))
+            while log and log[0][0] <= now - 2 * GR.GRAIN_S["h"]:
+                log.pop(0)
+            cov_log = {}
+            for g in GR.GRAINS:
+                lo = now - GR.GRAIN_S[g] + 1e-3
+                sel = [d for t, d in log if t >= lo]
+                cov_log[g] = (float(sum(sel)), len(sel))
+            grain = {"cov_log": cov_log,
+                "due": GR.due(now, dt, GR.CANONICAL),
+                "obs": {g: GR.observable(g, dt, GR.CANONICAL) for g in GR.GRAINS},
+                "span": {f: GR.span_decision(now, dt, f, ctx.config) for f in GR.SPAN_S},
+            }
         n = 0
         for s in store.systems():
             for e in store.entities(s):
-                self._entity(store, s, e, now, dt, tctx)
+                self._entity(store, s, e, now, dt, tctx, grain)
                 n += 1
         return n
 
+    def _ensure_grain_retention(self, store) -> None:
+        """Raise-only: the raw sets merged over an H window (maps, sketch
+        namespaces) must outlive G_h + dt."""
+        if getattr(self, "_ret_store", None) is store:
+            return
+        for name in set(F.MAP_RAW_SETS) | {m for _, m in SKETCH_SOURCES} | {
+                "act.stream", "act.tokens", "tls.sni_etld1_set", "dns.qname_etld1_set",
+                "l4.dport_set"}:
+            store.ensure_retention(name, max_age_s=RAW_SET_KEEP_S)
+        self._ret_store = store
+
     # ------------------------------------------------------------ one entity
     def _entity(self, store, s: str, e: str, now: float, dt: float,
-                tctx: Dict[str, Any]) -> None:
+                tctx: Dict[str, Any], grain: Optional[Dict[str, Any]] = None) -> None:
         cache: Dict[str, Any] = {}
 
         def get(metric: str) -> Optional[Any]:
@@ -187,6 +246,9 @@ class FeatureVectorEngine(Engine):
             name=TCTX, value=dict(tctx), ts=now, system=s, entity=e, window_s=w,
             kind=MetricKind.CATEGORICAL, inputs=["config.tz", "config.calendar"]))
 
+        if grain is not None:
+            self._grains(store, s, e, now, dt, get, active, grain)
+
         prof = store.profile(s, e)
         if prof is None:
             prof = EntityProfile(system=s, entity=e, updated=now)
@@ -197,3 +259,96 @@ class FeatureVectorEngine(Engine):
                        and _calibration_healthy(prof))
         prof.updated = now
         store.put_profile(prof)
+
+
+    # ------------------------------------------------------ spec v2.1 grains
+    def _grains(self, store, s: str, e: str, now: float, dt: float, get, active: float,
+                grain: Dict[str, Any]) -> None:
+        """feature.part every tick; feature.live.<g> every tick where g is
+        observable; the decision rows of each due grain (module docstring)."""
+        w = int(round(dt))
+        parts = F.compute_parts(get, dt, active=active)
+        store.add_vec(s, e, PART, now, parts.astype(np.float32), window_s=w)
+        span_now: Optional[Dict[str, Optional[float]]] = None
+        for g in GR.GRAINS:
+            if not grain["obs"][g]:
+                continue
+            G = GR.GRAIN_S[g]
+            lo = now - G + 1e-3
+            ts, P = store.vec_since(s, e, PART, lo)
+            if not len(ts):
+                continue
+            P = np.asarray(P, dtype=np.float64)
+            S = P.sum(axis=0)
+            # coverage is the wall clock the pipeline covered (its own tick log):
+            # before an entity's first appearance its parts are true zeros
+            cl, nl = grain["cov_log"][g]
+            cov = max(float(S[0]), cl)
+            S[0] = cov
+            n_ticks = max(int(len(ts)), nl)
+            n_act = int(np.count_nonzero(P[:, 1] > 0.5))
+            due = grain["due"][g]
+            if due:
+                sets = {f: SK.set_count(SK.set_union(_raw_window(store, s, e, src, lo, now)))
+                        for f, src in F.SET_SOURCES.items()}
+                maps = {src: _merge_maps(_raw_window(store, s, e, src, lo, now))
+                        for src in F.MAP_RAW_SETS}
+                span: Dict[str, Optional[float]] = {}
+                if g == "h":
+                    if span_now is None:
+                        span_now = {name: (store.latest_fresh(s, e, F.FEATURE_SOURCE[name], now)
+                                           if grain["span"].get(name) else None)
+                                    for name in F.SPAN_FEATURES}
+                    span = span_now
+                vec, nat = F.grain_values(S, cov, G, sets=sets, maps=maps, span=span)
+            else:
+                vec, nat = F.grain_values(S, cov, G)
+            nat32 = nat.astype(np.float32)
+            store.add_vec(s, e, f"{LIVE}.{g}", now, nat32, window_s=w)
+            if not due:
+                continue
+            meta = np.array([1.0 if n_act > 0 else 0.0, cov, n_ticks, n_act, G],
+                            dtype=np.float32)
+            store.add_vec(s, e, f"{NAT}.{g}", now, nat32, window_s=w)
+            store.add_vec(s, e, f"{VEC}.{g}", now, vec.astype(np.float32), window_s=w)
+            store.add_vec(s, e, f"{META}.{g}", now, meta, window_s=w)
+            store.add_derived(DerivedMetric(
+                name=f"{EXPO}.{g}", value=F.grain_exposure(S), ts=now, system=s, entity=e,
+                window_s=w, kind=MetricKind.CATEGORICAL, inputs=[PART]))
+            if g == "h":
+                ns_counts = {}
+                for ns, metric in SKETCH_SOURCES:
+                    mm = _merge_maps(_raw_window(store, s, e, metric, lo, now))
+                    if mm:
+                        ns_counts[ns] = mm
+                store.add_vec(s, e, f"{SKETCH}.h", now, SK.sketch_vector(ns_counts), window_s=w)
+
+
+def _raw_window(store, s: str, e: str, name: str, lo: float, hi: float) -> List[Any]:
+    """Values of raw `name` with lo <= ts <= hi (oldest first)."""
+    n = 8
+    while True:
+        tail = store.raw_tail(s, e, name, n)
+        if not tail or len(tail) < n or tail[0].ts < lo or n >= 1 << 16:
+            break
+        n *= 4
+    return [m.value for m in tail if lo <= m.ts <= hi]
+
+
+def _merge_maps(values: List[Any]) -> Dict[str, float]:
+    """Sum count maps key by key ('__other__' summed like any key; a value
+    that is itself a mapping contributes its 'n', as sketch_block reads it)."""
+    out: Dict[str, float] = {}
+    for v in values:
+        if not isinstance(v, Mapping):
+            continue
+        for k, c in v.items():
+            if isinstance(c, Mapping):
+                c = c.get("n")
+            try:
+                x = float(c)
+            except (TypeError, ValueError):
+                continue
+            if x > 0.0 and math.isfinite(x):
+                out[k] = out.get(k, 0.0) + x
+    return out

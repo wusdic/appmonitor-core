@@ -17,7 +17,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Seque
 
 import numpy as np
 
-from ..engines.behavior.lib import m_class, m_feedback, m_governor, m_rhythm
+from ..engines.behavior.lib import m_class, m_feedback, m_governor, m_portrait, m_rhythm
 from ..engines.behavior.lib.classkeys import class_id, class_kind, is_class, is_pseudo
 from ..engines.behavior.lib.detectors import DETECTORS, FAMILIES, family_of
 from ..engines.behavior.lib.features import (FEATURE_GROUP, FEATURE_KIND, FEATURE_NAMES_V2)
@@ -303,9 +303,12 @@ def incident_summary(inc: Any, tz: str) -> Dict[str, Any]:
 
 
 def narrative(inc: Any) -> Dict[str, Optional[str]]:
-    """{zh, en} narrative: B29 explain writes narrative_zh / narrative_en into
-    the explanation (or as attributes); the Incident.narrative string is the
-    fallback for both."""
+    """{zh, en, headline_zh, headline_en}: B29 explain writes narrative_zh /
+    narrative_en / headline_zh / headline_en into incident.explanation (an
+    older writer may nest {'zh', 'en'} under 'narrative' or set attributes).
+    Incident.narrative (B29 copies the zh text there) is the fallback only
+    when the explanation carries neither language, so an English reader is
+    never shown the Chinese text labelled as English."""
     ex = inc.explanation if isinstance(getattr(inc, "explanation", None), Mapping) else {}
     base = getattr(inc, "narrative", "") or ""
     zh = getattr(inc, "narrative_zh", None) or ex.get("narrative_zh")
@@ -314,7 +317,28 @@ def narrative(inc: Any) -> Dict[str, Optional[str]]:
     if isinstance(nar, Mapping):
         zh = zh or nar.get("zh")
         en = en or nar.get("en")
-    return {"zh": zh or base or None, "en": en or base or None}
+    if not zh and not en:
+        zh = en = base or None
+    return {"zh": zh or None, "en": en or None,
+            "headline_zh": ex.get("headline_zh") or None,
+            "headline_en": ex.get("headline_en") or None}
+
+
+def mask_template(tok: Any) -> Any:
+    """A template / HTTP token as B30 publishes it: every path or query VALUE
+    re-masked (lib/m_portrait.safe_token); None when there is nothing to show."""
+    return None if tok is None else m_portrait.safe_token(tok)
+
+
+def portrait_diff(a: Mapping[str, Any], b: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Material changes between two kept portrait versions with B30's own
+    semantics (lib/m_portrait.signature / diff_signatures); a version without
+    a stored 'sig' is signed from its json."""
+    sa = a.get("sig") if isinstance(a.get("sig"), Mapping) else \
+        m_portrait.signature(a.get("json") or {})
+    sb = b.get("sig") if isinstance(b.get("sig"), Mapping) else \
+        m_portrait.signature(b.get("json") or {})
+    return m_portrait.diff_signatures(sa, sb)
 
 
 def _incident_new_tokens(inc: Any) -> List[str]:
@@ -447,26 +471,58 @@ def rhythm_grid(store: Any, s: str, e: str, now: float, tz: str,
 
 
 # ================================================================ features
+_GRAIN_UNIT = {"h": "per 60 min", "q": "per 15 min"}
+_GRAIN_Z = {"h": ("behavior.z", "behavior.zr"), "q": ("behavior.z.q", "behavior.zr.q")}
+
+
 def feature_rows(store: Any, s: str, e: str, extra: Mapping[str, Any],
                  prof: Any, dt_s: float) -> List[Dict[str, Any]]:
     """Per-feature rows: the current value and the predictive p5/p50/p95 in
     natural units (profile.extra.model_state, B04), plus the engine's own z
     (behavior.z, current anchor) and zr (reference anchor). Count and bytes
     features are shown at the model_state exposure (15 min) so current and
-    band are comparable; `current_tick` is the raw per-tick value."""
+    band are comparable; `current_tick` is the raw per-tick value.
+
+    spec v2.1 (cadence.md §9.5): with grain model_state each row gains
+    grains: {h: {current, p5, p50, p95, z, zr}, q: {..., provisional}}, where
+    `current` is the live rolling grain value (feature.live.<g>, exact for
+    distinct counts; v2 scaled the tick value by 900 / Δt, which is wrong for
+    sub-additive features). The legacy fields are filled from Q when Q is
+    observable, else from H, and `unit` names the grain."""
     ms = extra.get("model_state") if isinstance(extra.get("model_state"), Mapping) else {}
     feats = ms.get("features") if isinstance(ms.get("features"), Mapping) else {}
     ms_dt = fnum(ms.get("dt_s")) or 900.0
     names = list(getattr(prof, "feature_names", None) or FEATURE_NAMES_V2)
     _, nat = latest_vec(store, s, e, "feature.nat")
-    _, z = latest_vec(store, s, e, "behavior.z")
-    _, zr = latest_vec(store, s, e, "behavior.zr")
+    gms = ms.get("grains") if isinstance(ms.get("grains"), Mapping) else {}
+    live: Dict[str, Any] = {}
+    gz: Dict[str, Tuple[Any, Any]] = {}
+    for g in ("h", "q"):
+        if not isinstance(gms.get(g), Mapping):
+            continue
+        tl, lv = latest_vec(store, s, e, f"feature.live.{g}")
+        live[g] = lv
+        gz[g] = (latest_vec(store, s, e, _GRAIN_Z[g][0])[1],
+                 latest_vec(store, s, e, _GRAIN_Z[g][1])[1])
+    # the legacy fields: Q when Q is observable (a live Q row), else H
+    leg = "q" if live.get("q") is not None else ("h" if "h" in live else None)
+    if leg is not None:
+        feats = gms[leg].get("features") if isinstance(gms[leg].get("features"), Mapping) else {}
+        ms_dt = fnum(gms[leg].get("dt_s")) or ms_dt
+        z, zr = gz[leg]
+    else:
+        _, z = latest_vec(store, s, e, "behavior.z")
+        _, zr = latest_vec(store, s, e, "behavior.zr")
     rows = []
     for i, name in enumerate(names):
         kind = FEATURE_KIND.get(name, "")
         cur_tick = fnum(nat[i]) if nat is not None and i < nat.size else None
-        scale = ms_dt / dt_s if kind in ("count", "bytes") and dt_s > 0 else 1.0
-        cur = cur_tick * scale if cur_tick is not None else None
+        if leg is not None:
+            lv = live.get(leg)
+            cur = fnum(lv[i]) if lv is not None and i < lv.size else None
+        else:
+            scale = ms_dt / dt_s if kind in ("count", "bytes") and dt_s > 0 else 1.0
+            cur = cur_tick * scale if cur_tick is not None else None
         q = feats.get(name)
         p5 = p50 = p95 = None
         if isinstance(q, (list, tuple)) and len(q) >= 3:
@@ -474,15 +530,38 @@ def feature_rows(store: Any, s: str, e: str, extra: Mapping[str, Any],
         zi = fnum(z[i]) if z is not None and i < z.size else None
         zri = fnum(zr[i]) if zr is not None and i < zr.size else None
         spread = (p95 - p5) / 3.29 if p5 is not None and p95 is not None else None
-        rows.append({
+        unit = None
+        if kind in ("count", "bytes"):
+            unit = _GRAIN_UNIT.get(leg, "per 15 min") if leg else "per 15 min"
+        row = {
             "name": name, "group": FEATURE_GROUP.get(name), "kind": kind,
-            "unit": ("per 15 min" if kind in ("count", "bytes") else None),
+            "unit": unit,
             "current": rnd(cur, 4), "current_tick": rnd(cur_tick, 4),
             "p5": rnd(p5, 4), "p50": rnd(p50, 4), "p95": rnd(p95, 4),
             "z": rnd(zi, 3), "zr": rnd(zri, 3),
             # legacy (routes.py v1) field names, same semantics
             "baseline": rnd(p50, 4), "spread": rnd(spread, 4), "stable": rnd(p50, 4),
-        })
+        }
+        if live:
+            grains: Dict[str, Any] = {}
+            for g, lv in live.items():
+                blk = gms[g]
+                gf = blk.get("features") if isinstance(blk.get("features"), Mapping) else {}
+                gq = gf.get(name)
+                b5 = b50 = b95 = None
+                if isinstance(gq, (list, tuple)) and len(gq) >= 3:
+                    b5, b50, b95 = fnum(gq[0]), fnum(gq[1]), fnum(gq[2])
+                zg, zrg = gz[g]
+                gr = {"current": rnd(fnum(lv[i]) if lv is not None and i < lv.size else None, 4),
+                      "p5": rnd(b5, 4), "p50": rnd(b50, 4), "p95": rnd(b95, 4),
+                      "z": rnd(fnum(zg[i]) if zg is not None and i < zg.size else None, 3),
+                      "zr": rnd(fnum(zrg[i]) if zrg is not None and i < zrg.size else None, 3),
+                      "unit": _GRAIN_UNIT[g] if kind in ("count", "bytes") else None}
+                if g == "q":
+                    gr["provisional"] = bool(blk.get("provisional", False))
+                grains[g] = gr
+            row["grains"] = grains
+        rows.append(row)
     return rows
 
 
@@ -584,6 +663,34 @@ def last_write_any(store: Any, name: str, keys: Sequence[Tuple[str, str]]) -> Op
         if t is not None and (best is None or t > best):
             best = t
     return best
+
+
+def degraded_counts(store: Any, s: str) -> Dict[str, Dict[str, Any]]:
+    """{detector: {'n', 'degraded', 'causes': {kind: count}}} over the keys of
+    system s (entities and class keys) at each key's last behavior.score
+    tick: n = keys whose detector ran there (a finite score, or an entry in
+    behavior.degraded at that tick), degraded = those with an entry; the
+    cause kind is the part before ':' (lib/emit.CAUSES)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    keys = list(store.entities(s)) + [k for k in store.pseudo_entities(s) if is_class(k)]
+    for e in keys:
+        ts, row = latest_vec(store, s, e, "behavior.score")
+        if ts is None or row is None:
+            continue
+        t_d, dg = latest_dict(store, s, e, "behavior.degraded")
+        dg = dg if (dg and t_d == ts) else {}
+        vals = np.asarray(row, dtype=np.float64).reshape(-1)
+        for i, d in enumerate(DETECTORS):
+            ran = (i < vals.size and math.isfinite(float(vals[i]))) or d in dg
+            if not ran:
+                continue
+            c = out.setdefault(d, {"n": 0, "degraded": 0, "causes": {}})
+            c["n"] += 1
+            if d in dg:
+                c["degraded"] += 1
+                kind = str(dg[d]).split(":", 1)[0]
+                c["causes"][kind] = c["causes"].get(kind, 0) + 1
+    return out
 
 
 def all_keys(store: Any) -> List[Tuple[str, str]]:

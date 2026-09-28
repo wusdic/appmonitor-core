@@ -395,7 +395,8 @@ def test_rerun_same_tick_is_idempotent():
 def test_scheduled_through_safe_run_and_metadata():
     eng = SessionEngine()
     assert eng.layer == "derived" and eng.interval == 1
-    assert set(eng.produces) == set(ALL_OUT)
+    # spec v2.1 (deliberate): the canonical-mode think-time parts are D2 outputs too
+    assert set(eng.produces) == set(ALL_OUT) | {"derived.think_log_sum", "derived.think_gaps"}
     assert {"act.events", "act.stream", "act.stream_frac", "model.seq"} <= set(eng.consumes)
     st = make_store()
     _active(st, T0, _burst(T0 - 800.0))

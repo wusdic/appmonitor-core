@@ -53,6 +53,14 @@ An active entity (feature.active = 1) without a z row means B04 was
 degraded: it gets an all-NaN zi row (unscored, never "normal").
 ctx.training learns as usual but emits no events.
 
+spec v2.1 grains (docs/lib3/cadence.md §5.1; canonical grain mode): the same
+computation runs as an H pass on H decision ticks (behavior.z of the H rows
+-> behavior.zi, behavior.common.flag, behavior.common.<g>, the activity
+clock feature.meta.h) and as a Q pass on Q decision ticks (behavior.z.q ->
+behavior.zi.q, behavior.common.flag.q, behavior.common.q.<g>, learner
+'common_mode.q'). The members' rows of a pass are synchronous because grain
+boundaries are the same for every entity. Loadings refit every 16 grain rows.
+
 Store: reads behavior.z, feature.active, behavior.quarantine (via gating),
 behavior.score / pm / p / acc_alarm (t-1 and now), model.class (m_class),
 store.events(first_seen, rare_access), store.matches, model.control and
@@ -71,6 +79,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, MetricKind, Severity
 from .lib import emit
 from .lib import gating as G
+from .lib import grains as GR
 from .lib import m_class
 from .lib.classkeys import SYSTEM_KEY, class_kind
 from .lib.detectors import DETECTOR_INDEX
@@ -332,18 +341,35 @@ class CommonModeEngine(Engine):
         super().__init__(**params)
         self.refit_ticks = int(params.get("refit_ticks", REFIT_TICKS))
         self._ents: Dict[Tuple[str, str], _Ent] = {}
-        self._learners: Dict[float, G.GatedLearner] = {}
+        self._ents_by: Dict[str, Dict[Tuple[str, str], _Ent]] = {"": self._ents}
+        self._learners: Dict[Tuple[float, str], G.GatedLearner] = {}
         self._cur: Optional[_Buf] = None
         self._class_cache: Dict[str, Tuple[Tuple, Dict[str, List[str]]]] = {}
+        self._set_pass("")
+
+    def _set_pass(self, g: str, period: Optional[float] = None) -> None:
+        """Series names of the pass: '' = v2 / tick mode, 'h' / 'q' = spec
+        v2.1 grain passes (the H pass keeps the v2 behaviour names)."""
+        self._g = g
+        self._period = period
+        q = g == "q"
+        self._Z = Z + (".q" if q else "")
+        self._ZI = ZI + (".q" if q else "")
+        self._FLAG = FLAG + (".q" if q else "")
+        self._SERIES = ({k: COMMON_PREFIX + "q." + k for k in GROUP_NAMES} if q
+                        else dict(COMMON_SERIES))
+        self._ACTIVE = ACTIVE if g == "" else f"feature.meta.{g}"
+        self._ents = self._ents_by.setdefault(g, {})
 
     # ------------------------------------------------------------ learner
     def _learner(self, d_min_s: float) -> G.GatedLearner:
-        lrn = self._learners.get(d_min_s)
+        key = (d_min_s, self._g)
+        lrn = self._learners.get(key)
         if lrn is None:
-            lrn = self._learners[d_min_s] = G.GatedLearner(
-                name=LEARNER, init=_init_state, update=_update, fetch=self._fetch,
-                dump=_dump, load=_load, d_min_s=d_min_s, ckpt_every_s=G.CKPT_EVERY_S,
-                clock=ZI)
+            lrn = self._learners[key] = G.GatedLearner(
+                name=LEARNER + (".q" if self._g == "q" else ""), init=_init_state,
+                update=_update, fetch=self._fetch, dump=_dump, load=_load, d_min_s=d_min_s,
+                ckpt_every_s=G.CKPT_EVERY_S, clock=self._ZI)
         return lrn
 
     def _fetch(self, store, s: str, e: str, ts: float) -> Optional[_Row]:
@@ -360,10 +386,24 @@ class CommonModeEngine(Engine):
         store = ctx.store
         now, dt = float(ctx.now), float(ctx.window_s)
         d_min = ctx.config.get("D_min_s", G.D_MIN_S)
-        lrn = self._learner(float(d_min) if d_min else G.D_MIN_S)
+        d_min = float(d_min) if d_min else G.D_MIN_S
+        if not GR.canonical(ctx.config):
+            self._set_pass("")
+            lrn = self._learner(d_min)
+            n = 0
+            for s in store.systems():
+                n += self._system(ctx, lrn, s, now, dt)
+            return n
+        # spec v2.1: an H pass on H decision ticks, a Q pass on Q decision ticks
         n = 0
-        for s in store.systems():
-            n += self._system(ctx, lrn, s, now, dt)
+        for g in GR.GRAINS:
+            if not GR.decision(now, dt, g, GR.CANONICAL):
+                continue
+            self._set_pass(g, max(dt, GR.GRAIN_S[g]))
+            lrn = self._learner(d_min)
+            for s in store.systems():
+                n += self._system(ctx, lrn, s, now, dt)
+        self._set_pass("")
         return n
 
     def _system(self, ctx: Context, lrn: G.GatedLearner, s: str, now: float, dt: float) -> int:
@@ -371,15 +411,15 @@ class CommonModeEngine(Engine):
         ents: List[str] = []
         rows: List[np.ndarray] = []
         for e in store.entities(s):
-            z = store.vec_at(s, e, Z, now)
+            z = store.vec_at(s, e, self._Z, now)
             if z is not None:
                 ents.append(e)
                 rows.append(z)
             else:
-                a = store.vec_at(s, e, ACTIVE, now)
+                a = store.vec_at(s, e, self._ACTIVE, now)
                 if a is not None and a[0] >= 0.5:
                     # active but unscored by B04: degraded, never "normal"
-                    store.add_vec(s, e, ZI, now, np.full(FEATURE_DIM, np.nan, np.float32),
+                    store.add_vec(s, e, self._ZI, now, np.full(FEATURE_DIM, np.nan, np.float32),
                                   window_s=int(dt))
                 self._learn(ctx, lrn, s, e, now, dt)
         if not ents:
@@ -447,9 +487,9 @@ class CommonModeEngine(Engine):
         Zi32 = Zim.astype(np.float32)
         learn_row = ~excluded & np.isfinite(L).any(axis=1)
         for i, e in enumerate(ents):
-            store.add_vec(s, e, ZI, now, Zi32[i], window_s=int(dt))
+            store.add_vec(s, e, self._ZI, now, Zi32[i], window_s=int(dt))
             store.add_derived(DerivedMetric(
-                name=FLAG, value=dict(zip(GROUP_NAMES, F[i].astype(int).tolist())), ts=now,
+                name=self._FLAG, value=dict(zip(GROUP_NAMES, F[i].astype(int).tolist())), ts=now,
                 system=s, entity=e, window_s=int(dt), kind=MetricKind.CATEGORICAL))
             if learn_row[i]:
                 sts[i].buf.append(now, L[i], zb[i])
@@ -490,7 +530,9 @@ class CommonModeEngine(Engine):
             return
         store = ctx.store
         csig = _control_sig(store.get_model(s, e, G.CONTROL_MODEL))
-        due = self.entity_due((s, e, LEARNER), now, period_s=self.refit_ticks * dt)
+        per = dt if self._period is None else self._period
+        key = (s, e, LEARNER) + ((self._g,) if self._g else ())      # v2 key in tick mode
+        due = self.entity_due(key, now, period_s=self.refit_ticks * per)
         if not due and csig == st.csig:
             return
         st.csig = csig
@@ -547,6 +589,8 @@ class CommonModeEngine(Engine):
         eligible scored members, direction fractions over all scored members,
         and (system only) the coherent-direction run length."""
         store = ctx.store
+        if self._period is not None:
+            dt = self._period                   # grain pass: the grain period
         runs: Dict[str, Tuple[int, int, int]] = {}         # g -> (dir, run, prev_run)
         vals: Dict[str, Dict[str, Any]] = {}
         V = zb[idx]                                        # [k, NG]
@@ -580,17 +624,17 @@ class CommonModeEngine(Engine):
                 "frac_up": up, "frac_down": down, "dir": dirn, "dt": dt,
             }
             if coherence:
-                prev = _prev_point(store, s, key, COMMON_SERIES[g], now, dt)
+                prev = _prev_point(store, s, key, self._SERIES[g], now, dt)
                 prun = int(prev.get("run", 0)) if prev and int(prev.get("dir", 0)) == dirn else 0
                 pr_any = int(prev.get("run", 0)) if prev else 0
                 run = prun + 1 if dirn != 0 else 0
                 val["run"] = run
                 runs[g] = (dirn, run, pr_any)
             vals[g] = val
-            store.add_derived(DerivedMetric(name=COMMON_SERIES[g], value=val, ts=now, system=s,
+            store.add_derived(DerivedMetric(name=self._SERIES[g], value=val, ts=now, system=s,
                                             entity=key, window_s=int(dt),
                                             kind=MetricKind.CATEGORICAL))
-        if coherence and runs and not ctx.training:
+        if coherence and runs and not ctx.training and self._g != "q":
             self._maybe_emit(store, s, now, dt, runs, vals)
 
     @staticmethod

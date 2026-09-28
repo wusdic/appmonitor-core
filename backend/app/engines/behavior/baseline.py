@@ -56,6 +56,18 @@ changes, computed per system in one batch. Tier models (class, system, org)
 are refreshed every tier_period_s and whenever model.class or the set of
 systems changes.
 
+spec v2.1 (docs/lib3/cadence.md §6.1; canonical grain mode). The anchors
+above are the H grain: they learn H decision rows (clock feature.meta.h, a
+row's weight the MINIMUM trust over its hour, exposure = its coverage, time
+context = its window midpoint), and the H current anchor folds the
+paired-hour sums [A, B, D, W] of the variance-scale estimator (om, §6.3)
+whenever an H row holds exactly 4 covered Q rows. A Q current anchor
+(model['q'], clock feature.meta.q, the same cap, no reference / golden /
+bin168) learns the Q decision rows; B04 combines it with the transferred H
+predictive (m_baseline.predictive_q). n_eff is in 15-min equivalents (an H
+row counts 4). Tier models also carry omega = the members' om sums. A model
+learnt in the other grain mode is reset (its rows were tick rows).
+
 B03 scores nothing and emits no event, so ctx.training only changes the
 gating default (missing trust -> 1). Absence is data: inactive ticks are not
 committed (B04 scores active ticks against these predictives; silence is
@@ -83,6 +95,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile
 from .lib import gating as G
+from .lib import grains as GR
 from .lib import m_baseline as MB
 from .lib import m_class
 from .lib import timebins as TB
@@ -93,8 +106,11 @@ SEASONAL_FEATURES = ["http_requests", "bytes_up", "flows", "dns_queries", "duty_
 
 LEARNER_CUR = "baseline.current"
 LEARNER_REF = "baseline.reference"
+LEARNER_Q = "baseline.current.q"
 ACTIVE = "feature.active"
 NAT = "feature.nat"
+META_H, META_Q = "feature.meta.h", "feature.meta.q"
+NAT_H, NAT_Q = "feature.nat.h", "feature.nat.q"
 RISK = "behavior.risk"
 REGIME = "behavior.regime"
 
@@ -115,23 +131,34 @@ ROW_DT_MAX = 3600.0              # a row's exposure is the gap to its previous t
 _TCTX_CACHE_MAX = 4096
 
 
-def new_model() -> Dict[str, Any]:
-    """Empty model.baseline@(s, e) (hyperprior predictives)."""
-    return {
+def new_model(mode: str = GR.TICK) -> Dict[str, Any]:
+    """Empty model.baseline@(s, e) (hyperprior predictives). spec v2.1: in
+    canonical grain mode the H current anchor carries the omega sums and the
+    Q current anchor is added under 'q'."""
+    canon = mode == GR.CANONICAL
+    m = {
         "fmt": MB.FMT, "tier": "entity", "version": 0, "branch": 0,
-        "current": MB.new_anchor(week=True, select=True),
-        "reference": MB.new_anchor(week=False, select=False, hl_days=MB.HL_REF_DAYS),
+        "current": _init_cur_h() if canon else MB.new_anchor(week=True, select=True),
+        "reference": _init_ref_h() if canon else
+        MB.new_anchor(week=False, select=False, hl_days=MB.HL_REF_DAYS),
         "gate": G.GateState(), "gate_ref": G.GateState(),
         "golden": {"week": None, "snaps": [], "stats": None, "n_reset": 0},
         "ref_elig": {}, "reg": {"scan": -math.inf, "since": None, "iv": []},
         "ctl_sig": None, "n_eff": 0.0, "allow_drift": 0.0, "held": [], "pb": None,
-        "pb_ts": -math.inf,
+        "pb_ts": -math.inf, "grain_mode": mode,
     }
+    if canon:
+        m[MB.Q_KEY] = {"current": _init_q(), "gate": G.GateState(), "n_eff": 0.0, "held": []}
+    return m
 
 
-def _valid(model: Any) -> bool:
-    return (isinstance(model, dict) and model.get("fmt") == MB.FMT
-            and model.get("tier") == "entity" and isinstance(model.get("current"), MB.Anchor))
+def _valid(model: Any, mode: str = GR.TICK) -> bool:
+    ok = (isinstance(model, dict) and model.get("fmt") in MB.FMTS
+          and model.get("tier") == "entity" and isinstance(model.get("current"), MB.Anchor))
+    if ok and mode == GR.CANONICAL:
+        # a model learnt from tick rows (v2 / tick mode) is not a grain model
+        ok = model.get("grain_mode") == GR.CANONICAL and isinstance(model.get(MB.Q_KEY), dict)
+    return ok
 
 
 def _update_cur(state: MB.Anchor, row: MB.Row, w: float) -> MB.Anchor:
@@ -153,6 +180,19 @@ def _init_cur() -> MB.Anchor:
 
 def _init_ref() -> MB.Anchor:
     return MB.new_anchor(week=False, select=False, hl_days=MB.HL_REF_DAYS)
+
+
+def _init_cur_h() -> MB.Anchor:
+    """spec v2.1 H current anchor: omega sums, sigma15 through the default transfer."""
+    return MB.new_anchor(week=True, select=True, om=True, v15=float(GR.M))
+
+
+def _init_ref_h() -> MB.Anchor:
+    return MB.new_anchor(week=False, select=False, hl_days=MB.HL_REF_DAYS, v15=float(GR.M))
+
+
+def _init_q() -> MB.Anchor:
+    return MB.new_anchor(week=False, select=True)
 
 
 def _control_sig(control: Any) -> Optional[Tuple]:
@@ -215,6 +255,21 @@ class BaselineEngine(Engine):
             name=LEARNER_REF, init=_init_ref, update=_update_ref, fetch=self._fetch_ref,
             dump=MB.dump, load=MB.load, on_rebase=MB.on_rebase_reference, d_min_s=DAY,
             ckpt_every_s=G.CKPT_EVERY_REF_S)
+        # spec v2.1 grain learners (canonical mode): H anchors on H decision
+        # rows, the Q current anchor on Q decision rows
+        self._canon = False
+        self._cur_h = G.GatedLearner(
+            name=LEARNER_CUR, init=_init_cur_h, update=_update_cur, fetch=self._fetch_cur_h,
+            dump=MB.dump, load=MB.load, merge=MB.merge, on_rebase=self._on_rebase_cur,
+            ckpt_every_s=G.CKPT_EVERY_S, clock=META_H, window_s=GR.GRAIN_S["h"])
+        self._ref_h = G.GatedLearner(
+            name=LEARNER_REF, init=_init_ref_h, update=_update_ref, fetch=self._fetch_ref,
+            dump=MB.dump, load=MB.load, on_rebase=MB.on_rebase_reference, d_min_s=DAY,
+            ckpt_every_s=G.CKPT_EVERY_REF_S, clock=META_H, window_s=GR.GRAIN_S["h"])
+        self._cur_q = G.GatedLearner(
+            name=LEARNER_Q, init=_init_q, update=_update_cur, fetch=self._fetch_q,
+            dump=MB.dump, load=MB.load, merge=MB.merge, on_rebase=self._on_rebase_cur,
+            ckpt_every_s=G.CKPT_EVERY_S, clock=META_Q, window_s=GR.GRAIN_S["q"])
 
     # ------------------------------------------------------------------- run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
@@ -223,7 +278,9 @@ class BaselineEngine(Engine):
         if not (math.isfinite(dt) and dt > 0.0):
             raise ValueError(f"BaselineEngine: bad ctx.window_s {ctx.window_s!r}")
         self._cfg, self._dt, self._now = ctx.config, dt, now
-        self._cur.d_min_s = float(ctx.config.get("D_min_s") or G.D_MIN_S)
+        self._canon = GR.canonical(ctx.config)
+        d_min = float(ctx.config.get("D_min_s") or G.D_MIN_S)
+        self._cur.d_min_s = self._cur_h.d_min_s = self._cur_q.d_min_s = d_min
         if len(self._tctx_cache) > _TCTX_CACHE_MAX:
             self._tctx_cache.clear()
         tc_now = self._tctx(now, dt)
@@ -240,7 +297,8 @@ class BaselineEngine(Engine):
             for e in ents:
                 recs.append((s, e, self._learn(ctx, s, e, now, dt, incs, ref_due)))
         # fold every queued row: one round per queued row, all anchors at once
-        MB.flush_many([m[k] for _, _, m in recs for k in ("current", "reference")])
+        MB.flush_many([m[k] for _, _, m in recs for k in ("current", "reference")]
+                      + [MB.q_anchor(m) for _, _, m in recs if MB.q_anchor(m) is not None])
         for s, e, model in recs:
             self._publish(store, s, e, model, now)
         self._profiles(store, recs, tc_now, now)
@@ -254,20 +312,24 @@ class BaselineEngine(Engine):
         """Step both gated learners (their rows are queued on the anchors)."""
         store = ctx.store
         model = store.get_model(s, e, MB.MODEL)
-        if not _valid(model):
-            model = new_model()
+        mode = GR.CANONICAL if self._canon else GR.TICK
+        if not _valid(model, mode):
+            model = new_model(mode)
         training = bool(ctx.training)
         control = store.get_model(s, e, G.CONTROL_MODEL)
-        lw = store.last_write_ts(s, e, ACTIVE)
+        cur_l, ref_l = (self._cur_h, self._ref_h) if self._canon else (self._cur, self._ref)
+        lw = store.last_write_ts(s, e, META_H if self._canon else ACTIVE)
 
-        # current anchor: every tick, rows t - D
+        # current anchor: every tick, rows t - D (spec v2.1: H decision rows)
         cur, gate = model["current"], model["gate"]
-        front = G.commit_frontier(now, dt, self._cur.d_min_s)
+        front = G.commit_frontier(now, dt, cur_l.d_min_s)
         if control is not None or (lw is not None and gate.last_ts < min(lw, front)):
-            cur, gate = self._cur.step(store, s, e, cur, gate, now, dt, training)
-        cur, gate = self._cur.seed_from_link(store, s, e, cur, gate,
-                                             lambda a: _other_current(store, s, a))
+            cur, gate = cur_l.step(store, s, e, cur, gate, now, dt, training)
+        cur, gate = cur_l.seed_from_link(store, s, e, cur, gate,
+                                         lambda a: _other_current(store, s, a))
         model["current"], model["gate"] = cur, gate
+        if self._canon:
+            self._learn_q(store, s, e, model, control, now, dt, training)
 
         # reference anchor: hourly batches of rows t - 24 h (a new directive at once)
         sig = _control_sig(control)
@@ -279,8 +341,8 @@ class BaselineEngine(Engine):
                 ivs = self._ref_marks(store, s, e, model, now, incs)
                 self._ref_ctx = (model, ivs, float(gate.allow_drift))
                 try:
-                    ref, gref = self._ref.step(store, s, e, model["reference"], gref, now, dt,
-                                               training)
+                    ref, gref = ref_l.step(store, s, e, model["reference"], gref, now, dt,
+                                           training)
                 finally:
                     self._ref_ctx = None
                 model["reference"], model["gate_ref"] = ref, gref
@@ -288,6 +350,19 @@ class BaselineEngine(Engine):
                 if el and min(el) < now - REF_ELIG_KEEP_S:
                     model["ref_elig"] = {k: v for k, v in el.items() if k >= now - REF_ELIG_KEEP_S}
         return model
+
+    def _learn_q(self, store: Any, s: str, e: str, model: Dict[str, Any], control: Any,
+                 now: float, dt: float, training: bool) -> None:
+        """spec v2.1: the Q current learner (Q decision rows, t - D)."""
+        q = model[MB.Q_KEY]
+        lw = store.last_write_ts(s, e, META_Q)
+        cur, gate = q["current"], q["gate"]
+        front = G.commit_frontier(now, dt, self._cur_q.d_min_s)
+        if control is not None or (lw is not None and gate.last_ts < min(lw, front)):
+            cur, gate = self._cur_q.step(store, s, e, cur, gate, now, dt, training)
+        cur, gate = self._cur_q.seed_from_link(
+            store, s, e, cur, gate, lambda a: MB.q_anchor(store.get_model(s, a, MB.MODEL)))
+        q["current"], q["gate"] = cur, gate
 
     def _publish(self, store: Any, s: str, e: str, model: Dict[str, Any], now: float) -> None:
         """Golden snapshot, contract fields and put_model."""
@@ -297,6 +372,12 @@ class BaselineEngine(Engine):
         model["allow_drift"] = float(gate.allow_drift)
         model["held"] = gate.held                 # rows (ts, w_eff, w_prov) held for B28
         model["n_eff"] = MB.n_eff(model["current"])
+        q = model.get(MB.Q_KEY)
+        if isinstance(q, dict) and model.get("grain_mode") == GR.CANONICAL:
+            # 15-min equivalents: an H row covers 4 quarters (cadence.md §5.3)
+            model["n_eff"] *= float(GR.M)
+            q["n_eff"] = MB.n_eff(q["current"])
+            q["held"] = q["gate"].held
         store.put_model(s, e, MB.MODEL, model, version=int(gate.version), ts=now)
 
     # --------------------------------------------------------------- fetch
@@ -343,8 +424,42 @@ class BaselineEngine(Engine):
             ok = el[ts] = _eligible(ts, ivs)
         if not ok:
             return None
-        row = self._fetch_cur(store, s, e, ts)
+        row = (self._grain_row(store, s, e, ts, "h") if self._canon
+               else self._fetch_cur(store, s, e, ts))
+        if row is not None and row.pair is not None:
+            row = row._replace(pair=None)       # only the current anchor estimates omega
         return row._replace(drift=drift) if row is not None and drift else row
+
+    # ------------------------------------------------- spec v2.1 grain rows
+    def _grain_row(self, store: Any, s: str, e: str, ts: float, g: str) -> Optional[MB.Row]:
+        """Decision row of grain g at ts (active rows only): nat, exposure =
+        coverage, the window-midpoint time context; an H row carries its Q
+        rows when it is a paired hour (4 Q rows, all covered)."""
+        meta = store.vec_at(s, e, META_H if g == "h" else META_Q, ts)
+        if meta is None or not float(meta[0]) > 0.5:
+            return None
+        nat = store.vec_at(s, e, NAT_H if g == "h" else NAT_Q, ts)
+        if nat is None:
+            return None
+        cov = float(meta[1])
+        if not cov > 0.0:
+            return None
+        tc = GR.row_tctx(ts, g, self._dt, self._cfg)
+        pair = None
+        if g == "h" and cov >= GR.COVER_MIN * GR.GRAIN_S["h"]:
+            tq, Mq = store.vec_range(s, e, META_Q, ts - GR.GRAIN_S["h"] + 1e-3, ts + 1e-3)
+            if len(tq) == GR.M and np.all(np.asarray(Mq)[:, 1] >= GR.COVER_MIN * GR.GRAIN_S["q"]):
+                qn = [store.vec_at(s, e, NAT_Q, float(t)) for t in tq]
+                if all(x is not None for x in qn):
+                    pair = (np.stack([np.asarray(x, dtype=np.float64) for x in qn]),
+                            np.asarray(Mq, dtype=np.float64)[:, 1])
+        return MB.make_row(ts, nat, cov, tc, pair=pair)
+
+    def _fetch_cur_h(self, store: Any, s: str, e: str, ts: float) -> Optional[MB.Row]:
+        return self._grain_row(store, s, e, ts, "h")
+
+    def _fetch_q(self, store: Any, s: str, e: str, ts: float) -> Optional[MB.Row]:
+        return self._grain_row(store, s, e, ts, "q")
 
     def _on_rebase_cur(self, state: MB.Anchor, tau: float) -> MB.Anchor:
         """ACCEPTED: the new regime's rows (held ones and the next day's) are
@@ -464,9 +579,11 @@ class BaselineEngine(Engine):
         ver = self._tier_ver
         zeros = np.zeros((48, MB.L_STATS))
         per_sys: Dict[str, Tuple[Dict[str, np.ndarray], np.ndarray, Dict[str, List[str]], float]] = {}
+        oms: Dict[str, Dict[str, np.ndarray]] = {}
         for s in store.systems():
             ents: Dict[str, np.ndarray] = {}
             neff = 0.0
+            om_s: Dict[str, np.ndarray] = {}
             for e in store.entities(s):
                 m = store.get_model(s, e, MB.MODEL)
                 if _valid(m):
@@ -474,6 +591,10 @@ class BaselineEngine(Engine):
                     if St is not None:
                         ents[e] = St
                         neff += MB.n_eff(m)
+                    om = MB.true_om(m["current"], now) if not m["current"].empty else None
+                    if om is not None:
+                        om_s[e] = om
+            oms[s] = om_s
             S_sys = sum(ents.values()) if ents else zeros
             classes: Dict[str, List[str]] = {}
             for key in m_class.all_class_keys(store, s, min_members=m_class.MIN_MEMBERS):
@@ -483,9 +604,12 @@ class BaselineEngine(Engine):
         S_org = sum(v[1] for v in per_sys.values()) if per_sys else zeros
         kap_org = MB.eb_kappa([v[1].sum(axis=0) for v in per_sys.values()])
         h1 = np.ones((48, MB.NF))
+        om_sys = {s: (sum(v.values()) if v else None) for s, v in oms.items()}
+        om_org = [v for v in om_sys.values() if v is not None]
         store.put_model(ORG[0], ORG[1], MB.MODEL, _tier_dict(
             "org", S_org, S_org, h1, kap_org, now, ver, sorted(per_sys),
-            sum(v[3] for v in per_sys.values())), version=ver, ts=now)
+            sum(v[3] for v in per_sys.values()),
+            omega=sum(om_org) if om_org else None), version=ver, ts=now)
         for s, (ents, S_sys, classes, neff) in per_sys.items():
             E_s, h_s = MB.join(S_sys, S_org, h1, kap_org, loo=True)
             kap_ent = MB.eb_kappa([S.sum(axis=0) for S in ents.values()])
@@ -493,24 +617,32 @@ class BaselineEngine(Engine):
             kap_cls = MB.eb_kappa([sum(v).sum(axis=0) for v in cstats.values() if v])
             store.put_model(s, SYSTEM_KEY, MB.MODEL, _tier_dict(
                 "system", S_sys, E_s, h_s, kap_ent, now, ver, sorted(ents), neff,
-                kappa_cls=kap_cls), version=ver, ts=now)
+                kappa_cls=kap_cls, omega=om_sys.get(s)), version=ver, ts=now)
             for key, mem in classes.items():
                 sts = cstats[key]
                 S_c = sum(sts) if sts else zeros
                 E_c, h_c = MB.join(S_c, E_s, h_s, kap_cls, loo=True)
+                om_c = [oms[s][x] for x in mem if x in oms[s]]
                 store.put_model(s, key, MB.MODEL, _tier_dict(
                     "class", S_c, E_c, h_c, MB.eb_kappa([S.sum(axis=0) for S in sts]), now, ver,
                     list(mem), sum(MB.n_eff(store.get_model(s, x, MB.MODEL)) for x in mem
-                                   if x in ents)), version=ver, ts=now)
+                                   if x in ents),
+                    omega=sum(om_c) if len(om_c) >= 3 else None), version=ver, ts=now)
 
 
 def _tier_dict(tier: str, S: np.ndarray, E: np.ndarray, h: np.ndarray, kappa: np.ndarray,
                now: float, ver: int, members: List[str], n_eff: float,
-               kappa_cls: Optional[np.ndarray] = None) -> Dict[str, Any]:
-    return {"fmt": MB.FMT, "tier": tier, "ts": float(now), "version": int(ver),
-            "stats": S, "E": E, "h": h, "kappa": kappa,
-            "kappa_cls": kappa if kappa_cls is None else kappa_cls,
-            "members": members, "n_eff": float(n_eff)}
+               kappa_cls: Optional[np.ndarray] = None,
+               omega: Optional[np.ndarray] = None) -> Dict[str, Any]:
+    d = {"fmt": MB.FMT, "tier": tier, "ts": float(now), "version": int(ver),
+         "stats": S, "E": E, "h": h, "kappa": kappa,
+         "kappa_cls": kappa if kappa_cls is None else kappa_cls,
+         "members": members, "n_eff": float(n_eff)}
+    if omega is not None:
+        # spec v2.1: members' paired-hour sums [A, B, D, W] x 52 (the EB chain
+        # of the Q scale transfer, m_baseline.omega_chain)
+        d["omega"] = np.asarray(omega, dtype=np.float64)
+    return d
 
 
 def _other_current(store: Any, s: str, entity: str) -> Optional[MB.Anchor]:

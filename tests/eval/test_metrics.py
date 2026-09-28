@@ -407,6 +407,19 @@ def test_compute_gates_structure_and_values():
     assert abl[0]["sole_detector_of"] == ["A/T1", "A/T3"]
 
 
+def test_feedback_and_ablation_compare_the_same_pack_seeds():
+    """Feedback / ablation runs usually cover a subset of the full runs; they
+    used to be compared with ALL full runs (the cut and the FAR delta mixed
+    packs and seeds)."""
+    scores = _synthetic_scores()
+    base = [dict(s, far=dict(s["far"], n_low=4)) for s in scores]
+    fb = [dict(base[0], labels_added=25, far=dict(base[0]["far"], n_low=2))]
+    g = M.feedback_gate(base, fb)
+    assert g["value"] == pytest.approx(0.5)          # 4 -> 2 on the paired run, not 12 -> 2
+    abl = M.ablation_table(base, {"b04": [dict(base[0], far=dict(base[0]["far"], n_low=4))]})
+    assert abl[0]["delta_far_low"] == pytest.approx(0.0)
+
+
 def test_report_json_and_self_contained_html(tmp_path):
     scores = _synthetic_scores()
     rep = write_report(scores, str(tmp_path), meta={"note": "test"})
@@ -448,3 +461,15 @@ def test_reopened_incident_is_a_new_opening_for_detection_but_one_far_incident()
     run2 = make_run(incidents=[inc("i2", "10.20.1.12", t_fp, "high", history=hist2)])
     far = M.score_run(run2)["far"]
     assert (far["n_low"], far["n_high"], far["n_reopened"]) == (1, 1, 1)
+
+
+def test_report_renders_ablation_and_meta_sections(tmp_path):
+    scores = _synthetic_scores()
+    abl = {"b14": [dict(s, scenarios=[dict(o, within_deadline=False) for o in s["scenarios"]])
+                   for s in scores]}
+    meta = {"sections": [{"title": "Before / after", "headers": ["gate", "before", "after"],
+                          "rows": [["1_detection", 0.5, 0.75]], "note": "round 2"}]}
+    write_report(scores, str(tmp_path), ablation=abl, meta=meta)
+    html = (tmp_path / "eval_report.html").read_text(encoding="utf-8")
+    assert "Ablation (one engine disabled)" in html and "b14" in html
+    assert "Before / after" in html and "round 2" in html and "1_detection" in html

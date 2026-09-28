@@ -406,6 +406,41 @@ def identity_stratum_key(daypart: str, regime_tercile: int, cc: Optional[int] = 
     return f"{dp}{_STRATUM_SEP}r{k}{_STRATUM_SEP}{c}"
 
 
+def grain_stratum_key(daypart: str, grain: str, prov: Optional[int] = None,
+                      tercile: Optional[int] = None) -> str:
+    """spec v2.1 (cadence.md §5.3, §9.1): stratum of an H / Q stream detector
+    in canonical mode: 'daypart|g:h', 'daypart|g:q|p:<prov>' and, for
+    identity, 'daypart|r<k>|g:h'. H rings fill at 24 per day at every cadence
+    and survive a cadence switch; provisional Q scores have their own ring."""
+    dp = _check_part("daypart", daypart, _KEY_SEP + _STRATUM_SEP)
+    if grain not in ("h", "q"):
+        raise ValueError(f"grain_stratum_key: grain {grain!r} not in ('h', 'q')")
+    parts = [dp]
+    if tercile is not None:
+        k = _as_int(tercile)
+        if k is None or not 0 <= k <= 2:
+            raise ValueError(f"grain_stratum_key: regime tercile {tercile!r} not in 0..2")
+        parts.append(f"r{k}")
+    parts.append(f"g:{grain}")
+    if grain == "q":
+        parts.append(f"p:{1 if prov else 0}")
+    return _STRATUM_SEP.join(parts)
+
+
+def meta_stratum_key(daypart: str, tau: str, cc: Optional[int] = None) -> str:
+    """spec v2.1: B25 meta-ring stratum 'daypart|t:<tau>' (+ '|<cc>' for the
+    per-tick type t, whose null still depends on the tick length)."""
+    dp = _check_part("daypart", daypart, _KEY_SEP + _STRATUM_SEP)
+    if tau not in ("h", "q", "t"):
+        raise ValueError(f"meta_stratum_key: tick type {tau!r} not in ('h', 'q', 't')")
+    if tau == "t":
+        c = _as_int(cc)
+        if c is None or c <= 0:
+            raise ValueError(f"meta_stratum_key: cadence class {cc!r} must be a positive integer")
+        return f"{dp}{_STRATUM_SEP}t:t{_STRATUM_SEP}{c}"
+    return f"{dp}{_STRATUM_SEP}t:{tau}"
+
+
 def ring_key(detector: str, stratum: str) -> str:
     """Key inside model.calib: '<detector>@<stratum>'; meta rings use
     detector in {'meta_inst', 'meta_all'} (owned by B25)."""
@@ -423,8 +458,58 @@ def split_ring_key(key: str) -> Tuple[str, str]:
 
 
 # ------------------------------------------------------------ tail fit / p
+def _exp_order_means(n: int) -> np.ndarray:
+    """E[Y_(m)] / s for the m-th smallest of n Exp(s) draws, m = 1..n:
+    H_n - H_{n-m} (H = harmonic numbers)."""
+    return np.cumsum(1.0 / np.arange(n, 0, -1, dtype=np.float64))
+
+
+def winsorise_exceedances(y: np.ndarray, alpha: float) -> np.ndarray:
+    """Exceedances y (sorted ascending, >= 0) with outliers pulled in.
+
+    Model: under the null the excesses are exponential with scale s (the
+    tail of -log10 of a valid p). The largest of n such excesses is above
+    b = s (ln n + ln(1/alpha)) with probability ~alpha, so entries above b
+    are contamination. s is estimated from ranks, which the contaminating
+    top entries cannot move: with k entries above b, the median inlier
+    y_(m), m = ceil((n - k) / 2), is the m-th smallest of all n draws, whose
+    mean is s (H_n - H_{n-m}); s = y_(m) / (H_n - H_{n-m}), iterated with b
+    until k is stable (start: k = 0, the plain median). Each outlier is then
+    replaced by the expected value of its order statistic, s (H_n - H_{r-1})
+    for the r-th largest: clipping at b would leave k values far beyond
+    every other excess and keep the PWM xi heavy. On a clean exponential
+    tail nothing exceeds b with probability ~1 - alpha and y is returned
+    unchanged; six warm-up extremes (-log10 p = 21 .. 37 among excesses of
+    ~0.4) no longer drag a meta ring's xi to 0.3 - 0.5 (engines.md B25,
+    integration §8). Returns y unchanged when alpha is not in (0, 1) or the
+    scale is not positive."""
+    n = int(y.size)
+    if n < 2 or not 0.0 < float(alpha) < 1.0:
+        return y
+    em = _exp_order_means(n)
+    lnb = math.log(n) + math.log(1.0 / float(alpha))
+    k = 0
+    sc = 0.0
+    for _ in range(4):
+        m = max(1, (n - k + 1) // 2)
+        sc = float(y[m - 1]) / float(em[m - 1])
+        if not sc > 0.0:
+            return y
+        k_new = n - int(np.searchsorted(y, sc * lnb, side="right"))
+        if k_new == k:
+            break
+        k = min(k_new, n - 1)
+    if k <= 0:
+        return y
+    out = np.array(y, dtype=np.float64, copy=True)
+    # r-th largest, r = k .. 1 (ascending positions n-k .. n-1): s (H_n - H_{r-1})
+    out[n - k:] = np.minimum(out[n - k:], sc * em[n - k:])
+    return np.sort(out)
+
+
 def fit_tail(ring: Ring, now_ts: float = float("nan"),
-             xi_min: float = XI_FLOOR) -> Optional[GPDTail]:
+             xi_min: float = XI_FLOOR, winsor_alpha: Optional[float] = None
+             ) -> Optional[GPDTail]:
     """PWM-GPD fit to exceedances over u = q_0.90(ring) (evt.gpd_pwm_fit).
 
     Returns None with fewer than MIN_EXCEED exceedances. xi is clipped to
@@ -437,6 +522,11 @@ def fit_tail(ring: Ring, now_ts: float = float("nan"),
     (sigma not finite and > 0) also returns None, so p_from_ring falls back
     to the conformal p. Pure: the caller assigns ring.gpd. O(M) (the ring is
     already sorted).
+
+    winsor_alpha (None = off): the exceedances are winsorised first
+    (winsorise_exceedances) - for scores whose null tail is exponential by
+    construction (-log10 of a valid p: B25's meta rings), where a heavier
+    fitted tail can only come from contamination.
     """
     sc = ring.scores
     n = int(sc.size)
@@ -448,6 +538,8 @@ def fit_tail(ring: Ring, now_ts: float = float("nan"),
     if n_u < MIN_EXCEED:
         return None
     y = sc[k:] - u
+    if winsor_alpha is not None:
+        y = winsorise_exceedances(y, winsor_alpha)
     xi, sigma = evt.gpd_pwm_fit(y)
     xi, sigma = float(xi), float(sigma)
     if xi < xi_min:

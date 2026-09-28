@@ -376,3 +376,101 @@ class HyperLogLog:
         if len(raw) != HLL_M:
             raise ValueError(f"HyperLogLog.from_bytes: expected {HLL_M} bytes, got {len(raw)}")
         return cls(registers=np.frombuffer(raw, dtype=np.uint8).copy())
+
+
+# ============================================================================
+# spec v2.1: SetSketch, mergeable distinct counts (docs/lib3/cadence.md §3.2)
+# ============================================================================
+# A per-tick distinct set as {'n': distinct, 'h': sorted uint64 hashes} while
+# it has <= SET_EXACT_MAX keys, else {'n': distinct, 'hll': 1024 B}. The hash
+# is blake2b-64 of f'{ns}\x1f{key}' (token_hash's function). A union stays
+# exact while it holds <= SET_UNION_EXACT_MAX hashes and becomes an HLL
+# (register-wise max over the same 64-bit hashes: lossless merge) above that.
+SET_EXACT_MAX = 256
+SET_UNION_EXACT_MAX = 4096
+_H64: Dict[str, Dict[str, int]] = {}
+
+
+def _h64(ns: str, key: str) -> int:
+    cache = _H64.get(ns)
+    if cache is None:
+        if len(_H64) >= _NS_CACHE_MAX:
+            _H64.clear()
+        cache = _H64.setdefault(ns, {})
+    x = cache.get(key)
+    if x is None:
+        x = _digest64(f"{ns}{_SEP}{key}")
+        if len(cache) >= _CODE_CACHE_MAX:
+            cache.clear()
+        cache[key] = x
+    return x
+
+
+def _registers_of(hashes: np.ndarray) -> np.ndarray:
+    """HLL registers of 64-bit hashes (HyperLogLog.add's rule on x directly)."""
+    reg = np.zeros(HLL_M, dtype=np.uint8)
+    if hashes.size:
+        x = hashes.astype(np.uint64)
+        idx = (x >> _U_W_BITS).astype(np.intp)
+        rho = (_RHO_MAX - _bit_length_u54(x & _U_W_MASK)).astype(np.uint8)
+        np.maximum.at(reg, idx, rho)
+    return reg
+
+
+def _hll_count(reg: np.ndarray) -> float:
+    return HyperLogLog(registers=reg).count()
+
+
+def set_sketch(ns: str, keys: Iterable[Any]) -> Dict[str, Any]:
+    """SetSketch of one tick's full key set (str(key) is hashed, so 443 and
+    '443' are the same key)."""
+    if type(ns) is not str:
+        ns = str(ns)
+    hs = {_h64(ns, k if type(k) is str else str(k)) for k in keys}
+    h = np.fromiter(hs, dtype=np.uint64, count=len(hs))
+    h.sort()
+    if h.size <= SET_EXACT_MAX:
+        return {"n": int(h.size), "h": h}
+    return {"n": int(h.size), "hll": _registers_of(h).tobytes()}
+
+
+def set_union(sketches: Iterable[Any]) -> Dict[str, Any]:
+    """Union of SetSketches: exact while |union| <= 4096 and no member is an
+    HLL, else an HLL (lossless register max). None / malformed members are
+    skipped; the empty union is {'n': 0, 'h': []}."""
+    exact: List[np.ndarray] = []
+    reg: Any = None
+    for sk in sketches:
+        if not isinstance(sk, Mapping):
+            continue
+        hll = sk.get("hll")
+        if hll is not None:
+            r = np.frombuffer(bytes(hll), dtype=np.uint8)
+            if r.size != HLL_M:
+                continue
+            reg = r.copy() if reg is None else np.maximum(reg, r)
+            continue
+        h = sk.get("h")
+        if h is None:
+            continue
+        exact.append(np.asarray(h, dtype=np.uint64).reshape(-1))
+    if exact:
+        u = np.unique(np.concatenate(exact)) if len(exact) > 1 else np.unique(exact[0])
+    else:
+        u = np.zeros(0, dtype=np.uint64)
+    if reg is None and u.size <= SET_UNION_EXACT_MAX:
+        return {"n": int(u.size), "h": u}
+    r2 = _registers_of(u)
+    reg = r2 if reg is None else np.maximum(reg, r2)
+    return {"n": _hll_count(reg), "hll": reg.tobytes()}
+
+
+def set_count(sk: Any) -> float:
+    """Distinct count of a SetSketch: exact size or the HLL estimate (0 when empty)."""
+    if not isinstance(sk, Mapping):
+        return 0.0
+    if sk.get("hll") is not None:
+        r = np.frombuffer(bytes(sk["hll"]), dtype=np.uint8)
+        return _hll_count(r.copy()) if r.size == HLL_M else 0.0
+    h = sk.get("h")
+    return float(len(h)) if h is not None else float(sk.get("n") or 0.0)

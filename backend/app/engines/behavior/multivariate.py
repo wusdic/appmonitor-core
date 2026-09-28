@@ -67,6 +67,16 @@ a zi row, an all-NaN zi row, or a failed B05 tick -> NaN + behavior.degraded
 p = 1). ctx.training learns as usual (missing trust counts as 1) and B06 emits
 no events at all. Exceptions are never swallowed.
 
+spec v2.1 grains (docs/lib3/cadence.md §6.4; canonical grain mode): the H
+pass runs on H decision ticks on the H residuals (behavior.zi of H rows,
+clock feature.meta.h; one row per hour, so the 336-row buffer holds 14 d and
+the refit is every 16 H rows or 4 h); model.groups is fitted from H zi only.
+The Q pass runs on Q decision ticks on behavior.zi.q with model.density.q, a
+Q fit shrunk to the entity's own H density with 30 pseudo-rows (the class
+shrink of a young entity, with the H density as the prior): t2_q / spe_q,
+behavior.wh.q and behavior.prov {t2_q, spe_q: n_Q / (n_Q + 64)} (provisional
+while n_Q < 64).
+
 Store: reads behavior.zi, feature.active, behavior.trust / trust_prov /
 quarantine (gating), model.control, model.link (gating), model.class
 (m_class), model.density (own and class); writes model.density@(s, e) and
@@ -93,6 +103,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile
 from .lib import emit, m_class, m_density, robustcov
 from .lib import gating as G
+from .lib import grains as GR
 from .lib.classkeys import SYSTEM_KEY, class_kind
 from .lib.features import FEATURE_DIM, FEATURE_NAMES_V2
 
@@ -104,6 +115,10 @@ GROUPS_MODEL = m_density.GROUPS_MODEL
 B05_ENGINE = "behavior.common_mode"
 LEARNER = "density"
 DETS = ("t2", "spe")
+DETS_Q = ("t2_q", "spe_q")
+DENSITY_Q = DENSITY + ".q"
+PROV = "behavior.prov"
+PROV_N = 64.0                  # a Q density is provisional while n_Q < 64
 
 # ---- learner / refit -------------------------------------------------------
 CAP = 336                      # committed rows kept (one per slot)
@@ -523,24 +538,39 @@ class MultivariateEngine(Engine):
         self.refit_s = float(params.get("refit_s", REFIT_S))
         self.groups_ticks = int(params.get("groups_ticks", GROUPS_TICKS))
         self.groups_s = float(params.get("groups_s", GROUPS_S))
-        self._learners: Dict[float, G.GatedLearner] = {}
+        self._learners: Dict[Tuple[float, str], G.GatedLearner] = {}
         self._cur_arch: Optional["OrderedDict[int, Tuple[float, np.ndarray]]"] = None
+        self._set_pass("")
+
+    def _set_pass(self, g: str, period: Optional[float] = None) -> None:
+        """Names of the pass: '' = v2 / tick mode; 'h' / 'q' spec v2.1."""
+        self._g = g
+        self._gk = (g,) if g else ()          # tick mode keeps v2's scheduling keys
+        self._period = period
+        q = g == "q"
+        self._ZI = ZI + (".q" if q else "")
+        self._WH = WH + (".q" if q else "")
+        self._ACTIVE = ACTIVE if g == "" else f"feature.meta.{g}"
+        self._DENS = DENSITY_Q if q else DENSITY
+        self._DETS = DETS_Q if q else DETS
+        self._LEARNER = LEARNER + (".q" if q else "")
 
     # ------------------------------------------------------------------ learner
     def _learner(self, d_min_s: float) -> G.GatedLearner:
-        lrn = self._learners.get(d_min_s)
+        key = (d_min_s, self._g)
+        lrn = self._learners.get(key)
         if lrn is None:
-            lrn = self._learners[d_min_s] = G.GatedLearner(
-                name=LEARNER, init=_init, update=_update, fetch=self._fetch, dump=_dump,
+            lrn = self._learners[key] = G.GatedLearner(
+                name=self._LEARNER, init=_init, update=_update, fetch=self._fetch, dump=_dump,
                 load=_load, merge=_merge, on_rebase=_on_rebase, d_min_s=d_min_s,
-                ckpt_every_s=G.CKPT_EVERY_S, clock=ZI)
+                ckpt_every_s=G.CKPT_EVERY_S, clock=self._ZI)
         return lrn
 
     def _fetch(self, store: Any, s: str, e: str, ts: float
                ) -> Optional[Tuple[float, np.ndarray]]:
         """The zi row at ts: the store ring (6 h), else the per-slot archive
         (8 d; only the newest row of each slot, which is the one kept)."""
-        row = store.vec_at(s, e, ZI, ts)
+        row = store.vec_at(s, e, self._ZI, ts)
         if row is None:
             hit = self._cur_arch.get(int(math.floor(ts / SLOT_S))) if self._cur_arch else None
             if hit is None or hit[0] != ts:
@@ -556,35 +586,56 @@ class MultivariateEngine(Engine):
         store = ctx.store
         now, dt = float(ctx.now), float(ctx.window_s)
         d_min = ctx.config.get("D_min_s") or G.D_MIN_S
-        lrn = self._learner(float(d_min))
         b05_failed = store.engine_failed(B05_ENGINE, now)
+        passes = [("", None)]
+        if GR.canonical(ctx.config):
+            # spec v2.1: H pass on H decision ticks, Q pass on Q decision ticks
+            passes = [(g, max(dt, GR.GRAIN_S[g])) for g in GR.GRAINS
+                      if GR.decision(now, dt, g, GR.CANONICAL)]
+            if passes and passes[0][0] == "h":
+                self._ensure_retention(store)
         n = 0
-        for s in store.systems():
-            for e in store.entities(s):
-                n += self._entity(ctx, lrn, s, e, now, dt, b05_failed)
-            self._system_models(ctx, s, now, dt)
+        try:
+            for g, per in passes:
+                self._set_pass(g, per)
+                lrn = self._learner(float(d_min))
+                for s in store.systems():
+                    for e in store.entities(s):
+                        n += self._entity(ctx, lrn, s, e, now, dt, b05_failed)
+                    if g != "q":
+                        self._system_models(ctx, s, now, dt)
+        finally:
+            self._set_pass("")
         return n
+
+    def _ensure_retention(self, store: Any) -> None:
+        """behavior.wh of H rows: 4 d like the other H-grain rings (raise-only)."""
+        if getattr(self, "_ret_store", None) is store:
+            return
+        store.ensure_retention(WH, max_age_s=4 * 86400.0)
+        store.ensure_retention(ZI, max_age_s=4 * 86400.0)
+        self._ret_store = store
 
     # --------------------------------------------------------------- per entity
     def _entity(self, ctx: Context, lrn: G.GatedLearner, s: str, e: str, now: float,
                 dt: float, b05_failed: bool) -> int:
         store = ctx.store
-        model = store.get_model(s, e, DENSITY)
+        model = store.get_model(s, e, self._DENS)
         if not (isinstance(model, dict) and model.get("fmt") == m_density.FMT
                 and "_state" in model):
             model = None
-        zi = store.vec_at(s, e, ZI, now)
+        zi = store.vec_at(s, e, self._ZI, now)
         if zi is not None and zi.size != FEATURE_DIM:
-            raise ValueError(f"B06: {ZI} has dim {zi.size}, expected {FEATURE_DIM}")
+            raise ValueError(f"B06: {self._ZI} has dim {zi.size}, expected {FEATURE_DIM}")
         has_obs = zi is not None and bool(np.isfinite(zi).any())
         written = 0
         if (b05_failed or (zi is not None and not has_obs)
-                or (zi is None and _active(store, s, e, now))):
+                or (zi is None and _active(store, s, e, now, self._ACTIVE))):
             cause = ("producer_error:" + B05_ENGINE if b05_failed
-                     else "nan:" + ZI if zi is not None else "stale:" + ZI)
-            emit.write_scores(store, s, e, now, {d: None for d in DETS},
-                              degraded={d: cause for d in DETS}, window_s=int(dt))
-            store.add_vec(s, e, WH, now, [_NAN], window_s=int(dt))
+                     else "nan:" + self._ZI if zi is not None else "stale:" + self._ZI)
+            emit.write_scores(store, s, e, now, {d: None for d in self._DETS},
+                              degraded={d: cause for d in self._DETS}, window_s=int(dt))
+            store.add_vec(s, e, self._WH, now, [_NAN], window_s=int(dt))
             written = 1
         if model is None:
             if not has_obs:
@@ -594,16 +645,16 @@ class MultivariateEngine(Engine):
             _archive(model["_arch"], now, zi)
             if not b05_failed and m_density.is_fitted(model):
                 written = self._score(ctx, s, e, model, zi, now, dt)
-            if not written and store.last_write_ts(s, e, WH) is not None:
+            if not written and store.last_write_ts(s, e, self._WH) is not None:
                 # observed but no longer scorable (the density was reset by a
                 # rollback / rebase): behavior.wh is undefined, not silent
                 # (B14 reads it hourly; eval robustness: stale wh on the L6 /
                 # L8 newcomers after their model was reset). A cold entity
                 # that was never scored still writes nothing.
-                store.add_vec(s, e, WH, now, [_NAN], window_s=int(dt))
+                store.add_vec(s, e, self._WH, now, [_NAN], window_s=int(dt))
         ctrl = self._learn(ctx, lrn, s, e, model, now, dt)
         model = self._maybe_refit(ctx, s, e, model, now, dt, ctrl)
-        store.put_model(s, e, DENSITY, model, version=model["version"], ts=now)
+        store.put_model(s, e, self._DENS, model, version=model["version"], ts=now)
         return written
 
     def _score(self, ctx: Context, s: str, e: str, model: Dict[str, Any], zi: np.ndarray,
@@ -612,13 +663,14 @@ class MultivariateEngine(Engine):
         sc = m_density.score_model(model, zi)
         if not sc.scored:
             return 0
-        scores = {"t2": _neglog10(sc.p_t2), "spe": _neglog10(sc.p_spe)}
-        pm = {"t2": _fin(sc.p_t2), "spe": _fin(sc.p_spe)}
+        d_t2, d_spe = self._DETS
+        scores = {d_t2: _neglog10(sc.p_t2), d_spe: _neglog10(sc.p_spe)}
+        pm = {d_t2: _fin(sc.p_t2), d_spe: _fin(sc.p_spe)}
         axes: Dict[str, List[str]] = {}
         if sc.p_t2 < ALPHA or sc.p_spe < ALPHA:
             rbc, pv = m_density.contributions_model(model, zi)
             ax = m_density.axes_from_contrib(rbc, pv)
-            for d, p in (("t2", sc.p_t2), ("spe", sc.p_spe)):
+            for d, p in ((d_t2, sc.p_t2), (d_spe, sc.p_spe)):
                 if p < ALPHA and ax:
                     axes[d] = ax
             _put_extra(store, s, e, "last_contrib", {
@@ -627,7 +679,11 @@ class MultivariateEngine(Engine):
                 "top": m_density.ranked(rbc, pv, TOP_CONTRIB, sc.z),
                 "model_version": int(model["version"])})
         emit.write_scores(store, s, e, now, scores, pm=pm, axes=axes or None, window_s=int(dt))
-        store.add_vec(s, e, WH, now, [sc.wh], window_s=int(dt))
+        store.add_vec(s, e, self._WH, now, [sc.wh], window_s=int(dt))
+        if self._g == "q":
+            nq = float(model.get("n_own", 0.0) or 0.0)
+            store.upsert_dict(s, e, PROV, now, {d: nq / (nq + PROV_N) for d in DETS_Q},
+                              int(dt))
         return 1
 
     def _learn(self, ctx: Context, lrn: G.GatedLearner, s: str, e: str,
@@ -669,10 +725,12 @@ class MultivariateEngine(Engine):
         # 20 entities, for models that change little between two commits)
         first = not model.get("fitted")
         young = float(model.get("n", 0.0)) < EAGER_N
+        per = dt if self._period is None else self._period
         if not (ctrl or first
-                or (young and self.entity_due((s, e, "young"), now, max(dt, EAGER_PERIOD_S)))
-                or self.entity_due((s, e, "fit"), now,
-                                   min(self.refit_ticks * dt, self.refit_s))):
+                or (young and self.entity_due((s, e, "young") + self._gk, now,
+                                              max(dt, EAGER_PERIOD_S)))
+                or self.entity_due((s, e, "fit") + self._gk, now,
+                                   min(self.refit_ticks * per, self.refit_s))):
             return model
         return self._refit(ctx, s, e, model, now, sig)
 
@@ -691,8 +749,14 @@ class MultivariateEngine(Engine):
                 oos_v += v[ok].tolist()
         # 2. own fit + class shrink
         own = fit_rows(X_a, w_a, ts_a)
-        ck = m_class.class_key(store, s, e, CLASS_MIN_MEMBERS)
-        cm = m_density.get(store, s, ck) if ck else None
+        if self._g == "q":
+            # spec v2.1: the Q density is shrunk to the entity's own H density
+            ck = None
+            hm = store.get_model(s, e, DENSITY)
+            cm = hm if m_density.is_fitted(hm) else None
+        else:
+            ck = m_class.class_key(store, s, e, CLASS_MIN_MEMBERS)
+            cm = m_density.get(store, s, ck) if ck else None
         front = float(ts_a.max()) if ts_a.size else -math.inf
         if own is None and cm is None:
             if not model.get("fitted"):
@@ -720,10 +784,12 @@ class MultivariateEngine(Engine):
                                            int(model["version"]) + 1)
             for k in _CARRY:
                 new_model[k] = model[k]
+            new_model["n_own"] = float(own.n_eff) if own is not None else 0.0
         new_model["_oos_ts"], new_model["_oos_v"] = oos_ts[-OOS_CAP:], oos_v[-OOS_CAP:]
         new_model["_sig"] = sig
         new_model["_front"] = front
-        _put_extra(store, s, e, "mv_model", m_density.descriptor(new_model))
+        if self._g != "q":
+            _put_extra(store, s, e, "mv_model", m_density.descriptor(new_model))
         return new_model
 
     # --------------------------------------------------------- system / class
@@ -836,8 +902,8 @@ def _other_state(store: Any, s: str, e: str) -> Optional[Dict[str, list]]:
     return None
 
 
-def _active(store: Any, s: str, e: str, now: float) -> bool:
-    a = store.vec_at(s, e, ACTIVE, now)
+def _active(store: Any, s: str, e: str, now: float, name: str = ACTIVE) -> bool:
+    a = store.vec_at(s, e, name, now)
     return a is not None and a.size > 0 and float(a[0]) > 0.5
 
 

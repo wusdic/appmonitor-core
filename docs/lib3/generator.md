@@ -21,13 +21,13 @@ PREREQUISITES (pipeline/generator.py v2 and pipeline/build.py)
 
 3) Mechanics:
 - Counts ~ Poisson(rate·dt/60).
-- Per-event obs.ts = tick_start + an offset, with sessions laid out inside the tick.
+- Per-event obs.ts is a real time. Human sessions are a continuous-time process independent of the tick grid (eval round 2): session starts are Poisson with rate rate·activity/sess_len per 5-min sub-interval, a session holds Geometric(1/sess_len) events with log-normal think times, and events after the tick end are carried to the tick that contains them. (Sessions used to be laid out inside each tick, so at dt = 60 s every minute started a session: ~4x the login redirects and DNS lookups, ~2.5x the POST share and a median inter-request gap of 50 s instead of 9 s, relative to 900 s.) A scenario's forced activity window holds at least one session. Machine resolver clocks run on every tick (a 90-150-s poller used to skip its DNS lookups on ticks without a poll), and a backup job resolves once per run, not once per tick.
 - Idle ticks are real; no DNS query is forced.
 - Calendar: weekends, a holiday list and 调休 make-up days, from ctx.config.
 - Attack modes are additive or replace, each with a start and an end.
 
 4) Aggregated mode, used when dt ≥ 900 s:
-- One Observation per (entity, token, outcome, dest, stack), with extra = {count, bytes_up_total, bytes_down_total, ts_sample: up to 64 session-structured offsets}.
+- One Observation per (entity, token, outcome, dest, stack), with extra = {count, bytes_up_total, bytes_down_total, retransmits_total (HTTP), ts_sample: up to 64 offsets}. Per-record fields are per-flow values (R1 adds w × field); totals travel in extra.
 - Raw engines honour count (R1, R2).
 - This cuts generator plus raw cost from ~10.6 µs per event to ~10.6 µs per aggregate, about 30 aggregates per entity per tick.
 

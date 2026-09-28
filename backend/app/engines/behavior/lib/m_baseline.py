@@ -157,12 +157,14 @@ from scipy import special as sp
 
 from . import bayes
 from . import features as F
+from . import grains as GR
 from . import m_class
 from . import priors as PR
 from .classkeys import ORG, SYSTEM_KEY, is_pseudo
 
 MODEL = "model.baseline"
-FMT = 1
+FMT = 2                            # spec v2.1: fmt 2 (H anchors + Q current anchor)
+FMTS = (1, 2)                      # fmt-1 models load as H-only fmt 2
 NF = F.FEATURE_DIM
 DAY = 86400.0
 WEEK = 7.0 * DAY
@@ -492,15 +494,23 @@ class Row(NamedTuple):
     tctx: Mapping[str, Any]
     drift: float = 0.0      # reference: allow_drift in force (log-units / day)
     elig: bool = True       # reference: admission decision
+    pair: Optional[Tuple[np.ndarray, np.ndarray]] = None   # spec v2.1: (Q nats [M, 52], Q covs [M])
 
 
 def make_row(ts: float, nat: Sequence[float], dt_s: float, tctx: Mapping[str, Any],
-             drift: float = 0.0, elig: bool = True) -> Row:
-    """Row of tick ts from its feature.nat[52], real dt and time context."""
+             drift: float = 0.0, elig: bool = True,
+             pair: Optional[Tuple[Any, Any]] = None) -> Row:
+    """Row of tick ts from its feature.nat[52], real dt and time context.
+    spec v2.1: a grain row passes dt_s = cov and the midpoint tctx; `pair`
+    = (the M Q rows' nats, their covs) of a paired hour (cadence.md §6.3)."""
     for k in ("hour_local", "dow", "day_type"):
         if k not in tctx:
             raise ValueError(f"m_baseline.make_row: tctx lacks {k!r}")
-    return Row(float(ts), _check_nat(nat), _check_dt(dt_s), tctx, float(drift), bool(elig))
+    if pair is not None:
+        qn = np.asarray(pair[0], dtype=np.float64).reshape(-1, NF)
+        qc = np.asarray(pair[1], dtype=np.float64).reshape(-1)
+        pair = (qn, qc)
+    return Row(float(ts), _check_nat(nat), _check_dt(dt_s), tctx, float(drift), bool(elig), pair)
 
 
 @lru_cache(maxsize=8192)
@@ -573,7 +583,8 @@ class Anchor:
 
     __slots__ = ("a48", "a168", "T0", "T", "hl", "t_first", "n_commit", "sh", "sh_T0",
                  "loss", "nloss", "n_eval", "select", "uncap_lo", "uncap_hi", "reset_after",
-                 "n_reset", "blk48", "blk168", "dirty48", "dirty168", "blk_code", "pending")
+                 "n_reset", "blk48", "blk168", "dirty48", "dirty168", "blk_code", "pending",
+                 "om", "v15")
 
     def __init__(self, week: bool = True, select: bool = True,
                  hl_days: float = HL_DEFAULT_DAYS) -> None:
@@ -600,6 +611,11 @@ class Anchor:
         self.dirty168 = set(range(168)) if week else set()
         self.blk_code = ""
         self.pending: List[Tuple[Row, float, float, float]] = []   # (row, w, cap, drift)
+        # spec v2.1: paired-hour sums [A, B, D, W] x 52 (scaled like the stats;
+        # None: this anchor does not estimate omega) and the variance factor of
+        # the rate cap's sigma15 (1 for tick rows / Q rows, M for H rows)
+        self.om: Optional[np.ndarray] = None
+        self.v15 = 1.0
 
     @property
     def empty(self) -> bool:
@@ -623,7 +639,8 @@ class Anchor:
         W = np.zeros((48, NF)) if St is None else St[:, FULL.W]
         return {"T": self.T, "t_first": self.t_first, "n_commit": self.n_commit,
                 "n_eff": n_eff(self), "hl_days": self.hl / DAY, "week_mode": self.week_mode(),
-                "pending": len(self.pending), "mean": mean, "sd15": s15, "W": W}
+                "pending": len(self.pending), "mean": mean, "sd15": s15, "W": W,
+                "om": true_om(self)}
 
 
 def _new_arr(n: int, lay: _Layout) -> np.ndarray:
@@ -632,8 +649,25 @@ def _new_arr(n: int, lay: _Layout) -> np.ndarray:
     return a
 
 
-def new_anchor(week: bool = True, select: bool = True, hl_days: float = HL_DEFAULT_DAYS) -> Anchor:
-    return Anchor(week=week, select=select, hl_days=hl_days)
+def new_anchor(week: bool = True, select: bool = True, hl_days: float = HL_DEFAULT_DAYS,
+               om: bool = False, v15: float = 1.0) -> Anchor:
+    """spec v2.1: om=True gives the anchor the paired-hour omega sums (the
+    H current anchor in canonical mode); v15 the sigma15 variance factor."""
+    a = Anchor(week=week, select=select, hl_days=hl_days)
+    if om:
+        a.om = np.zeros((4, NF))
+    a.v15 = float(v15)
+    return a
+
+
+def true_om(anc: Optional[Anchor], T: Optional[float] = None) -> Optional[np.ndarray]:
+    """spec v2.1: the paired-hour sums [A, B, D, W] x 52 decayed to T (default
+    the anchor clock); None when the anchor has none, zeros when empty."""
+    if anc is None or anc.om is None:
+        return None
+    if anc.empty:
+        return np.zeros((4, NF))
+    return anc.om * np.exp2(-((anc.T if T is None else T) - anc.T0) / anc.hl)[None, :]
 
 
 def new_model() -> Dict[str, Anchor]:
@@ -750,17 +784,21 @@ def _mean(par: _Par) -> np.ndarray:
     return _feat(par.mu, par.p, par.loc)
 
 
-def _sd15_par(par: _Par, ebar: np.ndarray) -> np.ndarray:
+def _sd15_par(par: _Par, ebar: np.ndarray, v: Optional[np.ndarray] = None) -> np.ndarray:
     """Predictive sd for a 15-minute exposure, in mean units, [nb, 52].
     count: NB sd of the 15-min count / 15; ratio: BB sd of k/n at the 15-min
     trials of its exposure feature; t: scale * sqrt(ebar/15), ebar = mean row
-    exposure (min) of the bucket (a 15-min value averages ebar/15 rows' worth)."""
+    exposure (min) of the bucket (a 15-min value averages ebar/15 rows' worth).
+    spec v2.1: `v` [nb] is the Q transfer factor of an H anchor (the
+    overdispersion 1/r and 1/(1 + c) scaled by v, cadence.md §6.1-§6.2)."""
     with np.errstate(all="ignore"):
+        vv = np.ones((par.mu.shape[0], 1)) if v is None else np.asarray(v, dtype=np.float64).reshape(-1, 1)
         m15 = 15.0 * par.mu
-        sc = np.sqrt(m15 + m15 * m15 / par.r) / 15.0
+        sc = np.sqrt(m15 + vv * m15 * m15 / par.r) / 15.0
         n15 = 15.0 * par.mu[:, _RAT_NPOS]
         n15 = np.where(np.isfinite(n15) & (n15 >= 1.0), n15, 1.0)
-        pp, cc = par.p, par.c
+        pp = par.p
+        cc = np.maximum(GR.C_T_MIN, (1.0 + par.c) / vv - 1.0) if v is not None else par.c
         sr = np.sqrt(pp * (1.0 - pp) * (n15 + cc) / (n15 * (1.0 + cc)))
         sn = par.scale * np.sqrt(ebar / 15.0)[:, None]
     return _feat(sc, sr, sn)
@@ -778,9 +816,9 @@ _H1 = np.ones((48, NF))                  # full hyperprior weight (shared, read-
 _H1.setflags(write=False)
 
 
-def _sd15(St: np.ndarray) -> np.ndarray:
+def _sd15(St: np.ndarray, v: Optional[np.ndarray] = None) -> np.ndarray:
     """Own-posterior sigma15 (hyperprior + own stats) of FULL rows [nb, L]."""
-    return _sd15_par(_params(St, np.ones((St.shape[0], NF))), _ebar(St))
+    return _sd15_par(_params(St, np.ones((St.shape[0], NF))), _ebar(St), v)
 
 
 # ------------------------------------------------------------------- commit
@@ -813,7 +851,8 @@ def _mature(sub: np.ndarray, lay: _Layout, Gi: np.ndarray, capped_before: np.nda
 
 
 def _band_edges(blk: np.ndarray, newb: np.ndarray, mean0: np.ndarray, G: np.ndarray,
-                band: np.ndarray, caps: np.ndarray, drifts: np.ndarray) -> None:
+                band: np.ndarray, caps: np.ndarray, drifts: np.ndarray,
+                v15: Optional[np.ndarray] = None) -> None:
     """Open a new band for the (anchor, bucket) cells newb of bin48 blocks
     [n, 5, W]: edges mean0 -/+ half, half = cap sigma15 (+ allow_drift) with
     sigma15 from the bucket's own posterior at the band start; NaN edges (no
@@ -827,7 +866,10 @@ def _band_edges(blk: np.ndarray, newb: np.ndarray, mean0: np.ndarray, G: np.ndar
     rows = np.flatnonzero(mature.any(axis=1))
     if rows.size:
         St = sub[rows, :FULL.L] / Gi[rows][:, FULL.SLOT_F]
-        h = caps[ii[rows]][:, None] * _sd15(St)
+        vr = None
+        if v15 is not None and np.any(v15 != 1.0):
+            vr = v15[ii[rows]]
+        h = caps[ii[rows]][:, None] * _sd15(St, vr)
         d = drifts[ii[rows]]
         if d.any():
             h = h + _drift_many(mean0[ii[rows], jj[rows]], d)
@@ -840,7 +882,7 @@ def _band_edges(blk: np.ndarray, newb: np.ndarray, mean0: np.ndarray, G: np.ndar
 
 def _fold48(ancs: Sequence[Anchor], idx: np.ndarray, W0: np.ndarray, B: _Batch, G: np.ndarray,
             band: np.ndarray, capped: np.ndarray, caps: np.ndarray,
-            drifts: np.ndarray) -> np.ndarray:
+            drifts: np.ndarray, v15: Optional[np.ndarray] = None) -> np.ndarray:
     """Fold one row per anchor into its bin48 buckets idx[n, 5] with weights
     W0[n, 5, 52] (scaled space) under the band cap: a violating
     bucket-feature is folded with the weight that puts its mean on the band
@@ -854,7 +896,7 @@ def _fold48(ancs: Sequence[Anchor], idx: np.ndarray, W0: np.ndarray, B: _Batch, 
     mean0 = Aq / Bq
     newb = capped[:, None] & live & ~(band <= blk[..., FULL.BAND])   # later band-day or none
     if newb.any():
-        _band_edges(blk, newb, mean0, G, band, caps, drifts)
+        _band_edges(blk, newb, mean0, G, band, caps, drifts, v15)
     lo = blk[..., FULL.LO:FULL.HI]
     hi = blk[..., FULL.HI:FULL.BAND]
     num, den = B.num[:, None, :], B.den[:, None, :]
@@ -904,6 +946,65 @@ def _fold168(ancs: Sequence[Anchor], idx: np.ndarray, W0: np.ndarray, B: _Batch,
         ancs[i].a168[idx[i]] = blk[j]
 
 
+def _hour_bucket(tc: Mapping[str, Any]) -> int:
+    h = int(math.floor(float(tc["hour_local"]))) % 24
+    return h + (24 if tc.get("day_type") == "nonworkday" else 0)
+
+
+def paired_hour_stats(St_b: np.ndarray, row: Row) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(a, b, d, valid) [52] of one paired hour (cadence.md §6.3) against the
+    bucket's own H predictive St_b [L] (before the row is folded): NB rates,
+    BB proportions and t values of the M Q rows vs the H row (lib/grains
+    paired_stats; the H excess variance from the predictive's mean)."""
+    qn, qc = row.pair
+    m = qn.shape[0]
+    a = np.zeros(NF)
+    b = np.zeros(NF)
+    d = np.zeros(NF)
+    ok = np.zeros(NF, dtype=bool)
+    if m != GR.M or not np.all(qc >= GR.COVER_MIN * GR.GRAIN_S["q"] * (1.0 - 1e-9)):
+        return a, b, d, ok
+    par = _params(St_b[None, :], np.ones((1, NF)))
+    num_q, den_q, wf_q = _observe_many(qn, qc)
+    num_h, den_h, wf_h = _observe_many(row.nat[None, :], np.array([row.dt]))
+    valid = (wf_q > 0.0).all(axis=0) & (wf_h[0] > 0.0)
+    with np.errstate(all="ignore"):
+        # counts: rates per minute
+        aa, bb, _ = GR.paired_stats("nb", num_q[:, CNT], den_q[:, CNT], num_h[0, CNT],
+                                    den_h[0, CNT], {"mean": par.mu[0], "r": par.r[0]})
+        a[CNT], b[CNT] = aa, bb
+        aa, bb, _ = GR.paired_stats("bb", num_q[:, RAT], den_q[:, RAT], num_h[0, RAT],
+                                    den_h[0, RAT], {"mean": par.p[0], "c": par.c[0]})
+        a[RAT], b[RAT] = aa, bb
+        var = GR.t_variance(par.scale[0], par.df[0])
+        aa, bb, dd = GR.paired_stats("t", num_q[:, NIG], np.ones_like(num_q[:, NIG]),
+                                     num_h[0, NIG], 1.0, {"var": var})
+        a[NIG], b[NIG], d[NIG] = aa, bb, dd
+    ok = valid & np.isfinite(a) & np.isfinite(b) & np.isfinite(d) & (b > 0.0)
+    return np.where(ok, a, 0.0), np.where(ok, b, 0.0), np.where(ok, d, 0.0), ok
+
+
+def _fold_omega(ancs: Sequence[Anchor], rows: Sequence[Row], sel: Sequence[int],
+                ws: np.ndarray, B: _Batch, T0: np.ndarray, HL: np.ndarray,
+                Tn: np.ndarray) -> None:
+    """Fold paired-hour (a, b, d, 1) into the anchors' om sums with the row's
+    trust weight and decay (spec v2.1, cadence.md §6.3); before the fold of
+    the row itself, so the predictive is the bucket's prior to the row."""
+    for i in sel:
+        anc, row = ancs[i], rows[i]
+        bk = _hour_bucket(row.tctx)
+        St_b = anc.a48[bk, :FULL.L] * np.exp2(-(Tn[i] - T0[i]) / HL[i])[FULL.SLOT_F] \
+            if not anc.empty else np.zeros(FULL.L)
+        a, b, d, ok = paired_hour_stats(St_b, row)
+        if not ok.any():
+            continue
+        g = float(ws[i]) * np.exp2((B.ts[i] - T0[i]) / HL[i])
+        anc.om[0] += np.where(ok, g * a, 0.0)
+        anc.om[1] += np.where(ok, g * b, 0.0)
+        anc.om[2] += np.where(ok, g * d, 0.0)
+        anc.om[3] += np.where(ok, g, 0.0)
+
+
 def commit_many(ancs: Sequence[Anchor], rows: Sequence[Row], ws: Sequence[float],
                 caps: Sequence[float], drifts: Sequence[float]) -> None:
     """Fold one row into each of several DISTINCT anchors, vectorised across
@@ -944,7 +1045,13 @@ def commit_many(ancs: Sequence[Anchor], rows: Sequence[Row], ws: Sequence[float]
         hours = B.hours
         band = np.floor((B.local_ts[:, None] - ((hours % 24) + 12.5) * 3600.0) / DAY)
         idx48 = hours % 24 + 24 * B.nwd[:, None]
-        half = _fold48(ancs, idx48, W0, B, G, band, capped, caps_, drifts_)
+        rows_k = [rows[i] for i in keep]
+        om_sel = [i for i, a in enumerate(ancs) if a.om is not None and rows_k[i].pair is not None]
+        if om_sel:
+            _fold_omega(ancs, rows_k, om_sel, ws_, B, T0, HL, Tn)
+        v15 = np.array([float(a.v15) for a in ancs])
+        half = _fold48(ancs, idx48, W0, B, G, band, capped, caps_, drifts_,
+                       v15 if np.any(v15 != 1.0) else None)
         sel = np.flatnonzero([a.a168 is not None and bool(B.typical[i]) for i, a in enumerate(ancs)])
         idx168 = (B.dow[:, None] * 24 + hours) % 168
         if sel.size:
@@ -1000,6 +1107,8 @@ def _renorm(anc: Anchor, T: float) -> None:
     anc.a48[:, :FULL.L] *= _scale(anc, T, FULL)
     if anc.a168 is not None:
         anc.a168[:, :LOC.L] *= _scale(anc, T, LOC)
+    if anc.om is not None:
+        anc.om = anc.om * np.exp2(-(float(T) - anc.T0) / anc.hl)[None, :]
     anc.T0 = float(T)
     anc._dirty_all()
 
@@ -1011,6 +1120,8 @@ def _reset(anc: Anchor) -> None:
         anc.a168 = _new_arr(168, LOC)
     anc.T0 = anc.T = anc.t_first = math.nan
     anc.n_commit = 0
+    if anc.om is not None:
+        anc.om = np.zeros((4, NF))
     anc.sh = np.zeros_like(anc.sh)
     anc.sh_T0 = math.nan
     anc.loss = np.zeros_like(anc.loss)
@@ -1027,6 +1138,8 @@ def _set_hl(anc: Anchor, new_hl: np.ndarray) -> None:
     anc.a48[:, :FULL.L] *= fac[FULL.SLOT_F]
     if anc.a168 is not None:
         anc.a168[:, :LOC.L] *= fac[LOC.SLOT_F]
+    if anc.om is not None:
+        anc.om = anc.om * fac[None, :]
     anc.hl = np.asarray(new_hl, dtype=np.float64).copy()
     anc._dirty_all()
 
@@ -1133,6 +1246,8 @@ def merge(own: Anchor, other: Optional[Anchor], w: float) -> Anchor:
     own.a48[:, :FULL.L] += float(w) * S48 * G[FULL.SLOT_F]
     if own.a168 is not None and S168 is not None:
         own.a168[:, :LOC.L] += float(w) * S168 * G[LOC.SLOT_F]
+    if own.om is not None and other.om is not None:
+        own.om = own.om + float(w) * true_om(other) * G[None, :]
     own.T = T_new
     own.t_first = min(own.t_first, other.t_first)
     own._dirty_all()
@@ -1206,7 +1321,9 @@ def dump(anc: Anchor, dtype: Any = np.float32) -> Dict[str, Any]:
                  "n_commit": anc.n_commit, "sh_T0": anc.sh_T0, "n_eval": anc.n_eval,
                  "select": anc.select, "uncap": (anc.uncap_lo, anc.uncap_hi),
                  "reset_after": anc.reset_after, "n_reset": anc.n_reset,
-                 "pending": tuple(anc.pending)})
+                 "pending": tuple(anc.pending),
+                 "om": None if anc.om is None else anc.om.astype(np.float64).tobytes(),
+                 "v15": float(anc.v15)})
 
 
 def load(blob: Mapping[str, Any]) -> Anchor:
@@ -1237,6 +1354,9 @@ def load(blob: Mapping[str, Any]) -> Anchor:
     anc.reset_after = float(blob["reset_after"])
     anc.n_reset = int(blob["n_reset"])
     anc.pending = list(blob.get("pending", ()))
+    om = blob.get("om")
+    anc.om = None if om is None else np.frombuffer(om, dtype=np.float64).reshape(4, NF).copy()
+    anc.v15 = float(blob.get("v15", 1.0))
     return anc
 
 
@@ -1323,7 +1443,7 @@ def tier_model(store: Any, s: str, key: str) -> Optional[Mapping[str, Any]]:
     """Published tier model (key 'class:<rid>' | '__system__' | 'org')."""
     m = (store.get_model(ORG[0], ORG[1], MODEL) if key == "org"
          else store.get_model(s, key, MODEL))
-    if isinstance(m, Mapping) and m.get("fmt") == FMT and m.get("E") is not None:
+    if isinstance(m, Mapping) and m.get("fmt") in FMTS and m.get("E") is not None:
         return m
     return None
 
@@ -1352,6 +1472,9 @@ class Pred:
     anchor: str = "current"
     bucket: int = -1
     mode: str = "bin48"
+    grain: str = "h"                       # spec v2.1
+    prov: Optional[np.ndarray] = None      # Q: pi_nat = W_native / (W_native + KAPPA_T)
+    scored: Optional[np.ndarray] = None    # Q: False for a 'none' feature below KAPPA_T rows
 
     @property
     def family(self) -> np.ndarray:
@@ -1429,7 +1552,7 @@ def anchor_predictive(anc: Optional[Anchor], tctx: Mapping[str, Any],
 
 def _entity_model(store: Any, s: str, e: str, model: Any) -> Optional[Mapping[str, Any]]:
     m = model if model is not None else store.get_model(s, e, MODEL)
-    if isinstance(m, Mapping) and m.get("fmt") == FMT and m.get("tier", "entity") == "entity":
+    if isinstance(m, Mapping) and m.get("fmt") in FMTS and m.get("tier", "entity") == "entity":
         return m
     return None
 
@@ -1542,6 +1665,134 @@ def predictive_set(store: Any, s: str, e: str, tctx: Mapping[str, Any],
     else:
         cls = _pred(tm["E"][b:b + 1], tm["h"][b:b + 1], tier="class", bucket=b)
     return {"current": cur_pr, "reference": ref_pr, "class": cls}
+
+
+# ------------------------------------------------ batched predictives (perf)
+# B04 builds the predictives of every scored entity of a tick at once. The
+# assembly of the effective statistics (chain, join, leave-one-out, bin168
+# cell) is per entity exactly as above; the parameter maps (_params, _ebar,
+# _mean, _refine_par) are element-wise per row, so evaluating the stacked
+# rows in one call gives the same numbers as one _pred call per row.
+def _preds_from_rows(E: np.ndarray, h: np.ndarray, cells: Sequence[Optional[np.ndarray]],
+                     kws: Sequence[Dict[str, Any]]) -> List[Pred]:
+    """[_pred(E[i:i+1], h[i:i+1], cells[i], **kws[i]) for every row i]."""
+    par = _params(E, h)
+    rows = [i for i, c in enumerate(cells) if c is not None]
+    if rows:
+        par = _refine_par(par, E, np.stack([cells[i] for i in rows]), np.array(rows))
+    mean = _mean(par)
+    ebar = _ebar(E)
+    out = []
+    for i, kw in enumerate(kws):
+        mu = np.full(NF, np.nan)
+        r, p, c, df, loc, scale = (mu.copy() for _ in range(6))
+        mu[CNT], r[CNT] = par.mu[i], par.r[i]
+        p[RAT], c[RAT] = par.p[i], par.c[i]
+        df[NIG], loc[NIG], scale[NIG] = par.df[i], par.loc[i], par.scale[i]
+        if cells[i] is not None:
+            kw = dict(kw, mode="bin168")
+        out.append(Pred(mu, r, p, c, df, loc, scale, mean[i], ebar=float(ebar[i]), **kw))
+    return out
+
+
+def _set_rows(store: Any, s: str, e: str, tctx: Mapping[str, Any]) -> Tuple[Any, ...]:
+    """predictive_set's per-entity assembly: (E, h, cell) of current,
+    reference and class, and the entity model."""
+    b = int(tctx["bin48"])
+    m = _entity_model(store, s, e, None)
+    E, h = _chain(store, s, e, b, m, True)
+    E2, h2 = join(_reference_base(m, b), E, h, np.full(NF, KAPPA_REF), loo=False)
+    tm = tier_model(store, s, parent_key(store, s, e))
+    if tm is None:
+        Ec, hc = np.zeros((1, FULL.L)), _H1[:1]
+    elif m is not None:
+        Ec, hc = _loo_parent(tm, b, m)
+    else:
+        Ec, hc = tm["E"][b:b + 1], tm["h"][b:b + 1]
+    return b, m, E, h, _week_cell(m, tctx), E2, h2, Ec, hc
+
+
+def predictive_set_many(store: Any, items: Sequence[Tuple[str, str, Mapping[str, Any]]]
+                        ) -> List[Dict[str, Pred]]:
+    """[predictive_set(store, s, e, tctx) for (s, e, tctx) in items], with
+    the parameter maps of all 3 x len(items) predictives in one pass."""
+    if not items:
+        return []
+    Es, hs, cells, kws = [], [], [], []
+    for s, e, tctx in items:
+        b, m, E, h, cell, E2, h2, Ec, hc = _set_rows(store, s, e, tctx)
+        Es += [E, E2, Ec]
+        hs += [h, h2, hc]
+        cells += [cell, None, None]
+        kws += [dict(tier="entity", anchor="current", bucket=b),
+                dict(tier="entity", anchor="reference", bucket=b),
+                dict(tier="class", bucket=b)]
+    P = _preds_from_rows(np.concatenate(Es), np.concatenate(hs), cells, kws)
+    return [{"current": P[3 * i], "reference": P[3 * i + 1], "class": P[3 * i + 2]}
+            for i in range(len(items))]
+
+
+def predictive_q_many(store: Any, items: Sequence[Tuple[str, str, Mapping[str, Any]]]
+                      ) -> List[Dict[str, Pred]]:
+    """[predictive_q(store, s, e, tctx) for (s, e, tctx) in items], with the
+    H predictives and the Q parameter maps of all items in one pass each."""
+    if not items:
+        return []
+    Es, hs, cells, kws, ms, bs = [], [], [], [], [], []
+    for s, e, tctx in items:
+        b = int(tctx["bin48"])
+        m = _entity_model(store, s, e, None)
+        E, h = _chain(store, s, e, b, m, True)
+        E2, h2 = join(_reference_base(m, b), E, h, np.full(NF, KAPPA_REF), loo=False)
+        Es += [E, E2]
+        hs += [h, h2]
+        cells += [_week_cell(m, tctx), None]
+        kws += [dict(tier="entity", anchor="current", bucket=b),
+                dict(tier="entity", anchor="reference", bucket=b)]
+        ms.append(m)
+        bs.append(b)
+    PH = _preds_from_rows(np.concatenate(Es), np.concatenate(hs), cells, kws)
+    EQ, SQ, t_refs, W_nats = [], [], [], []
+    for i, (s, e, tctx) in enumerate(items):
+        cur_h, ref_h = PH[2 * i], PH[2 * i + 1]
+        v, da, db = omega_chain(store, s, e, ms[i])
+        var_c = GR.t_variance(cur_h.scale, cur_h.df)
+        delta_c = da + db * np.where(_JENSEN, -(v - 1.0) * var_c / 2.0, 0.0)
+        var_r = GR.t_variance(ref_h.scale, ref_h.df)
+        delta_r = da + db * np.where(_JENSEN, -(v - 1.0) * var_r / 2.0, 0.0)
+        t_cur = transfer_pred(cur_h, v, np.where(np.isfinite(delta_c), delta_c, 0.0))
+        t_refs.append(transfer_pred(ref_h, v, np.where(np.isfinite(delta_r), delta_r, 0.0)))
+        S_Q = _anchor_E(q_anchor(ms[i]), bs[i])
+        W_nats.append(np.maximum(S_Q[0, FULL.W], 0.0))
+        EQ.append(S_Q + pseudo_stats(t_cur, _KT))
+        SQ.append(S_Q)
+    n = len(items)
+    par_t = _params(np.concatenate(EQ), np.zeros((n, NF)))
+    par_n = _params(np.concatenate(SQ), np.broadcast_to(_H1[:1], (n, NF)))
+    nC_, nR_, nN_ = _NONE[CNT][None, :], _NONE[RAT][None, :], _NONE[NIG][None, :]
+    par = _Par(np.where(nC_, par_n.mu, par_t.mu), np.where(nC_, par_n.r, par_t.r),
+               np.where(nR_, par_n.p, par_t.p), np.where(nR_, par_n.c, par_t.c),
+               np.where(nN_, par_n.df, par_t.df), np.where(nN_, par_n.loc, par_t.loc),
+               np.where(nN_, par_n.scale, par_t.scale))
+    mean = _mean(par)
+    span = ~_TRANSFERABLE & ~_NONE
+    out = []
+    for i in range(n):
+        mu = np.full(NF, np.nan)
+        r, p, c, df, loc, scale = (mu.copy() for _ in range(6))
+        mu[CNT], r[CNT] = par.mu[i], par.r[i]
+        p[RAT], c[RAT] = par.p[i], par.c[i]
+        df[NIG], loc[NIG], scale[NIG] = par.df[i], par.loc[i], par.scale[i]
+        W_nat = W_nats[i]
+        prov = W_nat / (W_nat + _KT)
+        scored = np.where(_NONE, W_nat >= _KT, ~span)
+        cur = Pred(mu, r, p, c, df, loc, scale, mean[i], ebar=15.0, tier="entity",
+                   anchor="current", bucket=bs[i], mode="bin48", grain="q", prov=prov,
+                   scored=scored)
+        t_ref = t_refs[i]
+        t_ref.prov, t_ref.scored = prov, scored
+        out.append({"current": cur, "reference": t_ref})
+    return out
 
 
 # ------------------------------------------------------ scoring / quantiles
@@ -1665,6 +1916,41 @@ def quantiles(pred: Pred, qs: Sequence[float], dt_s: float = 900.0,
     return out
 
 
+def quantiles_many(preds: Sequence[Pred], qs: Sequence[float],
+                   dt_s: Sequence[float]) -> np.ndarray:
+    """quantiles(preds[i], qs, dt_s[i]) for every i at once, [len(preds),
+    len(qs), 52]: the same element-wise formulas on stacked parameters (the
+    NB integer search and the grouped BB pmf passes are per element, so the
+    values are those of the one-by-one calls). B04 model_state (perf)."""
+    q = np.asarray(qs, dtype=np.float64).reshape(-1)
+    m = len(preds)
+    out = np.full((m, q.size, NF), np.nan)
+    if m == 0:
+        return out
+    dts = np.asarray(dt_s, dtype=np.float64).reshape(-1)
+    e = dts / 60.0
+    mu = np.stack([p.mu for p in preds])
+    r = np.stack([p.r for p in preds])
+    pp = np.stack([p.p for p in preds])
+    cc = np.stack([p.c for p in preds])
+    df = np.stack([p.df for p in preds])
+    loc = np.stack([p.loc for p in preds])
+    scale = np.stack([p.scale for p in preds])
+    mean = mu[:, CNT] * e[:, None]
+    out[:, :, CNT] = bayes.nb_ppf(q[None, :, None], mean[:, None, :], r[:, CNT][:, None, :])
+    n = mu[:, RATIO_N_IDX] * e[:, None]
+    n = np.where(np.isfinite(n) & (n >= 1.0), np.round(n), 1.0)
+    a = pp[:, RAT] * cc[:, RAT]
+    b = (1.0 - pp[:, RAT]) * cc[:, RAT]
+    out[:, :, RAT] = np.asarray(bayes.bb_ppf(q[None, :, None], n[:, None, :], a[:, None, :],
+                                             b[:, None, :]), dtype=np.float64) / n[:, None, :]
+    with np.errstate(all="ignore"):
+        t = sp.stdtrit(df[:, NIG][:, None, :], np.clip(q, 0.0, 1.0)[None, :, None])
+        y = loc[:, NIG][:, None, :] + scale[:, NIG][:, None, :] * t
+    out[:, :, NIG] = _inverse_tx(y, dts[:, None, None])
+    return out
+
+
 def mean_nat(pred: Pred, dt_s: float = 900.0) -> np.ndarray:
     """Predictive centre in natural units: count mean per dt, ratio p, t
     features the inverse transform of the location (a median for monotone
@@ -1741,15 +2027,18 @@ def profile_many(store: Any, s: str, ents: Sequence[str], models: Sequence[Mappi
     return _vec_med_sd(par, _ebar(E))
 
 
-def bucket_means(anc: Optional[Anchor], T: Optional[float] = None
+def bucket_means(anc: Optional[Anchor], T: Optional[float] = None, v: Optional[float] = None
                  ) -> Tuple[np.ndarray, np.ndarray]:
     """(mean[48, 52], sigma15[48, 52]) of every bin48 bucket from the anchor's
-    own statistics and the hyperprior (what the rate cap sees)."""
+    own statistics and the hyperprior (what the rate cap sees). spec v2.1:
+    `v` (e.g. an H anchor's v15) is the Q transfer factor of sigma15; None =
+    the anchor's own-grain sigma (v = 1)."""
     St = true_stats(anc, T)
     if St is None:
         St = np.zeros((48, FULL.L))
     par = _params(St, _H1)
-    return _mean(par), _sd15_par(par, _ebar(St))
+    vv = None if v is None or float(v) == 1.0 else np.full(48, float(v))
+    return _mean(par), _sd15_par(par, _ebar(St), vv)
 
 
 # ===================================================================== model
@@ -1955,3 +2244,163 @@ def descriptors(model: Any, names: Optional[Sequence[str]] = None,
         vals = [float(x) if math.isfinite(x) else None for x in v]
         out["features"][name] = {"workday": vals[:24], "nonworkday": vals[24:]}
     return out
+
+
+# ============================================================================
+# spec v2.1: Q grain (docs/lib3/cadence.md §6)
+# ============================================================================
+Q_KEY = "q"
+_TRANSFER = np.array([F.TRANSFER[n] or "-" for n in F.FEATURE_NAMES_V2])
+_JENSEN = _TRANSFER == "jensen"
+_NONE = _TRANSFER == "none"
+_TRANSFERABLE = ~_NONE & (_TRANSFER != "-")
+_KT = GR.KAPPA_T
+
+
+def q_anchor(model: Any) -> Optional[Anchor]:
+    """The entity's Q current anchor (model['q']['current']) or None."""
+    if not isinstance(model, Mapping):
+        return None
+    q = model.get(Q_KEY)
+    a = q.get("current") if isinstance(q, Mapping) else None
+    return a if isinstance(a, Anchor) else None
+
+
+def omega_chain(store: Any, s: str, e: str, model: Any = None
+                ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(v[52], delta_a[52], delta_b[52]) of a real entity: the EB chain org ->
+    system -> class (>= 3 members) -> entity over the paired-hour sums
+    (cadence.md §6.3), omega at the root = M (v = M: independent quarters).
+    The location shift at bucket b is delta = delta_a + delta_b * default(b)
+    (the family default is the chain's root, and the recursion is linear
+    in it)."""
+    om_nodes: List[np.ndarray] = []
+    org = tier_model(store, s, "org")
+    for tm in (org, tier_model(store, s, SYSTEM_KEY)):
+        if tm is not None and tm.get("omega") is not None:
+            om_nodes.append(np.asarray(tm["omega"], dtype=np.float64))
+    pk = parent_key(store, s, e)
+    if pk != SYSTEM_KEY:
+        tm = tier_model(store, s, pk)
+        if tm is not None and tm.get("omega") is not None:
+            om_nodes.append(np.asarray(tm["omega"], dtype=np.float64))
+    m = _entity_model(store, s, e, model)
+    own = true_om(m.get("current")) if m is not None and isinstance(m.get("current"), Anchor) else None
+    if own is not None:
+        om_nodes.append(own)
+    omega = np.full(NF, float(GR.M))
+    da = np.zeros(NF)
+    db = np.ones(NF)
+    K = GR.KAPPA_OMEGA
+    for om in om_nodes:
+        A, Bs, D, W = om[0], om[1], om[2], om[3]
+        omega = GR.omega_eb(A, Bs, W, omega)
+        Wp = np.maximum(W, 0.0)
+        da = (D + K * da) / (Wp + K)
+        db = K * db / (Wp + K)
+    return GR.v_from_omega(omega), da, db
+
+
+def transfer_pred(pred: Pred, v: np.ndarray, delta: np.ndarray) -> Pred:
+    """The H predictive transferred to the Q grain (cadence.md §6.2): NB
+    r / v, BB (1 + c) / v - 1 (>= C_T_MIN), t loc + delta, scale sqrt(v);
+    same means. `none` / span features are left as they are."""
+    mu, r, p, c = pred.mu.copy(), pred.r.copy(), pred.p.copy(), pred.c.copy()
+    df, loc, scale = pred.df.copy(), pred.loc.copy(), pred.scale.copy()
+    v = np.asarray(v, dtype=np.float64)
+    i = CNT[_TRANSFERABLE[CNT]]
+    _, r[i] = GR.transfer_nb(mu[i], r[i], v[i])
+    i = RAT[_TRANSFERABLE[RAT]]
+    _, c[i] = GR.transfer_bb(p[i], c[i], v[i])
+    i = NIG[_TRANSFERABLE[NIG]]
+    loc[i], scale[i], _ = GR.transfer_t(loc[i], scale[i], df[i], v[i], np.asarray(delta)[i])
+    mean = np.array(pred.mean, dtype=np.float64, copy=True)
+    mean[NIG] = loc[NIG]
+    return Pred(mu, r, p, c, df, loc, scale, mean, ebar=15.0, tier=pred.tier,
+                anchor=pred.anchor, bucket=pred.bucket, mode=pred.mode, grain="q")
+
+
+def pseudo_stats(pred: Pred, kappa: float = _KT) -> np.ndarray:
+    """kappa conjugate pseudo-rows [1, FULL.L] whose statistics reproduce the
+    predictive `pred` at a 15-min exposure (cadence.md §6.2): NB exposure 15
+    min with the moments of NB(15 mu, r) (so the moment overdispersion is r),
+    BB n_bar = 15 mu_n trials with phi-hat = c, t sums whose h = 0 posterior
+    has pred's loc and scale."""
+    out = np.zeros((1, FULL.L))
+    C, R, N = _blocks(out)
+    k = float(kappa)
+    with np.errstate(all="ignore"):
+        m15 = 15.0 * pred.mu[CNT]
+        C[0, :, 0] = k
+        C[0, :, 1] = k * m15
+        C[0, :, 2] = 15.0 * k
+        C[0, :, 3] = k * (m15 * m15 + m15 + m15 * m15 / pred.r[CNT])
+        C[0, :, 4] = 15.0 * k * m15
+        C[0, :, 5] = 225.0 * k
+        nbar = 15.0 * pred.mu[RATIO_N_IDX]
+        nbar = np.where(np.isfinite(nbar) & (nbar > 1.5), nbar, 1.5)
+        pp = np.clip(pred.p[RAT], 1e-6, 1.0 - 1e-6)
+        cc = np.clip(pred.c[RAT], bayes.BB_PHI_CLIP[0], bayes.BB_PHI_CLIP[1])
+        rho = 1.0 / (cc + 1.0)
+        sn = k * nbar
+        sk = pp * sn
+        Sres = (k - 1.0) * pp * (1.0 - pp) * (1.0 + rho * (nbar - 1.0))
+        R[0, :, 0] = k
+        R[0, :, 1] = sk
+        R[0, :, 2] = sn
+        R[0, :, 3] = Sres + pp * sk
+        sc = pred.scale[NIG]
+        within = sc * sc * k * k / (k + 1.0)
+        N[0, :, 0] = k
+        N[0, :, 1] = k * pred.loc[NIG]
+        N[0, :, 2] = within + k * pred.loc[NIG] ** 2
+    return np.where(np.isfinite(out), out, 0.0)
+
+
+def predictive_q(store: Any, s: str, e: str, tctx: Mapping[str, Any],
+                 model: Any = None) -> Dict[str, Pred]:
+    """Q-grain predictives of a real entity at tctx's bucket (the Q row's
+    midpoint context), cadence.md §6.2:
+      current   = native Q current stats (+) KAPPA_T pseudo-rows of the
+                  transferred H current predictive; 'none' features (set,
+                  map) use the native stats alone and are scored only once
+                  W_native >= KAPPA_T;
+      reference = the transfer of the H reference (golden) predictive.
+    Pred.prov = W_native / (W_native + KAPPA_T); Pred.scored."""
+    b = int(tctx["bin48"])
+    m = _entity_model(store, s, e, model)
+    E, h = _chain(store, s, e, b, m, True)
+    cur_h = _pred(E, h, _week_cell(m, tctx), tier="entity", anchor="current", bucket=b)
+    E2, h2 = join(_reference_base(m, b), E, h, np.full(NF, KAPPA_REF), loo=False)
+    ref_h = _pred(E2, h2, tier="entity", anchor="reference", bucket=b)
+    v, da, db = omega_chain(store, s, e, m)
+    var_c = GR.t_variance(cur_h.scale, cur_h.df)
+    delta_c = da + db * np.where(_JENSEN, -(v - 1.0) * var_c / 2.0, 0.0)
+    var_r = GR.t_variance(ref_h.scale, ref_h.df)
+    delta_r = da + db * np.where(_JENSEN, -(v - 1.0) * var_r / 2.0, 0.0)
+    t_cur = transfer_pred(cur_h, v, np.where(np.isfinite(delta_c), delta_c, 0.0))
+    t_ref = transfer_pred(ref_h, v, np.where(np.isfinite(delta_r), delta_r, 0.0))
+    qa = q_anchor(m)
+    S_Q = _anchor_E(qa, b)
+    W_nat = np.maximum(S_Q[0, FULL.W], 0.0)
+    E_Q = S_Q + pseudo_stats(t_cur, _KT)
+    par_t = _params(E_Q, np.zeros((1, NF)))
+    par_n = _params(S_Q, _H1[:1])
+    nC_, nR_, nN_ = _NONE[CNT][None, :], _NONE[RAT][None, :], _NONE[NIG][None, :]
+    par = _Par(np.where(nC_, par_n.mu, par_t.mu), np.where(nC_, par_n.r, par_t.r),
+               np.where(nR_, par_n.p, par_t.p), np.where(nR_, par_n.c, par_t.c),
+               np.where(nN_, par_n.df, par_t.df), np.where(nN_, par_n.loc, par_t.loc),
+               np.where(nN_, par_n.scale, par_t.scale))
+    mu = np.full(NF, np.nan)
+    r, p, c, df, loc, scale = (mu.copy() for _ in range(6))
+    mu[CNT], r[CNT] = par.mu[0], par.r[0]
+    p[RAT], c[RAT] = par.p[0], par.c[0]
+    df[NIG], loc[NIG], scale[NIG] = par.df[0], par.loc[0], par.scale[0]
+    # span features: no Q predictive (H only)
+    span = ~_TRANSFERABLE & ~_NONE
+    prov = W_nat / (W_nat + _KT)
+    scored = np.where(_NONE, W_nat >= _KT, ~span)
+    cur = Pred(mu, r, p, c, df, loc, scale, _mean(par)[0], ebar=15.0, tier="entity",
+               anchor="current", bucket=b, mode="bin48", grain="q", prov=prov, scored=scored)
+    t_ref.prov, t_ref.scored = prov, scored
+    return {"current": cur, "reference": t_ref}

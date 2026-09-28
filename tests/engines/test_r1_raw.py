@@ -205,6 +205,17 @@ def test_l4_weighted_averages_totals_and_new_metrics():
     assert val(st, "l3.proto.tcp_ratio") == 1.0
 
 
+def test_l4_aggregate_retransmit_total_is_not_multiplied_by_the_weight():
+    st = make_store()
+    obs = [flow_obs(443, retransmits=1, pkts_up=3, pkts_down=5),
+           flow_obs(443, retransmits=0, pkts_up=1, pkts_down=1,
+                    extra={"count": 50, "bytes_up_total": 5000, "bytes_down_total": 5000,
+                           "retransmits_total": 4})]
+    run_engine(L4FlowEngine(), st, T0, observations=obs)
+    assert val(st, "l4.pkts_total") == 8 + 50 * 2
+    assert val(st, "l4.retransmit_rate") == pytest.approx((1 + 4) / 108)
+
+
 def test_peer_key_buckets():
     assert peer_key("10.1.2.3") == "10.1.2.0/24"
     assert peer_key("10.1.2.3:8443") == "10.1.2.0/24"

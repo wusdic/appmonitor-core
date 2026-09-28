@@ -32,10 +32,25 @@ describes (and alarms on) the same wall-clock slots.
   3. Off-hours: Bernoulli CUSUM in bits, once per slot, only over bins with
      p_hat <= 0.3 (p1 = min(0.95, max(0.5, 5 p_hat))); h = log2(ARL) + 0.5
      with ARL = 100 days of slots (13.7 bits). p_eq = 2^-W.
-  4. Silence: only for machine-like rhythms (normalised 168-bin entropy <=
-     0.8) in bins with p_hat >= 0.95; s += -ln(1 - p_hat) per silent slot, an
-     active eligible slot resets it, p_eq = e^-s, alarm at s >= ln(ARL).
-     Other entities are unscored (NaN).
+  4. Silence: only for machine-like entities in bins with p_hat >= 0.95;
+     s += -ln(1 - p_hat) per silent slot, an active eligible slot resets it,
+     p_eq = e^-s, alarm at s >= ln(ARL). Other entities are unscored (NaN).
+     machine_like is a calibrated automation index (m_rhythm.automation_index,
+     refreshed hourly): the mean of the off-hours activity ratio (active rate
+     outside workday 08-19 over the rate inside), the non-workday / workday
+     rate ratio (both from a model spanning >= 7 d) and B02's per-IP
+     automation index A (timing regularity, periodicity, non-browser share,
+     think time, path entropy), with B02's hysteresis (enter >= 0.6, leave
+     < 0.4); presence must also be all-or-nothing where the entity is
+     active (regularity 1 - mean 4 r (1 - r) >= 0.5), since silence and a
+     missed usual window mean nothing for slots filled like a coin flip. The v2 rule (normalised 168-bin entropy <= 0.8) held for most
+     office workers (entropy ~0.7) and for no 24/7 client (~1.0), so a
+     person's day off accumulated silence while a stopped service did not.
+     On the generator's population (10 clean warm-up days at 3600 s, seeds
+     0 and 1; integration.md §8.2) every human persona (interactive, search,
+     NAT: 36 entity-runs) indexes <= 0.34 and every machine persona (API,
+     integration, health, backup: 38) >= 0.73; the v2 rule called 22 of the
+     36 human runs and 4 of the 38 machine runs machine-like.
   5. Schedule shift: a machine-like entity whose whole usual window
      (contiguous slots with p_hat >= 0.5) stays silent, followed within 24 h
      by a run of unusual activity of the same duration (+-25 %, at least +-1
@@ -105,7 +120,7 @@ SHIFT_DUR_TOL = 0.25
 SHIFT_VOL_RANGE = (0.5, 2.0)
 SHIFTS_KEEP = 16
 TIER_REFIT_S = 3600.0
-ENTROPY_REFIT_S = 3600.0          # entropy168 / machine_like (~40 us)
+ENTROPY_REFIT_S = 3600.0          # entropy168 / automation index / machine_like
 DESC_REFIT_S = 6 * 3600.0         # full descriptors (~0.3 ms): the rhythm moves slowly
 PRIOR_REFIT_S = 3600.0
 CLASS_MIN_MEMBERS = 3             # contract L: a smaller class backs off to the system tier
@@ -391,7 +406,12 @@ class RhythmEngine(Engine):
                 not math.isfinite(model.get("entropy168", math.nan)):
             h = R.entropy168(model)
             model["entropy168"] = h
-            model["machine_like"] = bool(math.isfinite(h) and h <= R.ENTROPY_MAX)
+            a = (m_class.assignment(store, s, e) or {}).get("A")
+            model["auto_A"] = float(a) if isinstance(a, (int, float)) and a == a else None
+            model["automation"] = R.automation_index(model, model["auto_A"])
+            model["machine_like"] = R.machine_decision(
+                model["automation"], bool(model.get("machine_like", False)),
+                R.automation_components(model)["regular"])
             if math.isfinite(h) and (not model.get("desc") or self.entity_due(
                     ("rhythm-desc", s, e), now, DESC_REFIT_S)):
                 model["desc"] = R.descriptors(model)
@@ -406,6 +426,7 @@ class RhythmEngine(Engine):
         held = _held_W(det)
         if held is not None:
             W_rep = held                    # a possible schedule move: evidence held
+        deg = _degraded(model, clock, w_slot)
         # 4) learn (rows <= now - D; the scores above used the pre-commit model)
         self._learn(ctx, lrn, s, e, model)
         _prune(model, now)
@@ -413,7 +434,7 @@ class RhythmEngine(Engine):
         model["version"] = int(model["gate"].version)
         model["rev"] = int(model.get("rev", 0)) + 1
         store.put_model(s, e, MODEL, model, version=int(model["gate"].version))
-        self._write(ctx, s, e, model, det, W_rep, p_cur, a_cur, w_slot, finals)
+        self._write(ctx, s, e, model, det, W_rep, p_cur, a_cur, w_slot, finals, deg)
         return 1
 
     def _observe(self, store, s: str, e: str, clock: _Clock, det: Dict[str, Any],
@@ -610,7 +631,8 @@ class RhythmEngine(Engine):
     # ---------------------------------------------------------------- writes
     def _write(self, ctx: Context, s: str, e: str, model: Dict[str, Any], det: Dict[str, Any],
                W: float, p_cur: float, a_cur: float, w_slot: Optional[int],
-               finals: List[Tuple[int, float]]) -> None:
+               finals: List[Tuple[int, float]],
+               degraded: Optional[Dict[str, str]] = None) -> None:
         store, now, dt = ctx.store, float(ctx.now), float(ctx.window_s)
         machine = bool(model.get("machine_like", False))
         s_sil = det["s"] if machine else math.nan
@@ -629,7 +651,8 @@ class RhythmEngine(Engine):
         det["alarm"] = {"offhours": on_off, "silence": on_sil}
         emit.write_scores(store, s, e, now, {"offhours": W, "silence": s_sil},
                           pm={"offhours": pm_off, "silence": pm_sil},
-                          axes=axes or None, acc_alarm=dict(det["alarm"]), window_s=int(dt))
+                          axes=axes or None, acc_alarm=dict(det["alarm"]),
+                          degraded=degraded or None, window_s=int(dt))
         val = {"p_expected": _r(p_cur), "W_off": _r(W), "s_sil": _r(s_sil),
                "active": _r(a_cur), "h_off": _r(self.h_off), "h_sil": _r(self.h_sil),
                "shift_explained": int(explained), "machine_like": machine,
@@ -706,9 +729,11 @@ class RhythmEngine(Engine):
         prev = prev if isinstance(prev, dict) else {}
         rev = int(prev.get("rev", 0)) + 1
         h = R.entropy168(tm)
+        auto = R.automation_index(tm)
         tm.update(version=rev, rev=rev, updated=now, members=sorted(mem), n_members=len(mem),
-                  pi48=R.prior_pi48(st["A48"], st["N48"]), entropy168=h,
-                  machine_like=bool(math.isfinite(h) and h <= R.ENTROPY_MAX))
+                  pi48=R.prior_pi48(st["A48"], st["N48"]), entropy168=h, automation=auto,
+                  machine_like=R.machine_decision(auto, bool(prev.get("machine_like", False)),
+                                                  R.automation_components(tm)["regular"]))
         if math.isfinite(h) and (not prev.get("desc") or self.entity_due(
                 ("rhythm-tier-desc", s, key), now, DESC_REFIT_S)):
             tm["desc"] = R.descriptors(tm)
@@ -745,6 +770,30 @@ class RhythmEngine(Engine):
 
 
 # ================================================================ helpers
+def _degraded(model: Dict[str, Any], clock: "_Clock", w_slot: Optional[int]
+              ) -> Dict[str, str]:
+    """behavior.degraded of offhours (lib/emit causes): the slot the reported
+    W refers to is judged mostly against the fallback tier - the entity's own
+    decayed observations of that cell are fewer than the prior's strength
+    (class 6, system 2, hyperprior 1 pseudo-observations) - so off-hours
+    evidence there describes the class / system rhythm, not the entity's
+    ('fallback:<tier>'; 'insufficient_support' on the bare hyperprior)."""
+    j = w_slot if w_slot is not None else clock.cur
+    try:
+        c48, c168 = clock.cells(int(j))
+    except Exception:                                    # noqa: BLE001 - no cell, no claim
+        return {}
+    _, _, n_own = R.cell_stats(model, c48, c168)
+    prior = model.get("prior") or {}
+    s0 = float(prior.get("s", R.HYPER_S) or R.HYPER_S)
+    if not n_own < s0:
+        return {}
+    tier = str(prior.get("tier") or "hyper")
+    if tier == "hyper":
+        return {"offhours": emit.cause(emit.INSUFFICIENT_SUPPORT)}
+    return {"offhours": emit.cause(emit.FALLBACK, "class" if tier.startswith("class:") else tier)}
+
+
 def _held_W(det: Dict[str, Any]) -> Optional[float]:
     """W before the current unusual run while that run may still be the moved
     usual window (<= its duration + tolerance), else None. Its off-hours

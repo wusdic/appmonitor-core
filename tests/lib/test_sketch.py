@@ -656,3 +656,42 @@ def test_hll_add_many_speed():
     t = time.perf_counter()
     hll_of(range(100_000))
     assert time.perf_counter() - t < 1.0                     # measured ~0.07 s
+
+
+# ------------------------------------------------------ spec v2.1 SetSketch
+def test_set_sketch_exact_small_and_hll_beyond_256():
+    from app.engines.behavior.lib import sketch as SK
+    sk = SK.set_sketch("l4.peer_ids", [f"10.0.0.{i}" for i in range(200)] + ["10.0.0.1"])
+    assert sk["n"] == 200 and "h" in sk and SK.set_count(sk) == 200.0
+    big = SK.set_sketch("l4.peer_ids", [f"h{i}" for i in range(300)])
+    assert big["n"] == 300 and "hll" in big and len(big["hll"]) == 1024
+    assert abs(SK.set_count(big) - 300) / 300 < 0.13
+    # 443 and '443' are one key
+    assert SK.set_sketch("ports", [443, "443"])["n"] == 1
+
+
+def test_set_union_exact_up_to_4096_then_hll():
+    from app.engines.behavior.lib import sketch as SK
+    parts = [SK.set_sketch("act.template_ids", [f"t{j}" for j in range(i * 100, i * 100 + 150)])
+             for i in range(10)]
+    u = SK.set_union(parts)
+    assert "h" in u and SK.set_count(u) == 1050.0            # exact union with overlaps
+    many = [SK.set_sketch("ns", [f"k{j}" for j in range(i * 250, i * 250 + 250)]) for i in range(20)]
+    u2 = SK.set_union(many)                                   # 5000 > 4096 distinct -> HLL
+    assert "hll" in u2 and abs(SK.set_count(u2) - 5000) / 5000 < 0.13
+    # the union of the sketches equals the sketch of the union (exact regime)
+    keys_a, keys_b = [f"x{i}" for i in range(0, 120)], [f"x{i}" for i in range(80, 220)]
+    ua = SK.set_union([SK.set_sketch("n", keys_a), SK.set_sketch("n", keys_b)])
+    direct = SK.set_sketch("n", keys_a + keys_b)
+    assert ua["n"] == direct["n"] == 220 and np.array_equal(ua["h"], direct["h"])
+    # associativity and HLL members: register max is lossless
+    h1 = SK.set_sketch("n", [f"y{i}" for i in range(400)])
+    h2 = SK.set_sketch("n", [f"y{i}" for i in range(200, 700)])
+    s3 = SK.set_sketch("n", [f"y{i}" for i in range(650, 750)])
+    left = SK.set_union([SK.set_union([h1, h2]), s3])
+    right = SK.set_union([h1, SK.set_union([h2, s3])])
+    assert left["hll"] == right["hll"]
+    full = SK.set_sketch("n", [f"y{i}" for i in range(750)])
+    assert left["hll"] == full["hll"]
+    empty = SK.set_union([])
+    assert empty["n"] == 0 and len(empty["h"]) == 0 and SK.set_count(None) == 0.0

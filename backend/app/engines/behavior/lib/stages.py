@@ -103,3 +103,30 @@ def stages_for(axes: Iterable[str], flags: Optional[Mapping[str, bool]] = None) 
         if st is not None:
             out.add(st)
     return out
+
+
+# ------------------------------------------------------------ lib-4 habits
+# A routine lib-4 activity of an entity (integration notes §4): a signature of
+# severity <= medium that the (entity, signature) has matched on at least
+# HABIT_MIN_TICKS ticks, the first of them at least HABIT_S ago. B26 gives it
+# no risk weight and B27 does not let it restart an incident's quiet clock;
+# each engine keeps its own memory (engines share no state) with this rule.
+HABIT_SEVERITIES = frozenset({"info", "low", "medium"})
+HABIT_S = 86400.0              # first match of the (entity, signature) at least this old
+HABIT_MIN_TICKS = 4            # ... and matched on at least this many ticks
+HABIT_FORGET_S = 30 * 86400.0  # a habit not seen for 30 d is forgotten
+
+
+def habit_step(habits: dict, key: tuple, ts: float) -> bool:
+    """Record one lib-4 match of `key` (e.g. (system, entity, signature)) at
+    ts (once per tick) and say whether the activity was already habitual
+    before it. `habits` maps key -> [first_ts, n_ticks, last_ts]."""
+    h = habits.get(key)
+    if h is None or ts - h[2] > HABIT_FORGET_S:
+        habits[key] = [ts, 1.0, ts]
+        return False
+    habitual = h[1] >= HABIT_MIN_TICKS and ts - h[0] >= HABIT_S
+    if ts > h[2]:
+        h[1] += 1.0
+        h[2] = ts
+    return habitual

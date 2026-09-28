@@ -202,9 +202,16 @@ def test_feature_inputs_formulas():
 
 # ---------------------------------------------------------------- detectors
 def test_detector_registry():
-    assert det.N_DETECTORS == 31 == len(det.DETECTORS)
+    # spec v2.1 (docs/lib3/cadence.md §7.3, deliberate): the four Q-grain
+    # detectors are appended, so D = 35 and the v2 prefix is unchanged
+    assert det.N_DETECTORS == 35 == len(det.DETECTORS)
     assert det.DETECTORS[:3] == ["marg_int", "marg_shape", "peer"]
-    assert det.DETECTORS[-1] == "cross_system"
+    assert det.DETECTORS[30] == "cross_system" and det.N_V2_DETECTORS == 31
+    assert det.DETECTORS[-4:] == ["marg_int_q", "marg_shape_q", "t2_q", "spe_q"]
+    assert det.DETECTORS[-1] == "spe_q"
+    assert {d for d in det.DETECTORS if det.DETECTOR_INFO[d]["stream"] == "q"} == set(det.Q_DETECTORS)
+    assert det.DETECTOR_INFO["identity"]["overlap"] is True
+    assert det.DETECTOR_INFO["marg_int"]["stream"] == "h" and det.DETECTOR_INFO["novelty"]["stream"] == "t"
     assert all(det.DETECTOR_INDEX[d] == i for i, d in enumerate(det.DETECTORS))
     for d in det.DETECTORS:
         info = det.DETECTOR_INFO[d]
@@ -218,14 +225,18 @@ def test_detector_registry():
             assert "budget_per_day" not in info
     assert set(det.P2_DETECTORS) == {"mixture", "session", "cross_system"}
     s = det.new_score_vector()
-    assert s.shape == (31,) and np.isnan(s).all()
+    assert s.shape == (35,) and np.isnan(s).all()
 
 
 def test_detector_families_partition():
     members = [d for f in det.FAMILIES for d in det.family_members(f)]
     assert sorted(members) == sorted(det.DETECTORS)
-    assert det.family_members("intensity") == ["marg_int", "t2", "budget_vol", "class_int"]
-    assert det.family_members("intensity", "inst") == ["marg_int", "t2", "class_int"]
+    # spec v2.1 (deliberate): the appended Q detectors join intensity / shape
+    assert det.family_members("intensity") == ["marg_int", "t2", "budget_vol", "class_int",
+                                               "marg_int_q", "t2_q"]
+    assert det.family_members("intensity", "inst") == ["marg_int", "t2", "class_int",
+                                                       "marg_int_q", "t2_q"]
+    assert det.family_members("shape")[-2:] == ["marg_shape_q", "spe_q"]
     assert det.family_members("change") == ["cusum", "mcusum", "bocpd", "creep"]
     assert det.family_members("temporal", "inst") == []
     assert set(det.INSTANT_FAMILIES) == {"intensity", "shape", "peer", "categorical",

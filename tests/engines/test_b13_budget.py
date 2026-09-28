@@ -324,3 +324,50 @@ def test_config_floor_override_and_validation():
         run_engine(eng, st, T_MID + 900, dt=900.0, config={"budget_abs_floor": {"objs": -1}})
     assert set(ABS_FLOOR_DEFAULT) == {"bytes_up", "bytes_down", "writes", "slots", "up_novel",
                                       "dns_label", "objs", "templates", "dests"}
+
+
+def test_count_quantities_have_a_counting_noise_scale_floor():
+    """A count quantity whose same-phase history is constant (0 writes at
+    03:00, 5 destinations in 7 d) had a log scale of 0 floored at 0.02, so
+    one more count was a 8-35 sigma residual and a tail p of 1e-10..1e-38
+    (pack B: budget_breadth / budget_vol p < 1e-6 on hundreds of clean
+    control ticks). The floor now includes the counting noise of the level;
+    bytes quantities keep the 2 % floor."""
+    from app.engines.behavior.budget import floor_scale, LOG_SCALE_MIN
+    unit = 0.5
+    for level in (0.0, 5.0, 150.0):
+        med = np.full((1, 1, 24), np.log(level + unit))
+        sc = floor_scale(med, np.zeros_like(med), count_unit=unit)
+        assert np.all(sc >= np.sqrt(level + 1.0) / (level + 1.0 + unit) - 1e-12)
+        z_one_more = (np.log(level + 1.0 + unit) - np.log(level + unit)) / sc
+        assert np.all(z_one_more < 2.0)                      # was 8-55 with the 2 % floor
+    med = np.full((1, 1, 24), np.log(4e7 + 5e4))             # bytes: unchanged
+    assert np.allclose(floor_scale(med, np.zeros_like(med)), LOG_SCALE_MIN)
+    nan = floor_scale(np.full((1, 1, 1), np.nan), np.zeros((1, 1, 1)), count_unit=unit)
+    assert np.isnan(nan).all()
+
+
+def test_seven_day_horizon_expects_its_own_day_type_composition():
+    """A make-up working Saturday puts a 6th workday into the next seven 7-d
+    windows (+20 % volume). The 7-d horizon compared them with history
+    windows that all held 5 workdays: a 20-sigma residual on every human
+    (pack B, round 2). Each window is now measured against its own expected
+    composition."""
+    from app.engines.behavior.budget import (HIST_DAYS, composition_7d, day_type_profile,
+                                             expected_7d)
+    hours = np.arange(24)
+    work = np.where((hours >= 9) & (hours < 18), 10.0, 0.0)
+    dtypes = np.array([0 if (d % 7) < 5 else 1 for d in range(HIST_DAYS)])
+    v = np.concatenate([work if t == 0 else np.zeros(24) for t in dtypes])
+    prof = day_type_profile(v, dtypes)
+    assert np.allclose(prof[0], work) and np.allclose(prof[1], 0.0)
+    unit = 2.0
+    prof2, corr, ebar = composition_7d(v, dtypes, unit)
+    assert np.allclose(ebar[20], 5 * 90.0)                    # usual: 5 workdays of 90
+    assert np.nanmax(np.abs(corr)) < 1e-9                     # regular weeks: no correction
+    normal = expected_7d(prof2, [0, 0, 0, 0, 0, 1, 1, 0], 20)  # 5 workdays in the window
+    makeup = expected_7d(prof2, [0, 0, 0, 0, 0, 0, 1, 0], 20)  # a make-up Saturday: 6
+    assert normal == pytest.approx(450.0) and makeup == pytest.approx(540.0)
+    # the 6-workday actual sum is at its expectation, not 20 % above it
+    adj = np.log(makeup + unit) - np.log(ebar[20] + unit)
+    assert np.log(540.0 + unit) - (np.log(450.0 + unit) + adj) == pytest.approx(0.0, abs=1e-12)

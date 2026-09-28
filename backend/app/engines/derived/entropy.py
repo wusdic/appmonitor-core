@@ -25,6 +25,7 @@ from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 
 from ...core.engine import Context, Engine
+from ..behavior.lib import grains as GR
 from ...models.schema import DerivedMetric, MetricKind
 from .fresh import fresh_raw_obj
 from .util import char_entropy, normalized_entropy
@@ -80,13 +81,14 @@ class EntropyEngine(Engine):
     name = "derived.entropy"
     layer = "derived"
     consumes = ["tls.sni_set", "dns.qname_set", "http.top_paths", "tls.ja3_set"]
-    produces = [n for name in SOURCES for n in (name, name + "_n")]
+    produces = [n for name in SOURCES for n in (name, name + "_n")] + ["derived.dns_dga_named_n"]
     description = ("Shannon entropy of destination/domain/path sets + character-entropy "
                    "DGA score, from fresh sets only, each with its item count _n.")
 
     def run(self, ctx: Context, observations=None) -> int:
         store, now = ctx.store, ctx.now
         ws = int(ctx.window_s)
+        canon = GR.canonical(ctx.config)
         n = 0
         for system in store.systems():
             for entity in store.entities_active(system, now):
@@ -104,6 +106,11 @@ class EntropyEngine(Engine):
                         value = float(len(named) + (1 if total > sum(named.values()) else 0))
                     elif out_name == "derived.dns_dga_score":
                         value = dga_score(named)
+                        if canon and math.isfinite(value):
+                            # spec v2.1 (cadence.md §3.1): the named mass the score
+                            # averages over, so grain rows can re-weight it exactly
+                            emit.append(("derived.dns_dga_named_n", sum(named.values()),
+                                         None, src))
                     else:
                         value = normalized_entropy(named.values()) if named else math.nan
                     if not math.isfinite(value):
@@ -113,6 +120,9 @@ class EntropyEngine(Engine):
                     store.add_derived(DerivedMetric(
                         name=out_name, value=float(value), ts=now, system=system,
                         entity=entity, window_s=ws, kind=MetricKind.GAUGE, inputs=[src]))
+                    if total is None:
+                        n += 1
+                        continue
                     store.add_derived(DerivedMetric(
                         name=out_name + "_n", value=float(total), ts=now, system=system,
                         entity=entity, window_s=ws, kind=MetricKind.COUNTER, inputs=[src]))

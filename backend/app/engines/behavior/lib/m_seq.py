@@ -60,6 +60,7 @@ Accessor signatures (pure reads; missing data gives the documented default):
 from __future__ import annotations
 
 import heapq
+import itertools
 import math
 import re
 import sys
@@ -430,14 +431,26 @@ def top_ngrams(model: Any, n: int = 2, k: int = 10) -> List[Dict[str, Any]]:
     if p is None or not p.counts or n < 1 or n > p.order + 1:
         return []
     f = 2.0 ** (-p.g)
-    cand = []
-    for ctx, d in p.counts.items():
-        if len(ctx) != n - 1 or BOS in ctx:
-            continue
-        for sym, c in d.items():
-            cand.append((c * f, ctx + (sym,)))
-    top = heapq.nlargest(k, cand, key=lambda x: x[0])
-    return [{"ngram": list(g), "count": round(float(c), 3)} for c, g in top]
+    L = n - 1
+    sel = [(ctx, d) for ctx, d in p.counts.items() if len(ctx) == L and BOS not in ctx and d]
+    if not sel or k <= 0:
+        return []
+    # Same result as heapq.nlargest(k, [(c f, ctx + (sym,)) in dict order], key=c f):
+    # a stable descending sort of the scaled counts keeps ties in dict order,
+    # and only the k winners are turned back into n-grams (perf: B30 / B10
+    # portraits scan every context of the class and system models).
+    vals = np.fromiter((c for _, d in sel for c in d.values()), dtype=np.float64,
+                       count=sum(len(d) for _, d in sel)) * f
+    top = np.argsort(-vals, kind="stable")[:k]
+    ends = np.cumsum([len(d) for _, d in sel])
+    out = []
+    for i in top.tolist():
+        j = int(np.searchsorted(ends, i, side="right"))
+        ctx, d = sel[j]
+        off = i - (int(ends[j - 1]) if j else 0)
+        sym = next(itertools.islice(iter(d), off, None))
+        out.append({"ngram": list(ctx + (sym,)), "count": round(float(vals[i]), 3)})
+    return out
 
 
 def describe(model: Any, k: int = 8) -> Dict[str, Any]:

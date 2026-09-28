@@ -1,11 +1,13 @@
 """Smoke test: build the v2 runtime (full lib-3 registry), warm up, run live
 ticks, print a summary of what the behaviour library produced.
 
-    python scripts/smoke.py [--warmup 120] [--live 16] [--strict]
+    python scripts/smoke.py [--warmup N | --plan 120x3600,192x900] [--live 16] [--strict]
 
-Warm-up runs with training=True at 900 s, the live phase at the runtime's
-60 s window (a 900 -> 60 s cadence switch, as in eval pack E); every tick is
-stamped with the generator's virtual clock. Exits non-zero on an engine error.
+Warm-up runs with training=True over the Runtime's warm-up plan (spec v2.1
+default 120 x 3600 s + 192 x 900 s; `--warmup N` keeps the v2 plan N x 900 s),
+the live phase at the runtime's 60 s window (a 900 -> 60 s cadence switch, as
+in eval pack E); every tick is stamped with the generator's virtual clock.
+Exits non-zero on an engine error.
 """
 import argparse
 import math
@@ -32,21 +34,31 @@ def _sev(v):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--warmup", type=int, default=120)
+    ap.add_argument("--warmup", type=int, default=None,
+                    help="v2 plan: N warm-up ticks at 900 s")
+    ap.add_argument("--plan", default=None,
+                    help="warm-up plan 'ticks x dt, ...', e.g. 120x3600,192x900")
     ap.add_argument("--live", type=int, default=16)
     ap.add_argument("--strict", action="store_true", help="engines re-raise (ctx.config strict)")
     args = ap.parse_args()
 
-    rt = Runtime(warmup_ticks=args.warmup, live_period_s=0.0, strict=args.strict)
+    plan = None
+    if args.plan:
+        plan = [(int(a), float(b)) for a, b in
+                (x.strip().lower().split("x") for x in args.plan.split(",") if x.strip())]
+    rt = Runtime(warmup_ticks=args.warmup, live_period_s=0.0, strict=args.strict,
+                 warmup_plan=plan)
     st = rt.store
-    print(f"warming up ({args.warmup} x 900 s, training)...")
+    print(f"grain mode {rt.config.get('grain_mode')}; warm-up plan {rt.plan_text()}, training")
+    for w in rt.plan_warnings(time.time()):
+        print(f"  warning: {w}")
     t0 = time.perf_counter()
     rt.warmup()
     t1 = time.perf_counter()
     for _ in range(args.live):
         rt.step_once()
     t2 = time.perf_counter()
-    print(f"warm-up {t1 - t0:.1f} s ({(t1 - t0) / max(args.warmup, 1) * 1e3:.0f} ms/tick), "
+    print(f"warm-up {t1 - t0:.1f} s ({(t1 - t0) / max(rt.warmup_ticks, 1) * 1e3:.0f} ms/tick), "
           f"live {args.live} x {rt.window_s} s in {t2 - t1:.1f} s; "
           f"pipeline ticks {rt.pipeline.tick_count}")
 

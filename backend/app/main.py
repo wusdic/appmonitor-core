@@ -24,9 +24,11 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.on_event("startup")
 def _startup() -> None:
-    warmup = int(os.environ.get("APPMON_WARMUP_TICKS", "180"))
+    # APPMON_WARMUP_TICKS=n keeps the v2 plan n x 900 s; unset = the spec v2.1
+    # plan (Runtime.DEFAULT_WARMUP_PLAN: 120 x 3600 s + 192 x 900 s)
+    warm = os.environ.get("APPMON_WARMUP_TICKS")
     period = float(os.environ.get("APPMON_LIVE_PERIOD_S", "3.0"))
-    runtime = Runtime(warmup_ticks=warmup, live_period_s=period)
+    runtime = Runtime(warmup_ticks=int(warm) if warm else None, live_period_s=period)
     runtime.start()
     routes.RUNTIME = runtime
 

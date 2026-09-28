@@ -90,7 +90,7 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
     - p5–p95 coverage of held-out ticks within [0.85, 0.95].
     - Class portraits exist for 100% of role, static and pool classes.
 
-12. Feedback: a simulated analyst with 5% label noise and 5 labels per day cuts control incidents ≥ LOW by ≥ 50% after 20 labels, with recall dropping by ≤ 0.02. Suppression escape behaves as in unit test B23.
+12. Feedback: a simulated analyst with 5% label noise and 5 labels per day cuts control incidents ≥ LOW by ≥ 50% after 20 labels, with recall dropping by ≤ 0.02. Suppression escape behaves as in unit test B23. The analyst dismisses fp verdicts with scope = pattern (B23 builds suppression policies only from widened scopes) and labels the rest with scope = this; the cut compares each feedback run with the full run of the same (pack, seed). Ablation deltas (gate 13) are likewise taken against the full runs of the same (pack, seed).
 
 13. Ablation
     - Δrecall and ΔFAR are reported per scenario with each engine disabled.

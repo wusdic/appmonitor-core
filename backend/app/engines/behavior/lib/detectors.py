@@ -27,6 +27,8 @@ DETECTORS: List[str] = [
     "budget_exfil", "budget_breadth", "cusum", "mcusum", "bocpd", "creep", "identity",
     "class_int", "class_shape", "class_rhythm", "class_novel", "class_coherence",
     "mixture", "session", "cross_system",
+    # spec v2.1 (docs/lib3/cadence.md §7.3): Q-grain detectors, appended
+    "marg_int_q", "marg_shape_q", "t2_q", "spe_q",
 ]
 N_DETECTORS: int = len(DETECTORS)
 DETECTOR_INDEX: Dict[str, int] = {d: i for i, d in enumerate(DETECTORS)}
@@ -94,7 +96,18 @@ _TABLE = {
     "mixture": ("shape", "inst", "B19", None, True),
     "session": ("sequence", "inst", "B20", None, True),
     "cross_system": ("xsys", "inst", "B21", None, True),
+    "marg_int_q": ("intensity", "inst", "B04", None, False),
+    "marg_shape_q": ("shape", "inst", "B04", None, False),
+    "t2_q": ("intensity", "inst", "B06", None, False),
+    "spe_q": ("shape", "inst", "B06", None, False),
 }
+
+# spec v2.1 streams (cadence.md §7.3): h = scored on H-grain rows at H
+# decision ticks, q = Q-grain rows at Q decision ticks, t = per tick.
+STREAM_H = frozenset({"marg_int", "marg_shape", "peer", "t2", "spe", "cusum", "mcusum", "bocpd",
+                      "creep", "identity", "class_int", "class_shape", "class_coherence"})
+STREAM_Q = frozenset({"marg_int_q", "marg_shape_q", "t2_q", "spe_q"})
+OVERLAP_DETECTORS = frozenset({"identity"})     # windows of 4 H rows overlap (single-tick only)
 
 _PATH_SIZE: Dict[str, int] = {}
 for _d, (_f, _k, _o, _p, _p2) in _TABLE.items():
@@ -117,6 +130,11 @@ for _d in DETECTORS:
         "strata": "daypart_regime" if _d == "identity" else "daypart_cc",
         # class detectors score class:<id> pseudo-entities, not real entities
         "level": "class" if _d in CLASS_DETECTORS else "entity",
+        # spec v2.1: stream, overlap and the canonical-mode strata (B24)
+        "stream": "h" if _d in STREAM_H else "q" if _d in STREAM_Q else "t",
+        "overlap": _d in OVERLAP_DETECTORS,
+        "grain_strata": ("daypart_regime_grain" if _d == "identity" else
+                         "daypart_grain" if (_d in STREAM_H or _d in STREAM_Q) else "daypart_cc"),
     }
     if _k == "acc":
         info["budget_path"] = _p
@@ -128,6 +146,11 @@ ACC_DETECTORS: List[str] = [d for d in DETECTORS if DETECTOR_INFO[d]["kind"] == 
 P2_DETECTORS: List[str] = [d for d in DETECTORS if DETECTOR_INFO[d]["p2"]]
 INSTANT_IDX: List[int] = [DETECTOR_INDEX[d] for d in INSTANT_DETECTORS]
 ACC_IDX: List[int] = [DETECTOR_INDEX[d] for d in ACC_DETECTORS]
+STREAM_DETECTORS: Dict[str, List[str]] = {
+    st: [d for d in DETECTORS if DETECTOR_INFO[d]["stream"] == st] for st in ("h", "q", "t")}
+Q_DETECTORS: List[str] = list(STREAM_DETECTORS["q"])
+Q_IDX: List[int] = [DETECTOR_INDEX[d] for d in Q_DETECTORS]
+N_V2_DETECTORS = 31             # the v2 prefix of DETECTORS (tick mode never scores the rest)
 
 
 def family_members(family: str, kind: Optional[str] = None) -> List[str]:
@@ -161,21 +184,25 @@ def detectors_of(owner: str) -> List[str]:
 
 
 def new_score_vector() -> np.ndarray:
-    """A fresh behavior.score / pm / p row: float64[31] of NaN (NaN = unscored)."""
+    """A fresh behavior.score / pm / p row: float64[35] of NaN (NaN = unscored)."""
     return np.full(N_DETECTORS, np.nan)
 
 
-def acc_level(p: float, detector: str, dt_s: float) -> float:
+def acc_level(p: float, detector: str, dt_s: float, period_s: Optional[float] = None) -> float:
     """Shared accumulator level L ~ S/h from the detector's CALIBRATED p
     (integration: B27's quiet test and B28's SUSPECT / trust tests use the
     same scale). A CUSUM's stationary tail is P(S >= x) ~ exp(-theta x) with
     theta h ~ ln ARL (ARL in ticks from the detector's wall-clock budget), so
     L = ln(1/p) / ln(ARL_ticks); L >= 1 is the alarm level. The raw
     m_cp.level (max S/h over B14's 48 charts) is NOT this scale: on a null it
-    sits >= 1/4 on most ticks. NaN p (or ARL <= 1 tick) -> NaN."""
+    sits >= 1/4 on most ticks. NaN p (or ARL <= 1 tick) -> NaN.
+
+    spec v2.1: `period_s` (grains.period_s of the detector's stream) counts
+    the ARL in grain periods; None keeps v2 (dt_s, i.e. ticks)."""
     if not (p == p) or not dt_s > 0:
         return math.nan
-    arl = arl_days(detector) * 86400.0 / float(dt_s)
+    per = float(dt_s) if period_s is None else float(period_s)
+    arl = arl_days(detector) * 86400.0 / per
     if arl <= 1.0:
         return math.nan
     pv = min(1.0, max(1e-300, float(p)))

@@ -832,3 +832,26 @@ def test_conformal_branch_meets_b24_per_tick_budget():
             K.p_from_ring(ring, x, 0.5)
         runs.append(time.perf_counter() - t0)
     assert sorted(runs)[2] < 0.004, runs
+
+
+# ------------------------------------------------- spec v2.1 grain strata
+def test_grain_and_meta_stratum_keys():
+    from app.engines.behavior.lib import calib as C
+    from app.engines.behavior.lib import m_calib as MC
+    assert C.grain_stratum_key("wd_day", "h") == "wd_day|g:h"
+    assert C.grain_stratum_key("wd_day", "q", prov=1) == "wd_day|g:q|p:1"
+    assert C.grain_stratum_key("wd_night", "h", tercile=2) == "wd_night|r2|g:h"
+    assert C.meta_stratum_key("nwd_day", "h") == "nwd_day|t:h"
+    assert C.meta_stratum_key("nwd_day", "t", 60) == "nwd_day|t:t|60"
+    with pytest.raises(ValueError):
+        C.grain_stratum_key("wd_day", "x")
+    # m_calib: grain strata for H / Q stream detectors, v2 strata otherwise
+    assert MC.stratum_for("marg_int", "wd_day", 900, grain="h") == "wd_day|g:h"
+    assert MC.stratum_for("marg_int_q", "wd_day", 900, grain="q", prov=1) == "wd_day|g:q|p:1"
+    assert MC.stratum_for("identity", "wd_day", 900, 1, grain="h") == "wd_day|r1|g:h"
+    assert MC.stratum_for("novelty", "wd_day", 900, grain="h") == "wd_day|900"
+    assert MC.stratum_for("marg_int", "wd_day", 900) == "wd_day|900"
+    code = (5, 1, 2, 0b0101)
+    dp, terc, dt, g = MC.decode_pending(code)
+    assert (dp, terc) == ("wd_night", 1) and g["dp_h"] == "wd_night" and g["dp_q"] == "nwd_day"
+    assert g["prov"]["marg_int_q"] == 1 and g["prov"]["marg_shape_q"] == 0

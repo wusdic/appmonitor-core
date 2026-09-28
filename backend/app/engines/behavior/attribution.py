@@ -76,6 +76,17 @@ behavior.id, so a restarted engine resumes it (alert holds are rebuilt from
 the event index). A failed B01 tick writes NaN + degraded; an unfitted
 model.identity means nothing is enrolled yet and B16 abstains.
 
+spec v2.1 windows (docs/lib3/cadence.md §8; canonical grain mode): a window
+is the last 4 ACTIVE H ROWS (m_identity.grain_row: feature.vec.h,
+feature.sketch.h, behavior.timing and the clock of the row's midpoint), i.e.
+4 h of wall-clock data at every cadence, the windows B15 enrols. B16 runs on
+H decision ticks only; the modality evidence of a row is the H window's
+merged evidence (m_identity.grain_modal_data). The instantaneous score is
+issued on every active H row (overlapping windows: single-tick path only);
+the two CUSUMs step only on NON-overlapping windows (every 4th active H
+row), with h counted in those windows per day. A full window is 4 covered
+H rows (cov >= 0.95 h) within a 48-h lookback.
+
 Store: reads feature.active, feature.vec, feature.sketch, feature.tctx,
 act.tokens, act.stream, act.stream_frac, tls/dns/l4 sets, client.stack_set,
 behavior.timing, model.identity, model.vocab, model.rhythm, model.seq,
@@ -96,6 +107,7 @@ from scipy.special import chdtrc, chdtri
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, EntityProfile, MetricKind, Severity
 from .lib import emit
+from .lib import grains as GR
 from .lib import m_class
 from .lib import m_client as MC
 from .lib import m_identity as MI
@@ -125,6 +137,8 @@ U_UP, U_DOWN, U_H = 1.0, 0.5, 2.0
 P_TYPICAL = 0.01
 POST_MIN, WINS_MIN, CONF_MAX = 0.9, 3, 0.1
 LOOKBACK_S = 86400.0                   # activity history for windows / day (feature.vec: 1 d)
+LOOKBACK_H_S = 2 * 86400.0             # spec v2.1: H rows (feature.vec.h is kept 2 d)
+META_H = "feature.meta.h"
 SEQ_MAX, GAP_MAX = 128, 256            # window evidence bounds (PPM cost)
 ALERT_HOLD_S = 6 * 3600.0
 PROFILE_EVERY_S = 3600.0
@@ -222,8 +236,8 @@ def window_vector(rows: Any) -> np.ndarray:
     return MI.window_vector(rows)
 
 
-def _is_active(store: Any, s: str, e: str, ts: float) -> bool:
-    a = store.vec_at(s, e, ACTIVE, ts)
+def _is_active(store: Any, s: str, e: str, ts: float, name: str = ACTIVE) -> bool:
+    a = store.vec_at(s, e, name, ts)
     return a is not None and float(a[0]) >= 0.5
 
 
@@ -360,8 +374,10 @@ class _Sys:
     """One system at one tick: the identity model, the modality background
     and small lookups shared by every entity (candidates overlap)."""
 
-    def __init__(self, store: Any, s: str, now: float, model: Mapping[str, Any]) -> None:
+    def __init__(self, store: Any, s: str, now: float, model: Mapping[str, Any],
+                 active_name: str = ACTIVE) -> None:
         self.store, self.s, self.now, self.model = store, s, now, model
+        self.active_name = active_name
         self.bg = MI.Background(store, s, now)
         self.smap = MS.SymbolMap.from_store(store, s)
         self.enrolled = set((model.get("means") or {}).keys())
@@ -439,7 +455,7 @@ class _Sys:
 
     def active(self, e: str) -> bool:
         if e not in self._active:
-            self._active[e] = _is_active(self.store, self.s, e, self.now)
+            self._active[e] = _is_active(self.store, self.s, e, self.now, self.active_name)
         return self._active[e]
 
 
@@ -464,6 +480,8 @@ class AttributionEngine(Engine):
     def __init__(self, **params: Any) -> None:
         super().__init__(**params)
         self._state: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._canon = False
+        self._config: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------ run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
@@ -472,6 +490,10 @@ class AttributionEngine(Engine):
         if not (math.isfinite(dt) and dt > 0.0):
             raise ValueError(f"AttributionEngine: bad ctx.window_s {ctx.window_s!r}")
         b01_failed = store.engine_failed(B01_ENGINE, now)
+        self._canon = GR.canonical(ctx.config)
+        self._config = ctx.config
+        if self._canon and not GR.decision(now, dt, "h", GR.CANONICAL):
+            return 0                           # spec v2.1: identity is scored on H rows
         return sum(self._system(ctx, s, now, dt, b01_failed) for s in store.systems())
 
     def _system(self, ctx: Context, s: str, now: float, dt: float, b01_failed: bool) -> int:
@@ -479,12 +501,13 @@ class AttributionEngine(Engine):
         model = MI.get(store, s)
         if not MI.is_fitted(model):
             return 0                                  # nothing enrolled yet: abstain
-        sc = _Sys(store, s, now, model)
+        act_name = META_H if self._canon else ACTIVE
+        sc = _Sys(store, s, now, model, act_name)
         n = 0
         for e in store.entities(s):
             key = (s, e)
             if b01_failed:
-                if key in self._state or store.vec_at(s, e, ACTIVE, now - dt) is not None:
+                if key in self._state or store.vec_at(s, e, act_name, now - dt) is not None:
                     emit.write_scores(store, s, e, now, {DETECTOR: _NAN},
                                       degraded={DETECTOR: f"producer_error:{B01_ENGINE}"},
                                       window_s=int(dt))
@@ -509,17 +532,40 @@ class AttributionEngine(Engine):
         win = int(dt)
 
         # ---- window: last K active ticks; windows per day for the threshold
-        ts_a, A = store.vec_since(s, e, ACTIVE, now - LOOKBACK_S)
-        ts_a = np.asarray(ts_a, dtype=np.float64)
-        act = np.asarray(A, dtype=np.float64).reshape(-1) if ts_a.size else np.zeros(0)
-        on = ts_a[act >= 0.5]
-        wts = [float(t) for t in on[-K:]]
-        span = max(now - float(ts_a[0]) + dt, dt) if ts_a.size else dt
-        wpd = min(max(float(on.size) * 86400.0 / min(span, LOOKBACK_S), 1.0), 86400.0 / dt)
-        h = SQ.h_for("llr", ARL_DAYS, 86400.0 / wpd)
+        canon = self._canon
+        full_ok = True
+        if canon:
+            # spec v2.1: the last K active H rows (48-h lookback); the chart
+            # steps once per NON-overlapping window, so h counts those per day
+            ts_a, A = store.vec_since(s, e, META_H, now - LOOKBACK_H_S)
+            ts_a = np.asarray(ts_a, dtype=np.float64)
+            Am = np.asarray(A, dtype=np.float64).reshape(len(ts_a), -1) if ts_a.size \
+                else np.zeros((0, 5))
+            act = Am[:, 0] if ts_a.size else np.zeros(0)
+            on = ts_a[act >= 0.5]
+            cov_on = Am[act >= 0.5, 1] if ts_a.size else np.zeros(0)
+            wts = [float(t) for t in on[-K:]]
+            full_ok = bool(cov_on[-K:].size == K and np.all(
+                cov_on[-K:] >= GR.COVER_MIN * GR.GRAIN_S["h"]))
+            per = max(dt, GR.GRAIN_S["h"])
+            span = max(now - float(ts_a[0]) + per, per) if ts_a.size else per
+            rpd = min(max(float(on.size) * 86400.0 / min(span, LOOKBACK_H_S), 1.0),
+                      86400.0 / per)
+            wpd = max(rpd / K, 1.0 / K)
+            h = SQ.h_for("llr", ARL_DAYS, 86400.0 / wpd)
+        else:
+            ts_a, A = store.vec_since(s, e, ACTIVE, now - LOOKBACK_S)
+            ts_a = np.asarray(ts_a, dtype=np.float64)
+            act = np.asarray(A, dtype=np.float64).reshape(-1) if ts_a.size else np.zeros(0)
+            on = ts_a[act >= 0.5]
+            wts = [float(t) for t in on[-K:]]
+            span = max(now - float(ts_a[0]) + dt, dt) if ts_a.size else dt
+            wpd = min(max(float(on.size) * 86400.0 / min(span, LOOKBACK_S), 1.0), 86400.0 / dt)
+            h = SQ.h_for("llr", ARL_DAYS, 86400.0 / wpd)
 
         # ---- per-tick caches: tick rows and raw modality evidence
-        row = MI.tick_row(store, s, e, now)
+        row = (MI.grain_row(store, s, e, now, config=self._config, dt=dt) if canon
+               else MI.tick_row(store, s, e, now))
         if row is None:
             emit.write_scores(store, s, e, now, {DETECTOR: _NAN},
                               degraded={DETECTOR: "stale:feature.vec"}, window_s=win)
@@ -529,17 +575,22 @@ class AttributionEngine(Engine):
         st["md"] = {t: m for t, m in st["md"].items() if t in keep}
         st["cheap"] = {t: m for t, m in st["cheap"].items() if t in keep and t != now}
         st["rows"][now] = row
-        st["md"][now] = MI.tick_modal_data(store, s, e, now, smap=sc.smap)
+        st["md"][now] = (MI.grain_modal_data(store, s, e, now, smap=sc.smap, config=self._config,
+                                             dt=dt) if canon
+                         else MI.tick_modal_data(store, s, e, now, smap=sc.smap))
         rows = []
         for t in wts:
             r = st["rows"].get(t)
             if r is None:                             # restart: rebuild from the rings
-                r = MI.tick_row(store, s, e, t)
+                r = (MI.grain_row(store, s, e, t, config=self._config, dt=dt) if canon
+                     else MI.tick_row(store, s, e, t))
                 if r is not None:
                     st["rows"][t] = r
             if r is not None:
                 rows.append(r)
         st["n_act"] = int(st["n_act"]) + 1
+        # spec v2.1: the CUSUMs step only on non-overlapping windows
+        step = (not canon) or int(st["n_act"]) % K == 0
 
         # ---- identity space
         ck = sc.role_key(e)
@@ -589,7 +640,8 @@ class AttributionEngine(Engine):
         lam = _NAN
         if j_star is not None:
             lam = min(LAMBDA_HI, max(LAMBDA_LO, L[j_star] - L[e]))
-            st["S"] = max(0.0, float(st["S"]) + lam - CUSUM_K)
+            if step:
+                st["S"] = max(0.0, float(st["S"]) + lam - CUSUM_K)
         top = max((j for j in cands if j != own_cls), key=lambda j: (L[j], j))
         st["winners"] = (list(st["winners"]) + [e if top in selfish else top])[-K:]
 
@@ -601,8 +653,8 @@ class AttributionEngine(Engine):
         # the chi2 typicality is calibrated on full K-row windows (B15 fits on
         # them); a partial window (a new or long-silent entity's first active
         # ticks: IQR 0, a noisier median) only lets the chart decay
-        if p_max == p_max:
-            up = p_max < P_TYPICAL and len(rows) >= K
+        if p_max == p_max and step:
+            up = p_max < P_TYPICAL and len(rows) >= K and full_ok
             st["U"] = max(0.0, float(st["U"]) + (U_UP if up else -U_DOWN))
         class_p = typicality(model, z, own_cls if own_cls else SYSTEM_KEY)
 

@@ -251,6 +251,26 @@ def test_d_closes_after_attack_with_risk_high_when_accumulators_decay():
     assert states(rig.store)[-1] == "close"
 
 
+def test_d_idle_entity_stale_q_inst_rows_do_not_block_the_quiet_close():
+    """The quiet rule reads the entity's last q_inst rows; an entity that went
+    idle right after alarming (a weekend, a holiday) kept those alarming rows
+    as its latest for days, so its incident never closed and a threat days
+    later only escalated it (pack B T18, round 2). Rows older than the quiet
+    window are no longer current evidence."""
+    rig = Rig()
+
+    def alarming(st, t):
+        put_alarm(st, E, t)
+        put1(st, E, "behavior.q_inst", t, 1e-6)
+
+    for _ in range(2):
+        rig.tick(alarming)
+    for _ in range(12):                                  # idle: nothing written for 3 h
+        rig.tick()
+    inc = rig.store.incidents(system=S)[0]
+    assert inc.status == "closed" and inc.close_reason == "timeout"
+
+
 def test_d_accumulator_above_quarter_h_holds_the_incident_open():
     rig = Rig()
 
@@ -484,6 +504,61 @@ def test_lib4_match_joins_as_evidence_but_does_not_open():
     incs = rig.store.incidents(system=S)
     assert len(incs) == 1 and incs[0].entity == E
     assert any(x.get("source") == "lib4" and x["signature_id"] == "y" for x in incs[0].evidence)
+
+
+def test_repeating_lib4_match_does_not_flood_the_evidence():
+    """A poller's routine info match every tick used to add an evidence entry
+    per tick; on a week-long incident 477 of the 512 kept entries were lib-4
+    info matches and the alarm entries were evicted. Below MEDIUM: one entry
+    per signature per opening; >= MEDIUM: at most hourly."""
+    rig = Rig()
+
+    def before(st, t):
+        put_alarm(st, E, t)
+        st.add_match(SignatureMatch(system=S, entity=E, ts=t - DT, signature_id="health",
+                                    label="hc", category="maintenance", confidence=1.0,
+                                    severity=Severity.INFO))
+        st.add_match(SignatureMatch(system=S, entity=E, ts=t - DT, signature_id="c2",
+                                    label="c2", category="beacon", confidence=1.0,
+                                    severity=Severity.HIGH))
+
+    n = int(3 * 3600 / DT)
+    for _ in range(n):
+        rig.tick(before)
+    ev = rig.store.incidents(system=S)[0].evidence
+    info = [x for x in ev if x.get("source") == "lib4" and x["signature_id"] == "health"]
+    high = [x for x in ev if x.get("source") == "lib4" and x["signature_id"] == "c2"]
+    assert len(info) == 1
+    assert 3 <= len(high) <= 4 < n
+
+
+def test_habitual_lib4_match_does_not_keep_an_incident_open():
+    """An integration host matched the MEDIUM signature 'high_error_backend'
+    on almost every tick; each match restarted the quiet clock, so an FP
+    incident stayed open for days and a later threat only escalated it
+    (pack B T4). A habitual match (lib/stages: >= 4 matched ticks, the first
+    >= 24 h earlier; same rule as B26) joins as evidence but lets the
+    incident close; a new medium signature still restarts the clock."""
+    def match(sig):
+        def f(st, t):
+            st.add_match(SignatureMatch(system=S, entity=E, ts=t - DT, signature_id=sig,
+                                        label=sig, category="health", confidence=0.8,
+                                        severity=Severity.MEDIUM))
+        return f
+    rig = Rig()
+    for _ in range(int(30 * 3600 / DT)):                  # warm-up: the habit forms
+        rig.tick(match("hb"), training=True)
+    rig.tick(lambda st, t: (match("hb")(st, t), put_alarm(st, E, t)))
+    for _ in range(12):                                  # 3 h of habitual matches only
+        rig.tick(match("hb"))
+    inc = rig.store.incidents(system=S)[0]
+    assert inc.status == "closed" and inc.close_reason == "timeout"
+    assert any(x.get("source") == "lib4" and x["signature_id"] == "hb" for x in inc.evidence)
+    rig2 = Rig()
+    rig2.tick(lambda st, t: (match("new")(st, t), put_alarm(st, E, t)))
+    for _ in range(12):                                  # a NEW medium activity is not routine
+        rig2.tick(match("new"))
+    assert rig2.store.incidents(system=S)[0].status == "open"
 
 
 def test_class_alarm_opens_class_incident():

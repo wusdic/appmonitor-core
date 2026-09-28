@@ -42,6 +42,8 @@ from ..behavior.lib import m_template as MT
 from ..behavior.lib import template as TPL
 from ..behavior.lib.classkeys import SYSTEM_KEY
 from ..behavior.lib.combine import seeded_uniform
+from ..behavior.lib import grains as GR
+from ..behavior.lib import sketch as SK
 from ..behavior.lib.sketch import HyperLogLog
 from ..behavior.lib.stack import stack_id, stack_token
 
@@ -197,10 +199,13 @@ def _conn_outcome(down: float, flags: Any) -> int:
 
 class _Acc:
     """Per-entity accumulator for one tick."""
-    __slots__ = ("events", "rows", "chunks", "tokens", "http_n", "http_new", "objs", "dests")
+    __slots__ = ("events", "rows", "chunks", "tokens", "http_n", "http_new", "objs", "dests",
+                 "chunk_w", "http_ev")
 
     def __init__(self) -> None:
         self.events = 0
+        self.chunk_w: List[int] = []           # weight of each aggregated chunk (slot tally)
+        self.http_ev: List[Tuple[float, str, int]] = []   # spec v2.1: (t, token, w) of HTTP events
         self.rows: List[Tuple[float, int, int, float, float, int, int]] = []
         # aggregated records: (ts_sample head, t0, token_id, outcome, up, down, dest_id, stack_id)
         self.chunks: List[Tuple[Any, float, int, int, float, float, int, int]] = []
@@ -266,6 +271,7 @@ class ActionTokenEngine(Engine):
         super().__init__(**params)
         self.last_dropped_pseudo = 0
         self.last_dropped_active = 0
+        self._canon = False
 
     def health_record(self, ok: bool = True) -> Dict[str, Any]:
         rec = super().health_record(ok)
@@ -276,6 +282,7 @@ class ActionTokenEngine(Engine):
     # ------------------------------------------------------------------ run
     def run(self, ctx: Context, observations: Optional[List[Observation]] = None) -> int:
         store, now = ctx.store, float(ctx.now)
+        self._canon = GR.canonical(ctx.config)
         groups: Dict[Tuple[str, str], List[Observation]] = {}
         bad: Set[Tuple[str, str]] = set()
         drop_pseudo = drop_active = 0
@@ -316,6 +323,7 @@ class ActionTokenEngine(Engine):
         if not isinstance(model.get("born"), (int, float)):
             model["born"] = float(now)                 # first tick of this vocabulary
         new_ok = MT.vocab_mature(model, now)
+        canon = self._canon
         vocab = tm.vocab
         new_toks: Set[str] = set()
         dest_names: Dict[int, str] = {}
@@ -387,12 +395,15 @@ class ActionTokenEngine(Engine):
                     rows_append((t, tid, outcome, up, down, did, sid))
                 else:
                     chunks.append((head, t, tid, outcome, up, down, did, sid))
+                    acc.chunk_w.append(w)
                 events += w
                 tokens[tok] = tokens.get(tok, 0) + w
                 if is_http:
                     http_n += w
                     if tok in new_toks:
                         http_new += w
+                    if canon:
+                        acc.http_ev.append((t, tok, w))
                     if masked:
                         vals = [v for m, v in masked if m in _OBJ_MASKS]
                         if vals:
@@ -410,6 +421,8 @@ class ActionTokenEngine(Engine):
 
         if not accs:
             return 0
+        if canon:
+            self._new_by_window(model, accs, new_toks, now)
         tm.maintain()
         rare = self._update_prevalence(model["prev"], accs, dest_names, now)
         model["version"] = int(model.get("version", 0)) + 1
@@ -418,8 +431,40 @@ class ActionTokenEngine(Engine):
         n = 0
         for e, acc in accs.items():
             active.add((s, e))
-            n += self._emit(store, s, e, acc, now, rare, new_ok)
+            n += self._emit(store, s, e, acc, now, rare, new_ok, self._canon)
         return n
+
+    # ------------------------------------------------ spec v2.1 new templates
+    @staticmethod
+    def _new_by_window(model: Dict[str, Any], accs: Dict[str, "_Acc"], new_toks: Set[str],
+                       now: float) -> None:
+        """Canonical grain mode: an HTTP event is 'new' when its token was
+        first seen by the system less than NEW_WINDOW_S before the event
+        (event time, not tick membership), so act.new_template_ratio is an
+        additive part whose sum over an hour is the same at 60, 900 and
+        3600 s. v2 counts every occurrence in the tick of a token new to the
+        vocabulary, i.e. a whole hour of occurrences at 3600 s and one minute
+        at 60 s."""
+        recent: Dict[str, float] = model.setdefault("tok_first", {})
+        first: Dict[str, float] = {}
+        for acc in accs.values():
+            for t, tok, _w in acc.http_ev:
+                if tok in recent:
+                    continue
+                if tok in new_toks and (tok not in first or t < first[tok]):
+                    first[tok] = t
+        recent.update(first)
+        for acc in accs.values():
+            n = 0
+            for t, tok, w in acc.http_ev:
+                f = recent.get(tok)
+                if f is not None and t - f < NEW_WINDOW_S:
+                    n += w
+            acc.http_new = n
+        cut = now - NEW_WINDOW_S - 3600.0
+        if recent and len(recent) > 256:
+            for k in [k for k, v in recent.items() if v < cut]:
+                del recent[k]
 
     # ----------------------------------------------------------- prevalence
     @staticmethod
@@ -466,7 +511,7 @@ class ActionTokenEngine(Engine):
 
     # ----------------------------------------------------------------- emit
     def _emit(self, store, s: str, e: str, acc: _Acc, now: float, rare: Set[int],
-              new_ok: bool = True) -> int:
+              new_ok: bool = True, canon: bool = False) -> int:
         total = acc.events
         arr = _rows_array(acc)                                   # every sampled event
         order = np.argsort(arr["ts"], kind="stable")
@@ -515,6 +560,13 @@ class ActionTokenEngine(Engine):
             out.append(("act.objs", objs, MetricKind.CATEGORICAL))
         if rare_ev:
             out.append(("act.rare_events", rare_ev, MetricKind.CATEGORICAL))
+        if canon:
+            # spec v2.1 (cadence.md §3.2-§3.3): distinct-template sketch of the
+            # FULL token set and the tick's events per 15-min slot
+            out.append(("act.template_ids",
+                        SK.set_sketch("act.template_ids", {_tkey(t) for t in acc.tokens}),
+                        MetricKind.CATEGORICAL))
+            out.append(("act.slot_events", slot_events(acc, now), MetricKind.CATEGORICAL))
 
         for name, value, kind in out:
             store.add_raw(RawMetric(name=name, value=value, ts=now, system=s, entity=e,
@@ -538,6 +590,37 @@ class ActionTokenEngine(Engine):
                                         method=AcquisitionMethod.PASSIVE_SPAN), touch=False)
                 n += 1
         return n
+
+
+SLOT_S = 900.0
+NEW_WINDOW_S = 900.0           # spec v2.1: an event is new within 15 min of its token's first sighting
+
+
+def slot_events(acc: _Acc, now: float) -> Dict[float, float]:
+    """{slot_start_epoch: events} of one tick (spec v2.1, cadence.md §3.3):
+    every event counts, a plain record at its ts, an aggregated record's
+    weight split over its ts_sample offsets proportionally (the whole weight
+    at t0 when it has no valid sample). Slots are epoch-aligned 15-min slots
+    (local offsets are multiples of 15 min, so they are local slots too)."""
+    out: Dict[float, float] = {}
+    for r in acc.rows:
+        t = r[0]
+        k = math.floor(t / SLOT_S) * SLOT_S if -_INF < t < _INF else math.floor(now / SLOT_S) * SLOT_S
+        out[k] = out.get(k, 0.0) + 1.0
+    lo, hi = -MT.TS_ABSOLUTE_MIN, MT.TS_ABSOLUTE_MIN
+    for (head, t0, *_rest), w in zip(acc.chunks, acc.chunk_w):
+        ts: List[float] = []
+        for x in head:
+            v = x if x.__class__ is float else _f(x)
+            if -_INF < v < _INF:
+                ts.append(t0 + v if lo < v < hi else v)
+        if not ts:
+            ts = [t0]
+        share = float(w) / len(ts)
+        for t in ts:
+            k = math.floor(t / SLOT_S) * SLOT_S
+            out[k] = out.get(k, 0.0) + share
+    return out
 
 
 def _expand_chunks(ch: List[tuple]) -> List[tuple]:

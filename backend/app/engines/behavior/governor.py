@@ -25,6 +25,15 @@ Trust (architecture section 3):
   (one-tick lag), and the regime machine does not run (a warm-up is by
   definition the reference period; a SUSPECT carried out of it would
   deadlock the first live tick).
+  trust_evidence = on live ticks only, the live trust's gates on the row
+               itself: [no alarm] x [no finding >= MEDIUM] x [every
+               accumulator < h/2]; NaN on a degraded tick. B24 and B25 cap
+               their ring admission with it (m_governor.evidence_weight),
+               which binds only for a release (trust_prov has no
+               accumulator factor). It carries neither the regime state nor
+               the q_inst evidence factor, and is not written in training:
+               gating warm-up rows on their own evidence truncates the null
+               the rings estimate (see _trust_evidence).
   Unscored is not suspicious: when neither q_inst nor q_all is scored (a
   silent entity, a class key with no instantaneous detector, cold start) the
   evidence factor is 1 and the other factors still gate. Otherwise a quiet
@@ -60,7 +69,12 @@ Regime machine (live only):
       the commit frontier when quarantine began: rows after it were held),
       live incidents of the key closed (close_reason returned; B27 notifies),
       quarantine 0 from this tick.
-  -> accepted / rejected by the legit log-odds (lib/m_governor.decide):
+  -> accepted / rejected by the legit log-odds (lib/m_governor.decide);
+      a REJECT (freeze) also needs the episode to be corroborated
+      (m_governor.reject_corroborated: its own alarm / accumulator evidence
+      on >= 4 ticks spanning >= 1 h, two independent malicious sources, or a
+      tp label) - one lib-4 HIGH match meeting a one-tick rhythm alarm on the
+      first live tick froze entities (integration §8):
       type from the evidence axes (c2 > exfil > identity > new_entity >
       categorical > ramp > shape > rhythm > intensity), prior by type, ln LR
       terms (peer concordance, lib-4, system-tier novelty / external upload,
@@ -113,7 +127,8 @@ feature.vec, behavior.id, behavior.common.flag, store.incidents,
 store.events(since, kinds), store.matches(since) (one-tick lag),
 model.feedback (m_feedback), model.class (m_class), model.baseline (slope
 diagnostics, safe defaults), health of behavior.fusion; writes
-behavior.trust / trust_prov / quarantine (1-element float32 vec rings),
+behavior.trust / trust_prov / quarantine / trust_evidence (1-element float32
+vec rings),
 behavior.regime (dict series), model.control@(s, e|class:<id>),
 model.governor, profile.extra.regime (merged: B14 owns delta_by_feature),
 profile versions (put_profile_version on ACCEPT), incident closes
@@ -132,6 +147,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import (BehaviorEvent, DerivedMetric, EntityProfile, Incident, MetricKind,
                               Severity)
 from .lib import combine, emit, gating, m_class, m_cp, m_feedback, m_link, seq
+from .lib import grains as GR
 from .lib import m_governor as MG
 from .lib.classkeys import CLASS_PREFIX, is_class
 from .lib.detectors import ACC_DETECTORS, DETECTOR_INDEX, DETECTOR_INFO, arl_days
@@ -145,6 +161,8 @@ _NAN = math.nan
 ALARM = "behavior.alarm"
 Q_INST = "behavior.q_inst"
 Q_ALL = "behavior.q_all"
+Q_INST_H = "behavior.q_inst.h"          # spec v2.1: H-stream instantaneous evidence
+HOLD_H_S = 3600.0 + 1e-3                # H-stream values hold until the next H tick
 P = emit.P
 ACC_ALARM = emit.ACC_ALARM
 CP_PROB = m_cp.CP_PROB
@@ -263,9 +281,18 @@ def canonical_axis(a: Any) -> str:
     return _AXIS_ALIASES.get(s, s)
 
 
-def evidence_factor(q_inst: float, q_all: float, dt: float) -> float:
+def evidence_factor(q_inst: float, q_all: float, dt: float,
+                    e_inst: Optional[float] = None) -> float:
     """clip(log10(e_inst / 0.1), 0, 1) with e_inst = q * 86400 / dt (q_inst,
-    else q_all); 1.0 when nothing was scored (see the module docstring)."""
+    else q_all); 1.0 when nothing was scored (see the module docstring).
+    spec v2.1: `e_inst` given (canonical mode: grains.e_inst over the
+    streams, min_s q_s N_s) replaces the per-tick one."""
+    if e_inst is not None and e_inst == e_inst:
+        e = max(float(e_inst), 0.0)
+        if e <= 0.0:
+            return 0.0
+        v = math.log10(e / E_INST_REF)
+        return 0.0 if v <= 0.0 else (1.0 if v >= 1.0 else v)
     q = q_inst if q_inst == q_inst else q_all
     if not q == q:
         return 1.0
@@ -491,11 +518,12 @@ class _Obs:
     __slots__ = ("alarm", "alarm_axes", "q_inst", "q_all", "acc_max", "acc_alarmed",
                  "acc_suspect", "cp_prob", "cp_onset", "cp_episode", "findings_med",
                  "lib4_high", "events", "creep_slope", "creep_axes", "lv", "src",
-                 "lv_loaded", "incidents", "degraded")
+                 "lv_loaded", "incidents", "degraded", "e_inst")
 
 
 # ====================================================================== engine
 class GovernorEngine(Engine):
+    _canon = False
     name = "behavior.governor"
     layer = "behavior"
     consumes = ["behavior.alarm", "behavior.q_inst", "behavior.q_all", "behavior.p",
@@ -504,8 +532,8 @@ class GovernorEngine(Engine):
                 "store.incidents", "event.*", "match.*", "model.feedback", "model.class",
                 "model.baseline"]
     produces = ["behavior.trust", "behavior.trust_prov", "behavior.quarantine",
-                "behavior.regime", "model.control", "model.governor", "profile.extra.regime",
-                "profile.versions", "event.regime", "incident.close"]
+                "behavior.trust_evidence", "behavior.regime", "model.control", "model.governor",
+                "profile.extra.regime", "profile.versions", "event.regime", "incident.close"]
     description = ("Trust / provisional trust / quarantine rings, the regime state machine "
                    "(suspect, drifting, returned, accepted, rejected) with legitimate-change "
                    "log-odds, retroactive rollback, release, rebase and freeze through "
@@ -523,6 +551,7 @@ class GovernorEngine(Engine):
         store = ctx.store
         now = float(ctx.now)
         dt = float(ctx.window_s)
+        self._canon = GR.canonical(ctx.config)
         if not (math.isfinite(dt) and dt > 0.0):
             raise ValueError(f"governor: ctx.window_s={ctx.window_s!r} is not a positive cadence")
         cfg = ctx.config or {}
@@ -555,6 +584,7 @@ class GovernorEngine(Engine):
             model = new_model(now)
         prev_state = model["regime"]
         ob = self._observe(store, sc, e, now, dt, degraded)
+        tev = None if ctx.training else self._trust_evidence(ob)
         if ctx.training:
             self._training(model, now)
             trust = prov = 0.0 if ob.lib4_high else 1.0
@@ -577,6 +607,8 @@ class GovernorEngine(Engine):
         store.add_vec(s, e, MG.TRUST, now, [trust], window_s=win)
         store.add_vec(s, e, MG.TRUST_PROV, now, [prov], window_s=win)
         store.add_vec(s, e, MG.QUARANTINE, now, [1.0 if q else 0.0], window_s=win)
+        if tev is not None:
+            store.add_vec(s, e, MG.TRUST_EVIDENCE, now, [tev], window_s=win)
         changed = model["regime"] != prev_state or first
         self._write_regime(store, s, e, model, now, dt, changed)
         self._write_profile(store, s, e, model, now, changed)
@@ -585,12 +617,19 @@ class GovernorEngine(Engine):
 
     # ------------------------------------------------------------ inputs
     def _ln_arl(self, dt: float) -> np.ndarray:
-        """ln ARL_ticks of each accumulator (ACC_DETECTORS order) at cadence dt."""
-        hit = self._lnarl.get(dt)
+        """ln ARL_ticks of each accumulator (ACC_DETECTORS order) at cadence dt.
+        spec v2.1 (canonical mode): the ARL in each detector's own periods."""
+        key = (dt, self._canon)
+        hit = self._lnarl.get(key)
         if hit is None:
-            hit = self._lnarl[dt] = np.array([math.log(seq.arl_ticks(arl_days(d), dt))
-                                              for d in ACC_DETECTORS])
+            md = GR.CANONICAL if self._canon else GR.TICK
+            hit = self._lnarl[key] = np.array([
+                math.log(arl_days(d) * DAY / GR.period_s(d, dt, md)) for d in ACC_DETECTORS])
         return hit
+
+    def _periods(self, dt: float) -> np.ndarray:
+        md = GR.CANONICAL if self._canon else GR.TICK
+        return np.array([GR.period_s(d, dt, md) for d in ACC_DETECTORS])
 
     def _observe(self, store: Any, sc: _Sys, e: str, now: float, dt: float,
                  degraded: bool) -> _Obs:
@@ -603,9 +642,20 @@ class GovernorEngine(Engine):
         ob.alarm_axes = {canonical_axis(x) for x in (ob.alarm or {}).get("axes") or ()}
         ob.q_inst = _vec1(store, s, e, Q_INST, now)
         ob.q_all = _vec1(store, s, e, Q_ALL, now)
+        ob.e_inst = None
         # accumulators
         aa = _dict_at(store, s, e, ACC_ALARM, now)
         prow = store.vec_at(s, e, P, now)
+        if self._canon:
+            # spec v2.1: H-stream values (accumulators, q_inst.h) hold between
+            # H ticks; e_inst = min over the streams (grains.e_inst)
+            qh = _latest1(store, s, e, Q_INST_H, now - HOLD_H_S)
+            ob.e_inst = GR.e_inst({"t": ob.q_inst, "h": qh}, dt, GR.CANONICAL)
+            prow = _latest_rows(store, s, e, P, now - HOLD_H_S)
+            if not aa:
+                tail = store.derived_tail(s, e, ACC_ALARM, 1)
+                if tail and tail[-1].ts >= now - HOLD_H_S and isinstance(tail[-1].value, Mapping):
+                    aa = tail[-1].value
         alarmed = {d for d, v in aa.items() if d in _ACC_SET and _f(v) >= 0.5} if aa else set()
         ob.acc_alarmed = alarmed
         ob.acc_max = 1.0 if alarmed else _NAN
@@ -621,7 +671,7 @@ class GovernorEngine(Engine):
                     ob.acc_max = mx
                 if not ob.acc_suspect:
                     # guard: h/2 AND rarer than ACC_SUSPECT_E_DAY per day after Bonferroni
-                    lim = ACC_SUSPECT_E_DAY * dt / DAY / int(ok.sum())
+                    lim = ACC_SUSPECT_E_DAY * self._periods(dt)[ok] / DAY / int(ok.sum())
                     ob.acc_suspect = bool(np.any((L >= ACC_SUSPECT_LEVEL) & (p[ok] <= lim)))
         # changepoint
         ob.cp_prob = _vec1(store, s, e, CP_PROB, now)
@@ -658,6 +708,18 @@ class GovernorEngine(Engine):
         is open); the level source is kept consistent (_sync_base)."""
         if not ob.lv_loaded:
             ob.lv_loaded = True
+            if self._canon:
+                # spec v2.1: zr of the H rows, held between H ticks; the
+                # H-grain vec as the fallback source
+                row = _latest_row(store, s, e, ZR, now - HOLD_H_S)
+                if row is not None:
+                    ob.lv, ob.src = group_levels(row), "zr"
+                else:
+                    row = _latest_row(store, s, e, "feature.vec.h", now - HOLD_H_S)
+                    if row is not None:
+                        ob.lv, ob.src = group_levels(row), "vec"
+                self._sync_base(model, ob)
+                return ob.lv
             row = store.vec_at(s, e, ZR, now)
             if row is not None:
                 ob.lv, ob.src = group_levels(row), "zr"
@@ -851,6 +913,12 @@ class GovernorEngine(Engine):
         ep["ticks"] = int(ep["ticks"]) + 1
         if ob.alarm is not None:
             ep["last_alarm"] = now
+        if ob.alarm is not None or ob.acc_alarmed:
+            # the anomaly's own persistence (REJECT corroboration, m_governor)
+            ep["ev_ticks"] = int(ep.get("ev_ticks") or 0) + 1
+            if ep.get("ev_first") is None:
+                ep["ev_first"] = now
+            ep["ev_last"] = now
         if ob.degraded:
             ep["degraded_ts"] = now
         # axes: a new one restarts the clean duration
@@ -1021,7 +1089,11 @@ class GovernorEngine(Engine):
         negative = MG.terms_negative(terms)
         onset = _f(ep["onset"])
         in_regime = now - _f(ep["start"])            # time in regime (since SUSPECT)
-        verdict = MG.decide(typ, x, in_regime, malicious, negative, ramp_blocked)
+        span = _f(ep.get("ev_last")) - _f(ep.get("ev_first"))
+        corroborated = MG.reject_corroborated(fl, int(ep.get("ev_ticks") or 0), span)
+        ep["corroborated"] = bool(corroborated)
+        verdict = MG.decide(typ, x, in_regime, malicious, negative, ramp_blocked,
+                            corroborated=corroborated)
         if verdict is None and is_class(e) and not malicious and not ramp_blocked:
             cs = _f(ep.get("concord_since"))
             if cs == cs and now - cs >= CLASS_ACCEPT_S:
@@ -1278,7 +1350,7 @@ class GovernorEngine(Engine):
                e: str) -> Tuple[float, float]:
         if ob.degraded:
             return _NAN, _NAN
-        prov = evidence_factor(ob.q_inst, ob.q_all, dt)
+        prov = evidence_factor(ob.q_inst, ob.q_all, dt, getattr(ob, "e_inst", None))
         if ob.alarm is not None or ob.findings_med:
             prov = 0.0
         trust = prov
@@ -1286,6 +1358,23 @@ class GovernorEngine(Engine):
         if live or model["regime"] not in MG.TRUSTED_STATES or ob.acc_max >= ACC_TRUST_LEVEL:
             trust = 0.0
         return prov, trust
+
+    def _trust_evidence(self, ob: _Obs) -> float:
+        """behavior.trust_evidence (m_governor.evidence_weight), live ticks
+        only: the live trust's gates on the row itself - [no alarm] x [no
+        discrete finding >= MEDIUM] x [every accumulator < h/2] - without
+        the regime / incident state and without the q_inst evidence factor.
+        A normal live commit's trust already contains these; they bind only
+        where a learner commits with trust_prov, i.e. a release, which would
+        otherwise admit a row whose accumulators were at alarm level (B24,
+        B25). Not written in training: gating warm-up rows on their own
+        evidence truncates the null the rings estimate (measured, W7 tuning:
+        pack A single-tick exceedance 5x -> 18-62x nominal)."""
+        if ob.degraded:
+            return _NAN
+        if ob.alarm is not None or ob.findings_med or ob.acc_max >= ACC_TRUST_LEVEL:
+            return 0.0
+        return 1.0
 
     def _quarantine(self, model: Dict[str, Any], sc: _Sys, e: str) -> bool:
         live = any(i.status in LIVE for i in sc.incidents.get(e, []))
@@ -1440,6 +1529,35 @@ def _set_state(model: Dict[str, Any], state: str, now: float, reason: str) -> No
               "type": model.get("type"), "p_legit": _enc(model.get("p_legit")),
               "reason": reason})
     del h[:-HISTORY_CAP]
+
+
+def _latest1(store: Any, s: str, e: str, name: str, since: float) -> float:
+    """spec v2.1: the newest value of a 1-element ring written since `since`."""
+    ts, M = store.vec_since(s, e, name, since)
+    if not len(ts):
+        return _NAN
+    v = float(M[-1, 0])
+    return v if math.isfinite(v) else _NAN
+
+
+def _latest_row(store: Any, s: str, e: str, name: str, since: float) -> Optional[np.ndarray]:
+    ts, M = store.vec_since(s, e, name, since)
+    return np.asarray(M[-1], dtype=np.float64) if len(ts) else None
+
+
+def _latest_rows(store: Any, s: str, e: str, name: str, since: float) -> Optional[np.ndarray]:
+    """Per column the newest finite value since `since` (NaN if none): an
+    H-stream p holds until the next H tick while T-stream p are per tick."""
+    ts, M = store.vec_since(s, e, name, since)
+    if not len(ts):
+        return None
+    M = np.asarray(M, dtype=np.float64)
+    out = np.full(M.shape[1], np.nan)
+    for j in range(M.shape[0]):
+        row = M[j]
+        ok = np.isfinite(row)
+        out[ok] = row[ok]
+    return out
 
 
 def _dict_at(store: Any, s: str, e: str, name: str, now: float) -> Mapping[str, Any]:

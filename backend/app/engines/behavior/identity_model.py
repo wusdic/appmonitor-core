@@ -75,6 +75,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import gating as G
 from .lib import m_class
+from .lib import grains as GR
 from .lib import m_identity as MI
 from .lib import m_seq
 from .lib import m_vocab
@@ -427,15 +428,25 @@ class IdentityModelEngine(Engine):
         self.cal_open_max = int(cal_open_max)
         self.cal_gap_s = float(cal_gap_s)
         self._now, self._dt, self._config = 0.0, 900.0, {}
-        self._learner = G.GatedLearner(name=LEARNER, init=new_state, update=_update,
-                                       fetch=self._fetch, dump=_dump, load=_load,
-                                       merge=_merge)
+        self._learner_tick = G.GatedLearner(name=LEARNER, init=new_state, update=_update,
+                                            fetch=self._fetch, dump=_dump, load=_load,
+                                            merge=_merge)
+        # spec v2.1: windows of 4 committed active H rows (clock feature.meta.h)
+        self._learner_h = G.GatedLearner(name=LEARNER, init=new_state, update=_update,
+                                         fetch=self._fetch_h, dump=_dump, load=_load,
+                                         merge=_merge, clock="feature.meta.h", window_s=3600.0)
+        self._learner = self._learner_tick
+        self._canon = False
 
     # ------------------------------------------------------------------ run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
         store = ctx.store
         self._now, self._dt, self._config = float(ctx.now), float(ctx.window_s), ctx.config
+        self._canon = GR.canonical(ctx.config)
+        self._learner = self._learner_h if self._canon else self._learner_tick
         self._learner.d_min_s = float(ctx.config.get("D_min_s") or G.D_MIN_S)
+        if self._canon and not GR.decision(self._now, self._dt, "h", GR.CANONICAL):
+            return 0                     # spec v2.1: collection / calibration on H ticks
         return sum(self._system(ctx, s) for s in store.systems())
 
     def refit(self, ctx: Context, system: Optional[str] = None) -> int:
@@ -480,7 +491,8 @@ class IdentityModelEngine(Engine):
         sched = idw["sched"]
         sched["ticks"] += 1
         by_clock = self.entity_due((s, "identity_fit"), now, self.fit_period_s)
-        if sched["last_fit"] is None or sched["ticks"] >= self.fit_ticks or by_clock:
+        by_ticks = sched["ticks"] >= self.fit_ticks and not self._canon   # v2.1: wall clock only
+        if sched["last_fit"] is None or by_ticks or by_clock:
             n = self._fit(ctx, s, idw)
             if n:
                 sched["ticks"], sched["last_fit"] = 0, now
@@ -501,11 +513,19 @@ class IdentityModelEngine(Engine):
         row = MI.tick_row(store, s, e, ts, tctx=tc, depth=depth)
         return None if row is None else (float(ts), row.tolist())
 
+    def _fetch_h(self, store, s: str, e: str, ts: float) -> Optional[Tuple[float, List[float]]]:
+        """spec v2.1: an active H row (m_identity.grain_row)."""
+        a = store.vec_at(s, e, "feature.meta.h", ts)
+        if a is None or not len(a) or not float(a[0]) > 0.5:
+            return None
+        row = MI.grain_row(store, s, e, ts, config=self._config, dt=self._dt)
+        return None if row is None else (float(ts), row.tolist())
+
     def _collect(self, ctx: Context, s: str, e: str, idw: Dict[str, Any]) -> int:
         store = ctx.store
         rec = idw["ents"].get(e)
         if rec is None:
-            if store.vec_latest(s, e, ACTIVE) is None:
+            if store.vec_latest(s, e, "feature.meta.h" if self._canon else ACTIVE) is None:
                 return 0                           # no feature rows yet
             rec = idw["ents"][e] = {"state": new_state(), "gate": G.GateState(), "vecs": {}}
         gate = G.GateState.from_dict(rec["gate"])
@@ -567,7 +587,8 @@ class IdentityModelEngine(Engine):
         live = set(ents)
         for e in [e for e, a in acc.items() if e not in live or now - a["t0"] > CAL_STALE_S]:
             del acc[e]
-        active = [e for e in ents if _active_now(store, s, e, now)]
+        active = [e for e in ents if _active_now(store, s, e, now,
+                                                 "feature.meta.h" if self._canon else ACTIVE)]
         if not active:
             return
         model = MI.get(store, s)
@@ -595,8 +616,12 @@ class IdentityModelEngine(Engine):
         ring = cal["ring"]
         for e in todo:
             a = acc[e]
-            tc = MI._dict_at(store, s, e, TCTX, now, 2)
-            data = MI.tick_modal_data(store, s, e, now, tctx=tc, smap=smap)
+            if self._canon:
+                data = MI.grain_modal_data(store, s, e, now, smap=smap, config=self._config,
+                                           dt=dt)
+            else:
+                tc = MI._dict_at(store, s, e, TCTX, now, 2)
+                data = MI.tick_modal_data(store, s, e, now, tctx=tc, smap=smap)
             llrs = MI.modality_llrs(store, s, a["c"], data, now, bg)
             for ci, c in enumerate(a["c"]):
                 for mi, m in enumerate(NG_MODS):
@@ -947,8 +972,8 @@ def _nstats(M: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     return np.where(n > 0, mean, np.nan), np.where(n > 0, var, np.nan), n
 
 
-def _active_now(store, s: str, e: str, now: float) -> bool:
-    a = store.vec_at(s, e, ACTIVE, now)
+def _active_now(store, s: str, e: str, now: float, name: str = ACTIVE) -> bool:
+    a = store.vec_at(s, e, name, now)
     return a is not None and len(a) > 0 and float(a[0]) > 0.5
 
 

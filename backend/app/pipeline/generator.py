@@ -26,8 +26,10 @@ What v2 models, and why:
   host 10.30.2.50 carrying two interactive personas.
 * Mechanics. Human counts are Poisson(rate * dt) with the rate integrated
   over 5-minute sub-intervals in LOCAL time (tz and holiday / make-up workday
-  calendar from the pack). Events are laid out as sessions inside the tick,
-  so obs.ts is a real sub-tick time. Idle ticks are really idle: an entity
+  calendar from the pack). Sessions are a continuous-time process (Poisson
+  starts, geometric sizes, log-normal think times) carried across tick
+  boundaries, so the traffic mix does not depend on the tick length; obs.ts
+  is a real sub-tick time. Idle ticks are really idle: an entity
   with nothing to do emits nothing (no forced DNS query). Human uploads are
   heavy-tailed (writes sometimes carry an attachment), so a user's per-tick
   log bytes_up has sd ~ 1: the regime the spec's "T2 stays at |z| < 2.5" and
@@ -923,7 +925,7 @@ class TrafficGenerator:
             out: List[list] = []
             models = [m.swap] if m.swap is not None else p.models
             for hm in models:
-                out.extend(self._emit_human(hm, r, tk, m))
+                out.extend(self._emit_human(hm, r, tk, m, f"hs|{key}|{hm.key}"))
             return out
         if arch == "scanner":
             return self._emit_scanner(key, r, tk)
@@ -937,80 +939,114 @@ class TrafficGenerator:
         return self._emit_periodic(mm, key, r, tk, m)
 
     def _emit_human(self, hm: HumanModel, r: np.random.Generator, tk: Tick,
-                    m: Mods) -> List[list]:
+                    m: Mods, skey: str = "") -> List[list]:
+        """Sessions as a continuous-time process, independent of the tick grid.
+
+        Session starts are Poisson with rate rate_s * activity / sess_len in
+        each sub-interval, a session holds Geometric(1 / sess_len) events
+        (mean sess_len, so the event rate is rate_s * activity as before) with
+        log-normal think times, and events that fall after the tick end are
+        carried to the tick that contains them (state `hs|<key>|<model>`).
+
+        Why: sessions used to be laid out INSIDE each tick (every tick started
+        at least one new session, whose span was squeezed into the tick). At
+        dt = 60 s that made every minute a session start: 4x the login
+        redirects (3xx), 2.5x the POSTs, 4x the DNS lookups and a median
+        inter-request gap of 50 s instead of 10 s, relative to the same
+        persona at 900 s. A warm-up at 900 s followed by a live phase at 60 s
+        (pack E, the Runtime) then compared two different populations."""
+        skey = skey or f"hs|{hm.key}"
+        pend = self._state.pop(skey, None) or []
+        t1 = tk.t1
+        out: List[list] = [e for e in pend if e[0] < t1]
+        keep: List[list] = [e for e in pend if e[0] >= t1]
         act = hm.activity(tk, m.force)
         lam = hm.rate_s * tk.sub * act * m.vol
         tot = float(lam.sum())
-        if tot <= 1e-9:
-            return []
-        n = int(r.poisson(tot))
-        if n == 0:
-            return []
-        # sessions: sizes, start sub-interval (∝ rate), think-time offsets
-        k = 1 + int(r.binomial(n - 1, 1.0 / hm.sess_len)) if n > 1 else 1
-        sizes = r.multinomial(n, np.full(k, 1.0 / k))
-        sizes = sizes[sizes > 0]
-        cell = r.choice(tk.M, size=len(sizes), p=lam / tot)
-        starts = tk.t0 + (cell + r.random(len(sizes))) * tk.sub
-        think = r.lognormal(hm.think_mu, hm.think_sigma, n)
-        u_nav = r.random(n)
-        u_id = r.random(n)
-        u_err = r.random(n)
-        u_var = r.random(n)
-        s_up = r.lognormal(0.0, 0.3, n)
-        s_down = r.lognormal(0.0, 0.5, n)
-        u_att = r.random(n)
-        s_att = r.lognormal(0.0, 1.0, n)
-        vocab, tc, sc_ = hm.vocab, hm.trans_cum, hm.start_cum
-        stack = hm.stack
-        extra = m.extra_tpls
-        u_x = r.random(n) if extra else None
-        out: List[list] = []
-        i = 0
-        t1 = tk.t1
-        for size, st in zip(sizes.tolist(), starts.tolist()):
-            offs = np.cumsum(think[i:i + size]) - think[i]
-            span = float(offs[-1])
-            if span >= tk.dt * 0.98:
-                offs = offs * (tk.dt * 0.98 / max(span, 1e-9))
-                span = float(offs[-1])
-            if st + span >= t1:
-                st = max(tk.t0, t1 - span - 1e-3)
-            state = -1
-            for j in range(size):
-                u = u_nav[i]
-                if state < 0:
-                    state = min(bisect.bisect_right(sc_, u), hm.K - 1)
-                else:
-                    state = min(bisect.bisect_right(tc[state], u), hm.K - 1)
-                t = vocab[state]
-                if extra and u_x is not None:
-                    acc = 0.0
-                    for share, xt in extra:
-                        acc += share
-                        if u_x[i] < acc:
-                            t = xt
-                            break
-                oid = hm.id_lo + int(u_id[i] ** 3 * hm.id_w)         # personal working set
-                path = t.render(oid, u_var[i])
-                if u_err[i] < hm.err:
-                    status = (404, 403, 500, 400)[int(u_err[i] / hm.err * 4) % 4]
-                elif t.cat == "auth" and t.method == "POST":
-                    status = 302
-                else:
-                    status = 200
-                up = t.base_up * s_up[i]
-                if t.write and u_att[i] < t.att_p:          # attachment / form body
-                    up += t.att_bytes * hm.size_mult * s_att[i]
-                down = t.base_down * hm.size_mult * s_down[i]
-                out.append([st + float(offs[j]), "h", t.method, t.host, path, status,
-                            up, down, t.srv_ms, stack])
-                i += 1
-            # the browser resolves the system host once per session (cached)
-            if u_var[i - 1] < 0.6:
-                h = vocab[0].host
-                out.append([max(tk.t0, st - 0.05), "d", "A", h, "NOERROR", 0,
-                            60.0 + len(h), 120.0, 2.0, stack])
+        q = 1.0 / max(1.0, hm.sess_len)
+        ns = int(r.poisson(tot * q)) if tot > 1e-9 else 0
+        if ns > 0:
+            cell = r.choice(tk.M, size=ns, p=lam / tot)
+        else:
+            cell = np.zeros(0, dtype=np.int64)
+        for x, y in m.force:
+            # a scenario's forced activity window (T5 / T16 off-hours) holds at
+            # least one session: the Poisson start count of a short window can
+            # be 0, and the scenario would then not happen at all. Once per
+            # window (state), in its first tick with a forced cell, so the
+            # guarantee does not depend on the tick length
+            fk = f"forced|{skey}|{x:.0f}"
+            if self._state.get(fk):
+                continue
+            fc = np.flatnonzero((tk.mids >= x) & (tk.mids < y) & (lam > 0))
+            if not fc.size:
+                continue
+            self._state[fk] = True
+            if not np.isin(cell, fc).any():
+                cell = np.append(cell, int(fc[0]))
+        ns = int(cell.size)
+        if ns > 0:
+            starts = tk.t0 + (cell + r.random(ns)) * tk.sub
+            sizes = r.geometric(q, ns)
+            n = int(sizes.sum())
+            think = r.lognormal(hm.think_mu, hm.think_sigma, n)
+            u_nav = r.random(n)
+            u_id = r.random(n)
+            u_err = r.random(n)
+            u_var = r.random(n)
+            s_up = r.lognormal(0.0, 0.3, n)
+            s_down = r.lognormal(0.0, 0.5, n)
+            u_att = r.random(n)
+            s_att = r.lognormal(0.0, 1.0, n)
+            vocab, tc, sc_ = hm.vocab, hm.trans_cum, hm.start_cum
+            stack = hm.stack
+            extra = m.extra_tpls
+            u_x = r.random(n) if extra else None
+            i = 0
+            for size, st in zip(sizes.tolist(), starts.tolist()):
+                offs = np.cumsum(think[i:i + size]) - think[i]
+                state = -1
+                sess: List[list] = []
+                # the browser resolves the system host once per session (cached)
+                if u_var[i + size - 1] < 0.6:
+                    h = vocab[0].host
+                    sess.append([st - 0.05, "d", "A", h, "NOERROR", 0,
+                                 60.0 + len(h), 120.0, 2.0, stack])
+                for j in range(size):
+                    u = u_nav[i]
+                    if state < 0:
+                        state = min(bisect.bisect_right(sc_, u), hm.K - 1)
+                    else:
+                        state = min(bisect.bisect_right(tc[state], u), hm.K - 1)
+                    t = vocab[state]
+                    if extra and u_x is not None:
+                        acc = 0.0
+                        for share, xt in extra:
+                            acc += share
+                            if u_x[i] < acc:
+                                t = xt
+                                break
+                    oid = hm.id_lo + int(u_id[i] ** 3 * hm.id_w)         # personal working set
+                    path = t.render(oid, u_var[i])
+                    if u_err[i] < hm.err:
+                        status = (404, 403, 500, 400)[int(u_err[i] / hm.err * 4) % 4]
+                    elif t.cat == "auth" and t.method == "POST":
+                        status = 302
+                    else:
+                        status = 200
+                    up = t.base_up * s_up[i]
+                    if t.write and u_att[i] < t.att_p:          # attachment / form body
+                        up += t.att_bytes * hm.size_mult * s_att[i]
+                    down = t.base_down * hm.size_mult * s_down[i]
+                    sess.append([st + float(offs[j]), "h", t.method, t.host, path, status,
+                                 up, down, t.srv_ms, stack])
+                    i += 1
+                for e in sess:
+                    if e[0] < tk.t0:
+                        e[0] = tk.t0                      # the DNS lookup of a session at t0
+                    (out if e[0] < t1 else keep).append(e)
+        if keep:
+            self._state[skey] = keep
         return out
 
     def _renewal(self, key: str, tk: Tick, period: float, jitter_abs: float,
@@ -1031,8 +1067,10 @@ class TrafficGenerator:
                        m: Mods) -> List[list]:
         """API clients and integration: polls of `batch` requests."""
         times = self._renewal(f"clk|{key}", tk, mm.period, mm.period * mm.jitter, r)
-        if not times:
-            return []
+        # no early return on a tick without a poll: the resolver clock below
+        # must still run, or its lookups in that tick are skipped for good
+        # (at dt = 60 s most ticks of a 90-150-s poller have no poll, and the
+        # API clients made half their DNS queries relative to 900 s)
         out: List[list] = []
         load = 1.0
         if mm.archetype == "api":                 # mild business-hours load swing
@@ -1090,7 +1128,10 @@ class TrafficGenerator:
                 out.append([t, "h", "PUT", e.host, f"/blob/{oid}", 200,
                             float(r.uniform(2e6, 6e6)), float(r.uniform(500, 2000)),
                             float(r.uniform(500, 3000)), stack])
-            out.append([lo, "d", "A", e.host, "NOERROR", 0, 80.0, 120.0, 1.5, stack])
+            if tk.t0 <= a < tk.t1:
+                # one lookup when the job starts, not one per tick of the
+                # window (at dt = 60 s that was ~60 lookups per backup run)
+                out.append([a, "d", "A", e.host, "NOERROR", 0, 80.0, 120.0, 1.5, stack])
         return out
 
     def _emit_scanner(self, key: str, r: np.random.Generator, tk: Tick,
@@ -1204,11 +1245,20 @@ class TrafficGenerator:
                 sample = [round(t - t0, 3) for t in ts]
             rep = list(e)
             rep[EV_UP], rep[EV_DOWN], rep[EV_DUR] = up / w, down / w, dur / w
+            retr = int(r.poisson(0.02 * m.retrans * w))
+            # every per-record field of an aggregate is a per-flow value (R1
+            # adds w x field), so the group's retransmit TOTAL travels in
+            # extra like the byte totals; the int field carries the rounded
+            # per-flow mean. Before, the total sat in the per-flow field and
+            # R1 multiplied it by w again: l4.retransmit_rate ~w x too high in
+            # aggregated ticks (logit +1.9 on busy machines), so a warm-up in
+            # aggregated mode and a live phase in event mode (pack E) disagreed
             extra = {"count": w, "bytes_up_total": int(round(up)),
                      "bytes_down_total": int(round(down)), "ts_sample": sample}
-            retr = int(r.poisson(0.02 * m.retrans * w))
+            if e[EV_CH] == "h":               # _make_obs carries retransmits on TCP/HTTP only
+                extra["retransmits_total"] = retr
             out.append(_make_obs(system, entity, rep, t0, rtt0 * float(r.lognormal(0, 0.1)),
-                                 retr, extra))
+                                 int(round(retr / w)), extra))
         return out
 
     # --------------------------------------------------- scenario effects
@@ -1327,7 +1377,7 @@ class TrafficGenerator:
             st = Stack("t6-python", PY_REQUESTS, ja3(_LIB_CIPH, _LIB_EXT, (64123,)), 64, 29200)
         r = self._sc_rng(sc)
         a, b = self._span(sc, tk)
-        evs = self._emit_human(hm, r, tk, _NO_MODS)
+        evs = self._emit_human(hm, r, tk, _NO_MODS, f"hs|{sc.scenario_id}|{key}")
         for e in evs:
             e[EV_STACK] = st
         extra.setdefault(key, []).extend(e for e in evs if a <= e[EV_TS] < b)

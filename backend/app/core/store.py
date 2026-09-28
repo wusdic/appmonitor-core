@@ -106,6 +106,36 @@ DEFAULT_RETENTION: Dict[str, Tuple[Optional[int], Optional[float]]] = {
     "behavior.budget": (24, 1 * DAY),           # 36 entries per point (B13)
     "behavior.class.agg": (None, 9 * DAY),      # B18 reference replay clock (24 h + 8 d)
     "behavior.calib_health": (None, 8 * DAY),   # B24
+    # spec v2.1 grain series (docs/lib3/cadence.md §5.2); written in
+    # canonical grain mode only, so tick mode keeps v2's memory
+    "l4.peer_ids": (None, 75 * 60.0),           # SetSketches: >= G_h + max dt (<= 900)
+    "l4.dport_ids": (None, 75 * 60.0),
+    "tls.ja3_ids": (None, 75 * 60.0),
+    "act.template_ids": (None, 75 * 60.0),
+    "act.slot_events": (None, 25 * HOUR),       # joins the D0 / D2 inputs
+    "feature.part": (None, 2 * HOUR),
+    "feature.live": (None, 6 * HOUR),
+    "feature.meta": (None, 8 * DAY),
+    "feature.vec.h": (None, 2 * DAY),           # identity windows look back 48 h
+    "feature.vec.q": (None, 2 * DAY),
+    "feature.sketch.h": (None, 2 * DAY),
+    "behavior.prov": (None, 1 * DAY),
+    "behavior.wh.q": (None, 6 * HOUR),
+    "behavior.common.q": (None, 6 * HOUR),
+    "behavior.q_inst.h": (None, 8 * DAY),
+    "behavior.evidence.h": (None, 8 * DAY),
+    # retention audit (perf, integration.md §9): lib-3 series that had no rule
+    # (20000 points: 208 d at 900 s) get the 8-d lib-3 horizon. Every engine
+    # reads them at now or a few points back; behavior.seq.class_llr is B10's
+    # gated-learner clock (replay <= 192 h, like feature.nat).
+    "behavior.acc_alarm": (None, 8 * DAY),
+    "behavior.rhythm": (None, 8 * DAY),
+    "behavior.timing": (None, 8 * DAY),
+    "behavior.id": (None, 8 * DAY),
+    "behavior.class": (None, 8 * DAY),          # behavior.class.agg keeps its 9 d
+    "behavior.common.": (None, 8 * DAY),        # behavior.common.q keeps its 6 h
+    "behavior.cp.": (None, 8 * DAY),
+    "behavior.seq.": (None, 8 * DAY),
 }
 RAW_SCALAR_MAX_AGE = 6 * HOUR
 # timeline(): a vec-ring risk point is listed when it enters a new 10-point band
@@ -202,6 +232,8 @@ class _VecRing:
         """Logical insertion index of t (np.searchsorted semantics)."""
         if not self.n:
             return 0
+        if self.start + self.n <= self.cap:        # not wrapped: one sorted segment
+            return int(np.searchsorted(self.ts[self.start:self.start + self.n], t, side=side))
         end1 = min(self.start + self.n, self.cap)
         seg1 = self.ts[self.start:end1]
         i = int(np.searchsorted(seg1, t, side=side))
@@ -211,6 +243,8 @@ class _VecRing:
         return len(seg1) + int(np.searchsorted(seg2, t, side=side))
 
     def drop_before(self, cutoff: float) -> None:
+        if not self.n or self.ts[self.start] >= cutoff:   # common case: nothing expired
+            return
         k = self.search(cutoff, "left")
         if k:
             self.start = (self.start + k) % self.cap
@@ -354,6 +388,7 @@ class MetricStore:
         self._systems: set[str] = set()
         self._entities: Dict[str, set[str]] = defaultdict(set)
         self._pseudo: Dict[str, set[str]] = defaultdict(set)
+        self._is_pseudo: Dict[str, bool] = {}
         self._first_seen: Dict[Tuple[str, str], float] = {}
         self._last_seen: Dict[Tuple[str, str], float] = {}
         # retention
@@ -456,7 +491,10 @@ class MetricStore:
             self._entities[system].add(entity)
 
     def _register_pseudo(self, system: str, entity: str) -> None:
-        if is_pseudo_entity(entity):
+        pseudo = self._is_pseudo.get(entity)        # memo: called on every write
+        if pseudo is None:
+            pseudo = self._is_pseudo[entity] = is_pseudo_entity(entity)
+        if pseudo:
             self._pseudo[system].add(entity)
 
     def add_raw(self, m: RawMetric, touch: bool = True) -> None:
@@ -615,7 +653,13 @@ class MetricStore:
         """The row written at exactly `ts`, or None."""
         with self._lock:
             ring = self._vec.get(_k(system, entity, name))
-            if ring is None:
+            if ring is None or not ring.n:
+                return None
+            p = (ring.start + ring.n - 1) % ring.cap     # fast path: the newest row
+            last = ring.ts[p]
+            if ts == last:
+                return ring.data[p].copy()
+            if ts > last:
                 return None
             i = ring.search(ts, "left")
             if i < ring.n and ring.ts_at(i) == ts:
@@ -1041,6 +1085,14 @@ class MetricStore:
             if vecs:
                 names.update(v for v, (vec, _) in self._virtual.items() if vec in vecs)
             return sorted(names)
+
+    def names_signature(self, system: str, entity: str) -> Tuple[int, int, int]:
+        """O(1) change marker of derived_names / vec_names of an entity: the
+        name sets only grow, so equal sizes mean equal lists (callers cache
+        name scans on it)."""
+        with self._lock:
+            return (len(self._derived_names.get((system, entity), ())),
+                    len(self._vec_names.get((system, entity), ())), len(self._virtual))
 
     def latest_raw(self, system: str, entity: str, name: str) -> Optional[RawMetric]:
         with self._lock:

@@ -227,6 +227,9 @@ def test_small_ring_blends_with_the_class_pooled_ring():
         assert npool >= 64 and pp == pp
         conf = calib.p_from_ring(own if own is not None else calib.Ring(), x, u)
         expect = calib.blend_small_sample(conf, pp, n)
+        k = 0 if own is None else int(np.sum(own.scores > calib._r32(x)))
+        if k:                                  # own-history floor of the blend
+            expect = max(expect, k / (n + 1.0))
         assert rig.p(new, "marg_int", ts) == m_calib.issued(expect)
         assert m_calib.issued(m_calib.p_from_snapshot(
             rig.model(new), "marg_int", ST, x, u, pooled=pool)) == rig.p(new, "marg_int", ts)
@@ -461,3 +464,20 @@ def test_identity_rings_are_per_cadence_class():
     assert m_calib.ring_size(rig.model(), "identity", calib.identity_stratum_key(
         "wd_day", 0, 900)) == 0
     assert rig.p(E, "identity", ts) == pytest.approx(0.95, rel=1e-6)
+
+
+def test_small_sample_prior_cannot_contradict_the_own_ring():
+    """A sparse entity (one scored hour a night) scored against its peers has
+    pm ~ 1e-18 every night and the same score in its own (small) ring every
+    night. The prior may add resolution beyond the ring, but p is at least
+    #{ring > s} / (n + 1): the blend used to issue p ~ 1e-16 every night."""
+    ring = calib.Ring()
+    for i, v in enumerate([17.1, 17.8, 18.0, 18.2, 18.3, 18.5, 18.6, 17.5, 17.9, 18.1]):
+        ring.add(v, 1000.0 + i)
+    p = m_calib.p_value(ring, 15.5, 0.5, 1e-18)
+    assert p >= 10 / 11 - 1e-12
+    p_mid = m_calib.p_value(ring, 18.05, 0.5, 1e-18)          # 5 ring entries above
+    assert p_mid >= 5 / 11 - 1e-12
+    p_top = m_calib.p_value(ring, 25.0, 0.5, 1e-18)           # beyond the ring: prior counts
+    assert p_top < 1e-10
+    assert m_calib.p_value(ring, 15.5, 0.5, float("nan")) == calib.p_from_ring(ring, 15.5, 0.5)

@@ -301,3 +301,63 @@ def test_profile_regime_merged_and_profile_version_on_accept():
     assert sim.regime() == MG.NORMAL
     assert MG.regime_at(sim.store, S, E, t - DT) == MG.ACCEPTED
     assert MG.regime_at(sim.store, S, E, t) == MG.NORMAL
+
+
+def test_one_tick_rhythm_alarm_with_lib4_high_does_not_reject_on_the_first_live_tick():
+    """integration §8: a rhythm-type suspect met a lib-4 HIGH match on the first
+    live tick; prior 0 + lib-4 (-2.3) gave P = 0.09 and REJECT froze the entity
+    at once. A REJECT now needs the anomaly to persist (>= 4 evidence ticks
+    over >= 1 h) or two independent malicious sources."""
+    sim = Sim(seed=5)
+    sim.run(48, lambda st, t: sim.normal(E, t), training=True)
+    sim.tick(lambda st, t: (sim.shifted(E, t, 5.0, axes=("temporal",)), match(st, E, t)))
+    sim.run(12, lambda st, t: sim.normal(E, t))          # lib-4 read with a one-tick lag
+    st = states(sim.store)
+    assert "rejected" not in st and control(sim.store).get("frozen") is not True
+    assert "returned" in st and sim.regime() == MG.NORMAL
+
+
+def test_persistent_rhythm_alarm_with_lib4_high_still_rejects():
+    sim = Sim(seed=6)
+    sim.run(48, lambda st, t: sim.normal(E, t), training=True)
+    sim.tick(lambda st, t: (sim.shifted(E, t, 5.0, axes=("temporal",)), match(st, E, t)))
+    sim.run(6, lambda st, t: sim.shifted(E, t, 5.0, axes=("temporal",)))
+    assert sim.regime() == MG.REJECTED and control(sim.store)["frozen"] is True
+
+
+def test_reject_corroboration_rule():
+    assert MG.reject_corroborated({"malicious_label": True}, 0, 0.0)
+    assert not MG.reject_corroborated({"lib4_high": True}, 1, 0.0)
+    assert not MG.reject_corroborated({"lib4_high": True}, 4, 2700.0)      # < 1 h
+    assert not MG.reject_corroborated({"lib4_high": True}, 3, 7200.0)      # < 4 ticks
+    assert MG.reject_corroborated({"lib4_high": True}, 4, 3600.0)
+    assert MG.reject_corroborated({"lib4_high": True, "beacon": True}, 1, 0.0)
+    # identity mismatch and client concurrency are one source
+    assert not MG.reject_corroborated({"id_mismatch": True, "client_concurrency": True}, 1, 0.0)
+    assert MG.decide("rhythm", MG.LR_LIB4, 0.0, True, True, corroborated=False) is None
+    assert MG.decide("rhythm", MG.LR_LIB4, 0.0, True, True) == "reject"
+
+
+def test_trust_evidence_is_the_live_row_gate_without_the_meta_calibrated_factor():
+    """behavior.trust_evidence (read by B24 / B25 through
+    m_governor.evidence_weight): live ticks only; the alarm / finding /
+    accumulator gates of the row, never the q_inst evidence factor (B25's
+    own meta-calibrated output)."""
+    sim = Sim(seed=9)
+    t = sim.tick(lambda st, t: (sim.normal(E, t), put_acc(st, E, t, {"cusum": 1})),
+                 training=True)
+    assert np.isnan(ring(sim.store, E, MG.TRUST_EVIDENCE, t))       # not written in training
+    assert MG.evidence_weight(sim.store, S, E, t) == 1.0
+    sim.run(4, lambda st, t: sim.normal(E, t), training=True)
+    t = sim.tick(lambda st, t: sim.normal(E, t))
+    assert ring(sim.store, E, MG.TRUST_EVIDENCE, t) == 1.0
+    # a tiny q_inst lowers trust_prov / trust but not the row-evidence weight
+    t = sim.tick(lambda st, t: (put1(st, E, "behavior.q_inst", t, 1e-9),
+                                put1(st, E, "behavior.q_all", t, 1e-9)))
+    assert ring(sim.store, E, MG.TRUST_PROV, t) == 0.0
+    assert ring(sim.store, E, MG.TRUST_EVIDENCE, t) == 1.0
+    # an accumulator at alarm level, or an alarm, fails it
+    t = sim.tick(lambda st, t: (sim.normal(E, t), put_acc(st, E, t, {"cusum": 1})))
+    assert ring(sim.store, E, MG.TRUST_EVIDENCE, t) == 0.0
+    t = sim.tick(lambda st, t: sim.shifted(E, t, 7.0))
+    assert ring(sim.store, E, MG.TRUST_EVIDENCE, t) == 0.0

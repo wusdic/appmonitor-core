@@ -903,11 +903,49 @@ def bb_ppf(q: float, n: float, a: float, b: float) -> float:
             out[idx] = ni
         else:
             groups.setdefault((ni, float(a_[idx]), float(b_[idx])), []).append(idx)
+    small = [(key, idxs) for key, idxs in groups.items() if key[0] <= _BB_PPF_GRID_MAX]
+    if len(small) > 1:                          # one padded pmf pass for every small group
+        res_s = _bb_ppf_small_many([k for k, _ in small],
+                                   [[float(q_[i]) for i in idxs] for _, idxs in small])
+        for (_, idxs), res in zip(small, res_s):
+            for i, v in zip(idxs, res):
+                out[i] = v
+        groups = {key: idxs for key, idxs in groups.items() if key[0] > _BB_PPF_GRID_MAX}
     for (ni, ai, bi), idxs in groups.items():
         res = _bb_ppf_group(np.array([float(q_[i]) for i in idxs]), ni, ai, bi)
         for i, v in zip(idxs, res):
             out[i] = v
     return _out(out)
+
+
+def _bb_ppf_small_many(keys: list, qss: list) -> list:
+    """_bb_ppf_group for several (n, a, b) groups with n <= _BB_PPF_GRID_MAX at
+    once, bit-identical to it: each group's support 0..n is one row of a
+    zero-padded [G, max n + 1] matrix, the log pmf is element-wise, and
+    np.cumsum along a row is the same sequential sum as on the unpadded row
+    (padding zeros add exactly 0; the upper tail is accumulated from the top
+    as in _bb_ppf_group). Perf (docs/lib3/integration.md §9)."""
+    ns = np.array([k[0] for k in keys])
+    a = np.array([k[1] for k in keys])[:, None]
+    b = np.array([k[2] for k in keys])[:, None]
+    M = int(ns.max()) + 1
+    j = np.arange(float(M))[None, :]
+    valid = j <= ns[:, None]
+    jj = np.where(valid, j, 0.0)
+    nn = np.broadcast_to(ns[:, None], jj.shape)
+    pm = np.where(valid, np.exp(_bb_lpmf_a(jj, nn, a, b)), 0.0)
+    cdf = np.cumsum(pm, axis=1)
+    rev = np.cumsum(pm[:, ::-1], axis=1)[:, ::-1]          # P(K >= j), from the top
+    sf = np.concatenate((rev[:, 1:], np.zeros((len(keys), 1))), axis=1)   # P(K > j)
+    gi = np.repeat(np.arange(len(keys)), [len(q) for q in qss])
+    q = np.array([x for qs in qss for x in qs])[:, None]
+    hit = np.where(q <= 0.5, cdf[gi] >= q, sf[gi] <= 1.0 - q) & valid[gi]
+    res = np.where(hit.any(axis=1), np.argmax(hit, axis=1).astype(np.float64), ns[gi])
+    out, o = [], 0
+    for qs in qss:
+        out.append(res[o:o + len(qs)])
+        o += len(qs)
+    return out
 
 
 # ----------------------------------------------------------------- student-t
