@@ -19,11 +19,12 @@ from __future__ import annotations
 import datetime as _dt
 import math
 import os
+from typing import Any, Dict, List
 
 import numpy as np
 import pytest
 
-from app.core.engine import Registry
+from app.core.engine import Registry, default_config
 from app.core.store import MetricStore
 from app.engines.behavior.feature_vector import FeatureVectorEngine
 from app.engines.behavior.lib import features as F
@@ -43,6 +44,7 @@ from app.engines.raw.l4flow import L4FlowEngine
 from app.engines.raw.tls import TLSEngine
 from app.eval import packs as P
 from app.models.schema import AcquisitionMethod, RawMetric
+from app.pipeline.build import build_registry, load_signatures
 from app.pipeline.generator import TrafficGenerator
 from app.pipeline.orchestrator import Pipeline
 
@@ -239,9 +241,122 @@ def test_property_additive_h_values_equal_direct_sums(case):
 SLOW = os.environ.get("APPMON_SLOW") == "1"
 
 
+# Six control personas (4 human, 2 machine, no scenarios) warm up by the §10
+# rule for a Monday start (96 x 3600 s + 288 x 900 s, Fri..Sun), then run 12
+# live hours (09:00-21:00) at dt = 60 s. The twin run replays the SAME live
+# observations (the generator is stepped at 60 s in both runs, so its random
+# stream is identical) re-batched into 900-s ticks. Both runs are canonical.
+_PB_KEYS = ["erp-prod|10.20.1.11", "erp-prod|10.20.1.12", "erp-prod|10.20.1.13",
+            "erp-prod|10.20.1.15", "erp-prod|10.20.9.9", "api-gateway|10.40.4.51"]
+_PB_LIVE_S = 12 * 3600.0
+_PB_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
+
+def _pb_sev(x: Any) -> int:
+    return _PB_RANK.get(str(getattr(x, "value", x)).lower(), 0)
+
+
+def _pb_pack() -> P.Pack:
+    phases = P._phases((96, 3600.0), (288, 900.0), (int(_PB_LIVE_S // 60), 60.0))
+    tl = P.Timeline(P.SHANGHAI, CAL, _dt.date(2025, 3, 10), phases, scen_hour=9.0)
+    return P._pack("partB", tl, _PB_KEYS, [], "cadence part B", backgrounds=False)
+
+
+def _pb_run(live_dt: float, seed: int = 0, mode: str = "canonical") -> Dict[str, Any]:
+    pk = _pb_pack()
+    cfg = default_config({"tz": P.SHANGHAI, "calendar": CAL, "strict": True,
+                          "grain_mode": mode})
+    sig, comp = load_signatures()
+    pl = Pipeline(MetricStore(), build_registry(sig, comp, config=cfg), window_s=60, config=cfg)
+    gen = TrafficGenerator(seed=seed, pack=pk)
+    for n, dt, _agg in pk.phases[:-1]:
+        for _ in range(n):
+            # non-aggregated like the live phase: aggregated generator records
+            # (one record per (key, template) and tick) change the stream-
+            # timestamp and session features the live events are compared to
+            obs = gen.step(dt, aggregated=False)
+            pl.run_tick(obs, now=gen.vt, training=True, dt=dt)
+    t_live = gen.vt
+    buf: List[Any] = []
+    k = int(round(live_dt / 60.0))
+    for i in range(int(_PB_LIVE_S // 60)):
+        buf.extend(gen.step(60.0, live=True, aggregated=False))
+        if (i + 1) % k == 0:
+            pl.run_tick(buf, now=gen.vt, training=False, dt=live_dt)
+            buf = []
+    return {"store": pl.store, "t_live": t_live, "t_end": gen.vt}
+
+
+def _pb_stats(r: Dict[str, Any]) -> Dict[str, Any]:
+    st, t0 = r["store"], r["t_live"]
+    days = _PB_LIVE_S / 86400.0
+    single = 0
+    acc_b14 = 0
+    b14_episodes = 0
+    ents = [(s, e) for s in st.systems() for e in st.entities(s)]
+    for s, e in ents:
+        ts, E = st.vec_since(s, e, "behavior.e_day", t0 + 1e-6)
+        single += int(np.sum(np.asarray(E, dtype=float).reshape(-1) <= 0.03))
+        prev = False
+        for m in st.derived_tail(s, e, "behavior.acc_alarm", 10 ** 6):
+            if m.ts <= t0 or not isinstance(m.value, dict):
+                continue
+            on = any(m.value.get(d) for d in ("cusum", "mcusum"))
+            acc_b14 += int(on)
+            b14_episodes += int(on and not prev)
+            prev = on
+    incs = [i for i in st.incidents() if float(i.opened) > t0]
+    ident = [ev for ev in st.events(since=t0 + 1e-6, limit=10 ** 9)
+             if ev.kind in ("unknown_identity", "identity_mismatch") and _pb_sev(ev.severity) >= 2]
+    return {"single_tick_alarms": single,
+            "incidents_medium_plus": sum(1 for i in incs if _pb_sev(i.severity) >= 2),
+            "identity_medium_plus": len(ident), "acc_alarms_b14": acc_b14,
+            "b14_episodes": b14_episodes,
+            "far_low": sum(1 for i in incs if _pb_sev(i.severity) >= 1) / max(1e-9, len(ents) * days)}
+
+
+def _pb_h_mismatch(a: Dict[str, Any], b: Dict[str, Any]) -> int:
+    """Common H rows whose add-class features differ beyond 1e-5 relative."""
+    bad = 0
+    sa, sb = a["store"], b["store"]
+    add = [i for i, n in enumerate(F.FEATURE_NAMES_V2) if F.GRAIN_CLASS.get(n) == "add"]
+    for s in sa.systems():
+        for e in sa.entities(s):
+            ta, A = sa.vec_since(s, e, "feature.nat.h", a["t_live"] + 1e-6)
+            tb, B = sb.vec_since(s, e, "feature.nat.h", b["t_live"] + 1e-6)
+            rb = {float(t): np.asarray(r, dtype=float) for t, r in zip(tb, B)}
+            for t, ra in zip(ta.tolist(), A):
+                x = rb.get(float(t))
+                if x is None:
+                    bad += 1
+                    continue
+                ra = np.asarray(ra, dtype=float)
+                for i in add:
+                    u, v = ra[i], x[i]
+                    if math.isnan(u) and math.isnan(v):
+                        continue
+                    if not abs(u - v) <= 1e-5 * max(1.0, abs(u), abs(v)):
+                        bad += 1
+                        break
+    return bad
+
+
+def run_part_b(seed: int = 0) -> Dict[Any, Any]:
+    r60 = _pb_run(60.0, seed)
+    r900 = _pb_run(900.0, seed)
+    out: Dict[Any, Any] = {60.0: _pb_stats(r60), 900.0: _pb_stats(r900)}
+    out["h_row_mismatch"] = _pb_h_mismatch(r60, r900)
+    return out
+
+
+def test_part_b_pack_follows_the_monday_warmup_rule():
+    """Cheap structural check of the Part B pack (always collected)."""
+    pk = _pb_pack()
+    assert [(n, dt) for n, dt, _a in pk.phases] == [(96, 3600.0), (288, 900.0), (720, 60.0)]
+
+
 @pytest.fixture(scope="module")
 def part_b():
-    from tests_cadence_part_b import run_part_b      # tests/tests_cadence_part_b.py
     return run_part_b()
 
 
@@ -254,7 +369,10 @@ def test_part_b_live_60_equals_900(part_b):
     assert out["h_row_mismatch"] == 0
     a, b = out[60.0], out[900.0]
     assert a["identity_medium_plus"] == b["identity_medium_plus"]
-    assert a["acc_alarms_b14"] == b["acc_alarms_b14"]
+    # B14 alarm episodes, not ticks: a latched alarm is re-reported on every
+    # tick, so the same wall-clock episode is 15x the ticks at 60 s (eval
+    # round 3: 118 vs 6 ticks for two identical 1-h episodes)
+    assert a["b14_episodes"] == b["b14_episodes"]
     assert abs(a["incidents_medium_plus"] - b["incidents_medium_plus"]) <= 1
     fa, fb = a["far_low"], b["far_low"]
     assert (fa == 0 and fb == 0) or 0.5 <= (fa / fb if fb else math.inf) <= 2.0

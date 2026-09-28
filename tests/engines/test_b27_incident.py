@@ -736,3 +736,42 @@ def test_perf_40_entities():
     per_tick_ms = spent / n * 1000.0
     assert rig.store.incidents(system=S)
     assert per_tick_ms < 10.0, per_tick_ms                # spec: < 1 ms; generous for CI
+
+
+def test_decaying_risk_of_a_closed_incident_does_not_reopen_it_on_a_weak_hit():
+    """Evaluator round 3: after a quiet close the key's risk decays over days,
+    and a family at e_day <= 0.1 is an ordinary null event (~1 per entity-day
+    over the families); old risk + any later weak hit reopened the incident
+    within hours (pack A: 58 reopenings of 23 control incidents). Only risk
+    the last incident did not cover opens; new risk on top still does."""
+    rig = Rig()
+    p_hit = 0.05 * DT / 86400.0                            # e_day 0.05 <= 0.1
+
+    def before(st, t, i):
+        if i < 3:                                          # the episode: 3 alarm ticks
+            put_alarm(st, E, t, sev="medium", axes=("volume",), e_day=1e-4)
+            put1(st, E, "behavior.q_inst", t, 1e-5)
+            put1(st, E, "behavior.risk", t, 60.0)
+            return
+        put1(st, E, "behavior.q_inst", t, 0.5)
+        put_p(st, E, t, {"marg_int": 0.4, "cusum": 0.5})
+        if i < 30:
+            put1(st, E, "behavior.risk", t, 58.0 - 0.1 * (i - 3))   # old risk decaying
+        else:
+            put1(st, E, "behavior.risk", t, 90.0)                   # new evidence on top
+        if i in (20, 32):
+            put_dict(st, E, "behavior.p_family", t, {"shape": p_hit})
+
+    reopened_at, was_closed = None, False
+    for i in range(36):
+        rig.tick(lambda st, t, i=i: before(st, t, i))
+        inc = rig.store.incidents(system=S)[0]
+        if i == 18:
+            assert inc.status == "closed"
+        was_closed = was_closed or inc.status == "closed"
+        if reopened_at is None and was_closed and inc.status == "open":
+            reopened_at = i
+    assert len(rig.store.incidents(system=S)) == 1        # the same id when it reopens
+    # the weak hit at tick 20 on the old risk did not reopen (the v2 rule did,
+    # at tick 20); the new risk from tick 30 on did
+    assert reopened_at == 30

@@ -8,7 +8,7 @@ compact JSON-able score crosses the process boundary, never the store.
 
 Examples:
   .venv/bin/python scripts/evaluate.py --packs A,B,C,D,E --seeds 0,1,2,3,4 --workers 4 --out eval_out
-  .venv/bin/python scripts/evaluate.py --packs A --seeds 0 --ablate likelihood,class_monitor
+  .venv/bin/python scripts/evaluate.py --packs A --seeds 0 --ablate behavior.likelihood,behavior.class_monitor
   .venv/bin/python scripts/evaluate.py --packs A --seeds 0,1 --feedback
 """
 from __future__ import annotations
@@ -80,8 +80,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--out", default="eval_out", help="output directory")
     ap.add_argument("--time-budget", type=float, default=None,
                     help="per pack-seed wall budget in s (aborts the run)")
-    ap.add_argument("--ablate", default="", help="comma list of engine names to disable one "
-                                                 "at a time (gate 13)")
+    ap.add_argument("--ablate", default="", help="comma list of full engine names (e.g. behavior.likelihood) or "
+                                                 "engine class names to disable one at a time "
+                                                 "(gate 13); a short name matches nothing")
     ap.add_argument("--feedback", action="store_true",
                     help="also run each pack-seed with the simulated analyst (gate 12)")
     ap.add_argument("--smoke", action="store_true",

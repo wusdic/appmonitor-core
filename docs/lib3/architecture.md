@@ -1,5 +1,7 @@
 # Behavior Library v2.1 — layered design
 
+> **Spec v2.1 note (docs sync, 2026-09-28).** In canonical grain mode (the default for the pipeline, Runtime, eval and scripts) `cadence.md` amends this document: features are scored on H (3600 s) and Q (900 s) grain rows at decision ticks; single-tick severity uses `e_day = q_all·n_τ/β_τ` over tick types instead of `q·86400/Δt` (§4); the evidence CUSUM is split into S_t and S_h with ARL 66 d each (§4); §6's cadence handling is replaced by cadence.md §2–§9; and the §7 cost envelope was not met (integration.md §9, §10.4). P2 engines B19–B22 are not built. Current results: integration.md §11.
+
 ## 0. Principles
 1. **Engines are coupled only through the store.** Engines exchange data only through MetricStore: series, float32 vector rings, models, events, incidents, checkpoints and health records. Shared maths lives in pure helper modules under `engines/behavior/lib/`:
    - `features.py`: FEATURE_SPEC v2.

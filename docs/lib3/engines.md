@@ -1,6 +1,8 @@
 # Behavior Library v2.1 — engine specifications
 Each engine: purpose, algorithm, store reads/writes, perf budget and the unit test it must pass.
 
+**Status (docs sync after evaluation round 3, 2026-09-28).** Every engine below is implemented and registered in `backend/app/pipeline/build.py::build_registry()` except the P2 engines B19–B22 (specified, not built, not registered). Each section is the design; the "Integration notes (as built)" and "Canonical grain mode" paragraphs record where the code differs or was corrected, with the integration.md section that has the evidence. Canonical grain mode (`grain_mode='canonical'`, docs/lib3/cadence.md) is the default for the pipeline, the Runtime, eval and scripts; engine unit tests run the v2 'tick' mode, which the tick-mode golden test (`tests/test_tick_mode_golden.py`) pins to v2. Every engine runs at registry interval 1; the strides quoted in the headers are internal (`Engine.period_s`, `entity_due` or a tick counter). Latest gate results: integration.md §10.4 and §11. References to `anomaly.py`, `fingerprint.py`, `clustering.py`, `drift.py` and line numbers of v1 files name the deleted v1 engines each design replaced (integration.md §2).
+
 ## R1 — L4FlowEngine/HTTPEngine/TLSEngine/DNSEngine/L2L3Engine [upgrade]
 
 - **File:** `backend/app/engines/raw/{l4flow,http,tls,dns,l2l3}.py`
@@ -234,10 +236,15 @@ Each engine: purpose, algorithm, store reads/writes, perf budget and the unit te
 (e) Sketch. Tokens with opposite hash signs give no NaN, and each non-empty namespace block has norm 1 ± 1e-9.
 (f) derived_series('feature.bytes_up') returns the same values as column 0 of feature.vec.
 
+**Canonical grain mode (spec v2.1, cadence.md §2–§4).**
+- Every tick B01 also writes the 47 additive parts `feature.part` and the rolling rows `feature.live.<g>` (g ∈ {h, q} where observable). On a grain's decision tick it writes the scored rows `feature.nat.<g>`, `feature.vec.<g>`, `feature.meta.<g>`, `feature.expo.<g>` (and `feature.sketch.h`); their presence at ts = now is the decision flag.
+- Set features are unions of the raw SetSketch series (`l4.peer_ids`, `l4.dport_ids`, `tls.ja3_ids`, `act.template_ids`), map features merge the raw count maps over the window, and span features are read on their 6-h / 24-h span decision ticks only. A set / map value needs coverage ≥ 0.95 G.
+- The row's tctx is the window midpoint (`grains.row_tctx`). Coverage comes from B01's own tick log. The tick-level `feature.vec` / `feature.nat` are still written every tick (tick-native detectors, lib-4 compatibility).
+
 ## B02 — PeerGroupEngine [upgrade]
 
 - **File:** `backend/app/engines/behavior/peer_group.py`
-- **Layer / order / interval:** behavior / 2 / 16
+- **Layer / order / interval:** behavior / 2 / 1 (internal refit stride: 16 ticks or 6 h; the cold-start path runs every tick)
 
 **Purpose.** (Previously B3; replaces clustering.py.) Discover a two-level class hierarchy (role class, then individual sub-class) with stable ids and soft membership. Also handle static CIDR classes and pool classes, cold-start typing, and class-transition and lineage events. The role is 'the class'.
 
@@ -334,6 +341,11 @@ Runs when 16 ticks or 6 h have passed, whichever comes first. A light cold-start
 - Accessor module lib/m_baseline (helpers_api index): float32 checkpoints; a band-day cap on the data mean; location-only bin168; retransmit_rate and probe_loss as t family; per-family stats layout (k = 6 / 4 / 3); reference = golden once one exists.
 - own_support(model, tctx) exposes the entity's own evidence at a bucket (B14 gates its charts on it); n_eff_by_bucket serves B30.
 
+**Canonical grain mode (spec v2.1, cadence.md §6).**
+- Learners: `baseline.current` and `baseline.reference` on H decision rows, `baseline.current.q` on Q decision rows; a row's commit weight is the minimum trust over its window; exposure is the row's coverage.
+- The Q predictive is the Q native current anchor plus κ_T = 16 conjugate pseudo-rows of the H predictive transferred with v_f = 1 + ((m−1)/m)·ω_f (NB r/v, BB c through v, t scale √v and a location δ_f). ω_f and δ_f are learnt on paired hours and EB-shrunk entity → class → system → org (default ω = m). The Q reference is the transferred H reference (golden once it exists). A Q score is provisional while the native share π_nat < 0.5.
+- σ15 of the rate caps comes from the Q transfer of the bucket's H posterior, so the caps keep their architecture meaning. Accessors: `m_baseline.predictive_set(..., grain=g)`, `transfer_pred`, `pseudo_stats`, `omega_chain`.
+
 ## B04 — LikelihoodEngine [new]
 
 - **File:** `backend/app/engines/behavior/likelihood.py`
@@ -376,6 +388,10 @@ profile.extra.model_state = p5/p50/p95 in natural units per feature for the curr
 (e) Dual anchor: shift the current anchor by +1σ, leave the reference unchanged, and observe the reference + 3σ. p_ref drives p_f < 0.01 although p_cur ≈ 0.05.
 (f) n* = 0 gives NaN.
 
+**Canonical grain mode (spec v2.1, cadence.md §6.2, §7.1).** B04 scores H rows at H decision ticks (`marg_int`, `marg_shape`, `peer`, `behavior.z` / `zr` / `pf`) and Q rows at Q decision ticks (`marg_int_q`, `marg_shape_q`, `behavior.*.q`; no `peer_q`). `none`-transfer features (distinct counts, bounded map features) are scored at Q only once their native weight reaches κ_T, otherwise NaN; provisional Q scores write `behavior.prov`. `profile.extra.model_state` holds `{grains: {h, q}}` bands per hour and per 15 min.
+
+**Perf pass (integration.md §9, results bit-identical).** All rows of a tick are scored in one batch (`m_baseline.predictive_set_many` / `predictive_q_many` / `quantiles_many`, the array NB mid-p kernel, grouped `bayes` BB quantiles); B04 is about 2.3× faster. The Beta-Binomial mid-p and the observation transform stay on their scalar paths: the vectorised versions differed by ~1e-11, enough to flip float32 ring values.
+
 ## B05 — CommonModeEngine [new]
 
 - **File:** `backend/app/engines/behavior/common_mode.py`
@@ -411,6 +427,8 @@ profile.extra.model_state = p5/p50/p95 in natural units per feature for the curr
 (c) A shift in the app composition group is never removed.
 (d) Exactly one system_shift is emitted.
 
+**Canonical grain mode.** The H pass runs at H decision ticks on H z rows and the Q pass at Q decision ticks (learner `common_mode.q`); `behavior.common.<g>` and `behavior.zi` are written per grain. A group with no scored member (or a class with no active member) is written as undefined (L NaN, n 0, dir 0) every tick (integration.md §4).
+
 ## B06 — MultivariateEngine [upgrade]
 
 - **File:** `backend/app/engines/behavior/multivariate.py`
@@ -441,6 +459,10 @@ Scoring on the observed dimensions o:
 **Unit test.** (a) Train with features 1 and 2 correlated at ρ = 0.95. Scoring x = (+2, −2) gives SPE p < 1e-4 with each |z| ≤ 2, and RBC ranks features 1 and 2 first. Scoring (+2, +2) gives T² p < 0.05 and SPE not significant.
 (b) With feature 2 missing, x = (+2, NaN) gives a finite T² with q = |o|, and the imputed z2 ≈ 0.95·2.
 (c) Under the null, over 2000 draws with n = 200, the T² p-values give KS D < 0.05; this exercises the prediction scaling.
+
+**Canonical grain mode (cadence.md §6.4).** H: T² / SPE on H zi at H ticks, density refit every 16 H rows or 4 h on ≤ 336 committed H rows. Q: `t2_q` / `spe_q` on Q zi from `model.density.q`, shrunk to the H density Σ̃_Q = (nΣ_Q + 30Σ_H)/(n + 30) and provisional while n_Q < 64. `model.groups` is fitted from H zi only.
+
+**Open (cadence.md §17 item 2).** The density commits zi rows computed while B04 still predicted from the hyperprior (the first D_min of a young entity), so on warm-ups shorter than D_min + 14 d (mini, smoke) T² is large after the switch to own predictives. Candidate fix: admit a zi row only when B04 scored it against an own-support predictive. Not changed.
 
 ## B07 — RhythmEngine [new]
 
@@ -640,6 +662,9 @@ Descriptors are written to behavior.timing for B15, B16 and B30.
 - Unit test (a) reads: human sessions with LogNormal(ln 8 s, σ = 1) think time and minutes-long breaks give B in [0.2, 0.6] (a pure log-normal renewal with σ = 1 has B = 0.135). B and M use gaps < 30 min; the think-time fit uses gaps < session_gap.
 - The gating clock is feature.active (B01 runs before B11 in the registry).
 
+- Eval round 2 (integration.md §10.2 #8): an active tick whose 6-h window holds no true gap yet (lone events of a session carried over from the previous tick) writes undefined (NaN) descriptors to `behavior.timing` instead of nothing, so the series is not stale while the entity is active.
+- Open (cadence.md §17 item 1, integration.md §10.7 item 2): B24 blends B11's pm (a G test whose overdispersion is under-estimated) while the timing stratum holds < 64 entries; after a cadence switch to 60 s timing is one of the main single-tick drivers on control t-ticks.
+
 ## B12 — BeaconEngine [new]
 
 - **File:** `backend/app/engines/behavior/beacon.py`
@@ -756,10 +781,14 @@ All four are accumulators.
 - Chart inputs are the key zr of features the entity's OWN baseline identifies at the bucket (m_baseline.own_support: ≥ 60 weighted minutes of own rows and ≥ 2 rows of the feature); other inputs are NaN (0 increment, no reset). Residuals against a pure backoff / hyperprior predictive carry a systematic offset (e.g. z ≈ −2 for a quiet 4xx rate under Beta(0.5, 0.5)) that would alarm within hours.
 - The CUSUM / MCUSUM statistics restart at 0 on the first live tick after warm-up (they ran against a model that was being learnt from those very rows).
 
+- Canonical grain mode, end of warm-up (eval round 3, integration.md §10.3): the charts restart on the first live tick whatever its type. The restart used to run on the first live H decision tick only, and `_hold_latches` re-emitted a warm-up latch as a live accumulator alarm on the live ticks before it. Test: test_b14_changepoint.py::test_canonical_first_live_tick_between_h_ticks_restarts_the_charts.
+
+**Canonical grain mode (cadence.md §7.2, §17).** The charts step on H decision rows only (decimated, non-overlapping sampling) and their ARLs are counted in hours, so the thresholds do not depend on Δt: cusum h = 16.60 (k = 0.25, ARL 2400 d) and mcusum h = 22.72 (d = 12, ARL 100 d) at every cadence. φ is learnt on H lag-1 pairs; BOCPD takes the hourly zr intensity mean and `wh` directly; creep uses daily means of H rows. Between H ticks B14 re-emits a latched cusum / mcusum / bocpd / creep alarm on every Q / T tick until the next H tick decides (otherwise B25, B27 and the eval saw an on-off train: 71 spurious "change"-path onsets on pack A). The CUSUM state ring keeps 96 H states for B29's replay.
+
 ## B15 — IdentityModelEngine [upgrade]
 
 - **File:** `backend/app/engines/behavior/identity_model.py`
-- **Layer / order / interval:** behavior / 15 / 96
+- **Layer / order / interval:** behavior / 15 / 1 (window collection every tick, every H tick in canonical mode; fit every 96 ticks or 24 h)
 
 **Purpose.** (Previously B4; replaces fingerprint.py separability.) Measure how identifiable each IP and each class is, with honest blocked cross-validation on ABSOLUTE representations. Report what distinguishes each one and whom it is confused with, and fit the calibration of each modality's LLR for attribution. This engine outputs no p-values; B24 owns them.
 
@@ -850,6 +879,8 @@ The common-mode flag never suppresses identity. When the entity has shared_ip, e
 - The unknown CUSUM only climbs on full K-row windows (partial windows of a new or long-silent entity only let it decay): the chi² typicality is calibrated on B15's K-row windows, and a 1–2 row window (IQR 0, noisier median) failed it for enrolled entities on their first ticks.
 - The per-candidate typicality is calibrated by the candidate's held-out genuine T99 from B15 (d² × chi2_r⁻¹(0.99)/T99 before the chi2 tail), so p < 0.01 means farther than 99 % of the entity's own held-out windows; the raw chi2_r assumed a within-entity covariance of I, which WCCN gives only on average.
 
+**Canonical grain mode (cadence.md §8, §7.2).** A window is 4 active H rows (`m_identity.grain_row`: `feature.vec.h`, `feature.sketch.h`, timing descriptors and clock features at the row's midpoint tctx), i.e. 4 h of data at every cadence. The instantaneous `identity` score is marked `overlap` (consecutive windows share 3 rows): it takes the single-tick path only and never enters the H evidence CUSUM. The other-identity and unknown CUSUMs step only on windows that share no row with the previous step; h uses windows per day = active H rows per day / 4.
+
 ## B17 — EntityLinkEngine [new]
 
 - **File:** `backend/app/engines/behavior/entity_link.py`
@@ -894,6 +925,8 @@ Actor chains: links within 24 h form model.link.actors, which B13 uses.
 **Integration notes (as built, docs/lib3/integration.md).**
 - behavior.zi is read only by the shared-IP test (linking is absolute). Shared-IP fit: PCA(≤ 4) + deterministic 2-component EM, first run at ≥ 64 rows. model.link fields: contract C; accessor lib/m_link.
 - A retracted link is undone by B28 (model.control rollback_to = t_link, release [t_link, now] on the seeded entity).
+
+**Canonical grain mode.** B17 runs on H ticks and scores the same 4-active-H-row windows as B16 (cadence.md §8, §17).
 
 ## B18 — ClassMonitorEngine [new]
 
@@ -940,11 +973,13 @@ Members are those with membership probability ≥ 0.5.
 
 **Integration notes (as built, docs/lib3/integration.md).**
 - Perf: the exact m_baseline predictives cost ~0.4 ms per midp call, so budget ~1.5–2 ms per class-tick rather than 0.2 ms.
+- class_rhythm in canonical grain mode (eval round 3, integration.md §10.3). (1) A member is active in a 15-min slot only if its act.slot_events has an event IN that slot; every slot a tick overlaps is registered with the present-member count, and every slot complete at the tick is scored and learned in time order (a 3600-s tick closes four). The v2 path counted a member active in a tick's slot when it was active anywhere in the tick, so an hourly warm-up taught the hour's activity as one slot's (4 members each active in a different quarter: 4 of 4 per slot at 3600 s, 1 of 4 at 900 s) and the 900-s live slots then read as a class-wide drop (pack B: erp-prod class:r3 S_lo latched Sat 20:15 → Tue 23:15). (2) A slot is scored only when its own bin (local hour × day type) holds ≥ 3 decayed slots (RHYTHM_MIN_BIN_W, most of one observed day); an empty bin used to fall back to the pooled prior of strength 4, i.e. to the other bins: a human class formed during a weekend 900-s phase scored its Monday-morning slots against weekend activity (z at the clip, S_hi = 21 by the first live tick, HIGH temporal class incident in scripts/smoke.py at Mon 09:13). The observation is learned either way. Tick mode keeps the v2 path (golden reference). Tests: tests/engines/test_b18_rhythm_grains.py.
 
 ## B19 — MixtureEngine [new]
 
 - **File:** `backend/app/engines/behavior/mixture.py`
 - **Layer / order / interval:** behavior / 19 / 32
+- **Status:** not built (P2). The module does not exist and the engine is not registered; its detector keeps its slot in `lib/detectors.py` (`P2_DETECTORS`) and is never scored (B25 treats it as not scored, not as degraded). Enable only after the ablation gate (eval.md gate 13); integration.md §10.6 lists the evidence so far.
 
 **Purpose.** (Previously B18; P2.) A density model for entities whose residual behaviour stays multimodal after hour conditioning (burst/idle jobs), so that values between the modes score as unlikely.
 
@@ -967,6 +1002,7 @@ Honours model.control. Runs every 32 ticks or 8 h.
 
 - **File:** `backend/app/engines/behavior/session_profile.py`
 - **Layer / order / interval:** behavior / 20 / 1
+- **Status:** not built (P2). The module does not exist and the engine is not registered; its detector keeps its slot in `lib/detectors.py` (`P2_DETECTORS`) and is never scored (B25 treats it as not scored, not as degraded). Enable only after the ablation gate (eval.md gate 13); integration.md §10.6 lists the evidence so far.
 
 **Purpose.** (Previously B19; P2.) A session-level shape profile, to catch scripted scraping, marathon sessions, and atypical depth or write mix.
 
@@ -992,6 +1028,7 @@ score.session = −log10 p of the robust d². Instantaneous, axis sequence.
 
 - **File:** `backend/app/engines/behavior/cross_system.py`
 - **Layer / order / interval:** behavior / 21 / 4
+- **Status:** not built (P2). The module does not exist and the engine is not registered; its detector keeps its slot in `lib/detectors.py` (`P2_DETECTORS`) and is never scored (B25 treats it as not scored, not as degraded). Enable only after the ablation gate (eval.md gate 13); integration.md §10.6 lists the evidence so far.
 
 **Purpose.** (Previously B20; P2.) An IP-centric view across business systems: first access to a system, and lateral spread.
 
@@ -1016,6 +1053,7 @@ Emit first_access_system when the tier ≥ class and p ≤ 0.005.
 
 - **File:** `backend/app/engines/behavior/action_embedding.py`
 - **Layer / order / interval:** behavior / 22 / 256
+- **Status:** not built (P2). The module does not exist and the engine is not registered; its detector keeps its slot in `lib/detectors.py` (`P2_DETECTORS`) and is never scored (B25 treats it as not scored, not as degraded). Enable only after the ablation gate (eval.md gate 13); integration.md §10.6 lists the evidence so far.
 
 **Purpose.** NEW (P2, optional learned modality). Learn dense semantic embeddings of templated actions and entities from co-occurrence, with no GPU. Enabled only if the ablation gate shows a gain for attribution, role clustering or semantic novelty.
 
@@ -1114,6 +1152,8 @@ Degraded inputs (NaN score) give NaN p, never 1.
 - Identity rings are stratified by (daypart, regime tercile, cadence class): B16's windows are K active ticks, so the identity score's null depends on the cadence like every other detector's (architecture §6). Key 'daypart|r<k>|<cc>'.
 - Own-history floor (eval round 2, integration.md §10; m_calib.p_value, shared with B29 / B25 meta): below 64 entries the prior may add resolution BEYOND the ring but never contradict it — p ≥ #{ring > s}/(n + 1). A sparse entity (a nightly backup host: one scored H row a night, ~10 entries after two weeks) is scored every night against its peers with pm ≈ 1e-18 while its own ring holds the same score every night; the blend (weight n/(n+64) ≈ 0.14) issued p ≈ 1e-16 every night (MEDIUM evidence-CUSUM incidents on the L15 automation hosts).
 
+**Canonical grain mode (cadence.md §9.1).** Strata per stream: H detectors (daypart, 'h'); Q detectors (daypart, 'q', prov); identity (daypart, tercile, 'h'); T detectors (daypart, cc) as above. The daypart of an H / Q score comes from the row's midpoint tctx. H rings fill at 24 entries a day at every cadence and are neither reset nor thinned by a cadence switch; admission is at the detector's decision ticks only (NaN elsewhere is skipped, not degraded). Health rates use p·86400/period_s(d). The pm ring of an H / Q detector is `<d>@pm|g:<g>`. B29 replays issued p through `m_calib.p_replay(grain, prov)`.
+
 ## B25 — FusionEngine [new]
 
 - **File:** `backend/app/engines/behavior/fusion.py`
@@ -1167,6 +1207,12 @@ Degraded inputs (NaN score) give NaN p, never 1.
 - Unit test (c): the [0.015, 0.045] band is checked over replicates (a single 200 entity-day sample holds ~6 expected alarms).
 - The evidence CUSUM restarts at 0 on the first live tick after warm-up.
 
+**Canonical grain mode (cadence.md §7.3–§7.5, §9.2, §17).**
+- Tick type τ ∈ {h, q, t}; meta rings keyed by (daypart, τ[, cc]); single-tick `e_day = q_all · n_τ / β_τ` with β = (0.5, 0.25, 0.25) renormalised over the types present (0.03 null alarms per entity-day in total at every Δt; identical to `q·86400/Δt` at 3600 s).
+- Two evidence CUSUMs, each with half the 33-day budget (ARL 66 d): S_t (`behavior.evidence`) over the T-stream instantaneous detectors every tick, h = 6.05 at 900 s and 8.93 at 60 s; S_h (`behavior.evidence.h`, input `behavior.q_inst.h`) over the H-stream instantaneous detectors except the overlapping identity, once per hour, h = 4.57 at every cadence. The Q stream feeds no CUSUM. The per-stream audit is implemented. The S_h reset at the first live tick persists even when that tick is not an H tick (cadence.md §17).
+- Corroboration windows are wall-clock per stream (max(4Δt, 1 h) for H evidence, max(4Δt, 15 min) for Q); provisional Q evidence is weighted × 0.5, can raise at most MEDIUM and never counts toward HIGH / CRITICAL corroboration. The pending entry records (stratum, τ, Δt) for B29.
+- Measured (integration.md §10.5): replaying other β shares on the recorded per-tick e_day moves the null single-tick rate by ±15–25 % only; the realised evidence-CUSUM rate is ~25× its budget whatever the split.
+
 ## B26 — RiskEngine [new]
 
 - **File:** `backend/app/engines/behavior/risk.py`
@@ -1205,6 +1251,8 @@ Class risk = max(the class pseudo-entity's own risk from its own detectors, mean
 - Warm-up evidence does not carry into live risk: the per-key state is cleared on the first live tick after training (the warm-up risk series stays in the store).
 - Habitual lib-4 activity: a match of severity ≤ medium whose (entity, signature) has matched on ≥ 4 ticks, the first ≥ 24 h earlier, weighs 0. lib-4 severities grade activities (routine login / form write / admin page / poor TCP are 'low'), so without this every busy entity carried L ≈ 30–50 of routine matches (risk 40–60, plus credential / privilege / exfiltration stages from the auth / admin / transfer categories) on every live tick, far above the spec's null (L ≈ 7). A new routine activity counts for its first day; high and critical matches always count; habits are learnt in warm-up too and forgotten after 30 d unseen.
 
+**Canonical grain mode.** Continuous evidence uses `excess_surprise(p, period_s)` with the family's stream period (cadence.md §9.3), so an hourly family earns the same per-day evidence at every cadence.
+
 ## B27 — IncidentEngine [new]
 
 - **File:** `backend/app/engines/behavior/incident.py`
@@ -1218,7 +1266,7 @@ Opening (suppressed during ctx.training), on any of:
 - an alarm (single-tick, evidence or accumulator);
 - a discrete finding ≥ MEDIUM;
 - a class alarm at a class key;
-- risk ≥ Medium for 2 or more ticks together with at least one family at e_day ≤ 0.1 in the last 24 h.
+- risk ≥ Medium for 2 or more ticks together with at least one family at e_day ≤ 0.1 in the last 24 h, the family hit newer than the key's last incident activity and the risk ≥ Medium beyond what that incident already covered (eval round 3, see the integration notes).
 Join: the open incident of the same entity, continuity alias or actor, if the gap is ≤ max(4 ticks, 1 h).
 Escalate: on a severity increase or a new axis.
 Close, when any of these holds (never based on risk):
@@ -1247,6 +1295,11 @@ Emit BehaviorEvent(kind='incident', extra.state, e_day, axes, p_by_detector, inc
 **Integration notes (as built, docs/lib3/integration.md).**
 - Every accumulator, cusum / mcusum included, is tested on the calibrated-p level lib/detectors.acc_level (shared with B28) in the quiet close; m_cp.level is diagnostic only.
 - A HABITUAL lib-4 match (lib/stages.habit_step, the rule B26 uses: severity ≤ medium, ≥ 4 matched ticks of the (entity, signature), the first ≥ 24 h earlier; learnt from every tick, warm-up included) joins as evidence but does not restart the quiet clock (eval round 2): an integration host's routine 'high_error_backend' (medium) match on almost every tick kept an FP incident open for days, and the T4 exfiltration that started meanwhile only escalated it. Lib-4 evidence entries: ≥ MEDIUM at most hourly per signature, below MEDIUM once per signature per (re)opening (a poller's routine info matches filled 477 of the 512 kept evidence entries and evicted the alarm entries).
+- Risk opening needs NEW risk (eval round 3, integration.md §10.3): B26's risk is 100 (1 − e^−x) with x additive in the evidence, and after a quiet close it decays over days (half-lives 12–72 h), while a family at e_day ≤ 0.1 is an ordinary null event (~0.1 per family and entity-day). With only the family hit required to be new, the old risk plus any later weak hit reopened the incident within hours (pack A seed 0: 58 reopenings of 23 control incidents, median 6 h after the close; pack B: the sanctioned health checker 10.40.9.9 reopened ~40 times on risk alone). The risk trigger now also requires 100 (1 − e^−(x_now − x_old)) ≥ 30, where x_old is the key's risk at its last incident activity decayed with the slowest B26 half-life (72 h, an upper bound of what the covered evidence still contributes). Alarms and findings still reopen as before. Test: test_b27_incident.py::test_decaying_risk_of_a_closed_incident_does_not_reopen_it_on_a_weak_hit.
+
+**Canonical grain mode.** `acc_level_from_p(p, d, period_s(d, Δt))` counts ARLs in grain periods for H accumulators; the quiet close needs both q_inst,t and the latest q_inst,h (≤ 1 h old) to be quiet (cadence.md §9.3).
+
+**Metric note (integration.md §10.7 item 5).** An attack on an entity whose LOW FP incident is already open joins and escalates that incident (CRITICAL, expected axes, an 'escalate' notification); eval.md counts only openings in the scenario window, so these are scored as misses. The risk-opening fix above cuts openings by 10–48 % but raises distinct incident ids (FAR per id).
 
 ## B28 — GovernorEngine [new]
 
@@ -1312,6 +1365,10 @@ A class-wide change accepts at class level after 24 h of concordance. Profile ve
 - Link retractions (m_link.retractions) are answered with model.control {rollback_to: t_link, release: [t_link, now]} on the seeded entity, once per link, deferred while a rollback is rate-limited.
 - Label-queue keys (DRIFTING > 14 d, m_governor.label_queue) are queued by B23 as reason 'held', source 'governor'.
 
+**Canonical grain mode.** `evidence_factor` takes e_inst = min over streams of q_inst,s·N_s (N_t = 86400/Δt, N_h = 24); `_ln_arl` works per detector period; the level and ramp series are H zr at H ticks (held between them) with hourly Sen-slope bins (cadence.md §9.3).
+
+**Open (integration.md §10.7 item 1).** Training trust is 0 on warm-up ticks with a lib-4 match ≥ HIGH, so a sanctioned nightly backup that matches `bulk_upload` (HIGH) every night never gets a trusted night hour; B13 then falls back to the peers' level and L15 is CRITICAL in every run. Needs a design decision (habituation of recurring same-phase HIGH matches, a sanctioned-automation allowlist, or keeping training trust).
+
 ## B29 — ExplainEngine [new]
 
 - **File:** `backend/app/engines/behavior/explain.py`
@@ -1352,6 +1409,8 @@ The z shown in the UI is the engine's own z, fixing routes.py:140.
 - The counterfactual set is a subset of the perturbed features and the counterfactual is valid: the replayed CUSUM stays below h and the fused decision is recomputed as no incident.
 - The narrative contains the natural-unit range.
 
+**Canonical grain mode (cadence.md §9.4, §17).** Numeric attribution uses the grain whose detector holds the smallest p (Q when a `_q` detector drives), with natural units per hour or per 15 min from the per-grain model_state; neutralising resets the grain value to that grain's bucket median. The replay recomputes the H / Q rows scored at the tick, the CUSUM bank over ≤ 96 H states and each evidence CUSUM stream over its own excursion, p through `p_replay(grain, prov)` (pm rings included), the meta strata B25 recorded, and e_day = q_all·n_τ/β_τ. `counterfactual_scope` lists the grains recomputed. Latest gate 10: hit@3 0.25, counterfactual validity 0.35 (targets 0.8 / 0.9).
+
 ## B30 — PortraitEngine [new]
 
 - **File:** `backend/app/engines/behavior/portrait.py`
@@ -1390,3 +1449,5 @@ Personal data from paths and query values is never embedded; only templates are 
 
 **Integration notes (as built, docs/lib3/integration.md).**
 - The engine runs every tick and each IP / class key refreshes once per refresh_s = 2 h at its own crc32 phase (Engine.entity_due). An 8-tick engine stride refreshed every key on the same tick (≈ 70 ms bursts at 20 entities); the per-key phase spreads the same work.
+
+**Canonical grain mode (cadence.md §9.5, §17).** Workload bands p5/p50/p95 per grain and day type under `workload.<f>.grains.{h,q}`: the H band is the H anchor's own predictive per hour, the Q band its transfer per 15 min with a `provisional` flag; the legacy per-tick band is the Q band (exposure 900 s). Class bands come from B18's hourly aggregate anchors. The zh / en texts name the grain. Public helpers used by the API live in `lib/m_portrait` (signature, diff_signatures, safe_token). Latest gate 11: H-row coverage 0.93 and Q-row 0.95 (in [0.85, 0.95]); per-tick coverage 0.96 (just above the band).

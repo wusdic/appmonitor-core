@@ -1,70 +1,104 @@
-VERDICT (re-verified against the code this session). The current library 3 does not meet the requirement. The root causes still hold at the cited lines:
-- Stale carry-forward: store.py:106-120 returns the latest value whatever its age, and feature_vector.py:52 defaults a missing source to 0.
-- The derived layer re-stamps stale inputs with ts=ctx.now: ratio.py:36-58, entropy.py:27-50, graph.py:31-67, aggregation.py:40-41, periodicity.py:43, trend.py:38 and session.py:40-60. As a result duty_cycle is only ever 0 or 1 and think_time is always 0.
-- A relative floor on log values: anomaly.py:102-104.
-- Nothing gates what is learned: baseline.py:51-61 and fingerprint.py:42-46.
-- The seasonal booster cannot fire on its own and works in UTC: anomaly.py:74-77, 146-157.
-- The IsolationForest is refit on every run: anomaly.py:117-139.
-- Clustering uses KMeans with thresholds on z-scores: clustering.py:63-111.
-- The sequence model is keyed on a churning name with a fixed alphabet of 8: sequence.py:60, 88-90.
-- Separability is a nearest-neighbour cosine between medians: fingerprint.py:80-94.
-- Categorical sets are truncated to the top 8 or 12: http.py:102, tls.py:78, dns.py:66.
-- Clock and cadence are skewed: orchestrator.py:33, build.py:104-115.
-- Engine errors are swallowed silently: engine.py:76-84.
-- Every events()/matches() call scans the whole deque: store.py:131-145.
-- Storage is 20000-point object deques with no limit by age: store.py:33-35.
+# Behavior library (lib-3) — current state
 
-REVISION. This spec fixes all 11 'missing', 24 'incorrect/risky' and 9 'contract conflict' findings from the critic.
-(1) Freshness chain from end to end.
-- New derived engines D0 (window metrics computed on a zero-filled wall-clock grid) and D1 (instant metrics emitted only when every input is fresh). The session engine D2 is fixed.
-- An entity counts as active when it has an observation in the ingestion tick. The old Δt/2 rule is removed.
-(2) Cold start.
-- Weak organisation-level hyperpriors per feature kind (lib/priors.py).
-- trust is set to 1 only during ctx.training, and even then not for entities with a library-4 hit at HIGH or above.
-- Forcing trust=1 for immature entities during live operation was rejected, because it would absorb T11. Instead, a new entity is scored against its class and system through backoff, and a separate acceptance path handles new entities.
-(3) Learning is reversible. Learners keep geometric checkpoints, a commit journal and a provisional trust. model.control supports rollback_to, release and rebase, so detections slower than the commit delay D no longer leave attack rows in any model.
-(4) Classes are entities. A new engine, B18 class_monitor, gives dynamic role classes, static CIDR classes and pool classes their own aggregate baseline, rhythm, vocabulary, detectors, incidents, risk and portrait.
-- common_mode is now leave-one-out and needs at least 3 other members.
-- It is limited to the volume, transport and app-error axes, and never applies to categorical, identity, c2 or exfil evidence.
-(5) Two-level hierarchy. Classes are role, then individual sub-class, each found by HDBSCAN on its own distance. The role is the class used for backoff, class_monitor and ARI.
-(6) Identity uses absolute representations and scores each window under each candidate's own models. behavior.z is never used for identity.
-(7) Calibration and fusion.
-- Conformal p-values are randomised and stratified by daypart × cadence class.
-- Families are combined with a weighted harmonic-mean p (HMP) instead of ACAT, then re-calibrated per entity.
-- Measured this session: ACAT([1e-3, 0.999, 0.5]) = 0.5, while HMP gives 0.003. Under equicorrelated dependence (ρ = 0.64) HMP's false-alarm rate is 1.095× nominal at α = 1e-3 and 1.005× at 1e-4.
-(8) False-alarm budgets are set in wall-clock time.
-- e_day = p·86400/Δt.
-- The evidence CUSUM runs only over instantaneous detectors, with k = 3. Its average run length (ARL) was solved exactly: ARL ≈ 21.6·e^{0.94h}, with h = 5 giving 2393 ticks and h = 8 giving 40263 ticks. The target is 33 entity-days, so h = 5.31 at 900 s and 8.19 at 60 s.
-- Accumulating detectors have their own time-based thresholds.
-- HIGH requires corroboration from a second source.
-- The raw budget of alarms at LOW or above totals ≈ 0.14 per entity-day.
-(9) Risk.
-- Evidence is the 'excess surprise over daily expectation', so it does not depend on cadence.
-- Evidence within one episode saturates.
-- L_ref is a fixed 60 rather than being poisonable. The simulated null gives mean L ≈ 7 and p99.99 ≈ 17–19 at both 60 s and 900 s, which keeps risk ≤ 27.
-(10) Governor.
-- Closing an incident no longer depends on risk.
-- Time spent stationary in a new regime counts as evidence. A single-entity intensity change is accepted after 1 day (logit 3.46), a shape change after 7 days (logit 2.46), and a categorical change needs a label (logit 1.96).
-- A ramp-rate rule applies: 0.05/day in log terms counts as legitimate.
-- No entity can be locked out permanently.
-(11) Poisoning. The current anchor is capped at 0.1σ/day. A reference anchor (0.03σ/day, 24-hour delay) feeds p = 2·min(p_cur, p_ref) and the changepoint residuals zr.
-(12) Numerical fixes.
-- The Bernoulli CUSUM clips p1 and runs on a 15-minute slot clock.
-- The Hellinger sketch formula is corrected.
-- Hotelling uses the prediction scaling, and missing dimensions are imputed conditionally.
-- The beacon test is now a Gamma renewal LRT with a finite-n Monte-Carlo null. Measured: with ±30% jitter the median p is 1.7e-8 at n = 12. The χ² asymptotic is 2–5× anti-conservative on a Poisson null. The Rayleigh median p is only 0.14 at n = 40.
-- The likelihood tests now use scipy-verified tails: Poisson(22) P(X≤3) = 5.7e-7 and P(X≤1) = 6.4e-9; BB(200, mean 0.1, c = 50) sf(99) = 1.3e-8, and 7.7e-5 at c = 20.
-(13) Store.
-- Indexed events and matches per entity with since and kinds filters, O(log n).
-- float32 vector rings with virtual scalar views, so the 45 compat series no longer copy 20000 objects each.
-- A retention table, first_seen/last_seen, checkpoints and a health record per engine.
-- Strict mode for tests and eval.
-(14) Why 'SOTA' here means this design. The architecture document maps the requirement terms to engines and eval gates. The dropped list evaluates DeepLog, LogBERT, AE/VAE, contrastive and GNN alternatives. An optional P2 learned modality, B22, adds PPMI-SVD and Poisson-NMF embeddings.
-(15) Generator. Five packs, one scenario per entity per pack, each timezone in its own run, one cadence pack, aggregated observations, and projected CPU of ≤ 5 minutes per pack-seed.
+Docs sync after evaluation round 3 (2026-09-28). The Chinese design document
+(`docs/组织业务系统画像平台设计.md`, library 3) is the full narrative; this page
+is the short English summary with pointers.
 
-COST. Library 3 costs ≈ 2.3 ms per entity per tick: ≈ 48 ms at 20 entities and ≈ 94 ms at 40. The smoke warm-up spends ≈ 9–10 s in library 3.
-- identity_model: LDA on 600×64×20 measured 29 ms, so a 96-tick or 24-hour stride costs ≈ 5 ms per tick amortised.
-- OAS on 600×64 measured 1.9 ms.
-- Memory target: ≤ 12 MB per entity in steady state.
+## What is built
 
-Scratch evidence: /tmp/claude-0/-home-user-appmonitor-core/e496f878-8276-5793-a91f-1f6d0128e252/scratchpad/rev_checks.py (tails, ACAT/HMP size), rev_checks2.py (exact exponential-CUSUM ARL), rev_checks3.py (Siegmund thresholds, null risk simulation), rev_checks4.py (Gamma LRT, Rayleigh, LDA/OAS timing, Bernoulli increments). The earlier bench_redesign.py and bench2.py are in the same folder.
+- **26 registered behaviour engines** (`backend/app/engines/behavior/`), run in
+  this order by `backend/app/pipeline/build.py::build_registry()`:
+  B01 feature_vector, B02 peer_group, B03 baseline, B04 likelihood,
+  B05 common_mode, B06 multivariate, B07 rhythm, B08 novelty,
+  B09 client_identity, B10 sequence, B11 timing, B12 beacon, B13 budget,
+  B14 changepoint, B15 identity_model, B16 attribution, B17 entity_link,
+  B18 class_monitor, B23 feedback, B24 calibration, B25 fusion, B26 risk,
+  B27 incident, B28 governor, B29 explain, B30 portrait.
+- Library-3 inputs from the upgraded raw layer (R1 full sets and weighted
+  records, R2 `raw.action_token`, R3 `raw.client_stack`) and the derived layer
+  (D0 zero-filled window grid, D1 fresh-only instant metrics, D2 sessions).
+- P2 engines B19 mixture, B20 session_profile, B21 cross_system and
+  B22 action_embedding are specified (engines.md) but **not built** and not
+  registered; they stay behind the ablation gate.
+- Engines communicate only through the MetricStore by metric / model name;
+  shared maths is in pure modules under `engines/behavior/lib/`.
+
+## How it works (one line each)
+
+| Stage | Method | Engines |
+|---|---|---|
+| Representation | 52 features in 9 groups with explicit exposure, time context (tz, holidays, make-up days), 80-dim token sketch; absence is data | B01 |
+| Cadence invariance (spec v2.1, default `grain_mode='canonical'`) | Features on canonical trailing wall-clock grains H = 3600 s and Q = 900 s, built from additive parts, mergeable set sketches and count maps; scored rows only on epoch-aligned decision ticks; midpoint time context | B01, `lib/grains.py`, cadence.md |
+| Baselines | Conjugate hierarchical Bayes (entity → role class → system → org → hyperprior, EB pseudo-counts), bin48/bin168 buckets, current (0.1σ15/day) and reference (0.03σ15/day, 24 h delay, golden) anchors, trust-gated delayed reversible commits; Q predictive = native Q anchor + κ_T = 16 pseudo-rows of the H predictive transferred with v = 1 + ((m−1)/m)ω | B03 |
+| Exact predictives | NB / Beta-Binomial / Student-t two-sided mid-p against both anchors, p = min(1, 2 min(p_cur, p_ref)); wHMP within and across dependence groups | B04 |
+| Detectors | LOO common mode; OAS / C-step T² and SPE with RBC; 15-min slot rhythm (Bernoulli CUSUM, silence, automation index); hierarchical Dirichlet + Good–Turing novelty; client-stack impersonation; PPM-C grammar; timing; Gamma renewal LRT beacon with Monte-Carlo null; POT/GPD budgets; CUSUM / MCUSUM / BOCPD / creep on reference residuals | B05–B14 |
+| Identity | Absolute 4-active-H-row windows, OAS-WCCN-LDA with blocked CV (EER_hard, separability), calibrated capped modality LLRs, open-set attribution with other-identity and unknown CUSUMs, Fellegi–Sunter linking and shared-IP tests | B15–B17 |
+| Classes as entities | Two-level HDBSCAN hierarchy (role, individual sub-class) plus static CIDR and pool classes; class aggregate baselines and detectors (class_int, class_shape, class_rhythm, class_novel, class_coherence) | B02, B18 |
+| Calibration | Randomised Mondrian conformal p per (key, detector, stratum), GPD tail, small-sample prior with randomised pm atoms and an own-history floor, KS / exceedance health | B24 |
+| Fusion | wHMP per family, per-entity meta-calibration with a winsorised tail, single-tick e_day = q_all·n_τ/β_τ over tick types (β = 0.5 / 0.25 / 0.25), one evidence CUSUM per stream (S_t, S_h; ARL 66 d each), accumulator paths, corroborated severities, axis reading rules | B25 |
+| Decision and governance | Cadence-invariant decaying risk with fixed L_ref = 60; incidents that close on regime / accumulators / evidence, never on risk; regime machine with legit-vs-attack log-odds, rollback / release / rebase, corroborated REJECT, no permanent lockout; analyst feedback (precision priors, stacking weights, pattern policies, alert budget, label queue) | B23, B26–B28 |
+| Explanation and portraits | Natural-unit attribution, faithful counterfactual by deterministic replay of stateful detectors; versioned per-IP and per-class portraits with per-grain bands and diffs | B29, B30 |
+
+## Latest evaluation (reports/eval_report.json, round 3 final)
+
+Strict, canonical; packs A and B seeds 0–1, C / D / E seed 0 (the 4 cores were
+shared with a leftover batch, so gate-14 timings are contended). Of the 15
+gates only **15 (robustness)** passes; 13 is n/a in the final report (ablation
+from an older tree); the other 13 fail.
+
+| Gate | Final | Target |
+|---|---|---|
+| 1 threat recall in deadline (loud / subtle) | 0.58 (0.36 / 0.68) | 0.95 (1.0 / 0.9) |
+| 3 FAR ≥ LOW / ≥ MEDIUM per entity-day | 0.237 / 0.152 | 0.2 / 0.05 |
+| 3 HIGH+ / CRITICAL on control entities, all runs | 60 / 19 | ≤ 1 / 0 |
+| 4 legit runs within allowed severity | 0.34 | 0.95 |
+| 5 notifications per TP incident | 7.05 | 3 |
+| 7 worst median KS D; single-tick exceedance cc 900 / cc 60 | 0.41; 64× / 2 818× | 0.05; [0.5, 2]× |
+| 7 evidence-CUSUM alarms per entity-day | 1.20 | 0.045 |
+| 8 twins confusable / Spearman / T19 chain | 0.14 / −0.09 / 0 | 1 / 0.8 / 0.9 |
+| 9 role ARI / refit ARI | 0.60 / 0.74 | 0.9 / 0.95 |
+| 10 hit@3 / counterfactual validity | 0.25 / 0.35 | 0.8 / 0.9 |
+| 12 feedback cut of control incidents | −0.08 | 0.5 |
+| 14 pack-seed wall / live p95 at 35 entities | 2874 s / 1403 ms (contended); 740 s / 909 ms uncontended pack A (§9) | 360 s / 80 ms |
+
+Tests: full suite 2185 passed, 4 skipped. The APPMON_SLOW Part B test
+`test_part_b_live_60_equals_900` fails (60-s t-stream calibration) and is left
+failing on purpose.
+
+## Top open issues (integration.md §10.7, §11)
+
+1. Recurring lib-4 HIGH matches in a clean warm-up (sanctioned backups, NAT):
+   no habituation, zero training trust, B13 falls back to peers; L15 is
+   CRITICAL in every run. Needs a design decision.
+2. 60-s t-stream calibration after a 900 → 60 s switch (empty cc = 60 strata,
+   accumulators in p_all, evidence cap).
+3. lib-4 ratio / entropy clauses still per tick at 60 s.
+4. Eval metric: an attack that escalates an already-open LOW FP incident is
+   not counted as a detection.
+5. Detector calibration at 900 s (identity, timing, spe, marg_shape_q,
+   budget_vol 12–21× nominal at p < 1e-3); idle API clients at risk 20–30.
+6. Loud TTD ≤ 2 ticks at 900 s is out of reach under the conservative H → Q
+   transfer.
+7. Gate 12 (labels increase control incidents), gate 14 CPU and 60-s memory,
+   and the identification / class / explanation sub-gates listed above.
+
+## Document map
+
+- `architecture.md` layered design and principles; `engines.md` per-engine
+  specs with as-built and canonical-mode notes; `cadence.md` the v2.1
+  dual-grain design with implementation notes (§17, §17.1).
+- `contract.md` store contract; `helpers_api.md` shared maths API.
+- `eval.md` gates; `generator.md` personas, packs and scenarios.
+- `integration.md` registry, integration fixes, cost, evaluation rounds
+  (§8–§10) and the round-2 summary (§11).
+- `decisions.md` dropped alternatives and risks; `api_ui.md` API / UI spec.
+
+## History
+
+This file previously held the design-review verdict on the v1 library (stale
+carry-forward, re-stamped derived inputs, ungated learning, per-run
+IsolationForest, KMeans archetypes, cosine drift and separability, truncated
+categorical sets, tick-based thresholds, linear store scans) and the list of
+revisions the v2 design made in response. Every item of that list is
+implemented; the v1 engines are deleted (integration.md §2) and the
+alternatives are recorded in `decisions.md`.

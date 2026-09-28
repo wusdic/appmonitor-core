@@ -178,6 +178,15 @@ RHYTHM_HL_S = 28 * DAY
 RHYTHM_K = 0.5
 RHYTHM_PRIOR_K = 4.0              # pooled-bin prior strength (rows)
 RHYTHM_MIN_W = 8.0                # pooled committed slots before scoring
+# spec v2.1 (canonical): a slot is scored only once its own bin (local hour x
+# day type) holds most of one observed day of slots. An empty bin fell back to the
+# pooled prior of strength RHYTHM_PRIOR_K, i.e. to the OTHER bins: a human
+# class formed during a weekend 900-s phase scored its first Monday-morning
+# slots against weekend activity (p_pool ~ 1e-3, z at the clip), S_hi = 21 by
+# the first live tick and a HIGH temporal class incident (smoke, Mon 09:13).
+RHYTHM_MIN_BIN_W = 3.0             # most of one observed day of the bin's 4 slots (decayed)
+SLOT_EVENTS = "act.slot_events"   # R2: the tick's events per 15-min slot (canonical)
+OPEN_SLOTS_MAX = 8                # open slots kept per class (<= 2 h of 15-min slots)
 Z_CLIP = 4.0
 # adoption
 ADOPT_WINDOW_S = DAY
@@ -412,11 +421,13 @@ def _update_cur(state: _Cur, row: _Row, w: float) -> _Cur:
     if jsd == jsd and jsd is not None and combine.seeded_uniform("classagg.jsd", row.ts) < w:
         aux["jsd"].add(float(jsd), row.ts)        # seeded thinning: a ring takes no weights
     if slot is not None:
-        b, a, m = slot
-        if m > 0:
-            c = np.array([1.0, a, m, a * a / m])
-            _dec_fold(aux["rh"], row.ts, RHYTHM_HL_S, int(b), c, w)
-            _dec_fold(aux["rh"], row.ts, RHYTHM_HL_S, 48, c, w)
+        # one (bin48, a, m) per slot; canonical rows may close several slots
+        # (a 3600-s tick closes its four)
+        for b, a, m in (slot if slot and isinstance(slot[0], (tuple, list)) else (slot,)):
+            if m > 0:
+                c = np.array([1.0, a, m, a * a / m])
+                _dec_fold(aux["rh"], row.ts, RHYTHM_HL_S, int(b), c, w)
+                _dec_fold(aux["rh"], row.ts, RHYTHM_HL_S, 48, c, w)
     for s_, n_ in tallies:
         if n_ > 0:
             _dec_fold(aux["ad"], row.ts, ADOPT_HL_S, slice(None),
@@ -755,7 +766,10 @@ class ClassMonitorEngine(Engine):
 
         # ---- 3b) class_rhythm (slot clock; silent members count)
         slot_obs = None
-        if not b01_bad:
+        if not b01_bad and self._canon:
+            slot_obs = self._rhythm_slots(store, s, ck, model, present, now, dt,
+                                          scores, pm, axes, acc)
+        elif not b01_bad:
             slot_obs = self._rhythm(s, ck, model, present, active_members, now, dt, tc_slot,
                                     scores, pm, axes, acc)
 
@@ -935,6 +949,92 @@ class ClassMonitorEngine(Engine):
             axes["class_rhythm"] = ["temporal"]
             acc["class_rhythm"] = int(S >= h)
         return obs
+
+    def _rhythm_slots(self, store: Any, s: str, ck: str, model: Dict[str, Any],
+                      present: List[str], now: float, dt: float, scores: Dict[str, float],
+                      pm: Dict[str, float], axes: Dict[str, List[str]], acc: Dict[str, int]
+                      ) -> Optional[Tuple[Tuple[int, int, int], ...]]:
+        """Canonical grain mode (cadence.md §3.3): active members per 15-min
+        slot from the members' act.slot_events, so a member counts as active
+        in a slot only if it had an event IN that slot, at any Δt. The v2
+        path counted a member active in the slot of a tick when it was active
+        anywhere in the tick: a 3600-s tick taught the hour's activity as the
+        activity of one slot (a human active 10 min of an hour counted fully),
+        and the 900-s live slots then read as a class-wide drop (S_lo latched
+        for days, pack B). Every slot the tick covers is registered with the
+        present-member count; each slot that is complete at this tick (a
+        3600-s tick completes four) is scored and learned in time order."""
+        run = model["run"]
+        op = run.get("qslots")
+        if not isinstance(op, list):
+            op = run["qslots"] = []                  # [[slot_start, [active...], m], ...]
+        k = math.floor((now - dt) / TB.SLOT_S + 1e-9) * TB.SLOT_S
+        while k < now - 1e-6:
+            if k + TB.SLOT_S > now - dt + 1e-6:      # a slot this tick overlaps
+                rec = next((r for r in op if r[0] == k), None)
+                if rec is None:
+                    op.append([k, [], len(present)])
+                else:
+                    rec[2] = max(int(rec[2]), len(present))
+            k += TB.SLOT_S
+        if op:
+            open_at = {r[0]: r for r in op}
+            for m in present:
+                pt = store.latest_raw(s, m, SLOT_EVENTS)
+                if pt is None or abs(float(pt.ts) - now) > 1e-6 or not isinstance(pt.value, Mapping):
+                    continue
+                for kk, c in pt.value.items():
+                    r = open_at.get(_f(kk))
+                    if r is not None and _f(c) > 0.0 and m not in r[1]:
+                        r[1].append(m)
+        obs: List[Tuple[int, int, int]] = []
+        keep = []
+        for rec in sorted(op, key=lambda r: r[0]):
+            if rec[0] + TB.SLOT_S <= now + 1e-6:
+                tc = self._tctx(rec[0] + 0.5 * TB.SLOT_S, min(dt, TB.SLOT_S))
+                o = self._score_slot(s, ck, model, int(tc["bin48"]), len(rec[1]), int(rec[2]),
+                                     int(tc["slot"]), now)
+                if o is not None:
+                    obs.append(o)
+            else:
+                keep.append(rec)
+        run["qslots"] = keep[-OPEN_SLOTS_MAX:]
+        if run["rh_scored"]:
+            S = max(float(run["S_hi"]), float(run["S_lo"]))
+            h = seq.h_for("gauss", 2.0 * arl_days("class_rhythm"), max(dt, float(TB.SLOT_S)),
+                          k=RHYTHM_K)
+            scores["class_rhythm"] = S
+            pm["class_rhythm"] = float(np.asarray(seq.cusum_stationary_p(S, RHYTHM_K, 2)))
+            axes["class_rhythm"] = ["temporal"]
+            acc["class_rhythm"] = int(S >= h)
+        return tuple(obs) or None
+
+    def _score_slot(self, s: str, ck: str, model: Dict[str, Any], b: int, a: int, m: int,
+                    slot_id: int, now: float) -> Optional[Tuple[int, int, int]]:
+        """Canonical: one complete slot -> Beta-binomial PIT -> the two CUSUMs,
+        only when its own bin has support (RHYTHM_MIN_BIN_W); the observation
+        is returned for learning either way."""
+        if m <= 0:
+            return None
+        run = model["run"]
+        rh = _dec_true(model["aux"]["rh"], now, RHYTHM_HL_S)
+        Wp, skp, snp = rh[48, 0], rh[48, 1], rh[48, 2]
+        W, sk, sn, skk = rh[b]
+        if Wp >= RHYTHM_MIN_W and snp > 0.0 and W >= RHYTHM_MIN_BIN_W:
+            p_pool = min(max(skp / snp, 1e-3), 1.0 - 1e-3)
+            a0, b0 = RHYTHM_PRIOR_K * p_pool, RHYTHM_PRIOR_K * (1.0 - p_pool)
+            p_hat, phi = bayes.ratio_posterior(a0, b0, W, sk, sn, skk, 0.0)
+            c = min(sn + RHYTHM_PRIOR_K, float(phi))
+            aa, bb = float(p_hat) * c, (1.0 - float(p_hat)) * c
+            lo = float(bayes.bb_cdf(a - 1, m, aa, bb)) if a > 0 else 0.0
+            eq = max(0.0, float(bayes.bb_cdf(a, m, aa, bb)) - lo)
+            v = combine.seeded_uniform(s, ck, "class_rhythm", slot_id)
+            u = min(max(lo + v * eq, 0.0), 1.0)
+            z = min(max(float(bayes.phi_inv(u)), -Z_CLIP), Z_CLIP)
+            run["S_hi"] = max(0.0, float(run["S_hi"]) + z - RHYTHM_K)
+            run["S_lo"] = max(0.0, float(run["S_lo"]) - z - RHYTHM_K)
+            run["rh_scored"] = True
+        return (b, a, m)
 
     def _close_slot(self, s: str, ck: str, model: Dict[str, Any],
                     now: float) -> Optional[Tuple[int, int, int]]:

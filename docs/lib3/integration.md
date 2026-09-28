@@ -36,7 +36,8 @@ P2 engines B19–B22 are not registered. They stay behind the ablation gate.
 
 Runtime (`Runtime`): `ctx.config` carries tz, the calendar (holidays and
 make-up workdays from the generator clock) and `strict`. Warm-up runs with
-`training=True` at Δt = 900 s. The live loop runs at the runtime window. Every
+`training=True` over the warm-up plan (spec v2.1 default `Runtime.DEFAULT_WARMUP_PLAN`
+= 120 × 3600 s + 192 × 900 s; `warmup_ticks=n` keeps the v2 plan n × 900 s). The live loop runs at the runtime window. Every
 tick is stamped `now = gen.vt`. `limit_blas_threads(1)` pins BLAS and OpenMP to
 one thread (R15.1, R19.3).
 
@@ -62,7 +63,7 @@ registry_factory=…)` still accepts any `callable(pack=?, config=?, seed=?)`.
   - W7's API v2 (`api/routes_v2.py`, `api/views.py`) has since been merged on
     top. After the merge the legacy route functions were re-exercised on a
     warmed v2 runtime and `tests/api` passes.
-- `scripts/smoke.py` runs the v2 runtime (warm-up 900 s, then live 60 s) and
+- `scripts/smoke.py` runs the runtime (warm-up over the Runtime plan, then live 60 s) and
   prints per-engine timings, class paths, separability, the risk top-10,
   incidents and recent events. It exits non-zero on an engine error.
 
@@ -725,3 +726,328 @@ faster without changing a result. Each of the next steps needs a decision:
   counterfactual explanation computed asynchronously per incident.
 - **A per-tick CPU budget for B13 / B06 refits.** It would bound the
   per-tick share instead of the per-day share.
+
+## 10. Evaluation rounds 2 and 3 (evaluator)
+
+### 10.1 Runs and method
+
+- **round-2 baseline** (`reports/round2_baseline/`): the tree after the perf
+  (§9) and W7 tuning (§8.2) passes, before any evaluator fix. Packs A and B
+  seeds 0 and 1, C / D / E seed 0; strict, canonical grain mode.
+- **round 2** (an evaluator interrupted by a container restart; its fixes are
+  in commit fdcde68 and listed in §10.2). "HEAD" below is that commit.
+- **round 3** (this section): full suite, the lead's four items (Part B test
+  module, `c2_beacon`, B18 class_rhythm after a short 900-s warm-up, the
+  pack-A reopenings), diagnosis of every failing gate / missed threat /
+  legit scenario over its severity down to the engine chain, fixes with
+  regression tests (§10.3), final runs (§10.4). "final" is HEAD + §10.3.
+- Every run: `runner.run_pack(pack, seed, strict=True)` + `metrics.score_run`,
+  in parallel processes (scratch driver = `scripts/evaluate._job` + pickling
+  of the RunResult for the chain diagnosis). The engine chain of an
+  incident was read from the collected per-tick series (behavior.p of every
+  detector, p_family, e_day, alarm path / severity, acc_alarm, risk) at its
+  (re)opening and escalation ticks, the B26 risk components from the
+  profiles and the events' extras.
+- Compute: 4 cores. The interrupted evaluator's last job batch (25 jobs:
+  full / feedback / ablation runs of the tree as of 03:54, i.e. HEAD minus
+  its B13 count-scale floor) could not be stopped from this session and ran
+  alongside, so every round-3 run shared the machine with 4 of its
+  processes; gate 14 timings in this section are therefore not comparable
+  with §9 (they are 1.5–2.5x slower). Its paired ablation / feedback runs are
+  used for gate 13 (§10.6) with that caveat.
+
+### 10.2 Round-2 fixes (committed in fdcde68)
+
+| # | Where | Symptom (evidence) | Root cause | Fix | Test |
+|---|---|---|---|---|---|
+| 1 | generator | Pack E: every control entity CRITICAL at the 900 → 60 s switch; FAR ≥ LOW 1.0 | Human sessions were laid out inside each tick, so at 60 s every minute started a session (4x the login redirects and DNS lookups, 2.5x the POST share) | Sessions are a continuous-time process (Poisson starts, geometric sizes, events carried across ticks) | `test_generator.py` (2) |
+| 2 | generator + R1 | `l4.retransmit_rate` of aggregated ticks ~w× the event-mode rate | the group's retransmit total was put in a per-flow field | `extra['retransmits_total']`, honoured by R1 | `test_r1_raw.py`, `test_generator.py` |
+| 3 | generator | API clients made half their DNS lookups at 60 s; a backup host resolved once per tick | resolver clock skipped on ticks without a poll; per-tick backup lookup | resolver clock every tick; one lookup per backup run | `test_generator.py` |
+| 4 | B13 | budget p < 1e-6 on hundreds of clean control ticks of pack B | a count quantity with a constant same-phase history had a ~0 log scale floored at 2 % | count quantities floor the log scale at their counting noise | `test_b13_budget.py` |
+| 5 | B24 | backup hosts: peer p ≈ 1e-17 every night | sparse strata blended with the pm prior forever | own-history floor p ≥ #{ring > s}/(n+1) | `test_b24_calibration_edges.py` |
+| 6 | B27 | FP incidents open for days; T4 / T18 / T21 absorbed | habitual lib-4 matches restarted the quiet clock; stale q_inst rows blocked the quiet close | habitual matches do not restart it; q_inst rows older than the quiet window ignored | `test_b27_incident.py` (2) |
+| 7 | B27 | 477 of 512 evidence entries were lib-4 info matches | every match appended every tick | ≥ MEDIUM hourly per signature, lower once per (re)opening | `test_b27_incident.py` |
+| 8 | B11 | stale `behavior.timing` | active tick without a true gap wrote nothing | NaN descriptors | `test_b11_timing.py` |
+| 9 | eval runner (gate 12) | feedback run had MORE control incidents | the simulated analyst used scope 'this'; B23 builds policies only from widened scopes | fp verdicts use scope 'pattern' (eval.md gate 12) | `test_runner.py` |
+| 10 | eval metrics (12, 13) | feedback cut / ablation ΔFAR compared unpaired runs | no pairing | paired by (pack, seed) | `test_metrics.py` |
+
+### 10.3 Round-3 fixes
+
+| # | Where | Symptom (evidence) | Root cause | Fix | Test |
+|---|---|---|---|---|---|
+| 1 | tests | `tests/tests_cadence_part_b.py` never collected | a helper module with a non-`test_` name imported by `test_cadence_invariance.py` | merged into `tests/test_cadence_invariance.py` (`_pb_*` helpers, `run_part_b`) plus an always-collected structural check of its pack | `test_part_b_pack_follows_the_monday_warmup_rule` |
+| 2 | lib-4 `signature.rule_match` | health checkers at risk 64–72 after the Runtime's 900 → 60 s switch (78 % from `c2_beacon`, HIGH); pack E: new lib-4 categories on control entities at 60 s, B08 first_seen `cat=beacon` at system tier and jsd p < 0.01 on 99 % of the machine personas' ticks | counter clauses (`http.requests <= 10`, `l4.bytes_up > 3e6`, ...) compare a per-TICK total: a 30-s poller is 30 per 900-s tick and 2 per 60-s tick | canonical grain mode: an additive counter is read as its total per 15-min grain (trailing 900 s at Δt < 900 with the straddling tick pro rata, value × 900/Δt at Δt ≥ 900, newcomers by their observed span); thresholds keep their 900-s meaning; tick mode unchanged (golden) | `tests/test_c2_beacon_cadence.py` (6) |
+| 3 | B18 class_rhythm | `scripts/smoke.py` pinned to Mon 09:13 Asia/Shanghai: `erp-prod class:r3` temporal HIGH on the first live tick (S_hi = 21); packs: class_rhythm alarm on 2–2.5 % of class ticks (B, D) and 14 % (E) against 0.005 / day; pack B `class:r3` latched Sat 20:15 → Tue 23:15; pack D new classes alarming from their first days | (a) a slot of a bin with no own history (a class formed during a weekend 900-s phase, or a new class) was scored against the pooled prior, i.e. the other bins' activity (z at the clip); (b) a member counted active in a tick's slot when active anywhere in the tick: a 3600-s warm-up learned the hour's activity as one slot's (1 of 4 vs 4 of 4 in the unit case) | canonical: per-slot membership from `act.slot_events`, every complete slot of a tick scored and learned in time order; a slot scored only when its own bin holds ≥ 3 decayed slots | `tests/engines/test_b18_rhythm_grains.py` (5) |
+| 4 | B27 risk opening | pack A seed 0: 58 reopenings of 23 control incidents (median 6 h after the quiet close, 44 of 58 with the risk trigger); pack B: sanctioned health checker 10.40.9.9 reopened ~40 times at risk 90–100, 39 of 42 L15 episodes opened with `risk` | the trigger required the FAMILY hit to be newer than the last incident activity but not the RISK: after a 2-h quiet close the risk decays over days while a family at e_day ≤ 0.1 is an ordinary null event (~0.1 per family and entity-day) | the risk trigger also needs risk ≥ 30 beyond the key's risk at its last incident activity decayed with the slowest B26 half-life (72 h) | `test_b27_incident.py::test_decaying_risk_of_a_closed_incident_does_not_reopen_it_on_a_weak_hit` |
+
+| 5 | B14 changepoint (canonical) | cadence Part B (APPMON_SLOW): 10.20.1.11 and 10.20.1.13 cusum / mcusum acc_alarm from the first live tick to the first live H tick, at 60 s and at 900 s (118 vs 6 alarm ticks for the same two 1-h episodes) | the end-of-warm-up chart restart (§4) runs in `_entity`, i.e. on H decision ticks only; on the live ticks before the first live H tick `_hold_latches` re-emitted the warm-up latch as a live accumulator alarm (every canonical run: up to 3 ticks at 900 s, 59 at 60 s) | `_hold_latches` applies the same restart on the first live tick whatever its type | `test_b14_changepoint.py::test_canonical_first_live_tick_between_h_ticks_restarts_the_charts` (3 cases) |
+| 6 | tests (Part B) | `test_part_b_live_60_equals_900` compared B14 acc_alarm TICKS | a latched alarm is re-reported every tick: the same wall-clock episode is 15x the ticks at 60 s | compares B14 alarm episodes (onsets); the null-level test keeps the tick count (0 = 0) | — |
+
+Every new test fails with its fix switched off (checked by monkeypatch). The
+tick-mode golden is unchanged (fixes 2 and 3 are canonical-mode only; fix 4
+does not trigger in its 48 live ticks).
+
+### 10.4 Results (strict, canonical; packs A and B seeds 0 and 1, C / D / E seed 0)
+
+C, D and E ran with seed 0 only: the whole matrix exceeded ~90 min on the
+4 shared cores (one B run took 45 min under contention). "baseline" =
+`reports/round2_baseline/`, "HEAD" = `reports/round3_head/` (B0, B1, D0 exact
+HEAD runs; A0, A1, E0 the final tree with the §10.3 fixes switched off by
+monkeypatch, i.e. HEAD; C0 the 03:54 tree), "final" = `reports/eval_report.json`.
+Values are the report's (medians / pooled over runs); per-pack spreads below.
+
+| Gate | baseline | HEAD | final | target |
+|---|---|---|---|---|
+| 1 overall threat recall / loud / subtle (in deadline) | 0.48 / 0.29 / 0.56 | 0.58 / 0.36 / 0.68 | 0.58 / 0.36 / 0.68 | 0.95 / 1.0 / 0.9 |
+| 2 loud TTD (worst listed, ticks) | A/T6b 43 | A/T9 21 | A/T9 31 | 2 |
+| 3 FAR ≥ LOW / ≥ MEDIUM per entity-day | 0.206 / 0.138 | 0.209 / 0.129 | 0.237 / 0.152 | 0.2 / 0.05 |
+| 3 HIGH+ / CRITICAL (all runs) | 92 / 53 | 63 / 21 | 60 / 19 | ≤ 1 / 0 |
+| 3 FAR(E@60 s) / FAR(A@900 s) | 3.38 | 3.10 | 3.10 | [0.5, 2] |
+| 4 legit runs within allowed severity | 0.32 | 0.34 | 0.34 | 0.95 |
+| 5 notifications per TP incident / class incidents per class legit event | 6.09 / 2 | 6.05 / 2 | 7.05 / 1 (pass) | 3 / 1 |
+| 6 incident closed ≤ 2 h after attack end | 0.55 | 0.59 | 0.36 | 1.0 |
+| 7 worst median KS D | 0.41 | 0.42 | 0.41 | 0.05 |
+| 7 single-tick exceedance e_day ≤ 0.03, cc 900 / cc 60 (x nominal) | 97 / 23,330 | 63 / 3,201 | 64 / 2,818 | [0.5, 2] |
+| 7 evidence-CUSUM alarms per entity-day | 1.51 | 1.70 | 1.20 | 0.045 |
+| 7 accumulator paths budget / change / temporal_categorical per entity-day | 0.012 / 0.145 / 2.39 | 0.018 / 0.099 / 1.06 | 0.004 (pass) / 0.072 / 1.34 | 0.02 / 0.04 / 0.04 |
+| 8 twins confusable / Spearman / T19 chain | 0.43 / 0.11 / 0 | 0.14 / −0.10 / 0 | 0.14 / −0.09 / 0 | 1 / 0.8 / 0.9 |
+| 9 role ARI / refit ARI / ID churn / L1–L3 class incidents ≤ LOW | 0.48 / 0.72 / 3 / 0 | 0.58 / 0.66 / 2 / 0 | 0.60 / 0.74 / 0 (pass) / 0.67 | 0.9 / 0.95 / 0 / 1 |
+| 10 hit@3 / counterfactual validity | 0.32 / 0.29 | 0.20 / 0.37 | 0.25 / 0.35 | 0.8 / 0.9 |
+| 11 per-tick p5–p95 coverage / typical-hours Jaccard | 0.98 / 0.92 | 0.96 / 0.92 | 0.96 / 1.0 | [0.85, 0.95] / 0.8 |
+| 12 feedback cut of control incidents ≥ LOW | −0.20 | – | −0.08 | 0.5 |
+| 13 ablation | – | – | see §10.6 | |
+| 14 max pack-seed wall / live p95 at 35 ent. | 2034 s / 1055 ms | 3183 s / 2164 ms | 2874 s / 1403 ms (contended host) | 360 s / 80 ms |
+| 15 exceptions / stale series | 0 / 0 | 0 / 4 (E0 class:r4 common.q) | 0 / 0 (pass) | 0 / 0 |
+
+Per run, HEAD → final (control incidents; "reopened" = extra episodes of
+the same id, the lead's open question; ev = evidence-CUSUM alarms per
+control entity-day):
+
+| run | FAR ≥ LOW | FAR ≥ MED | distinct ≥ LOW | reopened | openings (distinct + reopened) | HIGH / CRIT | ev |
+|---|---|---|---|---|---|---|---|
+| A0 | 0.329 → 0.289 | 0.184 → 0.171 | 25 → 22 | 63 → 31 | 88 → 53 | 2/0 → 2/0 | 1.41 → 1.25 |
+| A1 | 0.316 → 0.355 | 0.184 → 0.184 | 24 → 27 | 81 → 29 | 105 → 56 | 2/0 → 1/0 | 0.29 → 0.32 |
+| B0 | 0.210 → 0.254 | 0.145 → 0.181 | 58 → 70 | 187 → 86 | 245 → 156 | 12/4 → 14/5 | 3.55 → 2.16 |
+| B1 | 0.221 → 0.243 | 0.109 → 0.145 | 61 → 67 | 166 → 60 | 227 → 127 | 12/3 → 11/2 | 1.83 → 1.03 |
+| C0 | 0.191 → 0.268 | 0.134 → 0.191 | 10 → 14 | 41 → 18 | 51 → 32 | 4/2 → 5/1 | 4.49 → 4.42 |
+| D0 | 0.105 → 0.135 | 0.066 → 0.071 | 43 → 55 | 121 → 51 | 164 → 106 | 18/9 → 17/8 | 0.36 → 0.42 |
+| E0 | 1.000 → 1.000 | 0.786 → 0.893 | 28 → 28 | 12 → 8 | 40 → 36 | 13/3 → 10/3 | 1.07 → 1.11 |
+
+Reading: the B27 fix halves the reopenings everywhere and cuts the control
+openings (what an analyst is notified of) by 10–48 %, but the gate counts
+DISTINCT incident ids, and those rise: an FP incident that used to be
+revived by old risk and absorb every later alarm of the entity under one id
+now stays closed, and a later unrelated alarm opens its own. FAR ≥ LOW is
+over target before and after. Threat detection per seed is unchanged in
+count; on A0 T1 and T17 flip from detected to missed and on B0 T4b from
+missed to detected: all are the same mechanism, an entity at risk
+~27–32 before onset (API clients idle at risk 20–30 from identity /
+categorical family evidence) that either already has a LOW risk incident
+open at onset (the attack then only escalates it to CRITICAL with the
+expected axes; eval.md counts an opening, not an escalation) or does not.
+T3 on B is now detected by its own alarms after ~1 day (in deadline)
+instead of by a risk opening of old risk at +10 ticks; its incident stays
+open while the ramp continues (8–12 notifications instead of 1), which is
+also why "closed ≤ 2 h after attack end" drops for T3 / T15 / T18.
+
+Smoke: `scripts/smoke.py`'s Runtime pinned to Mon 2026-09-28 09:13
+Asia/Shanghai (120 × 3600 s + 192 × 900 s, 16 live ticks at 60 s): HEAD
+11 open incidents (5 demo threats, 6 clean keys incl. erp-prod class:r3
+temporal HIGH, oa-portal class:r3 LOW, the health checkers 10.40.9.9 MEDIUM
+and 10.30.9.9 LOW); final 6 (the 5 demo threats and one LOW categorical
+first_seen on 10.30.2.24). Eval smoke pack seed 0: lib-3 60 s (gate 14: 12
+s; contended host). mini seeds 0 / 1: 0 exceptions, 0 stale series.
+
+Tests: full suite 2185 passed, 4 skipped. APPMON_SLOW Part B:
+`test_part_b_live_60_equals_900` FAILS at HEAD and at final (H rows equal,
+B14 episodes now equal, but at 60 s 187 single-tick alarms against 3 at
+900 s and 5 vs 1 MEDIUM+ incidents; HEAD 149 vs 4, 7 vs 0). It passed in
+the cadence work because the old generator made the 60-s-stepped humans
+look alike in both twins and both were equally noisy; with the round-2
+generator fix the 900-s twin is quiet and the 60-s t-stream calibration
+problem (§10.7 item 2) is exposed. Not marked xfail: it is a real open
+issue. `test_part_b_null_levels` stays xfail.
+
+### 10.5 Design constants (lead decision): measured effect
+
+- **β = (0.5, 0.25, 0.25).** e_day of a tick of type τ is q_all n_τ / β_τ,
+  so other shares can be replayed from the recorded per-tick e_day and tick
+  type (single-tick path; final A0, B0, E0). Control single-tick alarms per
+  1000 ticks, design / Q-heavy (0.25, 0.5, 0.25) / n-proportional /
+  H-heavy (0.8, 0.1, 0.1): A 4.8 / 5.4 / 5.6 / 3.4, B 23.1 / 26.7 / 26.7 /
+  20.6, E 58.7 / 59.0 / 65.5 / 52.3 (nominal ≈ 0.31 at 900 s). Threats'
+  first single-tick alarm: unchanged for 21 of 24 (pack, scenario); a Q-heavy
+  split loses T1's H-tick alarm at +4 and gains nothing earlier; T9 / T9b /
+  T6b move by 4–50 ticks. So the shares move the null rate by ±15–25 % and
+  are not what limits loud TTD (the Q grain's own p-values, 1e-3 … 3e-4 for
+  the loud T1 replacement on its first three Q ticks, are) or the FAR (the
+  ≥ 60x excess is calibration, §10.7).
+- **Evidence split 0.5 / 0.5** (ARL 66 d per stream): realised evidence-CUSUM
+  alarms 1.20 per control entity-day overall (0.32–4.42 per run) against the
+  0.045 budget, i.e. ~25x whatever the split; the stream CUSUM inputs are not
+  in the collected series, so the split itself could not be replayed.
+
+### 10.6 Ablation (gate 13) and P2
+
+From the interrupted evaluator's batch (tree of 03:54 = HEAD minus the B13
+count floor; every ablation paired with the full run of the same pack-seed
+of that tree; `reports/round3_ablation/`): budget (sole detector of B/T4b),
+changepoint (B/T4), client_identity (A/T6, T6b, T9b, T16), novelty (A/T13),
+rhythm (A/T17), sequence (A/T17) and timing (B/T4b, T10, T14) are each the
+sole or main detector of a scenario; attribution, beacon, class_monitor,
+likelihood, multivariate and rule_match are not on the ablated pack-seed
+(no recall lost; ΔFAR ≥ LOW −0.026, +0.011, +0.002, −0.013, +0.013, −0.013).
+B18 is not the sole detector of T21 (T21 is detected with B18 disabled).
+Disabling B07 rhythm LOWERS FAR ≥ LOW by 0.079 and makes A/T7 detected: B07
+is a net false-alarm source on pack A. Gate 12 on that tree: −0.12 (final:
+−0.08) — labels increase control incidents.
+
+P2 (B19–B22, not built): the only direct signal is T20 (lateral access,
+expected detector B21 cross_system, axes lateral / xsys): missed on D in
+every run (an incident exists on the entity but no built engine emits the
+lateral / xsys axis), so B21 would add a gate-1 scenario. Nothing in the
+ablations points at B19 (no missed or late scenario is a bimodal-residual
+case), B20 (T12 credential stuffing is late, 13–23 ticks against 3, but its
+expected detectors B04 / B10 do fire; a session-shape detector might help)
+or B22 (role clustering and identification gates fail for reasons listed in
+§10.7).
+
+### 10.7 Tuning and design candidates (not changed; evidence)
+
+1. **Recurring HIGH lib-4 matches in a clean warm-up** (L15 backup hosts,
+   L7 NAT). `bulk_upload` (HIGH) matches the sanctioned nightly backup
+   every night: B26 never habituates HIGH, B28's training trust is 0 on
+   those ticks, so B13's committed ring has no trusted night hour, every
+   own day / 7-d window is invalid and B13 falls back to the PEERS' level
+   (10.20.9.5 bytes_up.7d 6.8 GB against a 20.8 MB "usual", fit_source
+   peer, 19 days of history). Risk 80–100 permanently (B0 profile:
+   lib4:bulk_upload 41–66 % of it). Options: habituate a HIGH match that
+   recurs at the same phase on ≥ N warm-up days, a sanctioned-automation
+   allowlist, or keep training trust. L15 is CRITICAL in every run.
+2. **60-s t-stream calibration** (pack E, Runtime, Part B). After the
+   900 → 60 s switch the (daypart, t, cc=60) meta strata and the cc=60 B24
+   strata start empty; p_all includes the accumulators by spec; live rows
+   with accumulators ≥ h/2 are kept out of the rings by the evidence cap.
+   E0 (interim run, final tree without the B14 / B27 fixes): single-tick
+   alarms on 6.7 % of control t-ticks, rising from 13 in the first hour to
+   342 in hour 19; the lowest detector is budget_vol / timing / jsd /
+   budget_breadth in ~92 % of them (x nominal at p < 1e-3:
+   jsd 467, timing 49, budget_vol 48, budget_breadth 35). Options: seed
+   cc=60 strata from cc=900 for window statistics (timing, jsd, budget_*
+   are defined on 1-h … 7-d windows), or keep accumulators out of the
+   t-tick single-tick fusion.
+3. **lib-4 per-tick ratio / entropy clauses at 60 s.** After the counter fix
+   E0 still shows categories never seen at 900 s: `search` / `api` on humans
+   (path_entropy, get_ratio of 1-minute samples), `maintenance` on machines,
+   `health`. Option: evaluate lib-4 on Q-window aggregates in canonical
+   mode (entropies of merged count maps, ratios of per-grain sums).
+4. **Loud TTD at 900 s.** The loud T1 replacement reaches p 1e-38 on the
+   first H tick (+4) but only 1e-3 … 3e-4 on the Q ticks before it (the
+   conservative H → Q transfer, variance factor 4); §10.5 shows the budget
+   shares are not the lever.
+5. **Detection metric vs B27 joining** (spec question): an attack on an entity
+   with an open LOW FP incident escalates it (CRITICAL, expected axes, an
+   'escalate' notification) but eval.md counts only openings (A0 T1 / T17,
+   E0 T1' / T12'). Decide whether an escalation with a new expected axis in
+   the window is a detection.
+6. **Detector calibration at 900 s** (live vs warm-up rings), x nominal at
+   p < 1e-3 on A0 control ticks: identity 21, timing 19, spe 17,
+   marg_shape_q 13, budget_vol 12, marg_shape 10 (KS: spe 0.41, identity
+   0.33). Clean API clients idle at risk 20–30 from identity / categorical
+   family evidence (B16 on machine personas; the health checker 10.40.9.9:
+   identity p ≈ 2e-4 on many H ticks, 56 % of its risk).
+7. **Memory at 60 s** (gate 14): age-based retention of per-tick dict series
+   (behavior.score / pm / p 1 d) holds 15x the points at 60 s; E0 derived
+   bytes 740 MB at the end, 163 MB / entity extrapolated to 8 d.
+8. **Cold start and renumbering** (L6, L8): the renumbered / new IP alarms
+   (marg_int single tick, spe) before link seeding or the class prior
+   carries it; L8 typing prob never ≥ 0.8 within 3 ticks.
+9. **Gate 12**: the simulated analyst's pattern-scope fp labels increase
+   control incidents (−0.08 … −0.20); not diagnosed further this round.
+10. **Evidence CUSUM**: 25x its budget; the previous evaluator's `evcap`
+    experiment (one tick may raise the CUSUM by at most h) was queued but is
+    not part of this report.
+
+### 10.8 Reports
+
+`reports/eval_report.{json,html}` (final), `reports/round3_head/` (HEAD),
+`reports/round3_ablation/` (gates 12 / 13 on the 03:54 tree),
+`reports/round2_baseline/`, `reports/round1/`, `reports/before/`,
+`reports/experiment_A_900s_warmup/` (history).
+
+## 11. Round 2 in one place: what changed, results, what remains
+
+"Round 2" here is the whole second development round after the first
+evaluation (§8): the cadence-invariant spec v2.1 (§8.1, cadence.md), the W7
+tuning fixes (§8.2), the results-neutral performance pass (§9) and the
+evaluator rounds 2 and 3 (§10). This section is the summary; the evidence is
+in the sections cited. The Chinese design document
+(`docs/组织业务系统画像平台设计.md`, library 3 §3.3–§3.4) carries the same results.
+
+### 11.1 What changed
+
+| Area | Change | Where |
+|---|---|---|
+| Representation | Canonical trailing grains H = 3600 s / Q = 900 s from additive parts (`feature.part`), SetSketch unions (`l4.peer_ids`, `l4.dport_ids`, `tls.ja3_ids`, `act.template_ids`), merged count maps and 15-min slot span features (`act.slot_events`); scored rows only on epoch-aligned decision ticks; midpoint time context; `grain_mode='canonical'` is the default for the pipeline, Runtime, eval and scripts, `'tick'` (golden-tested) for unit tests | cadence.md §2–§5, §17 |
+| Baselines and predictives | B03 H anchors plus a native Q current anchor; Q predictive = Q native ⊕ κ_T = 16 pseudo-rows of the H predictive transferred with v = 1 + ((m−1)/m)ω (ω from paired hours, EB-shrunk); B04 / B05 / B06 per grain; four Q detectors (`marg_int_q`, `marg_shape_q`, `t2_q`, `spe_q`; 35 detectors) | cadence.md §6 |
+| Sequential detection and budgets | B14 charts on hourly decision rows (h independent of Δt) with latches held between H ticks; identity windows = 4 active H rows with non-overlapping CUSUM steps; single-tick e_day = q_all·n_τ/β_τ over tick types; one evidence CUSUM per stream (S_t, S_h) with a per-stream audit | cadence.md §7–§8 |
+| Calibration and decisions | B24 grain strata and pm prior with randomised atoms; B25 winsorised meta tail and release cap (`behavior.trust_evidence`); B07 automation index; corroborated REJECT; B24 own-history floor; B27 quiet-close, lib-4 evidence and risk-reopening rules | §8.2, §10.2, §10.3 |
+| Downstream | B29 per-grain replay (≤ 96 H states, per-stream evidence), B30 per-grain bands, API `grains` block, `behavior.degraded` causes, `lib/m_portrait`, B23 profile after refit, narrative fields | §8.2, cadence.md §9 |
+| lib-4 | Fresh-only snapshot; additive counter clauses read per 15-min grain in canonical mode (`c2_beacon` no longer matches a 30-s health poller on every 60-s tick) | §4, §10.3 |
+| Generator and packs | Continuous-time human sessions, per-flow retransmit fields, resolver clocks; warm-ups end with a phase at the live cadence covering both day types (`packs.warmup_phases`); Runtime plan 120 × 3600 s + 192 × 900 s | §10.2, cadence.md §10 |
+| Performance (results bit-identical) | Batched B04, identity background memo, B10 tier reuse, store fast paths and `names_signature`, runner stale-check cache, GC thresholds, retention rules for 8 unbounded lib-3 series: about −20 % wall / CPU on packs A and B, memory under 12 MB per entity at 900 s | §9 |
+| Tests | Suite 2118 passed / 3 skipped after cadence M8 → 2185 passed / 4 skipped after round 3; new golden, grain, cadence-invariance, per-fix regression tests; `tests/tests_cadence_part_b.py` merged into `tests/test_cadence_invariance.py` | §8.2, §9, §10.3 |
+
+### 11.2 Results
+
+First evaluation (§8, v2 tick semantics, seed 0) → round-3 final (§10.4,
+canonical; A / B seeds 0–1, C / D / E seed 0):
+
+| Measure | §8 "after", A / B seed 0 | round-2 baseline | round-3 final | target |
+|---|---|---|---|---|
+| threats opening their own incident within deadline | A 1/12, B 1/10 | recall 0.48 | recall 0.58 (raw, any time: 0.75) | 0.95 |
+| FAR ≥ LOW / ≥ MEDIUM per control entity-day | A 0.25 / 0.197, B 0.083 / 0.058 | 0.206 / 0.138 | 0.237 / 0.152 | 0.2 / 0.05 |
+| HIGH / CRITICAL control incidents | A 10 / 6, B 10 / 5 | 92 / 53 (all runs) | 60 / 19 (all runs) | ≤ 1 / 0 |
+| single-tick exceedance at cc 900 (× nominal) | ~500 | 97 | 64 | [0.5, 2] |
+| evidence-CUSUM alarms per entity-day | – | 1.51 | 1.20 | 0.045 |
+| pack A wall | 850 s | – | 932 s after v2.1 → 740 s after §9 (uncontended); round-3 max pack-seed 2874 s on a contended host | 360 s |
+
+Gates in `reports/eval_report.json`: only 15 (robustness) passes out of the
+15; 13 (ablation) is n/a in the final report and was measured on an older tree
+(§10.6); 1–12 and 14 fail. Passing sub-checks include window top-1 and
+EER_hard, T9 / T9b, L6 linking, T21 class detection, class ID churn 0, the H /
+Q portrait band coverage, anchors unpoisoned after attacks, the budget
+accumulator path rate and bursty / steady FAR parity.
+
+### 11.3 What remains (ordered by impact)
+
+1. **Recurring lib-4 HIGH matches in clean warm-ups** (L15, L7): design
+   decision needed (habituation of recurring same-phase HIGH matches, a
+   sanctioned-automation allowlist, or training trust) — §10.7 item 1.
+2. **60-s t-stream calibration** after a 900 → 60 s switch; the APPMON_SLOW
+   Part B test `test_part_b_live_60_equals_900` fails for this reason and is
+   deliberately left failing — §10.7 item 2, cadence.md §17.1.
+3. **lib-4 ratio / entropy / concentration clauses per tick at 60 s** — §10.7
+   item 3.
+4. **Detection metric vs incident joining**: escalation of an already-open LOW
+   FP incident is not counted as a detection (spec question for eval.md
+   gates 1 and 5) — §10.7 item 5.
+5. **Detector calibration at 900 s** (identity 21×, timing 19×, spe 17×,
+   marg_shape_q 13×, budget_vol 12× nominal at p < 1e-3; idle API clients at
+   risk 20–30) — §10.7 item 6.
+6. **Loud TTD ≤ 2 ticks at 900 s** is structurally out of reach under the
+   conservative H → Q transfer; β shares are not the lever — §10.5, §10.7
+   item 4.
+7. **Gate 12** (pattern-scope fp labels increase control incidents), **gate 14**
+   (CPU several times over; 60-s memory ~163 MB per entity extrapolated) and
+   the identification / class / explanation / poisoning sub-gates — §9.4,
+   §10.7 items 7–10.
+8. Short warm-ups: B06 commits zi rows scored against hyperprior predictives
+   (engines.md B06, cadence.md §17 item 2).
+
+Docs sync note: `scripts/evaluate.py`'s docstring example
+`--ablate likelihood,class_monitor` matched no engine (the runner compares
+`disable_engines` with the full engine name or the class name, so the job ran
+unablated); the example and the `--ablate` help now use full names
+(`behavior.likelihood`). The round-3 ablation runs used full names, so their
+results are unaffected.

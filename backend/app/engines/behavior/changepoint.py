@@ -402,7 +402,7 @@ class ChangepointEngine(Engine):
                 # reporting its accumulator alarms in between (as on an idle
                 # tick), so B25 / B27 / B28 and the eval see one continuous
                 # alarm instead of an on-off train at the H period
-                return self._hold_latches(ctx.store, float(ctx.now), dt0)
+                return self._hold_latches(ctx.store, float(ctx.now), dt0, bool(ctx.training))
             if getattr(self, "_ret_store", None) is not ctx.store:
                 ctx.store.ensure_retention(m_cp.CUSUM_STATE, max_age_s=4 * 86400.0)
                 self._ret_store = ctx.store
@@ -784,14 +784,26 @@ class ChangepointEngine(Engine):
                           if any(on.values()) else {})
         self._write_delta(store, s, e, run, bank, mc, on)
 
-    def _hold_latches(self, store: Any, now: float, dt: float) -> int:
+    def _hold_latches(self, store: Any, now: float, dt: float, training: bool = False) -> int:
         """spec v2.1: between H decision ticks, re-emit the latched
-        acc_alarm of every entity whose last H tick left one on."""
+        acc_alarm of every entity whose last H tick left one on.
+
+        The end of warm-up restarts the charts (see _entity). It used to be
+        applied only on the first live H tick, so on the live ticks before it
+        a warm-up latch was re-emitted here as a live accumulator alarm (eval
+        round 3, cadence Part B: two humans 'alarmed' from the first live
+        minute to the first live hour at 60 s and at 900 s). The restart is
+        now applied on the first live tick whatever its type."""
         n = 0
         for s in store.systems():
             for e in store.entities(s):
                 m = store.get_model(s, e, m_cp.MODEL)
                 run = m.get("run") if isinstance(m, dict) else None
+                if run is not None and run.get("training") and not training:
+                    self._reset_charts(run)
+                    run["training"] = False
+                    store.put_model(s, e, m_cp.MODEL, m, ts=now)
+                    continue
                 alarm = (run or {}).get("alarm") or {}
                 if any(alarm.values()):
                     emit.write_scores(store, s, e, now, {}, acc_alarm=dict(alarm),

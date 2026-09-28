@@ -9,14 +9,43 @@ OR-membership × weight, gated by the NONE conditions.
 
 Emits a SignatureMatch per firing signature — the answer to "what is this
 entity doing right now?"
+
+Counter clauses are read per 15-min grain (evaluator round 3). A raw counter
+(`http.requests`, `l4.bytes_up`, ...) is a per-TICK total, so a threshold on
+it meant something different at every cadence: `c2_beacon`'s `http.requests
+<= 10` never matched a 30-s health checker at 900 s (30 per tick) and matched
+it on every 60-s tick (2 per tick); at 60 s `maintenance`, `search`, `health`
+and `browse` appeared on control entities that never matched them in the
+900-s warm-up, which B08 then scored as first_seen / JSD drift of its lib-4
+category dimension. The value of an additive counter is therefore its total
+over the trailing 900 s (the Q grain, cadence.md §2; a tick straddling the
+window start pro rata), and a tick longer than 900 s is scaled to 900 s, so
+steady traffic gives the same membership at 60, 900 and 3600 s and the
+thresholds keep the meaning they had at the packs' 900-s cadence (canonical
+grain mode; tick mode keeps v2's per-tick reading as the golden reference). Distinct
+counts (distinct peers / ports / paths / qnames) are not additive and stay
+per tick (at a fine cadence they can only shrink, i.e. never create a match).
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+import math
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from ...core.engine import Context, Engine
+from ..behavior.lib import grains as GR
 from ...models.schema import Severity, SignatureMatch
 from .store import Signature, SignatureStore
+
+
+# additive raw counters: read as totals per 15-min grain (see module docstring)
+GRAIN_S = 900.0
+ADDITIVE_COUNTERS = frozenset({
+    "act.events", "l3.bytes_total", "l4.flows", "l4.bytes_up", "l4.bytes_down",
+    "l4.syn_count", "l4.pkts_total", "http.requests", "http.status_2xx", "http.status_3xx",
+    "http.status_4xx", "http.status_5xx", "http.get_count", "http.write_count",
+    "tls.handshakes", "dns.queries", "dns.txt_count", "dns.nxdomain",
+})
 
 
 class RuleMatchEngine(Engine):
@@ -30,14 +59,68 @@ class RuleMatchEngine(Engine):
         super().__init__(**p)
         self.sig_store = store
         self.min_confidence = min_confidence
+        # (tick end, Δt) of the recent ticks, to pro-rate a past tick that
+        # straddles the start of the 900-s window (all entities share ticks)
+        self._ticks: Deque[Tuple[float, float]] = deque()
+
+    def _log_tick(self, now: float, dt: float) -> None:
+        tk = self._ticks
+        while tk and tk[-1][0] >= now:          # a replayed / restarted clock
+            tk.pop()
+        tk.append((now, dt))
+        horizon = now - 2.0 * GRAIN_S - max(dt, GRAIN_S)
+        while tk and tk[0][0] < horizon:
+            tk.popleft()
+
+    def _tick_dt(self, ts: float, default: float) -> float:
+        for t, d in reversed(self._ticks):
+            if abs(t - ts) < 1e-6:
+                return d
+            if t < ts:
+                break
+        return default
+
+    def per_grain(self, store: Any, system: str, entity: str, name: str, value: float,
+                  now: float, dt: float) -> float:
+        """Total of the additive counter `name` per 900 s ending at now."""
+        if dt >= GRAIN_S:
+            return value * GRAIN_S / dt
+        lo, total = now - GRAIN_S, 0.0
+        for m in store.raw_tail(system, entity, name, int(GRAIN_S // max(dt, 1.0)) + 2):
+            ts = float(m.ts)
+            if not (lo - GRAIN_S < ts <= now) or not isinstance(m.value, (int, float)):
+                continue
+            v = float(m.value)
+            if not math.isfinite(v):
+                continue
+            if ts == now:
+                total += v
+                continue
+            d = self._tick_dt(ts, dt)
+            ov = ts - max(ts - d, lo)
+            if ov > 0.0 and d > 0.0:
+                total += v * min(1.0, ov / d)
+        # an entity observed for less than one grain: a rate over the observed span
+        fs = store.first_seen(system, entity)
+        if fs is not None:
+            covered = now - float(fs) + dt
+            if 0.0 < covered < GRAIN_S:
+                total *= GRAIN_S / covered
+        return total
 
     def run(self, ctx: Context, observations=None) -> int:
         n = 0
+        now, dt = float(ctx.now), float(ctx.window_s)
+        canon = GR.canonical(ctx.config)
+        self._log_tick(now, dt)
         for system in ctx.store.systems():
             sigs = self.sig_store.for_system(system)
             if not sigs:
                 continue
             names = self._metric_names(sigs)
+            # spec v2.1 canonical grain mode only: tick mode keeps v2's per-tick
+            # reading (the golden reference, cadence.md M8)
+            counters = [m for m in names if m in ADDITIVE_COUNTERS] if canon else []
             for entity in ctx.store.entities(system):
                 # fresh-only (written at this tick): a match answers "what is
                 # the entity doing right now". Without `now` the latest value
@@ -49,6 +132,11 @@ class RuleMatchEngine(Engine):
                 snap = ctx.store.snapshot(system, entity, now=ctx.now, names=names)
                 if not snap:
                     continue
+                for name in counters:
+                    v = snap.get(name)
+                    if isinstance(v, (int, float)):
+                        snap[name] = self.per_grain(ctx.store, system, entity, name,
+                                                    float(v), now, dt)
                 for sig in sigs:
                     conf, terms = self._evaluate(sig, snap)
                     if conf >= self.min_confidence:

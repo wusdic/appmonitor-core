@@ -319,3 +319,30 @@ def test_restart_at_end_of_warmup_clears_the_reported_alarm_of_an_idle_entity():
         run_engine(eng, store, t2, training=False)
         assert not alarm(store, "e", t2), k
     assert m_cp.alarms(store, S, "e")["cusum"] == 0
+
+
+@pytest.mark.parametrize("training,latched_run,expect_alarm", [
+    (False, True, False),    # first live tick, not an H tick: the warm-up latch is dropped
+    (True, True, True),      # still warm-up: held between H ticks as before
+    (False, False, True),    # a live latch: held between H ticks (cadence.md §17)
+])
+def test_canonical_first_live_tick_between_h_ticks_restarts_the_charts(
+        training, latched_run, expect_alarm):
+    """Eval round 3: in canonical grain mode the end-of-warm-up restart ran
+    only on the first live H tick, so on the live ticks before it
+    _hold_latches re-emitted the warm-up latch as a live accumulator alarm
+    (cadence Part B: two humans alarmed from the first live minute to the
+    first live hour, at 60 s and at 900 s)."""
+    store, eng = make_store(), ChangepointEngine()
+    store.register_entity(S, "e")
+    model = eng._new_model()
+    model["run"]["alarm"]["cusum"] = 1
+    model["run"]["training"] = latched_run if training else True
+    if not training and not latched_run:
+        model["run"]["training"] = False
+    store.put_model(S, "e", m_cp.MODEL, model)
+    t = (T0 // 3600.0) * 3600.0 + 900.0                 # a Q tick, not an H decision tick
+    run_engine(eng, store, t, training=training, dt=900.0, config={"grain_mode": "canonical"})
+    assert bool(alarm(store, "e", t)) is expect_alarm
+    if not expect_alarm:
+        assert m_cp.alarms(store, S, "e")["cusum"] == 0

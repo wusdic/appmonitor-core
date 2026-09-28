@@ -3,7 +3,8 @@
 Status: **implemented (M0–M8)**; `grain_mode='canonical'` is the default for
 pipeline, runtime, eval and scripts, `'tick'` (v2, golden-tested) for engine
 unit tests. §17 lists where the implementation deviates from or corrects this
-design, and what is still open. `contract.md` and `helpers_api.md` carry the
+design, and what is still open. §17.1 records what evaluation rounds 2–3 changed in
+canonical mode and the measured state (integration.md §10, §11). `contract.md` and `helpers_api.md` carry the
 matching v2.1 amendments, each marked *spec v2.1*.
 
 Scope: the 52-feature representation (FEATURE_SPEC), everything that learns
@@ -1318,3 +1319,59 @@ reason below.
    B06 admits a zi row only when B04 scored it against an own-support
    predictive.
 
+### 17.1 Status after evaluation rounds 2–3 (docs sync, 2026-09-28)
+
+Changes in canonical mode since §17 (each with a regression test that fails
+with the fix switched off; tick mode and its golden are unchanged except where
+noted in integration.md §8.2):
+- **B14:** the end-of-warm-up chart restart runs on the first live tick
+  whatever its type (it ran on the first live H tick only, so a warm-up latch
+  was reported as a live alarm for up to an hour: 59 ticks at 60 s).
+- **B18 class_rhythm:** per-slot membership comes from `act.slot_events`
+  (a member active anywhere in a 3600-s tick used to count as active in every
+  slot of it), every complete slot is scored and learned in time order, and a
+  slot is scored only when its own bin holds ≥ 3 decayed slots
+  (`RHYTHM_MIN_BIN_W`) instead of falling back to the pooled prior of the
+  other bins.
+- **lib-4 `signature.rule_match`:** additive counter clauses are read as totals
+  per 15-min grain (`ADDITIVE_COUNTERS`, trailing 900 s pro rata at Δt < 900,
+  × 900/Δt at Δt ≥ 900), so thresholds keep their 900-s meaning. Ratio,
+  entropy and concentration clauses are still read per tick (open item 3
+  below).
+- Round 2 (commit fdcde68): continuous-time human sessions in the generator,
+  B13's counting-noise floor, B24's own-history floor, B27 quiet-close and
+  lib-4 evidence rules, B11 undefined descriptors.
+
+State of the two open items above:
+1. **B11 / tick-native pm on short strata** is reduced, not solved: B24's pm
+   prior randomises the two atoms of pm (`m_calib.pm_prior`, integration.md
+   §8.2) and the own-history floor stops a prior from contradicting the ring
+   (§10.2 #5), but a live score beyond every ring entry still takes pm. After
+   the Runtime's or pack E's 900 → 60 s switch the (daypart, t, cc = 60) meta
+   strata and the cc = 60 B24 strata start empty, p_all includes the
+   accumulators, and the evidence cap keeps high-accumulator live rows out of
+   the rings: 6.7 % of control t-ticks raise a single-tick alarm (budget_vol,
+   timing, jsd, budget_breadth). This is why the APPMON_SLOW Part B test
+   `test_part_b_live_60_equals_900` now FAILS (H rows and B14 alarm episodes
+   are equal, but 187 single-tick alarms at 60 s against 3 at 900 s). It
+   passed during M8 only because the old generator made both twins equally
+   noisy. It is left failing, not xfail. Candidate fixes: seed cc = 60 strata
+   from cc = 900 for the window statistics, or keep accumulators out of the
+   t-tick single-tick fusion (integration.md §10.7 item 2).
+2. **B06 on short warm-ups:** unchanged (engines.md B06).
+
+Further open items that belong to this design:
+3. lib-4 per-tick ratio / entropy / concentration clauses at 60 s (new
+   categories on control entities feed B08's category dimension); evaluating
+   lib-4 on Q-window aggregates needs derived-engine support.
+4. Loud TTD ≤ 2 ticks at 900 s is out of reach while Q-grain p stays at
+   1e-3 … 3e-4 under the default transfer v = 4 (no paired hours before the
+   first live day); the β shares are not the lever (integration.md §10.5).
+5. Memory at 60 s: age-based retention of per-tick dict series (behavior.score
+   / pm / p, 1 d) holds 15× the points of 900 s; pack E extrapolates to about
+   163 MB per entity over 8 days (gate 14: 12 MB).
+
+Measured (final round-3 tree, integration.md §10.4): FAR(E @ 60 s) /
+FAR(A @ 900 s) = 3.10 (gate 3 band [0.5, 2]); single-tick exceedance at
+e_day ≤ 0.03 is 64× nominal at cc 900 and 2 818× at cc 60 (gate 7 band
+[0.5, 2]).

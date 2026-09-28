@@ -16,7 +16,10 @@ Opening (never during ctx.training; everything else still runs):
     e_day <= 0.1 within 24 h that no incident of the key has already
     covered (the family hit must be newer than the key's last incident
     activity, otherwise the decaying risk of a closed attack would reopen
-    it on every tick, which is exactly what "close never on risk" forbids).
+    it on every tick, which is exactly what "close never on risk" forbids),
+    and the risk itself must be >= 30 beyond what the key's last incident
+    already covered (its risk then, decayed with the slowest B26 half-life):
+    a weak null family hit on top of old risk is not a new episode.
   Lower findings, lib-4 matches (one-tick lag, store.matches(since = the
   previous run)) and the key's risk only join an existing incident.
 Join: the live incident of the same entity whatever its gap (one incident
@@ -137,6 +140,9 @@ OPEN_FINDING_RANK = 2                      # discrete finding >= MEDIUM opens
 RISK_MEDIUM, RISK_HIGH = 30.0, 60.0
 RISK_FAM_E_DAY = 0.1
 RISK_LOOKBACK_S = DAY
+# The slowest B26 half-life (novelty / identity, engines.md B26): an upper
+# bound of what the evidence an incident already covered still adds to risk.
+RISK_OLD_HL_S = 72 * HOUR
 # common mode / campaign
 COMMON_AXES = frozenset({"volume", "transport", "app_error"})
 COMMON_FRAC = 0.5
@@ -681,12 +687,43 @@ class IncidentEngine(Engine):
         if mem.hit_ts <= last:
             return None                          # that evidence already had its incident
         r = float(row[0])
+        # (evaluator round 3) the RISK must be new too, not only the family hit:
+        # after a quiet close the key's risk decays over days (B26 half-lives
+        # 12-72 h) while a family at e_day <= 0.1 is an ordinary null event
+        # (~0.1 per family and entity-day, ~1 a day over the families), so the
+        # old risk + any later weak hit reopened the incident within hours
+        # (pack A: 58 reopenings of 23 control incidents, median 6 h after
+        # the close; pack B: the sanctioned health checker 10.40.9.9 reopened
+        # ~40 times on risk alone). Only the risk the key's last incident did
+        # not already cover counts: the old part is bounded above by the risk
+        # at that time decayed with the slowest half-life.
+        if math.isfinite(last) and self._uncovered_risk(store, s, k, r, last, now) < RISK_MEDIUM:
+            return None
         axes: Set[str] = set()
         for fam in mem.fams:
             axes.update(FAMILY_DEFAULT_AXES.get(fam, ()))
         return {"risk": r, "severity": "medium" if r >= RISK_HIGH else "low",
                 "families": list(mem.fams), "axes": sorted(axes), "e_day": mem.e_min,
                 "hit_ts": mem.hit_ts}
+
+    @staticmethod
+    def _uncovered_risk(store, s: str, k: str, r_now: float, last: float, now: float) -> float:
+        """Risk not explained by the risk the key had at its last incident
+        activity: B26's risk is 100 (1 - exp(-x)) with x additive in the
+        evidence, so the old part at now is at most x_last 2^(-(now-last)/H)
+        with H the slowest half-life."""
+        ts, M = store.vec_since(s, k, RISK, last - RISK_LOOKBACK_S)
+        r_old = _NAN
+        for t, rw in zip(ts, M):
+            if float(t) <= last + 1e-6 and float(rw[0]) == float(rw[0]):
+                r_old = float(rw[0])
+        if not r_old > 0.0:
+            return r_now
+
+        def x_of(r: float) -> float:
+            return -math.log(max(1e-12, 1.0 - min(max(r, 0.0), 99.999) / 100.0))
+        x_old = x_of(r_old) * 2.0 ** (-max(0.0, now - last) / RISK_OLD_HL_S)
+        return 100.0 * (1.0 - math.exp(-max(0.0, x_of(r_now) - x_old)))
 
     # --------------------------------------------------------- common mode
     @staticmethod

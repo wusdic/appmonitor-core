@@ -220,6 +220,7 @@ D. MetricStore API additions (backward compatible)
 - put_health(engine, dict), health(), last_write_ts(s, e, name).
 - timeline(s, e, since): merges indexed events, matches, incidents, profile versions and risk points.
 - snapshot(s, e, now=None, names=None): when now is given, it returns only fresh values; with names, only those metrics (the same values; lib-4 passes the metrics its signatures reference, since lib-3 adds ~300 derived names and vector views per entity).
+- lib-4 counter clauses (eval round 3, canonical grain mode): signature.rule_match reads an additive raw counter (http.requests, l4.bytes_up / bytes_down / flows / syn_count / pkts_total, l3.bytes_total, tls.handshakes, dns.queries, http status / method counts, act.events) as its total per 15-min grain: at Δt < 900 s the sum over the trailing 900 s (a straddling tick pro rata by its own Δt), at Δt ≥ 900 s the tick's value × 900 / Δt, an entity first seen less than 900 s ago scaled by 900 / its observed span. The thresholds in data/signatures keep the meaning they had at the packs' 900-s cadence. Distinct counts (distinct peers / dports / paths / qnames, fanout) stay per tick. Tick mode keeps v2's per-tick reading.
 - RawMetric, DerivedMetric, BehaviorEvent and SignatureMatch become dataclass(slots=True) with None defaults for dims and inputs.
 
 E. Schema additions
