@@ -16,7 +16,9 @@ baseline that keeps learning would absorb him. B14 therefore
       mcusum  Crosier MCUSUM on the whitened 12-vector, ARL 100 d;
       bocpd   hourly Bayesian online changepoint detection on the intensity
               residual and on B06's Wilson-Hilferty score (Normal-Gamma,
-              hazard 1/168 h); cp.prob = P(run length <= 3 h);
+              hazard 1/168 h); cp.prob = P(run length <= 3 h); its pm is
+              the Bayes-factor bound 1/BF (bocpd_pm; round 4) and its
+              score -log10 pm;
       creep   daily Mann-Kendall / Sen slope over 14 days of
               (entity - class median) group means, against the golden anchor;
   * estimates the onset tau-hat (the last tick the alarmed statistic was at
@@ -97,6 +99,10 @@ BOC_WINDOW_H = 3               # cp.prob = P(r <= 3 h)
 # within the 0.005/day change-path share of one detector.
 BOC_ALARM = 0.8
 BOC_MAX_GAP_H = 48             # silent hours stepped with hazard only (beyond: no-op)
+# bocpd's model p (round 4, evaluator): the prior probability of a run of
+# <= BOC_WINDOW_H hours under the hazard, and its odds (bocpd_pm)
+BOC_PRIOR = 1.0 - (1.0 - HAZARD) ** (BOC_WINDOW_H + 1)
+BOC_PRIOR_ODDS = BOC_PRIOR / (1.0 - BOC_PRIOR)
 _LOGPI = math.log(math.pi)
 
 # ---- creep ----------------------------------------------------------------
@@ -295,7 +301,14 @@ def scale_of(learn: Mapping[str, Any]) -> np.ndarray:
 def bocpd_new(d: int = 2) -> Dict[str, np.ndarray]:
     return {"r": np.zeros(1), "p": np.ones(1), "mu": np.zeros((d, 1)),
             "ka": np.full((d, 1), BOC_K0), "al": np.full((d, 1), BOC_A0),
-            "be": np.full((d, 1), 1.0)}
+            "be": np.full((d, 1), 1.0), "n": np.zeros(1)}
+
+
+def bocpd_steps(st: Mapping[str, np.ndarray]) -> float:
+    """Hourly steps since the chart (re)started; inf for a state without a
+    count (restored from before round 4: long past its first hours)."""
+    n = st.get("n")
+    return float(n[0]) if n is not None and len(n) else math.inf
 
 
 def bocpd_step(st: Mapping[str, np.ndarray], x: np.ndarray) -> Dict[str, np.ndarray]:
@@ -345,12 +358,38 @@ def bocpd_step(st: Mapping[str, np.ndarray], x: np.ndarray) -> Dict[str, np.ndar
     if not keep.all():
         p = p[keep] / p[keep].sum()
         r, mu, ka, al, be = r[keep], mu[:, keep], ka[:, keep], al[:, keep], be[:, keep]
-    return {"r": r, "p": p, "mu": mu, "ka": ka, "al": al, "be": be}
+    return {"r": r, "p": p, "mu": mu, "ka": ka, "al": al, "be": be,
+            "n": np.array([bocpd_steps(st) + 1.0])}
 
 
 def bocpd_prob(st: Mapping[str, np.ndarray], window_h: int = BOC_WINDOW_H) -> float:
     """P(run length <= window_h hours)."""
     return float(np.sum(st["p"][st["r"] <= window_h]))
+
+
+def bocpd_pm(cp: float) -> float:
+    """bocpd's model p-value from cp = P(r <= 3 h | data) (round 4,
+    evaluator): the Bayes-factor bound p = min(1, 1 / BF) with
+    BF = posterior odds / prior odds = (cp / (1 - cp)) / BOC_PRIOR_ODDS.
+
+    Why: bocpd was the only instantaneous-or-accumulator detector without a
+    pm, so B24 extrapolated its score -log10(1 - cp) purely from the ring's
+    GPD tail. A machine persona's hourly cp sits near 0 all warm-up (ring
+    max 0.007 over 120 H rows), so the first live cp of 0.54 was issued
+    p = 2e-21 and every such blip became a HIGH / CRITICAL accumulator alarm
+    (pack D seed 0: 8 of 14 HIGH+ control incidents; pack A seed 0: 1 - 2).
+    Under the no-change hypothesis the Bayes factor has expectation 1, so
+    P(BF >= k) <= 1/k (Markov / Ville): 1/BF is a valid p-value of a
+    correctly specified model, and score = -log10 pm lets B24's p-score tail
+    floor bound the extrapolation by the model's own scale (lib/calib).
+    Monotone in cp, so the ring ranking and the alarm (cp >= BOC_ALARM) are
+    unchanged. NaN cp -> NaN."""
+    if not math.isfinite(cp):
+        return math.nan
+    if cp <= 0.0:
+        return 1.0
+    q = max(1.0 - cp, seq.P_FLOOR)
+    return float(min(1.0, max(seq.P_FLOOR, BOC_PRIOR_ODDS * q / cp)))
 
 
 # ============================================================== engine
@@ -675,7 +714,13 @@ class ChangepointEngine(Engine):
                       hr["s_wh"] / math.sqrt(hr["n_wh"]) if hr["n_wh"] else math.nan])
         st = bocpd_step(run["bocpd"], x)
         run["bocpd"] = st
-        cp = bocpd_prob(st)
+        # the first BOC_WINDOW_H steps after a (re)start carry no evidence:
+        # every run is <= BOC_WINDOW_H hours long, so P(r <= 3 h) = 1 by
+        # construction. Round 4 (evaluator): a new IP (pack A L6 renumbered
+        # 10.20.1.112 / .114, L8 new employee 10.20.1.14) was issued bocpd
+        # p = 1e-38 and a CRITICAL single-tick alarm on its first H tick, and
+        # an ACCEPT rebase did the same to an established entity. Unscored.
+        cp = bocpd_prob(st) if bocpd_steps(st) > BOC_WINDOW_H else math.nan
         run["cp_prob"] = cp
         boc = run["boc"]
         if cp >= BOC_ALARM:
@@ -750,10 +795,12 @@ class ChangepointEngine(Engine):
         p_mc = m_cp.mcusum_p(stat)
         cp = float(run["cp_prob"])
         cr = run["creep"]
+        p_boc = bocpd_pm(cp)
         scores = {"cusum": -math.log10(p_bank), "mcusum": -math.log10(p_mc),
-                  "bocpd": -math.log10(max(1.0 - cp, seq.P_FLOOR)) if math.isfinite(cp) else None,
+                  "bocpd": -math.log10(p_boc) if math.isfinite(p_boc) else None,
                   "creep": -math.log10(cr["p"]) if math.isfinite(cr["p"]) else None}
         pm = {"cusum": p_bank, "mcusum": p_mc,
+              "bocpd": p_boc if math.isfinite(p_boc) else None,
               "creep": cr["pm"] if math.isfinite(cr["pm"]) else None}
         on = {"cusum": bool(bank["latch"]["on"]), "mcusum": bool(mc["latch"]["on"]),
               "bocpd": bool(run["boc"]["on"]), "creep": bool(cr["on"])}

@@ -429,6 +429,12 @@ class _StaleChecker:
     # ticks, transitions and an hourly heartbeat (B28), behavior.degraded only
     # on ticks where a detector ran degraded (contract M, lib/emit causes)
     SPARSE = frozenset({"behavior.alarm", "behavior.regime", "behavior.degraded"})
+    # written once per epoch-aligned window, at the entity's first ACTIVE tick
+    # in it (B21's clock behavior.xsys, one row per scored pair-hour): owed
+    # only by activity in a LATER window than the last write's, and then at
+    # that very tick. A gap-median period mis-reads them for sporadic entities
+    # (pack E seed 0: three xsys series flagged in the 900-s warm-up).
+    WINDOWED = {"behavior.xsys": 3600.0}
 
     def __init__(self) -> None:
         self.found: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
@@ -459,6 +465,17 @@ class _StaleChecker:
                 continue
             out.append(("derived", n))
         return out
+
+    @staticmethod
+    def _window_overdue(store: MetricStore, s: str, e: str, last: float, now: float,
+                        dt: float, window: float) -> bool:
+        w_next = (math.floor((last - 1e-3) / window) + 1.0) * window
+        ts, A = store.vec_since(s, e, "feature.active", w_next + 1e-6)
+        if not len(ts):
+            return False
+        a = np.asarray(A, dtype=np.float64).reshape(len(ts), -1)[:, 0]
+        on = np.flatnonzero(a >= 0.5)
+        return bool(on.size) and now - float(ts[on[0]]) > 2.0 * dt + 1e-6
 
     @staticmethod
     def _due_since(store: MetricStore, s: str, e: str, last: float, now: float,
@@ -501,6 +518,10 @@ class _StaleChecker:
                     last = lw[n]
                     if last is None or now - last <= 2.0 * dt + 1e-6:
                         continue
+                    if n in self.WINDOWED:
+                        if self._window_overdue(store, s, e, last, now, dt, self.WINDOWED[n]):
+                            self._flag(s, e, n, now, last, self.WINDOWED[n])
+                        continue
                     if kind == "vec":
                         ts, _ = store.vec_tail(s, e, n, 8)
                     else:
@@ -512,14 +533,16 @@ class _StaleChecker:
                     if period > 1.5 * dt and not self._due_since(store, s, e, last, now, period):
                         continue          # a grain series (spec v2.1) of a re-activated entity
                     if now - last > 2.0 * period + 1e-6:
-                        key = (s, e, n)
-                        rec = self.found.get(key)
-                        if rec is None:
-                            self.found[key] = {"system": s, "entity": e, "name": n,
-                                               "first_ts": now, "last_write": last,
-                                               "period_s": period, "n_ticks": 1}
-                        else:
-                            rec["n_ticks"] += 1
+                        self._flag(s, e, n, now, last, period)
+
+    def _flag(self, s: str, e: str, n: str, now: float, last: float, period: float) -> None:
+        key = (s, e, n)
+        rec = self.found.get(key)
+        if rec is None:
+            self.found[key] = {"system": s, "entity": e, "name": n, "first_ts": now,
+                               "last_write": last, "period_s": period, "n_ticks": 1}
+        else:
+            rec["n_ticks"] += 1
 
 
 # --------------------------------------------------------------------------- #

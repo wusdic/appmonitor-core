@@ -43,9 +43,12 @@ Per system and tick (docs/lib3/engines.md '## B16'):
   5. Posterior over the candidates plus an explicit unknown hypothesis
      (log-evidence 0 = the background; prior 0.05; self 0.5; the other
      candidates share 0.45). Linked aliases count as self.
-     score.identity = -log10 pi_self (instantaneous, axis identity; B24
-     calibrates it with (daypart, regime) strata); pm.identity = pi_self, a
-     conservative small-sample prior for B24.
+     score.identity = -log10 p_self, p_self the self-typicality tail of the
+     window's LDA distance calibrated on B15's held-out genuine windows of
+     the same model version (m_identity.typicality_p; round 4, see
+     score_p); pm.identity = p_self, a valid p-value as B24's small-sample
+     prior. B24 calibrates it with (daypart, regime) strata. The axis
+     identity follows pi_self < 0.5 (instantaneous).
   6. Other-identity CUSUM: lambda = clip(max_{j != e} L_j - L_e, -4, 8),
      S = max(0, S + lambda - 0.5), h = seq.h_for('llr', 100 d) counted in the
      entity's windows per day (its active ticks over the last day). At
@@ -192,6 +195,30 @@ def t99_scale(model: Mapping[str, Any], cand: str, r: int) -> float:
     if not (t == t and t > 0.0) or r < 1:
         return 1.0
     return float(chdtri(r, P_TYPICAL)) / t
+
+
+def score_p(model: Mapping[str, Any], z: np.ndarray, selfish: Sequence[str],
+            pi_self: float) -> float:
+    """p behind score.identity (round 4): the largest held-out-calibrated
+    self-typicality over the entity and its linked aliases, i.e. how unusual
+    this window is for the identity that owns the address, on the scale of
+    that identity's own held-out windows under the SAME model version.
+
+    Why not -log10 pi_self (v2): the posterior's null moved with every daily
+    refit (modality calibration) and every role relabel (the own class is a
+    candidate), so B24's rings, filled under earlier versions, did not match
+    the live null (pack A API clients: live 0.005-0.009 against a ring max
+    of 0.003-0.005, identity p < 1e-3 on 25x the nominal share of clean
+    ticks). The posterior still drives the axis and the two CUSUMs. A model
+    without typicality fits (older layout) keeps pi_self; an entity that is
+    not enrolled has no identity to be typical of: NaN."""
+    ps = [MI.self_typicality(model, z, j) for j in selfish]
+    ps = [p for p in ps if p == p]
+    if ps:
+        return float(max(ps))
+    if isinstance(model, Mapping) and model.get("typ"):
+        return _NAN
+    return pi_self
 
 
 def typicality(model: Mapping[str, Any], z: np.ndarray, cand: str) -> float:
@@ -671,9 +698,23 @@ class AttributionEngine(Engine):
             st["U"] = 0.0
         st["hold"] = {k: t for k, t in st["hold"].items() if now - t < ALERT_HOLD_S}
 
-        # ---- outputs
-        emit.write_scores(store, s, e, now, {DETECTOR: -math.log10(max(pi_self, 1e-300))},
-                          pm={DETECTOR: pi_self},
+        # ---- outputs: the score is the self-typicality tail (held-out
+        # calibrated by B15 for the model version scoring it; an alias linked
+        # by B17 counts as self), NaN when the IP is not enrolled
+        p_self = score_p(model, z, [j for j in cands if j in selfish], pi_self)
+        if len(rows) < K or not full_ok:
+            # the held-out calibration is of FULL K-row windows (B15 enrols
+            # nothing else): a partial window (the first rows after a weekend /
+            # holiday gap longer than the lookback, a new or long-silent IP;
+            # IQR 0, noisier medians) has no calibrated p (pack B seed 0: 13 of
+            # the 15 human identity p < 1e-3 on clean ticks were the 09:00 /
+            # 10:00 windows after the weekend and the holiday)
+            p_self = _NAN
+        info["p_self"] = p_self
+        emit.write_scores(store, s, e, now,
+                          {DETECTOR: -math.log10(max(p_self, 1e-300)) if p_self == p_self
+                           else _NAN},
+                          pm={DETECTOR: p_self},
                           axes={DETECTOR: AXES} if pi_self < AXES_POST_MAX else None,
                           window_s=win)
         best: Dict[str, Any] = {}
@@ -683,7 +724,7 @@ class AttributionEngine(Engine):
         store.add_derived(DerivedMetric(
             name=ID_SERIES, ts=now, system=s, entity=e, window_s=win,
             kind=MetricKind.CATEGORICAL, inputs=["feature.vec", "feature.sketch", MI.MODEL],
-            value={"posterior_self": _json(pi_self), "best_other": best,
+            value={"posterior_self": _json(pi_self), "p_self": _json(p_self), "best_other": best,
                    "p_unknown": _json(p_unknown), "cusum_other": _json(float(st["S"])),
                    "cusum_new": _json(float(st["U"])), "h": _json(h), "lambda": _json(lam),
                    "p_max": _json(p_max), "class_p": _json(class_p),

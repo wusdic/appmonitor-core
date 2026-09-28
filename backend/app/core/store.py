@@ -124,6 +124,8 @@ DEFAULT_RETENTION: Dict[str, Tuple[Optional[int], Optional[float]]] = {
     "behavior.common.q": (None, 6 * HOUR),
     "behavior.q_inst.h": (None, 8 * DAY),
     "behavior.evidence.h": (None, 8 * DAY),
+    # B21 (P2): its gating clock, one row per scored (system, IP) H window
+    "behavior.xsys": (None, 9 * DAY),
     # retention audit (perf, integration.md §9): lib-3 series that had no rule
     # (20000 points: 208 d at 900 s) get the 8-d lib-3 horizon. Every engine
     # reads them at now or a few points back; behavior.seq.class_llr is B10's
@@ -137,6 +139,56 @@ DEFAULT_RETENTION: Dict[str, Tuple[Optional[int], Optional[float]]] = {
     "behavior.cp.": (None, 8 * DAY),
     "behavior.seq.": (None, 8 * DAY),
 }
+# Per-tick DICT series (derived space only): a point cap on top of the age
+# rule (round 4, gate 14). An age rule holds 15x the points at 60 s that it
+# holds at 900 s (8 d = 11520 dicts per series and entity at 60 s, ~163 MB per
+# entity extrapolated to 8 d), while every reader of these series looks back
+# a bounded number of POINTS. Reader audit (every derived_tail / derived_series
+# / latest_* / emit.read_dict call site, round 4):
+#   feature.tctx         B24 _tctx_at <= 64, B29 <= 256, B17 <= 4 x 96 (zi-ring
+#                        restart), m_identity <= 64; B15's tick-mode fetch and
+#                        B24 / B29 recompute the same tctx from the config when
+#                        the row is gone (timebins, "the function B01 uses")
+#   feature.expo         newest only (B18 latest_fresh; B03 / B04 read the
+#                        exposure from feature.nat)
+#   behavior.axes        newest only (emit.read_dict <= 4 points; B25, B26)
+#   behavior.degraded    newest only (write-merge, B24, API health panel)
+#   behavior.timing      m_identity grain / tick rows <= 64 points; B15's
+#                        tick-mode fetch within feature.vec's 1 d (96 at 900 s)
+#   behavior.acc_alarm   B27 / B28 tail 1, emit.read_dict 4, B29 at t_open
+#   behavior.alarm       B26 / B28 newest, B29 at t_open (depth = ticks since)
+#   behavior.rhythm      B29 at t_open
+#   behavior.regime      B03 incremental scan (points since its last scan),
+#                        B18 class keys 256, B27 8, API history (thinned)
+#   behavior.id / class / common.* / calib_health / prov: newest few points,
+#                        B29 at t_open, the thinned API history
+# DICT_POINT_CAP (1536) is >= 8 d at 900 s (768 points), so those series are
+# unchanged at dt >= 900 s (the age rule binds first), and >= 1 d at 60 s, so
+# B29's replay at an incident's opening tick keeps a day at 60 s. The
+# smaller caps are >= every audited lookback of their series at any cadence.
+# behavior.p_family is NOT capped: B27's risk trigger, B29 and B23 fold it
+# over 24 h at tick resolution (<= 2000 / 1500 points), which its 1-d age
+# rule already bounds (1440 points at 60 s).
+DICT_POINT_CAP = 1536
+DICT_POINT_CAPS: Dict[str, Optional[int]] = {
+    "feature.tctx": 512,
+    "feature.expo": 64,                     # feature.expo.h / .q: grain rows only
+    "behavior.axes": 64,
+    "behavior.degraded": 64,
+    "behavior.timing": 256,
+    "behavior.acc_alarm": DICT_POINT_CAP,
+    "behavior.alarm": DICT_POINT_CAP,
+    "behavior.rhythm": DICT_POINT_CAP,
+    "behavior.regime": DICT_POINT_CAP,
+    "behavior.id": DICT_POINT_CAP,
+    "behavior.class": DICT_POINT_CAP,
+    "behavior.common.": DICT_POINT_CAP,
+    "behavior.calib_health": DICT_POINT_CAP,
+    "behavior.prov": DICT_POINT_CAP,
+    "behavior.p_family": None,              # 1 d at tick resolution (see above)
+}
+# behavior.degraded had no rule (20000 points = 208 d at 900 s)
+DEFAULT_RETENTION["behavior.degraded"] = (None, 8 * DAY)
 RAW_SCALAR_MAX_AGE = 6 * HOUR
 # timeline(): a vec-ring risk point is listed when it enters a new 10-point band
 RISK_TIMELINE_BAND = 10.0
@@ -335,6 +387,60 @@ def _k(system: str, entity: str, name: str) -> str:
     return f"{system}|{entity}|{name}"
 
 
+_LEAF_TYPES = (float, int, str, bool, type(None))
+
+
+def _same(a: Any, b: Any, depth: int = 0) -> bool:
+    """Exact structural identity of plain values: same types at every level,
+    same dict key ORDER, equal leaves (so sharing one object for both can
+    change nothing a reader, a JSON dump or a golden hash sees). numpy
+    arrays, other objects and nesting deeper than 4 levels are never 'same'
+    unless they are the identical object; NaN leaves only if identical."""
+    if a is b:
+        return True
+    ta = type(a)
+    if ta is not type(b) or depth > 4:
+        return False
+    if ta is dict:
+        if len(a) != len(b):
+            return False
+        for (k0, v0), (k1, v1) in zip(a.items(), b.items()):
+            if k0 is not k1 and (type(k0) is not type(k1) or k0 != k1):
+                return False
+            if v0 is not v1 and not _same(v0, v1, depth + 1):
+                return False
+        return True
+    if ta is list or ta is tuple:
+        return len(a) == len(b) and all(x is y or _same(x, y, depth + 1) for x, y in zip(a, b))
+    if ta in _LEAF_TYPES:
+        return a == b
+    return False
+
+
+def _compact(older: Any, row: Any) -> None:
+    """Lossless compaction of a derived row that has just stopped being the
+    newest of its series (round 4, gate 14): when its dict value (its
+    `inputs` / `dims` provenance) equals the previous row's, it shares the
+    previous row's object instead of holding a copy. Per-tick state dicts
+    repeat tick after tick (measured at 60 s: behavior.regime 98 %,
+    behavior.degraded 94 %, calib_health 84 %, acc_alarm 69 %, rhythm 65 %,
+    axes 59 %, expo 57 % of rows equal to their predecessor). Only rows that
+    are no longer the newest are touched: upsert_dict merges into the newest
+    row in place, and no reader mutates a stored value (they copy)."""
+    try:
+        v0, v1 = older.value, row.value
+        if v1 is not v0 and type(v1) is dict and _same(v1, v0):
+            row.value = v0
+        i0, i1 = older.inputs, row.inputs
+        if i1 is not None and i1 is not i0 and _same(i1, i0):
+            row.inputs = i0
+        d0, d1 = older.dims, row.dims
+        if d1 is not None and d1 is not d0 and _same(d1, d0):
+            row.dims = d0
+    except AttributeError:                  # not a DerivedMetric (tests may store others)
+        return
+
+
 def _is_scalar(v: Any) -> bool:
     return isinstance(v, (bool, int, float, np.integer, np.floating))
 
@@ -393,6 +499,7 @@ class MetricStore:
         self._last_seen: Dict[Tuple[str, str], float] = {}
         # retention
         self._retention: Dict[str, Tuple[Optional[int], Optional[float]]] = dict(DEFAULT_RETENTION)
+        self._dict_caps: Dict[str, Optional[int]] = dict(DICT_POINT_CAPS)
         self._ret_cache: Dict[Tuple[str, str], Tuple[int, Optional[float]]] = {}
 
     # ================================================================ retention
@@ -453,9 +560,30 @@ class MetricStore:
             if space == "raw":
                 # raw scalars 6 h; categorical sets / structured values 1 h
                 age = RAW_SCALAR_MAX_AGE if (value is None or _is_scalar(value)) else RAW_SET_MAX_AGE
-        out = (int(mp) if mp else self._max, age)
+        out_mp = int(mp) if mp else self._max
+        if space == "derived":
+            cap = self._dict_cap(name)
+            if cap is not None:
+                out_mp = min(out_mp, int(cap))
+        out = (out_mp, age)
         self._ret_cache[ck] = out
         return out
+
+    def _dict_cap(self, name: str) -> Optional[int]:
+        """Point cap of a per-tick dict series (DICT_POINT_CAPS, longest
+        prefix wins; an explicit None entry exempts the name)."""
+        best, cap = "", None
+        for p, c in self._dict_caps.items():
+            if name.startswith(p) and len(p) > len(best):
+                best, cap = p, c
+        return cap
+
+    def set_dict_cap(self, prefix: str, max_points: Optional[int]) -> None:
+        """Point cap for dict series under `prefix` (None removes the cap for
+        that prefix). Applied on the next append."""
+        with self._lock:
+            self._dict_caps[prefix] = None if max_points is None else int(max_points)
+            self._ret_cache.clear()
 
     def _append_series(self, table: Dict[str, Deque], space: str, key: str, name: str,
                        m: Any) -> None:
@@ -466,6 +594,8 @@ class MetricStore:
         elif dq.maxlen != mp:
             dq = table[key] = deque(dq, maxlen=mp)
         dq.append(m)
+        if space == "derived" and len(dq) >= 3:
+            _compact(dq[-3], dq[-2])
         if age is not None:
             cutoff = m.ts - age
             while dq and dq[0].ts < cutoff:
@@ -1246,18 +1376,36 @@ class MetricStore:
 
     # ================================================================== memory
     def memory_report(self) -> Dict[str, Any]:
-        """Approximate memory by component (bytes). Object series are sized
-        from their newest element × length, which is accurate enough for the
-        per-entity envelope gate and O(#series)."""
+        """Approximate memory by component (bytes). An object series costs its
+        rows (row object + deque slot) plus its DISTINCT value objects, each
+        sized like the mean of the newest 8 distinct values (shallow size plus
+        up to 64 items). Values shared by several rows (a state dict that did
+        not change, _compact; B24's calib_health object reused until its
+        hourly re-evaluation) are counted once: counting them per row
+        reported behavior.calib_health at 93 MB for 3 system keys on a 1-day
+        60-s smoke run. O(#points) identity scan, no deep walk."""
+        def val_bytes(v: Any) -> int:
+            vb = v.nbytes if isinstance(v, np.ndarray) else sys.getsizeof(v)
+            if isinstance(v, dict):
+                vb += sum(sys.getsizeof(k) + sys.getsizeof(x) for k, x in islice(v.items(), 64))
+            return vb
+
         def obj_bytes(dq: Deque) -> int:
             if not dq:
                 return 0
             m = dq[-1]
-            v = m.value
-            vb = v.nbytes if isinstance(v, np.ndarray) else sys.getsizeof(v)
-            if isinstance(v, dict):
-                vb += sum(sys.getsizeof(k) + sys.getsizeof(x) for k, x in islice(v.items(), 64))
-            return len(dq) * (sys.getsizeof(m) + vb)
+            row_b = sys.getsizeof(m) + 8
+            uniq: Dict[int, Any] = {}
+            for x in dq:
+                v = x.value
+                if id(v) not in uniq:
+                    uniq[id(v)] = v
+            if len(uniq) == 1:
+                return len(dq) * row_b + val_bytes(m.value)
+            vals = list(uniq.values())
+            samp = vals[-8:]
+            vb = sum(val_bytes(v) for v in samp) / len(samp)
+            return int(len(dq) * row_b + len(vals) * vb)
 
         with self._lock:
             raw_pts = sum(len(d) for d in self._raw.values())

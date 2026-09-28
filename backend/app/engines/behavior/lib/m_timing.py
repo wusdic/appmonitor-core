@@ -37,10 +37,12 @@ the clock is folded with its weight decayed, never the state backwards):
                               sum sq. dev. of ln(gap s)
     39..44   PW, PX, PY, PXX, PYY, PXY   consecutive active-gap pairs
                    (x = gap_i, y = gap_i+1): weight, means, co-moments
-    45..52   DISP  per daypart (timebins.DAYPARTS order) [W, S]: decayed sum of
-                   tick weights and of G/df of the recent-window test on those
-                   ticks (overdispersion of the gap histogram, see `dispersion`)
-    53       T     clock: newest folded row ts (NaN = empty model)
+    45..56   DISP  per daypart (timebins.DAYPARTS order) [W, S1, S2]: decayed
+                   sum of tick weights and of log r, log^2 r with r = G/df of
+                   the recent-window test on those ticks (clipped to
+                   [R_MIN, R_MAX]): the overdispersion of the gap histogram
+                   and its window-to-window spread (see `null_params`)
+    57       T     clock: newest folded row ts (NaN = empty model)
 Two gap populations, because a single overnight gap would dominate every raw
 second moment:
   * "active" gaps (< BURST_MAX_S = 30 min, fixed) carry B and M. They include
@@ -73,7 +75,10 @@ Accessor signatures (model may be None or {}: the documented NaN default):
     burstiness(model) -> float;  memory(model) -> float      over active gaps
     think_time(model) -> (mu, sigma)             ln-seconds
     think_logpdf(model, gaps) -> ndarray         N(mu, sigma) log-density of ln(gap)
-    dispersion(model, daypart=None) -> float >= 1  phi used to scale the G test
+    dispersion(model, daypart=None) -> float >= 1  typical G/df (exp of the shrunk mean log)
+    null_params(model, daypart, df) -> (g, nu)   G/df ~ g F(df, nu) (round 4)
+    null_pm(model, daypart, G, df) -> float      the window test's p under that null
+    null_support(model, daypart) -> float        committed weight behind that null
     period(model, now=None) -> (period_s, period_p)  last strict-period check
                                                  (NaN if none, or older than 6 h)
     descriptors(model, now=None) -> dict         long-term profile in natural units
@@ -95,7 +100,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 MODEL = "model.timing"
-FMT = 1
+FMT = 2                           # round 4: DISP holds log-moments (fmt 1 had [W, S])
 
 N_BINS = 32
 GAP_MIN_S = 0.01                  # 10 ms: timestamp resolution / parallel fetches
@@ -112,6 +117,9 @@ BURST_MAX_S = 1800.0              # active gaps (B, M): longer silences belong t
 N_DAYPARTS = 4
 PHI_PRIOR = 2.0                   # prior overdispersion of human gap histograms
 PHI_PRIOR_W = 8.0                 # its weight, in ticks
+LOGVAR_PRIOR = 0.2                # prior variance of log(G/df) beyond chi2 (log-sd ~0.45)
+R_MIN, R_MAX = 0.01, 25.0         # clip of G/df before the log (one window cannot dominate)
+NU_MIN, NU_MAX = 1.0, 1e4         # denominator dof of the F null
 PERIOD_STALE_S = 6 * 3600.0       # a strict-period check older than this is not reported
 
 # state layout
@@ -120,13 +128,14 @@ W2 = 32
 GW, GM, GM2 = 33, 34, 35
 TW, LM, LM2 = 36, 37, 38
 PW, PX, PY, PXX, PYY, PXY = 39, 40, 41, 42, 43, 44
-DISP = 45                         # DISP + 2*dp -> W, DISP + 2*dp + 1 -> S
-T = 53
-STATE_DIM = 54
+DISP = 45                         # DISP + 3*dp -> W, S1 = sum log r, S2 = sum log^2 r
+DISP_W = 3
+T = DISP + DISP_W * N_DAYPARTS    # 57
+STATE_DIM = T + 1
 # entries scaled by d when the clock advances by dt (d = exp(-dt/TAU_S)); W2
 # scales by d^2 and the means (GM, LM, PX, PY) and T do not scale
 DECAY_IDX = np.array(list(range(N_BINS)) + [GW, GM2, TW, LM2, PW, PXX, PYY, PXY]
-                     + list(range(DISP, DISP + 2 * N_DAYPARTS)), dtype=np.intp)
+                     + list(range(DISP, DISP + DISP_W * N_DAYPARTS)), dtype=np.intp)
 
 _NAN = math.nan
 
@@ -360,22 +369,91 @@ def think_logpdf(model: Any, gaps: Any) -> np.ndarray:
     return out
 
 
-def dispersion(model: Any, daypart: Optional[int] = None) -> float:
-    """Overdispersion phi >= 1 of the recent-window G test: the decayed mean of
-    G/df on committed ticks of this daypart, shrunk towards the pooled mean
-    (itself shrunk towards PHI_PRIOR). Bursty, correlated gaps make histogram
-    counts overdispersed relative to the multinomial, so G/phi, not G, is
-    compared with chi2_df."""
+def _log_moments(model: Any, daypart: Optional[int]) -> Tuple[float, float, float]:
+    """(mean, variance, weight) of log(G/df) for the daypart, shrunk towards
+    the pooled moments (weight PHI_PRIOR_W ticks), themselves shrunk towards
+    the prior (log PHI_PRIOR, LOGVAR_PRIOR beyond a chi2 with 16 dof)."""
+    m0 = math.log(PHI_PRIOR)
+    v0 = LOGVAR_PRIOR + 0.125                    # psi1(8): chi2_16 / 16 on the log scale
     s = state_of(model)
     if s is None:
-        return PHI_PRIOR
-    d = s[DISP:DISP + 2 * N_DAYPARTS].reshape(N_DAYPARTS, 2)
-    wp, sp = float(d[:, 0].sum()), float(d[:, 1].sum())
-    phi_pool = (sp + PHI_PRIOR_W * PHI_PRIOR) / (wp + PHI_PRIOR_W)
+        return m0, v0, 0.0
+    d = s[DISP:DISP + DISP_W * N_DAYPARTS].reshape(N_DAYPARTS, DISP_W)
+    k = PHI_PRIOR_W
+    wp, s1p, s2p = (float(x) for x in d.sum(axis=0))
+    mp = (s1p + k * m0) / (wp + k)
+    ep = (s2p + k * (v0 + m0 * m0)) / (wp + k)
+    vp = max(ep - mp * mp, 1e-6)
     if daypart is None or not (0 <= int(daypart) < N_DAYPARTS):
-        return max(1.0, phi_pool)
-    w, sm = float(d[int(daypart), 0]), float(d[int(daypart), 1])
-    return max(1.0, (sm + PHI_PRIOR_W * phi_pool) / (w + PHI_PRIOR_W))
+        return mp, vp, wp
+    w, s1, s2 = (float(x) for x in d[int(daypart)])
+    m = (s1 + k * mp) / (w + k)
+    e = (s2 + k * (vp + mp * mp)) / (w + k)
+    return m, max(e - m * m, 1e-6), w
+
+
+def dispersion(model: Any, daypart: Optional[int] = None) -> float:
+    """Typical overdispersion phi >= 1 of the recent-window G test: exp of the
+    shrunk mean log(G/df) of committed ticks of this daypart (a descriptor;
+    the test itself uses null_params)."""
+    return max(1.0, math.exp(_log_moments(model, daypart)[0]))
+
+
+def _solve_nu(excess: float) -> float:
+    """nu with psi1(nu / 2) = excess, clipped to [NU_MIN, NU_MAX]."""
+    from scipy import special
+    if not excess > float(special.polygamma(1, NU_MAX / 2.0)):
+        return NU_MAX
+    if excess >= float(special.polygamma(1, NU_MIN / 2.0)):
+        return NU_MIN
+    lo, hi = NU_MIN, NU_MAX
+    for _ in range(50):
+        mid = math.sqrt(lo * hi)
+        if float(special.polygamma(1, mid / 2.0)) > excess:
+            lo = mid
+        else:
+            hi = mid
+    return math.sqrt(lo * hi)
+
+
+def null_params(model: Any, daypart: Optional[int], df: float) -> Tuple[float, float]:
+    """(g, nu) of the null G/df ~ g F(df, nu) of the recent-window test.
+
+    Why (round 4): the window's gap counts are overdispersed (bursty
+    sessions) AND the overdispersion itself varies from window to window
+    (a 6-h window holds a few sessions of different kinds), so G / phi is
+    not chi2_df: on clean pack-A control ticks G/df/phi had q99 2-3 where
+    chi2_20/20 has 1.9, and the old pm was < 1e-3 on 8.5x the nominal share
+    of live ticks. A chi2 whose scale varies between windows is a scaled F:
+    Var log(G/df) = psi1(df/2) + psi1(nu/2) and E log(G/df) = log g +
+    log(nu/df) + psi(df/2) - psi(nu/2) are solved from the shrunk decayed
+    log-moments of the entity's own committed windows (per daypart). A
+    stable entity gets nu -> inf (the chi2 test scaled by g). Pack A seed 0,
+    clean control live ticks, engine run: KS of pm 0.14 -> 0.03, p < 1e-2
+    at 3.2x -> 1.9x nominal (p < 1e-3: 8.5x -> 7.4x; the null learns only
+    on trusted commits, about two thirds of the live ticks)."""
+    from scipy import special
+    m, v, _ = _log_moments(model, daypart)
+    df = max(float(df), 1.0)
+    nu = _solve_nu(v - float(special.polygamma(1, df / 2.0)))
+    lg = m - math.log(nu / df) - float(special.digamma(df / 2.0)) + float(special.digamma(nu / 2.0))
+    return math.exp(lg), nu
+
+
+def null_support(model: Any, daypart: Optional[int]) -> float:
+    """Decayed committed-tick weight behind the daypart's null (below
+    PHI_PRIOR_W the prior dominates: B11 marks the score provisional)."""
+    return float(_log_moments(model, daypart)[2])
+
+
+def null_pm(model: Any, daypart: Optional[int], g_stat: float, df: float) -> float:
+    """P(G/df >= observed) under null_params (NaN for NaN input)."""
+    from scipy import special
+    g_stat, df = float(g_stat), float(df)
+    if not (g_stat == g_stat and df >= 1.0):
+        return _NAN
+    g, nu = null_params(model, daypart, df)
+    return float(special.fdtrc(df, nu, max(g_stat, 0.0) / df / g))
 
 
 def _live(model: Any) -> Mapping:

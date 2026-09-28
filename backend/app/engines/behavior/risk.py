@@ -32,9 +32,17 @@ Evidence per tick (all in the same "surprise" unit so they add up):
     'medium'), so without this every busy entity carried L ~ 30-50 of
     routine matches (risk 40-60, and the auth / admin / transfer categories
     added kill-chain stages) on every live tick. A NEW routine activity
-    still counts for its first day; high / critical always count. The habit
+    still counts for its first day; critical always counts. The habit
     memory is learnt from every tick, warm-up included, and is not cleared
     with the evidence on the first live tick.
+    A HIGH match habituates only per (entity, rule) from TRUSTED history
+    (lib/m_habit, lead decision round 4): once it recurred on >= 5 distinct
+    trusted days (warm-up, or live and not quarantined), a match inside the
+    learnt envelope (a rhythm hour +- 1 h, the trusted peak / daily-volume
+    budget, known peers) counts x 0; outside it (new time, new peer, volume
+    beyond budget) it counts in full and never widens the envelope. B26
+    writes the verdicts to model.lib4_habit, which B27 and B28 read (the
+    sanctioned nightly backups of pack L15 were CRITICAL in every run).
   * everything that belongs to a suppressed incident (or a suppressed event)
     counts x 0.25 (m_feedback.SUPPRESSED_RISK_WEIGHT): feedback may silence
     notifications, never evidence.
@@ -66,7 +74,9 @@ Store: reads behavior.p_family, behavior.axes, behavior.alarm,
 behavior.common.flag (dicts at now), store.events / store.matches /
 store.incidents, model.feedback (m_feedback), model.class (m_class),
 store health of behavior.fusion (contract M: a fusion failure at this tick
-gives NaN risk); writes behavior.risk (1-element float32 vec ring) at each
+gives NaN risk), behavior.quarantine / model.control (m_governor, for the
+HIGH-match habit) and raw l4.* of matched ticks (m_habit); writes
+model.lib4_habit, behavior.risk (1-element float32 vec ring) at each
 entity, class:<id> and '__system__', and profile.extra.risk
 {score, tier, trend, top_reasons, stages, ...}.
 """
@@ -80,7 +90,11 @@ from typing import Any, Deque, Dict, Iterable, List, Mapping, Optional, Set, Tup
 
 from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile
+from ..signature.rule_match import ADDITIVE_COUNTERS
 from .lib import emit, m_class, m_feedback
+from .lib import m_governor as MG
+from .lib import m_habit as HB
+from .lib import timebins as TB
 from .lib import grains as GR
 from .lib import stages as STG
 from .lib.classkeys import CLASS_PREFIX, STATIC_PREFIX, SYSTEM_KEY
@@ -167,6 +181,8 @@ HABIT_S = STG.HABIT_S
 HABIT_MIN_TICKS = STG.HABIT_MIN_TICKS
 HABIT_MULT = 0.0
 HABIT_FORGET_S = STG.HABIT_FORGET_S
+# a HIGH match inside its learnt per-(entity, rule) envelope (lib/m_habit)
+HIGH_HABIT_MULT = 0.0
 _STAGE_DECAY = {"c2": "c2", "exfiltration": "exfil", "identity": "identity"}
 
 
@@ -623,6 +639,7 @@ class RiskEngine(Engine):
         habits = self._habits.get(store)
         if habits is None:
             habits = self._habits[store] = {}
+        hmodel: Optional[Dict[str, Any]] = None
         for mt in reversed(store.matches(s, e, since=win0, limit=1000)):
             if mt.ts >= now:
                 continue
@@ -631,15 +648,39 @@ class RiskEngine(Engine):
             w = SIG_W.get(sev, 0.0) * min(1.0, max(0.0, float(mt.confidence or 0.0)))
             if habitual and sev in HABIT_SEVERITIES:
                 w *= HABIT_MULT
+            note = ""
+            if sev == HB.SEVERITY:
+                # recurring HIGH activity: per (entity, rule) envelope (lib/m_habit)
+                if hmodel is None:
+                    hmodel = self._habit_model(store, s, e)
+                trusted = not MG.is_quarantined(store, s, e, at=float(mt.ts))
+                v, why = HB.observe(hmodel, mt, trusted,
+                                    (ctx.config or {}).get("tz") or TB.DEFAULT_TZ,
+                                    HB.match_inputs(store, mt, ADDITIVE_COUNTERS))
+                if v == HB.IN:
+                    w *= HIGH_HABIT_MULT
+                elif why:
+                    note = "; outside habit: " + "; ".join(why)
             if w <= 0.0:
                 continue
             stage = stage_for_category(mt.category)
             st.add_repeated(f"lib4:{mt.signature_id}", f"sig|{mt.signature_id}", w * mult,
                             match_decay(sev, stage), now, mt.ts, (stage,) if stage else (),
                             detail=f"{mt.label or mt.signature_id} ({sev}, "
-                                   f"conf {float(mt.confidence or 0.0):.2f})")
+                                   f"conf {float(mt.confidence or 0.0):.2f}{note})")
+        if hmodel is not None:
+            store.put_model(s, e, HB.MODEL, hmodel, ts=now)
         st.prune(now)
         return st.score(now, pi, self._criticality(ctx.config, s, e))
+
+    @staticmethod
+    def _habit_model(store, s: str, e: str) -> Dict[str, Any]:
+        """model.lib4_habit of the key (lib/m_habit), restarted when the
+        governor accepted a change (model.control version bump)."""
+        m = store.get_model(s, e, HB.MODEL)
+        m = m if isinstance(m, dict) else {}
+        HB.reset_on_control(m, MG.version(store, s, e))
+        return m
 
     @staticmethod
     def _habit(habits: Dict[Tuple[str, str, str], List[float]], s: str, e: str, sig: str,

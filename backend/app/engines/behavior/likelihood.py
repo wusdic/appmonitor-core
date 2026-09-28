@@ -128,6 +128,7 @@ DETS = ("marg_int", "marg_shape", "peer")
 DETS_Q = ("marg_int_q", "marg_shape_q")
 PROV = "behavior.prov"
 PROV_MIN = 0.5
+PROV_CAUSE = emit.cause(emit.PROVISIONAL, "q_transfer")
 INTENSITY_GROUP = "volume"
 AXIS_ALPHA = 0.01
 STATE_QS = (0.05, 0.5, 0.95)
@@ -679,11 +680,16 @@ class LikelihoodEngine(Engine):
         shape_names = [g for g in lay.fg_names if g != INTENSITY_GROUP]
         axes = {"marg_int_q": _axes(marg.p_fg, [INTENSITY_GROUP]),
                 "marg_shape_q": _axes(marg.p_fg, shape_names)}
-        emit.write_scores(store, s, e, now, scores, pm=pm,
-                          axes={d: a for d, a in axes.items() if a} or None, window_s=w)
         prov = cur.prov if cur.prov is not None else np.ones(NF)
         used = np.isfinite(sc.pf)
         pi = float(np.median(prov[used])) if used.any() else 1.0
+        # contract M: a Q score on the provisional H -> Q transfer (native
+        # share pi < 0.5) is a degraded run (B24 calibrates it in its own
+        # 'p:1' stratum and writes the same cause; the merge is idempotent)
+        dg = ({d: PROV_CAUSE for d in DETS_Q if pm[d] is not None} if pi < PROV_MIN else None)
+        emit.write_scores(store, s, e, now, scores, pm=pm,
+                          axes={d: a for d, a in axes.items() if a} or None,
+                          degraded=dg or None, window_s=w)
         store.upsert_dict(s, e, PROV, now, {d: pi for d in DETS_Q}, w)
         self._model_state(store, s, e, now, cur, grain="q", prov=pi, q=state_q)
 

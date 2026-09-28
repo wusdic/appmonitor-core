@@ -93,6 +93,18 @@ Signatures (all pure; no store access):
     weight_mult(calib_health, detector) -> float          # B25 family weights
     health_of(calib_health, detector) -> dict
     to_json(model) -> dict
+  round 4:
+    xfer_key / xfer_v(stats) / xfer_source(rings, d, dp, cc) /
+    xfer_prior(rings, xfer, d, dp, cc, score, u) -> (p, cc_src)   # cadence transfer
+    pcal_key / pcal_v(stats) / pcal_observe(stats, hit, ts) / pcal_apply(p, v)
+                                                  # live power correction
+    (B29 note: B24's issued p = pcal_apply(p_replay(...), pcal_v(model.calib@
+    (s, __system__)['pcal'][pcal_key(d, class)])) with class 'h' / 'q' for a
+    grain detector, else the cadence class.)
+
+Layout additions (round 4): model.calib@(s, e)['xfer'] {'<d>|<cc_src>><cc_dst>':
+[k, n]} (cadence-transfer counts); model.calib@(s, __system__)['pcal'] {'<d>|<class>':
+[k, n, t]} (B24) and ['aci'] {'th': {...}, 'n', 'n_err'} (B25).
 """
 from __future__ import annotations
 
@@ -263,6 +275,10 @@ def uniform(system: str, entity: str, detector: str, ts: float) -> float:
 # ------------------------------------------------------------------ pm prior
 PM_STRATUM = "pm"        # '<detector>@pm|<cc>' / '@pm|g:<g>': own history of -log10 pm[d]
 PM_RING_MIN = 16         # pm-ring entries before an atom's mass is taken from the ring
+PM_CAL_N = 100           # pm-ring entries before pm is calibrated on it (round 4; = TAIL_MIN_N)
+PM_POW_N = 8             # pm-ring entries before the power calibration (round 4)
+PM_POW_KAPPA = 4.0       # pseudo entries at v = 1 (pm as is)
+_LN10 = math.log(10.0)
 PM_ATOM_ONE = 0.0        # pm_score of pm = 1 (a statistic at its minimum: p_eq = 1)
 PM_ATOM_FLOOR = calib._r32(-math.log10(P_ISSUED_FLOOR))   # pm_score at the float32 floor (37.93)
 
@@ -297,6 +313,24 @@ def pm_score(pm: Any) -> float:
     return calib._r32(-math.log10(v)) if v < 1.0 else PM_ATOM_ONE
 
 
+def tail_sigma_min(score: Any, pm: Any) -> float:
+    """Lower bound on B24's GPD tail scale for one scored row (round 4,
+    evaluator; lib/calib module docstring): calib.P_SCORE_SIGMA = 1/ln 10
+    when the score is -log10 of the detector's own p-value pm at that row
+    (every detector but the few without a pm: bocpd, seq, most beacon rows),
+    else 0 (no bound). Beyond the tail threshold the issued p then never
+    decays faster than pm itself. Row-level, so B24 and a replay (p_replay,
+    which gets the row's pm) apply the same rule; it cannot misfire on a
+    score of another kind (a CUSUM statistic, a JSD) because those equal
+    -log10 pm only when the detector defines them so."""
+    x = _f(score)
+    v = _valid_p(pm)
+    if x != x or v != v or not v > 0.0:
+        return 0.0
+    y = -math.log10(v) if v < 1.0 else 0.0
+    return calib.P_SCORE_SIGMA if abs(x - y) <= 1e-5 * max(1.0, abs(y)) + 1e-6 else 0.0
+
+
 def pm_prior(pm_ring: Optional[calib.Ring], pm: Any, u: float,
              min_n: int = PM_RING_MIN) -> float:
     """B24's small-sample prior from behavior.pm[d]: pm, with its two point
@@ -318,14 +352,38 @@ def pm_prior(pm_ring: Optional[calib.Ring], pm: Any, u: float,
     floor never seen before is evidence, not a routine atom). Any other pm
     (the body) is used as is: pm is exposure-exact there by construction,
     and a ring-conformal pm would be coarse (>= 1/(n+1)) for weeks on a
-    sparse stratum. NaN when pm is missing or out of range."""
+    sparse stratum. NaN when pm is missing or out of range.
+
+    Round 4: pm is calibrated on the entity's own pm history. Raw pm is
+    exposure-exact only when the detector's model is: B06's Hotelling p of a
+    young covariance sat at 1e-9 .. 1e-13 on ordinary hours (mini pack: t2
+    p < 1e-3 on 82 % of live ticks; the small rings were blended with it).
+      * pm ring >= PM_CAL_N (= TAIL_MIN_N, 100) entries: the randomised
+        conformal p of -log10 pm against the ring with its contamination-
+        bounded GPD tail (calib.p_from_ring; the atom rule below is its
+        special case at the two ties);
+      * PM_POW_N <= n < PM_CAL_N: a body pm is raised to the power 1/v with
+        v = max(1, (sum -ln pm_i + PM_POW_KAPPA) / (n + PM_POW_KAPPA)) over
+        the ring (the MLE of pm = U^v, shrunk to v = 1, i.e. to pm as is):
+        a detector whose pm is routinely extreme loses exactly that much
+        resolution, a calibrated one (v ~ 1) keeps all of it; atoms as below.
+    """
     x = pm_score(pm)
     if x != x:
         return math.nan
-    if x != PM_ATOM_ONE and x != PM_ATOM_FLOOR:
-        return _valid_p(pm)
     r = as_ring(pm_ring)
     n = 0 if r is None else r.scores.size
+    if n >= PM_CAL_N:
+        # a pm ring holds -log10 pm: its tail never decays faster than pm's own
+        return calib.p_from_ring(r, x, u, sigma_min=calib.P_SCORE_SIGMA)
+    if x != PM_ATOM_ONE and x != PM_ATOM_FLOOR:
+        v = _valid_p(pm)
+        if n >= PM_POW_N and v == v:
+            y = float(np.sum(r.scores)) * _LN10                 # sum of -ln pm_i
+            vp = (y + PM_POW_KAPPA) / (n + PM_POW_KAPPA)
+            if vp > 1.0:
+                return v ** (1.0 / vp)
+        return v
     k = 0
     if n:
         sc = r.scores
@@ -339,6 +397,160 @@ def pm_prior(pm_ring: Optional[calib.Ring], pm: Any, u: float,
     if n < int(min_n) or k == 0:
         return _valid_p(pm)                 # an unseen floor: keep the evidence
     return uu * (k / n)
+
+
+# ------------------------------------------------------------ cadence transfer
+# Round 4 (integration §10.7 item 2): after a cadence switch (pack E, the
+# Runtime: 900 -> 60 s) a cadence-class stratum '<d>@<dp>|<cc>' starts empty
+# while the same detector's ring of the same daypart at the old cadence holds
+# its null. Until the new stratum has native support (SMALL_N entries) its
+# small-sample prior is the OLD ring's p made conservative by a learned power:
+#     prior = p_src^(1/v),  v >= 1
+# (the idea of the H -> Q omega transfer: a variance-like factor learned from
+# paired evidence, EB-shrunk to a conservative default). v is learned from
+# the entity's native rows at the new cadence: u_i = p_src(x_i) should be
+# uniform if the two cadences share the null; under the power model
+# P(u <= x) = x^(1/v), so with k of n native rows at u <= XFER_X,
+#     v = ln XFER_X / ln((k + KAPPA x0) / (n + KAPPA)),  x0 = XFER_X^(1/XFER_V0),
+# clipped to [1, XFER_V_MAX]: the transfer is never less conservative than the
+# old ring itself. The issued p is marked behavior.degraded
+# 'provisional:cc_transfer'.
+XFER = "xfer"                       # model.calib key: {'<d>|<cc_src>><cc_dst>': [k, n]}
+XFER_X = 0.05                       # tail level of the count
+XFER_V0 = 2.0                       # prior power (p_src^(1/2): sqrt)
+XFER_KAPPA = 20.0                   # pseudo rows of the prior
+XFER_V_MAX = 4.0
+XFER_LEARN_N = 2 * SMALL_N          # native entries after which v stops learning
+CADENCE_CLASSES = timebins.CADENCE_CLASSES
+
+
+def xfer_key(detector: str, cc_src: int, cc_dst: int) -> str:
+    return f"{detector}|{int(cc_src)}>{int(cc_dst)}"
+
+
+def xfer_v(stats: Any) -> float:
+    """The transfer power v from [k, n] (module constants; no data -> XFER_V0)."""
+    k = n = 0.0
+    if isinstance(stats, (list, tuple)) and len(stats) == 2:
+        k, n = _f(stats[0]), _f(stats[1])
+        k = k if k == k and k > 0.0 else 0.0
+        n = n if n == n and n > 0.0 else 0.0
+    x0 = XFER_X ** (1.0 / XFER_V0)
+    frac = (k + XFER_KAPPA * x0) / (n + XFER_KAPPA)
+    if not frac < 1.0:
+        return XFER_V_MAX
+    v = math.log(XFER_X) / math.log(frac)
+    return 1.0 if v < 1.0 else XFER_V_MAX if v > XFER_V_MAX else v
+
+
+def xfer_source(rings: Optional[Mapping], detector: str, daypart: str,
+                cc: int) -> Tuple[Optional[int], Optional[calib.Ring]]:
+    """(cc_src, ring) of the transfer: the same detector and daypart at the
+    nearest other cadence class (log distance; ties to the coarser) whose
+    ring holds >= SMALL_N entries; (None, None) when there is none."""
+    if not isinstance(rings, Mapping):
+        return None, None
+    best = None
+    for c in CADENCE_CLASSES:
+        if c == int(cc):
+            continue
+        r = as_ring(rings.get(calib.ring_key(detector, calib.stratum_key(daypart, c))))
+        if r is None or len(r) < SMALL_N:
+            continue
+        dist = (abs(math.log(c / float(cc))), -c)
+        if best is None or dist < best[0]:
+            best = (dist, c, r)
+    return (best[1], best[2]) if best is not None else (None, None)
+
+
+def xfer_prior(rings: Optional[Mapping], xfer: Optional[Mapping], detector: str,
+               daypart: str, cc: int, score: float, u: float) -> Tuple[float, Optional[int]]:
+    """(prior p, cc_src) of the cadence transfer, (NaN, None) without a source."""
+    c, r = xfer_source(rings, detector, daypart, cc)
+    if r is None:
+        return math.nan, None
+    p = calib.p_from_ring(r, score, u)
+    if p != p:
+        return math.nan, None
+    v = xfer_v((xfer or {}).get(xfer_key(detector, c, cc)))
+    return p ** (1.0 / v), c
+
+
+# ------------------------------------------------------ live power correction
+# Round 4 (prequential audit): every detector scores a row against a model
+# fitted only on rows committed D earlier (out of sample), but the warm-up
+# and live regimes are not exchangeable: pack A seed 0, share of clean
+# control rows above the entity's late-warm-up 99th percentile, per day
+# around go-live - spe 0.0 % (d-2, 3600 s) / 8 % (d-1, 900-s warm-up) /
+# 27 - 30 % (every live day), t2 0 / 5 / 13 - 15 %, identity 2 / 5 / 9 - 14 %,
+# marg_shape_q 0.2 / 2 / 6 - 16 %: a step at the switch and at go-live, not
+# a drift. Rings that still hold the warm-up rows then issue anti-conservative
+# live p (spe 17x at p < 1e-3). B24 therefore keeps, per system, detector and
+# stratum class (the H / Q grain, else the cadence class), the share of LIVE
+# issued p <= PCAL_X among rows of trusted periods (decayed, half-life 3 d),
+# and issues p^(1/v) with the power v of P(p <= x) = x^(1/v):
+#     v = ln PCAL_X / ln(share)  once the share's 3-sigma lower bound > PCAL_X,
+# clipped to [1, V_MAX] (no correction until live evidence is significant; a
+# ring that is conservative is never made less so). An attack under way is
+# quarantined and not observed at all (see calibration.py); a rate limit on
+# hits would bias the share whenever it is well above PCAL_X (4 ticks an
+# hour at 900 s, one counted: v 1.7 instead of 2 for q = U^2).
+PCAL = "pcal"                   # model.calib@(s, __system__)[PCAL] = {'<d>|<class>': [k, n, t]}
+PCAL_X = 0.05
+PCAL_Z = 3.0                    # one-sided bound on the share (pcal_v)
+PCAL_MIN_N = 30.0
+PCAL_V_MAX = 8.0
+PCAL_HL_S = 3 * 86400.0
+
+
+def pcal_key(detector: str, klass: Any) -> str:
+    return f"{detector}|{klass}"
+
+
+def pcal_v(stats: Any) -> float:
+    """The live power v from [k, n, t] (1.0 without significant evidence).
+
+    Two stages: the excess of the share f = k/n of p <= PCAL_X must be
+    SIGNIFICANT - its lower bound f - PCAL_Z sqrt(f (1 - f) / n) (Wald,
+    n >= PCAL_MIN_N) above PCAL_X, so a calibrated detector's noise never
+    powers its p (a uniform null keeps v = 1 with probability ~1 - 1e-3 per
+    evaluation) - and then v is the point estimate ln PCAL_X / ln f (the
+    bound itself would under-correct: q = U^2 over a 3-day window at 900 s
+    gave v = 1.6 and left the evidence CUSUM at 6x its ARL)."""
+    k = n = 0.0
+    if isinstance(stats, (list, tuple)) and len(stats) >= 2:
+        k, n = _f(stats[0]), _f(stats[1])
+        k = k if k == k and k > 0.0 else 0.0
+        n = n if n == n and n > 0.0 else 0.0
+    if n < PCAL_MIN_N:
+        return 1.0
+    f = min(1.0, k / n)
+    lcb = f - PCAL_Z * math.sqrt(max(f * (1.0 - f), 1e-12) / n)
+    if not lcb > PCAL_X:
+        return 1.0
+    if not f < 1.0:
+        return PCAL_V_MAX
+    v = math.log(PCAL_X) / math.log(f)
+    return 1.0 if v < 1.0 else PCAL_V_MAX if v > PCAL_V_MAX else v
+
+
+def pcal_observe(stats: Any, hit: bool, ts: float) -> List[float]:
+    """Fold one observation into [k, n, t] with exponential decay (PCAL_HL_S)."""
+    if isinstance(stats, (list, tuple)) and len(stats) == 3:
+        k, n, t0 = _f(stats[0]), _f(stats[1]), _f(stats[2])
+    else:
+        k, n, t0 = 0.0, 0.0, math.nan
+    k = k if k == k else 0.0
+    n = n if n == n else 0.0
+    if t0 == t0 and ts > t0:
+        f = 2.0 ** (-(ts - t0) / PCAL_HL_S)
+        k, n = k * f, n * f
+    return [k + (1.0 if hit else 0.0), n + 1.0, ts if not (t0 == t0 and t0 > ts) else t0]
+
+
+def pcal_apply(p: float, v: float) -> float:
+    """p^(1/v) (v <= 1 or NaN p: p unchanged)."""
+    return p if not (v > 1.0 and p == p and 0.0 < p < 1.0) else p ** (1.0 / v)
 
 
 def p_value(r: Optional[calib.Ring], score: float, u: float, prior: float = math.nan) -> float:
@@ -505,6 +717,9 @@ def p_replay(model: Optional[Mapping], detector: str, daypart: str, cc: int, sco
 
       |ring| >= 64: calib.p_from_ring (conformal + GPD tail);
       else the logit blend with the first usable prior of
+        0. (round 4, cadence-class strata) the cadence transfer xfer_prior:
+           the same daypart's ring at the nearest other cadence with >= 64
+           entries, p^(1/v) with the learned power in model['xfer'],
         1. the entity's own rings of the OTHER dayparts at this cadence,
            pooled (>= 64 entries; not for identity),
         2. pm_prior(the pm ring, behavior.pm[d] at that tick, u),
@@ -532,9 +747,13 @@ def p_replay(model: Optional[Mapping], detector: str, daypart: str, cc: int, sco
     r = ring(model, detector, st)
     n = 0 if r is None else len(r)
     if n >= SMALL_N:
-        return issued(calib.p_from_ring(r, s, u))
+        return issued(calib.p_from_ring(r, s, u, sigma_min=tail_sigma_min(s, pm)))
     prior = math.nan
-    if not is_id and (cc or gr is not None):
+    if not is_id and gr is None and cc and isinstance(model, Mapping):
+        # round 4: the cadence transfer (xfer_prior) comes first, as in B24
+        prior, _c = xfer_prior(model.get(RINGS), model.get(XFER), detector, daypart, int(cc),
+                               s, u)
+    if prior != prior and not is_id and (cc or gr is not None):
         if gr is not None:
             keys = [stratum_for(detector, p, int(cc), 0, grain=gr, prov=prov)
                     for p in timebins.DAYPARTS if p != daypart]

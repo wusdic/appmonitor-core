@@ -23,7 +23,7 @@ V2_BEHAVIOR_ORDER = [
     "behavior.rhythm", "behavior.novelty", "behavior.client_identity", "behavior.sequence",
     "behavior.timing", "behavior.beacon", "behavior.budget", "behavior.changepoint",
     "behavior.identity_model", "behavior.attribution", "behavior.entity_link",
-    "behavior.class_monitor", "behavior.feedback", "behavior.calibration", "behavior.fusion",
+    "behavior.class_monitor", "behavior.cross_system", "behavior.feedback", "behavior.calibration", "behavior.fusion",
     "behavior.risk", "behavior.incident", "behavior.governor", "behavior.explain",
     "behavior.portrait",
 ]
@@ -53,6 +53,9 @@ def test_registry_is_the_full_v2_set_in_contract_order():
                            "derived.session"]
     assert names[-2:] == ["signature.rule_match", "signature.correlation"]
     assert not V1_ENGINES & set(names)
+    # p2=False leaves out the P2 engines (B21 cross_system) and nothing else
+    names0 = [e.name for e in build.build_registry(p2=False).ordered()]
+    assert names0 == [n for n in names if n != "behavior.cross_system"]
 
 
 def test_strict_run_has_no_engine_errors(run):

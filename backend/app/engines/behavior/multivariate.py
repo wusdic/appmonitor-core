@@ -47,6 +47,23 @@ What is learned, and how (contract H, lib/gating):
     refits whose k differs) enters a 256-entry ring. Until the ring holds 30
     values: the class model's parameters, else a two-fold cross-fit of the
     buffer (bootstrap only), else NaN (no SPE evidence).
+  * Cross-fitted F null (round 4, lib/m_density "Cross-fitted null"): once
+    the own buffer holds >= CROSSFIT_MIN rows, the rows are split into
+    NULL_K = 4 contiguous time blocks, each block is scored under a model
+    refitted on the other three (same robust fit, same class / H shrink),
+    and the log-moments of the held-out SPE / theta1 and T2 / q are kept
+    (model['_null_st'], refreshed every NULL_REFRESH_S = 24 h, when the
+    buffer grew by half, and after a control action). Every refit turns
+    them into model['null'] = SPE ~ g F(d1, d2) with d1 the new model's
+    residual dof, T2 / q ~ s F(q, d2') rescaled to the new model's n; the
+    model p-values then come from these instead of Box / Hotelling. Scores
+    without a null (young entity, class-only model) are written with
+    behavior.degraded 'provisional:mv_null'. Why: on clean pack-A live rows
+    the Gaussian p gave SPE p < 1e-3 at 11x nominal and T2 at 44x (the OOS
+    Box ring mixed younger models, and the residual scale drifts between
+    days, which a chi2 tail does not allow); with the cross-fitted F null
+    2.1x and 4.1x (KS 0.29 -> 0.04, 0.17 -> 0.12; T2_q 74x -> 7x). Cost
+    ~20-30 ms per null.
   * Every 32 ticks or 8 h per system: dependence groups (|Spearman rho| > 0.8,
     average linkage) of the pooled committed rows -> model.groups@(s,
     __system__), which B04 uses to avoid counting one correlated signal twice.
@@ -142,6 +159,10 @@ OOS_CAP = 256
 BOX_MIN = 30
 OOS_MIN_W = 0.5                # only well-trusted rows calibrate the null
 CROSSFIT_MIN = 64
+NULL_K = 4                     # contiguous time blocks of the cross-fitted null
+NULL_REFRESH_S = 86400.0       # the null's log-moments are refreshed daily ...
+NULL_GROW = 1.5                # ... or once the buffer grew by half
+PROV_CAUSE = emit.cause(emit.PROVISIONAL, "mv_null")
 
 # ---- groups ------------------------------------------------------------------
 RHO_MIN = 0.8
@@ -154,7 +175,7 @@ GROUP_MIN_ROWS = 96
 ALPHA = 0.01                   # axes / last_contrib threshold on the model p
 TOP_CONTRIB = 5
 _NAN = math.nan
-_CARRY = ("_state", "_gate", "_arch", "_oos_ts", "_oos_v", "_sig", "_front")
+_CARRY = ("_state", "_gate", "_arch", "_oos_ts", "_oos_v", "_sig", "_front", "_null_st")
 _CTRL_KEYS = ("rollback_to", "release", "rebase_from", "frozen")
 
 
@@ -455,6 +476,87 @@ def combine(own: Optional[OwnFit], cm: Optional[Dict[str, Any]]
     return mu, S, cols, n, n + CLASS_PRIOR_N, wc
 
 
+def _null_due(nst: Optional[Dict[str, Any]], now: float, n_rows: int) -> bool:
+    if n_rows < CROSSFIT_MIN:
+        return False
+    if not nst:
+        return True
+    return (not 0.0 <= now - float(nst["ts"]) < NULL_REFRESH_S
+            or n_rows >= NULL_GROW * float(nst["n_rows"]))
+
+
+def cross_null(X: np.ndarray, w: np.ndarray, ts: np.ndarray, cm: Optional[Dict[str, Any]],
+               now: float = _NAN, theta1: float = _NAN, k_full: int = -1,
+               k: int = NULL_K) -> Optional[Dict[str, Any]]:
+    """Log-moments of held-out statistics (module docstring): the buffer rows
+    (slot order) in k contiguous blocks; each block scored under a model
+    fitted on the others with the same robust fit and class / H shrink (cm).
+    Held-out SPE is taken with the FULL model's number of components
+    (`k_full`) and normalised by its theta1 (`theta1`; the fold's own k and
+    theta1 when NaN): a fold fit has fewer rows, OAS flattens its spectrum
+    more, so it keeps more components for 90 % of the variance and its
+    residual is smaller (measured, 24 dims: log SPE 0.10-0.14 below fresh
+    rows under the full model; with k and theta1 matched, within +-0.04).
+    Returns {'ts', 'n_rows', 'spe', 't2', 'n_fold', 'qbar'} (spe / t2 are
+    m_density.null_stats or None), or None with too few rows."""
+    X = np.asarray(X)
+    n = X.shape[0]
+    if n < CROSSFIT_MIN:
+        return None
+    w = np.asarray(w, dtype=np.float64)
+    ts = np.asarray(ts, dtype=np.float64)
+    spe, t2q, qs, nf = [], [], [], []
+    idx = np.arange(n)
+    for b in np.array_split(idx, max(2, int(k))):
+        tr = np.setdiff1d(idx, b, assume_unique=True)
+        own = fit_rows(X[tr], w[tr], ts[tr])
+        if own is None:
+            continue
+        mu, S, cols, nn, n_pred, wc = combine(own, cm)
+        m = m_density.assemble(mu, S, cols, nn, n_pred)
+        if not m_density.is_fitted(m):
+            continue
+        nf.append(float(m["n_pred"]))
+        fc = m["cols"]
+        U = None
+        if theta1 == theta1 and theta1 > 0.0 and 0 < k_full < fc.size:
+            U = np.linalg.eigh(m["Sigma_c"])[1][:, ::-1][:, :k_full]
+        for i in b.tolist():
+            sc = m_density.score_model(m, X[i])
+            if not sc.scored:
+                continue
+            if U is not None:
+                z = sc.z_completed[fc]
+                r = z - U @ (U.T @ z)
+                spe.append(float(r @ r) / theta1)
+            else:
+                spe.append(sc.spe_norm)
+            t2q.append(sc.t2 / sc.q)
+            qs.append(float(sc.q))
+    if not nf:
+        return None
+    q = np.asarray(qs, dtype=np.float64)
+    return {"ts": float(now), "n_rows": float(n),
+            "spe": m_density.null_stats(np.asarray(spe, dtype=np.float64)),
+            "t2": m_density.null_stats(np.asarray(t2q, dtype=np.float64), q),
+            "n_fold": float(np.mean(nf)), "qbar": float(np.median(q)) if q.size else _NAN}
+
+
+def null_of(model: Dict[str, Any], nst: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """model['null'] of a fitted model from cross_null's log-moments: the SPE
+    null with the model's own residual dof, the T2 null rescaled to its n."""
+    if not nst or not m_density.is_fitted(model):
+        return None
+    spe = None
+    if nst.get("spe") is not None and model["theta1"] == model["theta1"]:
+        spe = m_density.null_spe(nst["spe"], m_density.residual_dof(model))
+    t2 = m_density.null_t2(nst.get("t2"), float(model["n_pred"]), float(nst["n_fold"]),
+                           float(nst["qbar"]))
+    if spe is None and t2 is None:
+        return None
+    return {"spe": spe, "t2": t2}
+
+
 def fit_model(X: np.ndarray, w: Optional[np.ndarray] = None, *, ts: Optional[np.ndarray] = None,
               cm: Optional[Dict[str, Any]] = None, box: Optional[Tuple[float, float]] = None,
               crossfit: bool = True, fitted_ts: float = _NAN, version: int = 1,
@@ -678,7 +780,11 @@ class MultivariateEngine(Engine):
                 "p_spe": _js(sc.p_spe), "q": sc.q, "axes": ax,
                 "top": m_density.ranked(rbc, pv, TOP_CONTRIB, sc.z),
                 "model_version": int(model["version"])})
-        emit.write_scores(store, s, e, now, scores, pm=pm, axes=axes or None, window_s=int(dt))
+        nl = model.get("null")
+        prov = {d: PROV_CAUSE for d, key in ((d_t2, "t2"), (d_spe, "spe"))
+                if pm[d] is not None and not (isinstance(nl, dict) and nl.get(key) is not None)}
+        emit.write_scores(store, s, e, now, scores, pm=pm, axes=axes or None,
+                          degraded=prov or None, window_s=int(dt))
         store.add_vec(s, e, self._WH, now, [sc.wh], window_s=int(dt))
         if self._g == "q":
             nq = float(model.get("n_own", 0.0) or 0.0)
@@ -732,10 +838,10 @@ class MultivariateEngine(Engine):
                 or self.entity_due((s, e, "fit") + self._gk, now,
                                    min(self.refit_ticks * per, self.refit_s))):
             return model
-        return self._refit(ctx, s, e, model, now, sig)
+        return self._refit(ctx, s, e, model, now, sig, ctrl)
 
     def _refit(self, ctx: Context, s: str, e: str, model: Dict[str, Any], now: float,
-               sig: Tuple) -> Dict[str, Any]:
+               sig: Tuple, ctrl: bool = False) -> Dict[str, Any]:
         store = ctx.store
         ts_a, w_a, X_a = state_arrays(model["_state"])
         oos_ts, oos_v = list(model["_oos_ts"]), list(model["_oos_v"])
@@ -783,8 +889,17 @@ class MultivariateEngine(Engine):
                                            ck if cm is not None else None, wc, now,
                                            int(model["version"]) + 1)
             for k in _CARRY:
-                new_model[k] = model[k]
+                new_model[k] = model.get(k)
             new_model["n_own"] = float(own.n_eff) if own is not None else 0.0
+            if own is not None:
+                nst = new_model.get("_null_st")
+                if ctrl or _null_due(nst, now, ts_a.size):
+                    nst = new_model["_null_st"] = cross_null(
+                        X_a, w_a, ts_a, cm, now, float(new_model.get("theta1", _NAN)),
+                        int(new_model.get("k", -1)))
+                new_model["null"] = null_of(new_model, nst)
+            else:
+                new_model["_null_st"] = None
         new_model["_oos_ts"], new_model["_oos_v"] = oos_ts[-OOS_CAP:], oos_v[-OOS_CAP:]
         new_model["_sig"] = sig
         new_model["_front"] = front
@@ -874,10 +989,11 @@ def _new_model(prev: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     m: Dict[str, Any] = {"fmt": m_density.FMT, "version": 0, "fitted": False, "n": 0.0}
     if prev is not None:
         for k in _CARRY:
-            m[k] = prev[k]
+            m[k] = prev.get(k)
         return m
     m.update({"_state": _init(), "_gate": G.GateState(), "_arch": OrderedDict(),
-              "_oos_ts": [], "_oos_v": [], "_sig": None, "_front": -math.inf})
+              "_oos_ts": [], "_oos_v": [], "_sig": None, "_front": -math.inf,
+              "_null_st": None})
     return m
 
 

@@ -206,10 +206,13 @@ def test_b_sequence_always_fp_weight_below_half_uniform():
     assert w["sequence"] < 0.5 * float(np.mean(list(w.values())))
     assert w["sequence"] >= FB.W_FLOOR
     assert max(w["intensity"], w["categorical"], w["exfil"], w["c2"]) > 1.0
-    # Beta precision: sequence never tp -> pi at its floor; tp-heavy families above 1
+    # Beta precision: sequence never tp -> pi at its floor; tp-heavy families
+    # are precise but their pi stays at 1 (feedback never raises the evidence
+    # of every entity above the calibrated null; evaluator round 4, gate 12)
     assert FB.risk_mult(st, "sequence") == pytest.approx(0.2)
     assert FB.precision(st, "sequence")[0] == pytest.approx(1 / 14)
-    assert FB.risk_mult(st, "exfil") > 1.0
+    assert FB.precision(st, "exfil")[0] > 0.5
+    assert FB.risk_mult(st, "exfil") == 1.0
     assert FB.risk_mult(st, "xsys") == 1.0                               # never labelled
 
 

@@ -14,7 +14,7 @@ from typing import Dict, List
 import numpy as np
 import pytest
 
-from helpers import DT, put_model
+from helpers import DT, put_model, set_trust
 
 from app.engines.behavior import fusion as F
 from app.engines.behavior.lib import calib, m_calib
@@ -58,15 +58,24 @@ def test_commit_delay_and_trust_weight():
     assert set(rig.store.get_model(S, E, m_calib.MODEL)) == {"meta"}
 
 
-def test_untrusted_rows_are_not_admitted_and_partial_trust_thins():
+def test_live_meta_admission_is_the_period_trust_not_the_row_trust():
+    """Round 4 (lib/gating.period_weight): behavior.trust carries the row's
+    own evidence (its q_inst, its alarm), so a meta ring admitting by it
+    truncates its own tail. Live rows are admitted whatever their trust; a
+    missing or NaN governor tick admits nothing; quarantine holds."""
     rig = Rig()
     run_null(rig, 12, trust=0.0)
-    assert meta(rig)["state"]["n_admit"] == 0 and sum(ring_sizes(rig).values()) == 0
-    assert len(meta(rig)["state"]["gate"].journal) == 8     # committed with w = 0
+    assert meta(rig)["state"]["n_admit"] == 8                  # D = 4: every committed row
     rig = Rig()
-    run_null(rig, 204, trust=0.5)
-    n = meta(rig)["state"]["n_admit"]
-    assert 70 <= n <= 130                                     # ~Binomial(200, 0.5)
+    run_null(rig, 104, trust=0.5)
+    assert meta(rig)["state"]["n_admit"] == 100
+    rig = Rig()
+    run_null(rig, 12, trust=float("nan"))
+    assert meta(rig)["state"]["n_admit"] == 0 and sum(ring_sizes(rig).values()) == 0
+    assert len(meta(rig)["state"]["gate"].journal) == 8       # committed with w = 0
+    rig = Rig()
+    run_null(rig, 12, trust=None)                              # no governor at all: fail safe
+    assert meta(rig)["state"]["n_admit"] == 0
 
 
 def test_training_trusts_missing_rows_but_not_explicit_zero():
@@ -169,32 +178,58 @@ def test_meta_tail_uses_predictive_xi_floor():
 
 
 def test_evidence_audit_raises_h_when_rate_too_high():
+    """Round 4: the audit solves h from the entity's own period-trusted q_inst
+    history (fusion.solve_h) and moves h_mult towards it by at most
+    H_MULT_STEP_UP per audit, never above H_MULT_MAX; quarantined ticks are
+    not part of the null stream."""
     rig = Rig()
     now = rig.t + 3 * 86400
     rng = np.random.default_rng(4)
     t = rig.t
+    ts_hist = []
     while t < now:                                    # 3 days of skewed q_inst history
         rig.store.add_vec(S, E, F.Q_INST, t, np.asarray([rng.random() ** 4], np.float32),
                           window_s=900)
+        ts_hist.append(t)
         t += DT
+    set_trust(rig.store, S, E, ts_hist, 0.0, quarantine=0.0)   # row trust 0: still null rows
     rig.t = now
     rig.step({E: NULL})
     st = meta(rig)["state"]
     assert st["audit"] is not None and st["audit"]["rate"] > 2.0 / F.EVIDENCE_ARL_DAYS
+    assert st["audit"]["h_star"] > F.evidence_h(900)
     assert st["h_mult"] == pytest.approx(1.0 + F.H_MULT_STEP_UP)
     # the audit is hourly: the next tick does not audit again
     rig.step({E: NULL})
     assert meta(rig)["state"]["h_mult"] == pytest.approx(1.0 + F.H_MULT_STEP_UP)
-    # never more than +20 %
+    # never more than H_MULT_MAX
     st["h_mult"] = F.H_MULT_MAX
     rig.t += 3600
     rig.step({E: NULL})
-    assert meta(rig)["state"]["h_mult"] == pytest.approx(F.H_MULT_MAX)
+    assert meta(rig)["state"]["h_mult"] <= F.H_MULT_MAX + 1e-12
     # the raised h is the one the CUSUM uses
     for _ in range(12):
         rig.step({E: {"novelty": 1e-4}}, trust=None)
     a = rig.alarm()
-    assert a["h"] == pytest.approx(F.H_MULT_MAX * F.evidence_h(900))
+    assert a["h"] == pytest.approx(meta(rig)["state"]["h_mult"] * F.evidence_h(900))
+
+
+def test_evidence_audit_ignores_quarantined_history():
+    rig = Rig()
+    now = rig.t + 3 * 86400
+    rng = np.random.default_rng(4)
+    t = rig.t
+    ts_hist = []
+    while t < now:
+        rig.store.add_vec(S, E, F.Q_INST, t, np.asarray([rng.random() ** 4], np.float32),
+                          window_s=900)
+        ts_hist.append(t)
+        t += DT
+    set_trust(rig.store, S, E, ts_hist, 1.0, quarantine=1.0)
+    rig.t = now
+    rig.step({E: NULL})
+    st = meta(rig)["state"]
+    assert st.get("audit") is None and float(st.get("h_mult", 1.0)) == 1.0
 
 
 def test_audit_rate_on_null_is_near_target():
@@ -236,3 +271,35 @@ def test_cadence_switch_900_to_60():
     rig3 = Rig(dt=60.0)
     rig3.step({E: {"jsd": p_at(2e-3, 60.0)}})
     assert rig3.alarm()["severity"] == "medium"
+
+
+def test_canonical_60s_t_meta_strata_are_thinned_and_start_on_a_conservative_prior():
+    """Round 4, canonical mode below 900 s: the per-tick-type meta strata
+    (meta_all at tau = t, meta_inst_t) admit one row per 900-s slot (a rule
+    on ts), and while young their prior is the raw p to the power 1/v with v
+    learned from the stratum's own committed rows (prior v = 2)."""
+    rig = Rig()
+    cfg = {"grain_mode": "canonical"}
+    rig.t = (int(rig.t) // 3600 + 1) * 3600.0
+    rng = np.random.default_rng(3)
+    for _ in range(8):
+        rig.step({E: {"novelty": float(rng.random()), "timing": float(rng.random())}},
+                 dt=900.0, training=True, config=cfg)
+    n_ticks = 600
+    for _ in range(n_ticks):
+        rig.step({E: {"novelty": float(rng.random()), "timing": float(rng.random())}},
+                 dt=60.0, config=cfg)
+    m = meta(rig)
+    sizes = {k: len(r) for k, r in F.meta_rings(m).items() if "|t:t|60" in k}
+    assert sizes, sizes
+    for k, n in sizes.items():
+        assert n <= n_ticks // 15 + 2, (k, n)                 # one per 900-s slot
+    xs = m["state"].get(F.XFER) or {}
+    assert any("|t:t|60" in k and v[1] >= 0.8 * n_ticks for k, v in xs.items() if "meta_all" in k
+               or "meta_inst_t" in k)
+    # the young-stratum prior: raw p^(1/v)
+    st = m["state"]
+    key = next(k for k in sizes if k.startswith(F.META_ALL))
+    v = m_calib.xfer_v(xs.get(key))
+    assert rig.eng._t_prior(st, F.META_ALL, key.split("@", 1)[1], None, 1e-4) == \
+        pytest.approx(1e-4 ** (1.0 / v))

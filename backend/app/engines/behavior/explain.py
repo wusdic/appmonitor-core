@@ -114,6 +114,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import time
+import warnings
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
@@ -183,6 +184,32 @@ DISCRETE_KINDS = frozenset({
     "class_adoption_risky", "schedule_shift", "beacon", "budget_exceeded", "baseline_creep",
 })
 NOVELTY_KINDS = ("first_seen", "rare_access")
+# round 4: the detector a discrete finding comes from (neutralising the
+# detector removes its findings of the decision tick as well)
+FINDING_DETECTORS: Dict[str, Tuple[str, ...]] = {
+    "first_seen": ("novelty",), "rare_access": ("novelty",),
+    "client_change": ("client",), "client_impersonation": ("client",),
+    "identity_mismatch": ("identity",), "unknown_identity": ("identity",),
+    "beacon": ("beacon",), "budget_exceeded": ("budget_vol", "budget_exfil", "budget_breadth"),
+    "baseline_creep": ("creep",), "schedule_shift": ("offhours",),
+}
+# the numeric feature that carries a discrete finding (round 4, opening
+# evidence): a decisive finding (>= MEDIUM, it opens an incident alone) ranks
+# its feature first; first_seen / rare_access by the dimension of the value
+FINDING_FEATURES: Dict[str, Tuple[str, ...]] = {
+    "client_change": ("ja3_diversity",), "client_impersonation": ("ja3_diversity",),
+    "beacon": ("periodicity",), "budget_exceeded": ("bytes_up",),
+    "novel:tmpl": ("new_template_ratio", "distinct_templates"),
+    "novel:sni": ("new_peer_count",), "novel:dns": ("new_peer_count",),
+    "novel:peer": ("new_peer_count", "distinct_peers"), "novel:dport": ("distinct_dports",),
+}
+# B27's risk opening (incident.py): a family at e_day <= 0.1 within 24 h
+RISK_FAM_E_DAY = 0.1
+RISK_LOOKBACK_S = DAY
+NEUTRAL_P = 0.5                 # a neutralised detector reads as the median of its null
+CF_DET_P = 0.05                 # a detector drives the decision below this p
+CF_DETECTORS = 10               # detector candidates tried by the counterfactual
+OPEN_EV_BASE_Q = 0.9            # the entity's routine level of -log10 pf (opening evidence)
 _RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 # ---- explanation parameters
@@ -530,6 +557,7 @@ class _Neutral:
         self.features = sorted(FEATURE_INDEX[c] for c in cands if c in FEATURE_INDEX)
         self.tokens = {c[len("token:"):] for c in cands if c.startswith("token:")}
         self.offhours = "offhours" in cands
+        self.detectors = {c[len("detector:"):] for c in cands if c.startswith("detector:")}
 
 
 class Counterfactual:
@@ -586,6 +614,8 @@ class Counterfactual:
         self.recomputed: Set[str] = set()
         self.replayed: Set[str] = set()
         self.held: Set[str] = set()
+        self.neutralised: Set[str] = set()
+        self._rh: Optional[List[Tuple[float, float, Set[str]]]] = None
         self.fid: Dict[str, Any] = {"p_log10_err": 0.0, "n_p": 0}
         self._cls_rings: Optional[List[Any]] = None
         self._cache: Dict[Tuple[str, ...], Dict[str, Any]] = {}
@@ -1183,7 +1213,80 @@ class Counterfactual:
             pms.update(pq)
         for d, sc in scores.items():
             p[DETECTOR_INDEX[d]] = self.p_of(d, t, sc, pms.get(d, _NAN))
+        self._neutralise(p, nz)
         return p
+
+    def _neutralise(self, p: np.ndarray, nz: _Neutral) -> None:
+        """round 4: a neutralised detector reads at least NEUTRAL_P (the median
+        of its null) wherever it was scored; NaN stays NaN."""
+        for d in nz.detectors:
+            i = DETECTOR_INDEX.get(d)
+            if i is not None and math.isfinite(float(p[i])):
+                p[i] = max(float(p[i]), NEUTRAL_P)     # only ever raises p (monotone)
+                self.neutralised.add(d)
+
+    def _finding_removed(self, ev: Any, nz: _Neutral) -> bool:
+        """A discrete finding does not hold when every new token it carries is
+        removed, or when the detector that emitted it is neutralised."""
+        toks = set(finding_tokens(ev))
+        if toks and toks <= nz.tokens:
+            return True
+        return bool(set(FINDING_DETECTORS.get(str(ev.kind), ())) & nz.detectors)
+
+    def _risk_hits(self) -> List[Tuple[float, float, Set[str]]]:
+        """B27's risk opening needs a family at e_day <= 0.1 newer than the
+        key's last incident activity within 24 h: the (ts, window_s, families)
+        of those hits before the decision tick, from the stored p_family."""
+        if self._rh is not None:
+            return self._rh
+        last = -math.inf
+        for x in (self.inc.evidence or ()):
+            if isinstance(x, Mapping) and _f(x.get("ts")) < self.now:
+                last = max(last, _f(x.get("ts")))
+        for other in self.store.incidents(system=self.s, entity=self.e):
+            if other.id != self.inc.id and other.entity == self.e \
+                    and float(other.opened) < self.now:
+                last = max(last, min(float(other.last_seen), self.now - 1.0))
+        lo = max(self.now - RISK_LOOKBACK_S, last)
+        out: List[Tuple[float, float, Set[str]]] = []
+        n = int(min(2000, math.ceil(RISK_LOOKBACK_S / max(self.dt, 1.0)) + 4))
+        for pt in self.store.derived_tail(self.s, self.e, P_FAMILY, n):
+            if not (lo < pt.ts <= self.now) or not isinstance(pt.value, Mapping):
+                continue
+            pdt = float(pt.window_s) if pt.window_s and pt.window_s > 0 else self.dt
+            fams = {str(f) for f, v in pt.value.items()
+                    if _f(v) == _f(v) and _f(v) * DAY / pdt <= RISK_FAM_E_DAY}
+            if fams:
+                out.append((float(pt.ts), pdt, fams))
+        self._rh = out
+        return out
+
+    def _risk_armed(self, nz: _Neutral, wm: Sequence[float]) -> bool:
+        """Does B27's risk opening still hold with nz neutralised? The risk
+        level itself is held (removing evidence only lowers it, so holding it
+        never overstates validity); the family hits that arm the trigger are
+        recomputed through the p row and fuse. A hit whose factual recompute
+        does not reproduce it is held."""
+        if not self.risk_open:
+            return False
+        hits = self._risk_hits()
+        if not hits:
+            return True
+        for ts, pdt, fams in hits:
+            t = self.tick(ts)
+            if t is None or t.p is None:
+                return True
+            fact = self._fam_hits(t, _Neutral(()), wm, pdt)
+            if not (fact & fams):
+                return True                     # not reproduced: held
+            if self._fam_hits(t, nz, wm, pdt):
+                return True
+        return False
+
+    def _fam_hits(self, t: _Tick, nz: _Neutral, wm: Sequence[float], pdt: float) -> Set[str]:
+        p = self._p_row(t, nz, False)
+        pf = self._q_canon(t, p, wm)[0] if self.canon else self._q(t, p, wm)[0]
+        return {f for f, v in pf.items() if v == v and v * DAY / pdt <= RISK_FAM_E_DAY}
 
     def _novelty(self, t: _Tick, nz: _Neutral, p: np.ndarray) -> None:
         """novelty -> 0 when every value first seen at the tick is removed."""
@@ -1270,6 +1373,10 @@ class Counterfactual:
         # --- novelty at now
         if p_now is not None:
             self._novelty(now_t, nz, p_now)
+            self._neutralise(p_now, nz)          # after the B14 / off-hours replays
+        for d in nz.detectors:
+            if d in acc:
+                acc[d] = 0
         # --- fuse and meta-calibrate now; paths that need only now
         wm = self._wmult()
         h = self._h_t()
@@ -1292,13 +1399,12 @@ class Counterfactual:
         if on:
             paths.append("accumulator")
         out["acc"] = sorted(on)
-        fnd = [ev for ev in self.findings if not (set(m_feedback.event_new_tokens(ev))
-                                                  and set(m_feedback.event_new_tokens(ev))
-                                                  <= nz.tokens)]
+        fnd = [ev for ev in self.findings if not self._finding_removed(ev, nz)]
         out["findings"] = sorted({ev.kind for ev in fnd})
-        out["risk"] = bool(self.risk_open)
+        risk = self._risk_armed(nz, wm) if self.risk_open else False
+        out["risk"] = bool(risk)
         out["h"] = h
-        quick = bool(paths or fnd or self.risk_open)
+        quick = bool(paths or fnd or risk)
         # --- spec v2.1: the H-stream evidence CUSUM (S_h) over its excursion
         if self.canon and p_now is not None and self._ev_on_h and (full or not quick):
             hh = self._h_h()
@@ -1351,7 +1457,7 @@ class Counterfactual:
         elif p_now is not None:
             out["S"] = _scalar(self.store, self.s, self.e, EVIDENCE, self.now)
         out["paths"] = paths
-        out["trigger"] = bool(paths or fnd or self.risk_open)
+        out["trigger"] = bool(paths or fnd or risk)
         self._cache[key] = out
         return out
 
@@ -1483,6 +1589,42 @@ class Counterfactual:
         return bh_threshold(qs)
 
     # ------------------------------------------------------------ search
+    def driving_detectors(self) -> List[str]:
+        """round 4: the detectors that drove the decision, most extreme first:
+        p <= CF_DET_P at the decision tick, an accumulator flag on, the
+        emitter of a finding >= MEDIUM, and the detectors below CF_DET_P at
+        the family hits that arm a risk opening (min p over those ticks). They
+        are counterfactual candidates after the features and tokens: had the
+        detector read as the median of its null wherever it was scored in the
+        recomputed window (NEUTRAL_P), would the decision still hold?"""
+        best: Dict[str, float] = {}
+
+        def take(row: Optional[np.ndarray]) -> None:
+            if row is None:
+                return
+            for i, v in enumerate(np.asarray(row, dtype=np.float64)):
+                if v == v and v <= CF_DET_P:
+                    d = DETECTORS[i]
+                    best[d] = min(best.get(d, 1.0), float(v))
+
+        now_t = self.tick(self.now)
+        take(now_t.p if now_t is not None else None)
+        for d, v in self.acc.items():
+            if d in DETECTOR_INDEX and _f(v) >= 0.5:
+                best[d] = min(best.get(d, 1.0), 0.0)
+        for ev in self.findings:
+            for d in FINDING_DETECTORS.get(str(ev.kind), ()):
+                best[d] = min(best.get(d, 1.0), 0.0)
+        if self.risk_open:
+            for ts, _pdt, _f2 in self._risk_hits():
+                t = self.tick(ts)
+                take(t.p if t is not None else None)
+        if self._ev_on or self._ev_on_h:
+            for ts in self.ev_window[-self.max_ticks:]:
+                t = self.tick(ts)
+                take(t.p if t is not None else None)
+        return [d for d, _ in sorted(best.items(), key=lambda kv: (kv[1], kv[0]))][:CF_DETECTORS]
+
     def explain(self, numeric: Sequence[str], tokens: Sequence[str]) -> Dict[str, Any]:
         t0 = time.perf_counter()
         stored_paths = sorted((self.alarm or {}).get("paths") or
@@ -1494,7 +1636,12 @@ class Counterfactual:
         cands += [f"token:{t}" for t in tokens]
         if self._off is not None and self._off["slots"]:
             cands.append("offhours")
+        cands += [f"detector:{d}" for d in self.driving_detectors()]
         fact = self.evaluate((), check=True, full=True)
+        # every accumulator the factual recompute latches drives the decision
+        # too (a replayed B14 latch is not in the stored flags between H ticks)
+        cands += [f"detector:{d}" for d in fact.get("acc") or ()
+                  if f"detector:{d}" not in cands]
         subset: List[str] = []
         n_eval = 1
         if fact["trigger"] and cands:
@@ -1558,10 +1705,12 @@ class Counterfactual:
         if cz is not None:
             window[0] = min(window[0], float(cz["t0"]))
         scope = {"recomputed": sorted(self.recomputed), "replayed": sorted(self.replayed),
-                 "held": held, "window": window,
+                 "held": held, "neutralised": sorted(d for d in self.neutralised
+                                                     if f"detector:{d}" in subset),
+                 "window": window,
                  "ticks": {"evidence": len(self.ev_window) if self._ev_on else 0,
                            "cusum": len(cz["rows"]) if cz is not None else 0},
-                 "held_triggers": (["risk"] if self.risk_open else []) + sorted(
+                 "held_triggers": (["risk_level"] if self.risk_open else []) + sorted(
                      {ev.kind for ev in self.findings
                       if not m_feedback.event_new_tokens(ev)}),
                  "grains": sorted({_STREAM[DETECTOR_INDEX[d]] for d in
@@ -1574,6 +1723,18 @@ class Counterfactual:
         return {"set": subset, "valid": valid, "reason": reason, "scope": scope,
                 "factual": _jsonable_decision(fact), "neutralised": _jsonable_decision(cf),
                 "candidates": cands}
+
+
+def finding_tokens(ev: Any) -> List[str]:
+    """New categorical values a discrete finding rests on: its new tokens
+    (m_feedback.event_new_tokens), and for B09's client events the new stack
+    ('stack=<id>'): removing that stack removes the finding."""
+    out = list(m_feedback.event_new_tokens(ev))
+    ex = getattr(ev, "extra", None) or {}
+    if not out and str(getattr(ev, "kind", "")) in ("client_change", "client_impersonation") \
+            and isinstance(ex, Mapping) and ex.get("stack"):
+        out.append(m_feedback.token_str("stack", ex["stack"]))
+    return out
 
 
 def _jsonable_decision(d: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1626,8 +1787,10 @@ class ExplainEngine(Engine):
             raise ValueError(f"explain: ctx.window_s={ctx.window_s!r} is not a positive cadence")
         n = 0
         self.last_ms = []
-        for inc in store.incidents(since=now):
-            if inc.status == "closed" or not self._due(inc, now):
+        # since: the incidents active now plus those opened within the last
+        # hour (the H opening-row refresh of _due)
+        for inc in store.incidents(since=now - GR.GRAIN_S["h"] - dt):
+            if inc.status == "closed" or not self._due(inc, now, dt):
                 continue
             t0 = time.perf_counter()
             expl = self.explain(store, inc, now, dt, ctx.config or {})
@@ -1639,11 +1802,18 @@ class ExplainEngine(Engine):
         return n
 
     @staticmethod
-    def _due(inc: Any, now: float) -> bool:
+    def _due(inc: Any, now: float, dt: float = 900.0) -> bool:
         """Opened, reopened or escalated this tick (a severity rise or a new
-        axis since the last explanation)."""
+        axis since the last explanation), or (round 4) the first H decision
+        tick after the opening when the explanation has no H opening row yet
+        (the trailing hour that contains the opening is scored there)."""
         ex = inc.explanation if isinstance(inc.explanation, Mapping) else {}
         if not ex or not ex.get("ts"):
+            return True
+        oe = ex.get("opening_evidence")
+        if isinstance(oe, Mapping) and "h" not in (oe.get("grains") or {}) \
+                and float(inc.opened) < now <= float(inc.opened) + GR.GRAIN_S["h"] + 1e-6 \
+                and GR.decision(now, dt, "h", GR.CANONICAL):
             return True
         if float(inc.last_seen) < now and float(inc.opened) < now:
             return False
@@ -1668,11 +1838,19 @@ class ExplainEngine(Engine):
         if grain is not None:
             tc = GR.row_tctx(t_star, grain, dt, config)       # the grain row's midpoint
         day_en, day_zh = _day_label(tc)
+        prev = inc.explanation if isinstance(inc.explanation, Mapping) else {}
+        opening = None
         if is_class(k):
             attrs, deviation = self._class_attributions(store, s, k, t_star, dt, tc,
                                                         grain=grain)
         else:
-            attrs, deviation = self._attributions(store, s, k, t_star, dt, tc, grain=grain)
+            opening = self._opening_evidence(store, s, k, inc, now, prev) if canon else None
+            got = self._opening_attributions(store, s, k, dt, config, opening, prev)
+            if got is not None:
+                attrs, deviation, tc_o = got
+                day_en, day_zh = _day_label(tc_o)
+            else:
+                attrs, deviation = self._attributions(store, s, k, t_star, dt, tc, grain=grain)
         new_tokens = self._new_tokens(store, inc, now, dt)
         vanished = [] if is_class(k) else self._vanished(store, s, k, inc, now)
         stacks = {} if is_class(k) else self._stack_diff(store, s, k, inc, now, dt)
@@ -1680,7 +1858,6 @@ class ExplainEngine(Engine):
         # ---- counterfactual of the opening decision (engines.md B29 step 4:
         # "stop when the incident's opening condition no longer holds")
         t_open = self._open_tick(inc, now)
-        prev = inc.explanation if isinstance(inc.explanation, Mapping) else {}
         prev_cf = prev.get("counterfactual") if isinstance(prev, Mapping) else None
         if isinstance(prev_cf, Mapping) and prev_cf.get("decision_ts") == t_open:
             # an escalation: the opening decision's counterfactual was computed
@@ -1689,7 +1866,8 @@ class ExplainEngine(Engine):
             cf = dict(prev_cf)
             cf["carried_from"] = prev.get("ts")
             return self._finish(store, inc, now, dt, s, k, t_star, tc, day_en, day_zh, attrs,
-                                deviation, new_tokens, vanished, stacks, transitions, cf)
+                                deviation, new_tokens, vanished, stacks, transitions, cf,
+                                opening)
         dt_open = dt
         strat = m_calib.issued_stratum(store.get_model(s, k, m_calib.MODEL), t_open)
         if strat is not None and strat[2] > 0:
@@ -1724,6 +1902,9 @@ class ExplainEngine(Engine):
         for ev in store.events(s, k, since=t_open, kinds=NOVELTY_KINDS, limit=1000):
             if float(ev.ts) == t_open:
                 toks_open.extend(m_feedback.event_new_tokens(ev))
+        for ev in store.events(s, k, since=t_open, kinds=sorted(DISCRETE_KINDS), limit=1000):
+            if float(ev.ts) == t_open and ev.kind not in NOVELTY_KINDS:
+                toks_open.extend(finding_tokens(ev))
         depth = int((now - t_open) / max(dt, 1.0)) + 8
         try:
             cfo = Counterfactual(store, s, k, t_open, dt_open, config, inc,
@@ -1737,14 +1918,15 @@ class ExplainEngine(Engine):
                   "scope": {"recomputed": [], "replayed": [], "held": []},
                   "decision_ts": t_open}
         return self._finish(store, inc, now, dt, s, k, t_star, tc, day_en, day_zh, attrs,
-                            deviation, new_tokens, vanished, stacks, transitions, cf)
+                            deviation, new_tokens, vanished, stacks, transitions, cf, opening)
 
     def _finish(self, store, inc: Any, now: float, dt: float, s: str, k: str, t_star: float,
                 tc: Mapping[str, Any], day_en: str, day_zh: str,
                 attrs: List[Dict[str, Any]], deviation: List[float],
                 new_tokens: List[Dict[str, Any]], vanished: List[Dict[str, Any]],
                 stacks: Dict[str, Any], transitions: List[Dict[str, Any]],
-                cf: Dict[str, Any]) -> Dict[str, Any]:
+                cf: Dict[str, Any], opening: Optional[Dict[str, Any]] = None
+                ) -> Dict[str, Any]:
         """Assemble the explanation dict and its narrative."""
         peer = self._peer_context(store, s, k, now, dt)
         nearest = self._nearest(store, s, inc, deviation)
@@ -1772,6 +1954,8 @@ class ExplainEngine(Engine):
             "deviation": deviation,
             "p_by_detector": self._pbd(store, s, k, t_star, dt),
         }
+        if opening:
+            expl["opening_evidence"] = opening
         zh, en, parts = self._narrative(inc, expl, day_en, day_zh)
         expl.update(narrative_zh=zh, narrative_en=en, headline_zh=parts["h_zh"],
                     headline_en=parts["h_en"], bullets_zh=parts["b_zh"], bullets_en=parts["b_en"])
@@ -1787,6 +1971,107 @@ class ExplainEngine(Engine):
                     and x.get("state") in ("open", "reopen") and _f(x.get("ts")) <= now:
                 return float(x["ts"])
         return min(float(inc.opened), now)
+
+    @staticmethod
+    def _opening_evidence(store, s: str, k: str, inc: Any, now: float,
+                          prev: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        """round 4: calibrated per-feature evidence of the decision rows that
+        cover the incident's FIRST opening, per grain: the first H / Q row at or
+        after inc.opened (the trailing grain that contains the opening),
+        e_f = -log10 pf_f minus the entity's pre-incident q90 of -log10 pf_f
+        (retained rows before opened - 1 h, >= 8 of them; a feature that is
+        routinely extreme for this entity is discounted by its own level).
+
+        Why: hit@3 was 0.1-0.25 because the attributions ranked Garthwaite-Koch
+        shares of the whitened residual at the LATEST explained tick (often an
+        escalation days after the opening) instead of the evidence that opened
+        the incident; on pack A seed 0 the perturbed feature was in the top 3
+        of this ranking for 10 of 14 threat incidents against 2 of 14 before.
+        behavior.pf is kept 6 h, so a grain found once is carried in the
+        explanation (prev['opening_evidence']) and later explanations reuse it."""
+        t1 = float(inc.opened)
+        carried = prev.get("opening_evidence") if isinstance(prev, Mapping) else None
+        out: Dict[str, Any] = {"t_opened": t1, "grains": {}}
+        if isinstance(carried, Mapping) and _f(carried.get("t_opened")) == t1:
+            out["grains"].update({g: dict(v) for g, v in (carried.get("grains") or {}).items()})
+        for g, suf in (("h", ""), ("q", ".q")):
+            if g in out["grains"]:
+                continue
+            t, M = store.vec_range(s, k, PF + suf, t1 - DAY, now)
+            if not len(t):
+                continue
+            t = np.asarray(t, dtype=np.float64)
+            M = np.asarray(M, dtype=np.float64).reshape(len(t), -1)
+            idx = np.flatnonzero((t >= t1 - 1e-6) & (t <= t1 + GR.GRAIN_S[g] + 1e-6))
+            if not idx.size:
+                continue
+            with np.errstate(divide="ignore", invalid="ignore"):
+                L = -np.log10(np.clip(M, 1e-300, 1.0))
+            base = L[t < t1 - HOUR]
+            b = np.zeros(NF)
+            if base.shape[0] >= 8:
+                with warnings.catch_warnings():         # an all-NaN feature column
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    b = np.nanquantile(base, OPEN_EV_BASE_Q, axis=0)
+                b = np.where(np.isfinite(b), b, 0.0)
+            ev = L[idx[0]] - b
+            out["grains"][g] = {"ts": float(t[idx[0]]),
+                                "ev": [_r(x, 3) if math.isfinite(x) else None for x in ev]}
+        if "findings" not in out:
+            fnd: Dict[str, str] = dict((carried or {}).get("findings") or {}) \
+                if isinstance(carried, Mapping) and _f(carried.get("t_opened")) == t1 else {}
+            for ev in store.events(s, k, since=t1, kinds=sorted(DISCRETE_KINDS), limit=1000):
+                if float(ev.ts) != t1 or ev.status == "suppressed" \
+                        or _sev_rank(ev.severity) < OPEN_FINDING_RANK:
+                    continue
+                key = str(ev.kind)
+                if key in NOVELTY_KINDS:
+                    ex = ev.extra if isinstance(ev.extra, Mapping) else {}
+                    key = f"novel:{ex.get('dim')}"
+                for f in FINDING_FEATURES.get(key, ()):
+                    fnd.setdefault(f, str(ev.kind))
+            out["findings"] = fnd
+        return out if (out["grains"] or out.get("findings")) else None
+
+    def _opening_attributions(self, store, s: str, k: str, dt: float,
+                              config: Mapping[str, Any], opening: Optional[Mapping[str, Any]],
+                              prev: Mapping[str, Any]
+                              ) -> Optional[Tuple[List[Dict[str, Any]], List[float],
+                                                  Mapping[str, Any]]]:
+        """Attributions of the opening rows ranked by their evidence (max over
+        grains) on the grain row holding the strongest evidence, recomputed
+        while that row is retained, else carried from the previous explanation
+        of the same opening."""
+        if not opening:
+            return None
+        gr = opening["grains"]
+        if not gr:
+            return None
+        vecs = {g: np.asarray([_f(x) for x in v["ev"]], dtype=np.float64) for g, v in gr.items()}
+        rank = np.full(NF, -np.inf)
+        for v in vecs.values():
+            rank = np.fmax(rank, np.where(np.isfinite(v), v, -np.inf))
+        # a decisive finding outranks every numeric deviation of the opening
+        top = float(np.max(rank)) if np.isfinite(rank).any() else 0.0
+        for f in (opening.get("findings") or {}):
+            if f in FEATURE_INDEX:
+                i = FEATURE_INDEX[f]
+                rank[i] = max(rank[i], max(top, 0.0) + 1.0)
+        rank = np.where(np.isfinite(rank), rank, np.nan)
+        g_best = max(vecs, key=lambda g: (np.nanmax(np.where(np.isfinite(vecs[g]), vecs[g],
+                                                             -np.inf)), g))
+        ts = float(gr[g_best]["ts"])
+        tc = GR.row_tctx(ts, g_best, dt, config)
+        attrs, dev = self._attributions(store, s, k, ts, dt, tc, grain=g_best, rank=rank)
+        if attrs:
+            for a in attrs:
+                a["evidence"] = _r(rank[FEATURE_INDEX[a["feature"]]], 3)
+            return attrs, dev, tc
+        pa = prev.get("attributions") if isinstance(prev, Mapping) else None
+        po = prev.get("opening_evidence") if isinstance(prev, Mapping) else None
+        if pa and isinstance(po, Mapping) and _f(po.get("t_opened")) == _f(opening["t_opened"]):
+            return list(pa), list(prev.get("deviation") or [0.0] * NF), tc
+        return None
 
     @staticmethod
     def _driving_grain(store, s: str, k: str, inc: Any, now: float) -> str:
@@ -1893,7 +2178,8 @@ class ExplainEngine(Engine):
         return MB.quantiles(pred, STATE_QS, dt_s=BAND_DT_S)
 
     def _attributions(self, store, s: str, e: str, ts: float, dt: float,
-                      tc: Mapping[str, Any], bands: bool = True, grain: Optional[str] = None
+                      tc: Mapping[str, Any], bands: bool = True, grain: Optional[str] = None,
+                      rank: Optional[np.ndarray] = None
                       ) -> Tuple[List[Dict[str, Any]], List[float]]:
         """Numeric attribution of the row scored at ts. spec v2.1: grain
         'h' / 'q' reads that grain's rows (feature.nat.<g>, behavior.z[.q],
@@ -1925,8 +2211,15 @@ class ExplainEngine(Engine):
             rbc = np.full(NF, np.nan)
         bh = bh_flags(p_rbc, BH_ALPHA)
         bands = self._bands(store, s, e, tc, grain) if bands else None
-        order = [i for i in np.argsort(-np.nan_to_num(share, nan=-1.0), kind="stable")
-                 if math.isfinite(share[i])]
+        if rank is not None:
+            # round 4: ranked by the calibrated per-feature evidence of the
+            # incident's decision rows (evidence_rank); share breaks ties
+            r_ = np.nan_to_num(np.asarray(rank, dtype=np.float64), nan=-np.inf)
+            order = [i for i in sorted(range(NF), key=lambda i: (-r_[i], -np.nan_to_num(
+                share[i], nan=-1.0), i)) if math.isfinite(r_[i])]
+        else:
+            order = [i for i in np.argsort(-np.nan_to_num(share, nan=-1.0), kind="stable")
+                     if math.isfinite(share[i])]
         out: List[Dict[str, Any]] = []
         for i in order[:TOP_ATTR]:
             it = self._attr_item(i, share, p_rbc, rbc, bh, z, pf, nat, bands, dt, band_s)

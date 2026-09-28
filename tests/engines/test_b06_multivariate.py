@@ -133,7 +133,9 @@ def test_b_missing_dimension_t2_and_imputation():
     assert s.z_completed[:2] == pytest.approx(ref, abs=1e-10)
     t2_ref, q_ref = robustcov.CholCache(model["Sigma"][:2, :2]).t2(zc)
     assert (s.t2, s.q) == (pytest.approx(t2_ref, rel=1e-10), q_ref)
-    assert s.p_t2 == pytest.approx(robustcov.hotelling_pred_p(t2_ref, model["n_pred"], 1))
+    # p from the cross-fitted F null (round 4) once the buffer holds one
+    s_t2, d2 = model["null"]["t2"]
+    assert s.p_t2 == pytest.approx(m_density.f_sf(t2_ref, s_t2, 1.0, d2))
 
 
 # ------------------------------------------------------------------ (c)
@@ -192,3 +194,79 @@ def test_null_wh_is_standard_normal_and_spe_calibrated():
     p_spe = np.array([s.p_spe for s in sc])
     assert np.isfinite(p_spe).all()
     assert (p_spe < 0.05).mean() < 0.08
+
+
+# ------------------------------------------- round 4: cross-fitted F null
+def _hetero_rows(rng: np.random.Generator, n: int, L: np.ndarray, day: int = 24) -> np.ndarray:
+    """Correlated rows whose scale drifts between 'days' (log-sd 0.35): the
+    clean live zi of pack A (mean zi^2 moves by +-25 % between multi-day
+    periods), which no single Gaussian describes."""
+    p = L.shape[0]
+    Z = rng.standard_normal((n, p)) @ L.T
+    s = np.repeat(np.exp(0.35 * rng.standard_normal(n // day + 1)), day)[:n]
+    X = np.full((n, FEATURE_DIM), np.nan)
+    X[:, :p] = Z * s[:, None]
+    return X
+
+
+def test_crossfit_null_calibrates_a_heteroscedastic_null():
+    """Held-out rows of a day-to-day scale mixture: the cross-fitted F null
+    keeps T2 and SPE near nominal at 1 % and 0.1 %, where the Gaussian
+    Hotelling / Box p-values are 20-300x anti-conservative (the round-4
+    pack-A failure: T2 44x, SPE 11x nominal at 1e-3)."""
+    rng = np.random.default_rng(11)
+    p = 24
+    A = rng.standard_normal((p, 4))
+    C = A @ A.T + 0.3 * np.eye(p)
+    d = np.sqrt(np.diag(C))
+    L = np.linalg.cholesky(C / np.outer(d, d))
+    X = _hetero_rows(rng, 336, L)
+    w, ts = np.ones(336), np.arange(336) * 3600.0
+    m = MV.fit_model(X, w, ts=ts, crossfit=True)
+    nst = MV.cross_null(X, w, ts, None, 0.0, m["theta1"], m["k"])
+    null = MV.null_of(m, nst)
+    assert null is not None and null["spe"] is not None and null["t2"] is not None
+    m_null = dict(m, null=null)
+    F = _hetero_rows(rng, 6000, L)
+    legacy = [m_density.score_model(m, x) for x in F]
+    new = [m_density.score_model(m_null, x) for x in F]
+    x2 = lambda v: float(np.mean(np.asarray(v) < 1e-2) / 1e-2)     # noqa: E731
+    x3 = lambda v: float(np.mean(np.asarray(v) < 1e-3) / 1e-3)     # noqa: E731
+    assert x2([s.p_t2 for s in legacy]) > 10.0                     # the failure mode
+    for key in ("p_t2", "p_spe"):
+        v = [getattr(s, key) for s in new]
+        assert x2(v) < 2.0, key                  # conservative draws are allowed: 14
+        assert x3(v) < 3.0, key                  # days of scale are a small sample
+    # homoscedastic Gaussian rows: d2 large (no scale mixing) and both
+    # p-values near nominal (held-out SPE with the full model's k and theta1)
+    Z = rng.standard_normal((6336, p)) @ L.T
+    G = np.full((6336, FEATURE_DIM), np.nan)
+    G[:, :p] = Z
+    mg = MV.fit_model(G[:336], crossfit=False)
+    ng = MV.null_of(mg, MV.cross_null(G[:336], w, ts, None, 0.0, mg["theta1"], mg["k"]))
+    assert ng["t2"][1] > 30.0
+    sg = [m_density.score_model(dict(mg, null=ng), x) for x in G[336:]]
+    for key in ("p_t2", "p_spe"):
+        v = [getattr(s, key) for s in sg]
+        assert 0.5 < x2(v) < 2.0, key
+
+
+def test_engine_marks_provisional_until_the_null_exists():
+    """Scores against a model without a cross-fitted null carry
+    behavior.degraded 'provisional:mv_null'; with >= CROSSFIT_MIN buffered
+    rows the model has a null and the flag is gone."""
+    rng = np.random.default_rng(3)
+    store = make_store()
+    eng = MultivariateEngine()
+    ts = feed(eng, store, corr_rows(rng, 40))
+    t = ts[-1] + DT
+    score_tick(store, eng, t, vec(f0=0.1, f1=0.1, f2=0.0, f3=0.0, f4=0.0))
+    dg = emit.read_dict(store, S, E, emit.DEGRADED, t)
+    assert dg.get("t2") == MV.PROV_CAUSE and dg.get("spe", MV.PROV_CAUSE) == MV.PROV_CAUSE
+    ts = feed(eng, store, corr_rows(rng, 120), t0=t + DT)
+    model = m_density.get(store, S, E)
+    assert model["null"] is not None and model["_null_st"]["n_rows"] >= MV.CROSSFIT_MIN
+    t = ts[-1] + DT
+    score_tick(store, eng, t, vec(f0=0.1, f1=0.1, f2=0.0, f3=0.0, f4=0.0))
+    assert not emit.read_dict(store, S, E, emit.DEGRADED, t)
+    assert m_density.descriptor(model)["null"]["src"] == "crossfit"

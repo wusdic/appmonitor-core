@@ -108,6 +108,7 @@ from .lib import grains as GR
 from .lib import m_identity as MI
 from .lib import m_link as ML
 from .lib import m_seq as MS
+from .lib import m_vocab as MV
 from .lib.classkeys import SYSTEM_KEY
 from .lib.gating import ROLLBACK_MAX_DEPTH_S
 from .lib.stack import parse_stack_token, stack_id
@@ -132,6 +133,11 @@ CENTRE_TICKS = 16                      # ad hoc Gaussian centre: A's last 16 act
 LOOKBACK_S = 86400.0                   # feature.vec retention
 # retraction
 RETRACT_OVERLAP_S = 3600.0             # "B is active": seen within the last hour
+YOUNG_S = 2 * 86400.0                  # round 4: raw token / stack profile of young entities
+YOUNG_CAP = 512                        # values kept per young profile
+# identifying dimensions for the shared-rare-value field (ports, query and
+# content types are too coarse to name an actor)
+FS_TOKEN_DIMS = ("tmpl=", "sni=", "dns=", "peer=")
 PENDING_KEEP_S = NEW_S
 # shared IP
 SH_ROWS = 96
@@ -474,6 +480,8 @@ class EntityLinkEngine(Engine):
         model["links"] = [dict(lk) for lk in model["links"] or () if isinstance(lk, Mapping)]
         model["pending"] = copy.deepcopy(dict(model["pending"] or {}))
         model["shared"] = dict(model["shared"] or {})
+        model["young"] = dict(model.get("young") or {})
+        model["fs"] = dict(model.get("fs") or {})
         ents = store.entities(s)
         if not ents:
             return 0
@@ -485,6 +493,7 @@ class EntityLinkEngine(Engine):
         before = (ML.version(model), len(model["links"]))
 
         dirty = self._retract(sc, model, active, out, touched)
+        dirty |= self._young(sc, model, active)
         dirty |= self._triggers(sc, model, active, out, touched)
         dirty |= self._shared(sc, model, active, out, touched)
 
@@ -566,6 +575,7 @@ class EntityLinkEngine(Engine):
             evaluated.append(b)
             dirty = True
         if evaluated:
+            self._fit_fs(model)
             self._impersonation(sc, model, evaluated, out, touched)
             self._resolve(sc, model, evaluated, active, out, touched)
         # bookkeeping: expire old / linked entries and the caches of finished entities
@@ -578,6 +588,130 @@ class EntityLinkEngine(Engine):
                                                            or pend[k[1]].get("done"))]:
             del self._new[key]
         return dirty
+
+    # ------------------------------------------------ actor evidence (round 4)
+    def _young(self, sc: _Sys, model: Dict[str, Any], active: Mapping[str, bool]) -> bool:
+        """Raw categorical values and client stacks of YOUNG entities
+        (first_seen within YOUNG_S), accumulated on their active rows.
+
+        Why: a new address has no committed model for many hours (the learners
+        commit behind the trust delay D), and its raw sets live 1 h, so when an
+        IP-hopping actor's next address appears, its predecessor's vocabulary
+        and stacks were nowhere to compare with (eval pack B: T19's three
+        hops never linked, every vocab / device term NaN or negative)."""
+        yg: Dict[str, Any] = model["young"]
+        dirty = False
+        for e, on in active.items():
+            fs = sc.fs(e)
+            if not on or fs is None or sc.now - fs > YOUNG_S:
+                continue
+            rec = yg.get(e)
+            if rec is not None and _f(rec.get("ts")) >= sc.now:
+                continue
+            md = _modal(sc.store, sc.s, e, sc.now, sc.smap)
+            rec = {"fs": fs, "ts": sc.now, "tok": dict((rec or {}).get("tok") or {}),
+                   "stk": dict((rec or {}).get("stk") or {})}
+            for dim, vals in md.vocab.items():
+                for v, n in vals.items():
+                    k = f"{dim}={v}"
+                    rec["tok"][k] = rec["tok"].get(k, 0.0) + float(n)
+            for t, n in md.stacks.items():
+                rec["stk"][t] = rec["stk"].get(t, 0.0) + float(n)
+            if len(rec["tok"]) > YOUNG_CAP:
+                keep = sorted(rec["tok"].items(), key=lambda kv: (-kv[1], kv[0]))[:YOUNG_CAP]
+                rec["tok"] = dict(keep)
+            yg[e] = rec
+            dirty = True
+        for e in [e for e, r in yg.items() if sc.now - _f(r.get("ts")) > MAX_GAP_S]:
+            del yg[e]
+            dirty = True
+        return dirty
+
+    def _tokens_of(self, sc: _Sys, model: Mapping[str, Any], e: str) -> Dict[str, float]:
+        rec = (model.get("young") or {}).get(e)
+        if rec and rec.get("tok"):
+            return dict(rec["tok"])
+        out: Dict[str, float] = {}
+        vm = MV.get(sc.store, sc.s, e)
+        if vm is not None:
+            for dim in MV.DIMS:
+                for v, c in MV.counts(vm, dim, sc.now).items():
+                    out[f"{dim}={v}"] = float(c)
+        return out
+
+    def _stacks_of(self, sc: _Sys, model: Mapping[str, Any], e: str) -> Dict[str, float]:
+        rec = (model.get("young") or {}).get(e)
+        if rec and rec.get("stk"):
+            return dict(rec["stk"])
+        ma = MC.get(sc.store, sc.s, e)
+        return dict(MC.shares(ma, sc.now)) if MC.kind(ma) == "entity" else {}
+
+    def _gamma(self, sc: _Sys, model: Mapping[str, Any], a: str, b: str, gap: float,
+               device_nan: bool, rare_cache: Dict[str, float]) -> Dict[str, Any]:
+        """Fellegi-Sunter agreement vector of (A, B) (m_link.FS_FIELDS)."""
+        tb = self._tokens_of(sc, model, b)
+        ta = self._tokens_of(sc, model, a)
+        tok = None
+        shared: List[str] = []
+        # conditional independence: the field substitutes for the vocab LLR
+        # only while A has no committed vocabulary of its own (the vocab term
+        # then backs off to A's class / the system and cannot see A's values)
+        vm = MV.get(sc.store, sc.s, a)
+        if MV.kind(vm) == "entity" and any(MV.total(vm, d, sc.now) > 0 for d in MV.DIMS):
+            tb = {}
+        u_tok = _NAN
+        if tb and ta:
+            yg = model.get("young") or {}
+            fs_a = _f(sc.fs(a))
+            n_ent = max(2, len(sc.store.entities(sc.s)))
+            for k in sorted(set(tb) & set(ta)):
+                if not k.startswith(FS_TOKEN_DIMS):
+                    continue
+                key = f"{a}|{b}|{k}"
+                if key not in rare_cache:
+                    dim, _, v = k.partition("=")
+                    n = MV.prevalence_n(sc.store, sc.s, dim, v)
+                    n = n if n == n else 0.0
+                    # other users of the value: young entities still active when
+                    # A appeared (an earlier hop went silent before A and is part
+                    # of the chain, not a bystander) and the system tier beyond
+                    # A, B and one predecessor
+                    young_o = sum(1 for e, r in yg.items() if e not in (a, b)
+                                  and _f(r.get("ts")) >= fs_a and k in (r.get("tok") or {}))
+                    rare_cache[key] = float(young_o + max(0.0, n - 3.0))
+                others = rare_cache[key]
+                if others < ML.FS_RARE_ENT:
+                    shared.append(k)
+                    # frequency-based u (Winkler): chance that a random non-matching
+                    # pair shares this value, from its users among the system's
+                    # entities; the rarest shared value is the evidence
+                    u = ((others + 1.0) / n_ent) ** 2
+                    u_tok = u if not (u_tok <= u) else u_tok
+            tok = bool(shared)
+        hand = bool(0.0 <= gap <= ML.FS_HANDOFF_S) if math.isfinite(gap) else None
+        stk = None
+        if device_nan:
+            sb, sa = self._stacks_of(sc, model, b), self._stacks_of(sc, model, a)
+            if sb and sa:
+                dom = max(sb.items(), key=lambda kv: (kv[1], kv[0]))[0]
+                stk = bool(sa.get(dom, 0.0) > 0.0)
+        return {"tok": tok, "hand": hand, "stk": stk, "shared": shared[:5],
+                "u_tok": u_tok if u_tok == u_tok else None}
+
+    @staticmethod
+    def _fit_fs(model: Dict[str, Any]) -> None:
+        """EM of the Fellegi-Sunter m / u over every pair compared so far."""
+        fsm = model["fs"]
+        obs = dict(fsm.get("obs") or {})
+        for b, p in (model.get("pending") or {}).items():
+            for a, r in (p.get("rows") or {}).items():
+                g = r.get("gamma")
+                if isinstance(g, Mapping):
+                    obs[f"{a}>{b}"] = [None if g.get(f) is None else int(bool(g.get(f)))
+                                       for f in ML.FS_FIELDS]
+        if len(obs) > ML.FS_KEEP:
+            obs = dict(list(obs.items())[-ML.FS_KEEP:])
+        model["fs"] = {"obs": obs, "params": ML.fs_em(list(obs.values()))}
 
     def _candidates(self, sc: _Sys, b: str, fs: float, active: Mapping[str, bool],
                     out_of: Set[str]) -> List[str]:
@@ -611,7 +745,13 @@ class EntityLinkEngine(Engine):
                     prior += _nz(sc.cal("gauss", MI.gauss_llr(sc.idm, z_b, a)))
             pre.append((prior, a))
         pre.sort(key=lambda t: (-t[0], t[1]))
-        return [a for _, a in pre[:N_CAND]]
+        top = [a for _, a in pre[:N_CAND]]
+        # round 4: young silent predecessors are always compared (an IP-hopping
+        # actor's previous address is itself new and not enrolled, so the cheap
+        # Gaussian prior cannot rank it); they carry a young profile
+        yg = sc.model.get("young") or {}
+        extra = [a for _, a in pre[N_CAND:] if a in yg][:N_CAND]
+        return top + extra
 
     def _z_now(self, sc: _Sys, b: str) -> Optional[np.ndarray]:
         row = _row(sc.store, sc.s, b, sc.now)
@@ -659,6 +799,8 @@ class EntityLinkEngine(Engine):
                     voc[a].append(vw)
         shares_sys = sc.sys_shares()
         rows: Dict[str, Dict[str, Any]] = {}
+        wfs = ML.fs_weights((sc.model.get("fs") or {}).get("params"))
+        rare: Dict[str, float] = {}
         for a in cands:
             la = sc.ls(a)
             gap = max(0.0, _f(sc.fs(b)) - _f(la))
@@ -669,12 +811,20 @@ class EntityLinkEngine(Engine):
             ma = MC.get(store, s, a)
             dev = ML.device_llr(MC.shares(ma, now), shares_sys, stacks) \
                 if MC.kind(ma) == "entity" and shares_sys else _NAN
-            lo_nd = _nz(b_tot) + _nz(v_tot) + topo + _nz(tprior)
+            gam = self._gamma(sc, sc.model, a, b, gap, not (dev == dev), rare)
+            actor = ML.fs_score(gam, wfs, (sc.model.get("fs") or {}).get("params"))
+            tok_w = wfs["tok"][0] if gam["tok"] else 0.0
+            lo_nd = _nz(b_tot) + _nz(v_tot) + topo + _nz(tprior) + actor
+            # the actor path (m_link.FS_FIELDS): Fellegi-Sunter log-odds of the
+            # rare-value / handoff / stack fields with the topology and time
+            # priors, used only with a rare shared value (resolve)
+            lo_act = actor + topo + _nz(tprior) if gam["tok"] else _NAN
             rows[a] = {"lo": lo_nd + _nz(dev), "lo_nd": lo_nd, "behaviour": b_tot,
                        "vocab": v_tot, "device": dev, "topology": topo, "time": tprior,
-                       "gap_s": gap,
-                       "has": bool(b_tot == b_tot or v_tot == v_tot),
-                       "pos": bool(_nz(b_tot) + _nz(v_tot) > 0.0), "n": len(wts)}
+                       "actor": actor, "lo_actor": lo_act, "gamma": gam, "gap_s": gap,
+                       "has": bool(b_tot == b_tot or v_tot == v_tot or gam["tok"]),
+                       # a rare value B shares with A is behavioural evidence too
+                       "pos": bool(_nz(b_tot) + _nz(v_tot) + tok_w > 0.0), "n": len(wts)}
         return rows
 
     def _score_window(self, sc: _Sys, b: str, w: Tuple[float, ...], cache: Dict[str, Any],
@@ -772,7 +922,8 @@ class EntityLinkEngine(Engine):
             for a, r in p["rows"].items():
                 if a in p["imp"] or not r["has"]:
                     continue
-                M[i, cols.index(a)] = r["lo"]
+                act = _f(r.get("lo_actor", _NAN))
+                M[i, cols.index(a)] = max(r["lo"], act) if act == act else r["lo"]
         ri, ci = linear_sum_assignment(M, maximize=True)
         for i, j in zip(ri, ci):
             b, a = bs[i], cols[j]
@@ -785,8 +936,10 @@ class EntityLinkEngine(Engine):
             margin = lo - max(alt) if alt else math.inf
             p, r = pend[b], pend[b]["rows"][a]
             dev = _f(r["device"])
-            if margin < ML.LINK_MARGIN or int(p.get("n", 0)) < MIN_TICKS or not r["pos"] \
-                    or (dev == dev and dev <= _LN_IMP):
+            act = _f(r.get("lo_actor", _NAN))
+            by_actor = act == act and act >= lo - 1e-12
+            if margin < ML.LINK_MARGIN or int(p.get("n", 0)) < MIN_TICKS \
+                    or not (r["pos"] or by_actor) or (dev == dev and dev <= _LN_IMP):
                 continue
             la = sc.ls(a)
             if la is None or la > _f(p["fs"]) + sc.dt or active.get(a):
@@ -944,4 +1097,9 @@ def _new_shared() -> Dict[str, Any]:
 
 
 def _terms(r: Mapping[str, Any]) -> Dict[str, Any]:
-    return {k: _j(r.get(k)) for k in ("behaviour", "vocab", "device", "topology", "time")}
+    out = {k: _j(r.get(k)) for k in ("behaviour", "vocab", "device", "topology", "time",
+                                     "actor", "lo_actor")}
+    g = r.get("gamma")
+    if isinstance(g, Mapping):
+        out["gamma"] = {k: g.get(k) for k in ("tok", "hand", "stk", "shared")}
+    return out

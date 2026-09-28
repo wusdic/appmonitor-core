@@ -476,10 +476,10 @@ def test_alias_and_actor_join_within_gap():
     put_model(rig.store, S, "__system__", "model.link",
               {"links": [{"from": a, "to": b, "ts": T0}], "actors": [[b, c]], "version": 1})
     rig.tick(lambda st, t: put_alarm(st, a, t))
-    rig.tick(lambda st, t: put_alarm(st, b, t, axes=("categorical",)))
+    rig.tick(lambda st, t: put_alarm(st, b, t, axes=("identity",)))
     incs = rig.store.incidents(system=S)
     assert len(incs) == 1 and set(incs[0].entities) == {a, b}
-    assert set(incs[0].axes) == {"volume", "categorical"}
+    assert set(incs[0].axes) == {"volume", "identity"}
     assert [e.extra["state"] for e in notifs(rig.store)] == ["open", "escalate"]
     # beyond max(4 ticks, 1 h) an actor member opens its own incident
     for _ in range(5):
@@ -775,3 +775,94 @@ def test_decaying_risk_of_a_closed_incident_does_not_reopen_it_on_a_weak_hit():
     # the weak hit at tick 20 on the old risk did not reopen (the v2 rule did,
     # at tick 20); the new risk from tick 30 on did
     assert reopened_at == 30
+
+
+# ====================================================== evaluator round 4
+def test_escalate_only_on_a_level_rise_or_a_new_stage_rate_limited():
+    """Pack A seed 0: 7.05 notifications per TP incident, two thirds of the
+    escalations a new plain axis at an unchanged severity (timing, transport,
+    app_error ... days into a CRITICAL incident). A severity-level rise
+    always notifies; a new kill-chain stage (lib/stages) notifies at most
+    once per 6 h per incident; plain behavioural axes never do."""
+    rig = Rig()
+    plan = [("low", ("volume",)), ("low", ("volume", "timing")),       # plain axis: silent
+            ("low", ("transport", "app_error")),                        # plain: silent
+            ("medium", ("volume",)),                                    # level rise
+            ("medium", ("exfil",)),                                     # new stage
+            ("medium", ("c2",)),                                        # new stage, < 6 h
+            ("high", ("volume",))]                                      # level rise
+    for sev, axes in plan:
+        rig.tick(lambda st, t, sev=sev, axes=axes: put_alarm(st, E, t, sev=sev, axes=axes))
+    n = notifs(rig.store)
+    assert [e.extra["state"] for e in n] == ["open", "escalate", "escalate", "escalate"]
+    assert [e.extra["severity"] for e in n] == ["low", "medium", "medium", "high"]
+    # after the gap the pending stage (c2 came inside it) is announced with the next growth
+    for _ in range(int(6 * 3600 / DT)):
+        rig.tick(lambda st, t: put_alarm(st, E, t, sev="high", axes=("volume",)))
+    rig.tick(lambda st, t: put_alarm(st, E, t, sev="high", axes=("privilege",)))
+    n = notifs(rig.store)
+    assert len(n) == 5 and "privilege" in n[-1].axes and "c2" in n[-1].axes
+
+
+def _acc_alarm(st, t, p_cusum, latched=True, **kw):
+    put1(st, E, "behavior.q_inst", t, 0.5)
+    put_p(st, E, t, {"cusum": p_cusum})
+    if latched:
+        put_dict(st, E, "behavior.acc_alarm", t, {"cusum": 1})
+        put_alarm(st, E, t, path="accumulator", paths=["accumulator"], acc=["cusum"], **kw)
+
+
+def test_latched_accumulator_that_stopped_rising_closes_and_does_not_reopen():
+    """B14 holds a chart's latch for 2 (t_alarm - tau-hat) of clean time, and
+    B25 re-emits an accumulator alarm every tick meanwhile: pack A seed 0,
+    T6 / T9 / T9b / T16 incidents open >= 24 h after the attack (cusum p
+    0.1-0.5 on a drained chart). A latched statistic that makes no new
+    extreme is old evidence: the incident closes once it has receded a
+    decade and stayed below its peak for the quiet window, and the latch
+    does not reopen it; a new crossing a decade beyond the close level does."""
+    rig = Rig()
+    ps = [1e-6, 1e-7, 1e-8] + [1e-6, 1e-5, 1e-4] + [1e-3] * 30
+    closed_at = None
+    for i, p in enumerate(ps):
+        t = rig.tick(lambda st, t, p=p: _acc_alarm(st, t, p))
+        inc = rig.store.incidents(system=S)[0]
+        if closed_at is None and inc.status == "closed":
+            closed_at = i
+    assert closed_at is not None and closed_at <= 2 + 8 + 1         # peak at i=2, +2 h
+    assert len(rig.store.incidents(system=S)) == 1
+    assert rig.store.incidents(system=S)[0].status == "closed"
+    # a new episode: one decade beyond the level at the close (1e-3 -> < 1e-4)
+    rig.tick(lambda st, t: _acc_alarm(st, t, 5e-5))
+    inc = rig.store.incidents(system=S)[0]
+    assert inc.status == "open" and states(rig.store).count("open") == 2
+
+
+def test_rising_accumulator_keeps_the_incident_open():
+    rig = Rig()
+    for i in range(20):
+        rig.tick(lambda st, t, i=i: _acc_alarm(st, t, 10.0 ** (-3 - i * 0.3)))
+    assert rig.store.incidents(system=S)[0].status == "open"
+
+
+def test_habituated_high_lib4_match_does_not_keep_an_incident_open():
+    """lib/m_habit: a HIGH match inside its learnt envelope (B26's verdict in
+    model.lib4_habit) is habitual for B27 too; a non-habituated one restarts
+    the quiet clock."""
+    from app.engines.behavior.lib import m_habit as HB
+
+    def match(verdict):
+        def f(st, t):
+            ts = t - DT
+            st.add_match(SignatureMatch(system=S, entity=E, ts=ts, signature_id="bulk_upload",
+                                        label="bulk", category="transfer", confidence=1.0,
+                                        severity=Severity.HIGH))
+            m = st.get_model(S, E, HB.MODEL) or {"sigs": {"bulk_upload": {"v": {}}}}
+            m["sigs"]["bulk_upload"]["v"][f"{ts:.3f}"] = verdict
+            st.put_model(S, E, HB.MODEL, m)
+        return f
+    for verdict, want in ((HB.IN, "closed"), (HB.LEARNING, "open")):
+        rig = Rig()
+        rig.tick(lambda st, t: put_alarm(st, E, t))
+        for _ in range(12):
+            rig.tick(match(verdict))
+        assert rig.store.incidents(system=S)[0].status == want

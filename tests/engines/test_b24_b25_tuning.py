@@ -6,11 +6,11 @@ float floor on every null tick (a sparse nightly host scored against its
 peers) or an accumulator's p_eq = 1 atom no longer puts the issued p at the
 floor or back in a point mass at 1.
 
-B25: meta rings admit a row with min(gate weight, the governor's
-row-evidence weight) (m_governor.evidence_weight, live rows only), so a
-release (trust_prov, no accumulator factor) cannot admit a row whose
-accumulators were at alarm level; warm-up rows are not gated by their own
-evidence; the meta tail is fitted to winsorised exceedances.
+B25: warm-up rows are not gated by their own evidence; the meta tail is
+fitted robustly. Round 4 superseded the W7 row-evidence cap on released
+rows: B24 and B25 admit by the PERIOD's trust only (lib/gating
+.period_weight / release_weight) and handle contamination with the
+trimmed tail fit (calib.robust_tail).
 """
 from __future__ import annotations
 
@@ -90,26 +90,68 @@ def test_pm_prior_rules():
     # >= min_n: the floor atom holds 30 / 40 of the history -> u * 0.75
     assert m_calib.pm_prior(r, 1e-40, u) == pytest.approx(u * 30 / 40)
     assert m_calib.pm_prior(r, 1.0, u) == pytest.approx(1.0 - 10 / 40 + u * 10 / 40)
-    assert m_calib.pm_prior(r, 0.004, u) == 0.004                 # body untouched
+    # round 4: the body is calibrated on the pm history - here 30 of 40 past
+    # pm were at the float floor, so a body pm of 0.004 is no evidence at all
+    v = (30 * m_calib.PM_ATOM_FLOOR * math.log(10.0) + m_calib.PM_POW_KAPPA) / (
+        40 + m_calib.PM_POW_KAPPA)
+    assert m_calib.pm_prior(r, 0.004, u) == pytest.approx(0.004 ** (1.0 / v))
 
 
-def test_released_rows_do_not_enter_detector_rings_at_alarm_level():
-    """A release commits held rows with trust_prov; the governor's evidence
-    weight (accumulator at alarm level -> 0) caps it on live ticks."""
-    rng = np.random.default_rng(1)
+def test_pm_prior_calibrates_a_routinely_extreme_pm_and_keeps_a_valid_one():
+    """Round 4: a detector whose pm sits at 1e-9 .. 1e-13 on null ticks (B06's
+    young covariance, mini pack) no longer passes that pm on as the
+    small-sample prior; a calibrated pm (uniform history) keeps its
+    resolution. With >= 100 entries pm is calibrated on the ring itself."""
+    rng = np.random.default_rng(2)
+    bad, good = calib.Ring(), calib.Ring()
+    for i in range(40):
+        bad.add(m_calib.pm_score(10.0 ** -rng.uniform(9, 13)), float(i))
+        good.add(m_calib.pm_score(float(rng.random())), float(i))
+    assert m_calib.pm_prior(bad, 1e-13, 0.5) > 0.1               # routine: no evidence
+    assert m_calib.pm_prior(good, 1e-6, 0.5) < 1e-5              # resolution kept
+    big = calib.Ring()
+    for i in range(300):
+        big.add(m_calib.pm_score(10.0 ** -rng.uniform(9, 13)), float(i))
+    big.gpd = calib.robust_tail(big)
+    assert m_calib.pm_prior(big, 1e-11, 0.5) > 0.2                # mid-history
+    assert m_calib.pm_prior(big, 1e-40, 0.5) < 1e-4               # far beyond it
+
+
+def test_released_rows_enter_the_ring_and_the_trimmed_tail_ignores_them():
+    """Round 4: a release is the governor's verdict that the period was
+    normal (RETURNED, or an incident closed while normal), so its held rows
+    are admitted whatever their own score (lib/gating.release_weight); an
+    attack released by mistake is handled by the contamination-bounded tail
+    fit (calib.robust_tail), not by thinning released rows by their own
+    evidence. Six alarm-level rows in a 256 ring leave the tail where the
+    clean ring's is, and a repeat of the same score still gets p < 1e-6."""
+    rng = np.random.default_rng(2)
     rig = CalRig(daypart="wd_day")
-    for _ in range(20):
+    for _ in range(254):
         rig.step({E: {"marg_int": float(rng.exponential())}})
     held = []
     for _ in range(6):
         ts = rig.step({E: {"marg_int": 25.0}}, quarantine=1.0)
-        rig.store.add_vec(S, E, MG.TRUST_EVIDENCE, ts, [0.0], window_s=900)
         held.append(ts)
-    put_model(rig.store, S, E, "model.control", {"version": 0, "release": [held[0], held[-1]]})
-    rig.step({E: {"marg_int": 1.0}})
+    # as B28 does: the release and quarantine 0 are written on the same tick,
+    # the learners apply them on the next one
+    rig.step({E: {"marg_int": float(rng.exponential())}})
+    put_model(rig.store, S, E, "model.control", {"version": 0, "release": [held[0], rig.t - 900]})
+    for _ in range(4):                                        # D: the rows not yet held
+        rig.step({E: {"marg_int": float(rng.exponential())}})
     r = m_calib.ring(rig.model(), "marg_int", calib.stratum_key("wd_day", 900))
-    assert r.scores.max() < 25.0
-    assert not set(r.ts.tolist()) & set(held)
+    assert set(held) <= set(r.ts.tolist())                    # admitted
+    tail = calib.robust_tail(r)
+    keep = r.scores < 25.0
+    clean = calib.Ring(scores=r.scores[keep], ts=r.ts[keep])
+    ref = calib.robust_tail(clean)
+    raw = calib.fit_tail(r)                                   # untrimmed, as before round 4
+    # the six foreign rows are trimmed: the tail is the clean ring's (up to
+    # the predictive floor 1/n_u of its 6 fewer exceedances)
+    assert 0.5 < tail.sf(8.0) / ref.sf(8.0) < 2.0 and tail.xi < 0.1
+    assert raw.sf(8.0) > 10 * tail.sf(8.0)
+    ts = rig.step({E: {"marg_int": 25.0}})
+    assert rig.p(E, "marg_int", ts) < 1e-6
 
 
 # ----------------------------------------------------------------- B25
@@ -133,17 +175,27 @@ def test_warmup_rows_are_not_gated_by_their_own_evidence():
     assert max(float(r.scores.max()) for r in rs.values()) > 20.0
 
 
-def test_release_caps_meta_admission_by_the_evidence_weight():
+def test_release_admits_meta_rows_by_the_period_verdict():
+    """Round 4: released rows enter the meta rings (the period was judged
+    normal); their own p_all does not gate them (lib/gating.release_weight)."""
     rig = FusRig()
     held = []
     for k in range(8):
-        t = rig.step({E: {"marg_int": 1e-28, "novelty": 0.6}}, quarantine=1.0)
-        rig.store.add_vec(S, E, MG.TRUST_EVIDENCE, t, [0.0], window_s=900)
-        held.append(t)
+        held.append(rig.step({E: {"marg_int": 1e-28, "novelty": 0.6}}, quarantine=1.0))
     assert _meta(rig)["state"]["n_admit"] == 0
-    put_model(rig.store, S, E, "model.control", {"version": 0, "release": [held[0], held[-1]]})
+    rig.step({E: dict(NULL)})             # B28: release + quarantine 0 on the same tick
+    put_model(rig.store, S, E, "model.control", {"version": 0, "release": [held[0], rig.t - 900]})
     rig.step({E: dict(NULL)})
-    assert _meta(rig)["state"]["n_admit"] == 0 and not F.meta_rings(_meta(rig))
+    assert _meta(rig)["state"]["n_admit"] == 6     # the 5 held rows + 1 committed now
+    for _ in range(3):                # the last rows of the released period: admitted too
+        rig.step({E: dict(NULL)})
+    assert _meta(rig)["state"]["n_admit"] == 9
+    got = set()
+    for r in F.meta_rings(_meta(rig)).values():
+        got |= set(r.ts.tolist())
+    assert set(held) <= got
+    rs = F.meta_rings(_meta(rig))
+    assert max(float(r.scores.max()) for r in rs.values()) > 20.0
 
 
 def test_missing_evidence_weight_leaves_the_gate_alone():
@@ -172,3 +224,52 @@ def test_winsorised_meta_tail_ignores_a_few_contaminating_extremes():
     touched = sum(not np.array_equal(calib.winsorise_exceedances(y, F.META_WINSOR_ALPHA), y)
                   for y in (np.sort(rng.exponential(0.43, 26)) for _ in range(2000)))
     assert touched / 2000 < 0.02
+
+
+# ------------------------------------------------ round 4: live power correction
+def test_pcal_v_needs_a_significant_excess():
+    assert m_calib.pcal_v(None) == 1.0
+    assert m_calib.pcal_v([10.0, 20.0, 0.0]) == 1.0                  # n < 30
+    assert m_calib.pcal_v([25.0, 500.0, 0.0]) == 1.0                 # exactly nominal
+    assert m_calib.pcal_v([40.0, 500.0, 0.0]) == 1.0                 # 8 %: not significant
+    v = m_calib.pcal_v([135.0, 500.0, 0.0])                          # 27 %: significant
+    assert v == pytest.approx(math.log(0.05) / math.log(0.27))       # the point estimate
+    assert 2.0 < v < 3.0
+    assert m_calib.pcal_apply(1e-6, v) == pytest.approx(1e-6 ** (1.0 / v))
+    assert m_calib.pcal_apply(0.5, 1.0) == 0.5
+    st = m_calib.pcal_observe(None, True, 0.0)
+    st = m_calib.pcal_observe(st, False, m_calib.PCAL_HL_S)          # one half-life later
+    assert st == pytest.approx([0.5, 1.5, m_calib.PCAL_HL_S])
+
+
+def test_live_power_correction_follows_a_warmup_to_live_shift():
+    """Warm-up null Exp(1), live null Exp(2.5) (a detector whose live scores
+    are heavier than its warm-up ring: the go-live step of spe / t2 / identity
+    in pack A): the issued live p are anti-conservative until the system's
+    live share of p <= 0.05 is significant, then p^(1/v) brings the realised
+    rate at p <= 0.01 back to <= 2x; a live stream that matches the warm-up
+    keeps v = 1."""
+    from app.engines.behavior.lib.classkeys import SYSTEM_KEY
+    ents = [f"10.0.0.{k}" for k in range(1, 11)]
+    for scale, shifted in ((2.5, True), (1.0, False)):
+        rng = np.random.default_rng(7)
+        # ten entities, hourly ticks: each ring (256 rows) still holds the
+        # warm-up rows for the whole live stretch, as an H stratum does for
+        # weeks after go-live; the correction is pooled over the system
+        rig = CalRig(entities=ents, daypart="wd_day", dt=3600.0)
+        for _ in range(300):
+            rig.step({e: {"marg_int": float(rng.exponential())} for e in ents}, training=True)
+        ps = []
+        for _ in range(60):
+            ts = rig.step({e: {"marg_int": float(rng.exponential(scale))} for e in ents})
+            ps.append([rig.p(e, "marg_int", ts) for e in ents])
+        pc = rig.store.get_model(S, SYSTEM_KEY, m_calib.MODEL)[m_calib.PCAL]
+        v = m_calib.pcal_v(pc[m_calib.pcal_key("marg_int", 3600)])
+        ps = np.asarray(ps)
+        if shifted:
+            assert v > 1.5
+            assert np.mean(ps[:3] <= 0.01) > 0.05                    # before: anti-conservative
+            assert np.mean(ps[30:] <= 0.01) <= 0.02                   # after: in band
+        else:
+            assert v == 1.0
+            assert np.mean(ps <= 0.01) <= 0.02

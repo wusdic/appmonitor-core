@@ -254,3 +254,25 @@ def test_clustered_entity_whose_evidence_decayed_is_not_new():
     assert role_of(w.model(), S, back) == rid
     mc = fit(w, eng, NOW + H6)                             # a refit keeps its role
     assert role_of(mc, S, back) == rid and not mc["assign"][f"{S}|{back}"].get("provisional")
+
+
+def test_canonical_refit_stride_is_wall_clock_at_60s():
+    """Round 4 (evaluator): in canonical grain mode the 16-tick stride counts
+    ticks of at least one Q grain (16 x max(dt, 900 s) = 4 h), so a 900 -> 60 s
+    switch does not make B02 re-cluster every 16 minutes (pack E seed 0: 90
+    refits a day, consecutive-refit ARI min 0.68, a class key dissolving and
+    re-forming within the hour). Tick mode keeps the raw tick stride (the
+    test above)."""
+    w = World(outlier=False)
+    eng = PeerGroupEngine()
+    canon = {"grain_mode": "canonical"}
+    fit(w, eng, config=canon)
+    last = w.model()["_state"]["last_refit"]
+    t = NOW
+    for k in range(4 * REFIT_TICKS):                       # 64 minutes at 60 s
+        t += 60.0
+        run_engine(eng, w.store, t, dt=60.0, config=canon)
+    assert w.model()["_state"]["last_refit"] == last
+    t = last + REFIT_TICKS * 900.0                         # 4 h after the last refit
+    run_engine(eng, w.store, t, dt=60.0, config=canon)
+    assert w.model()["_state"]["last_refit"] == t

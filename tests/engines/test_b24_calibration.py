@@ -184,10 +184,13 @@ def test_d_night_scores_never_use_the_day_ring():
 
 
 # ---------------------------------------------------------------- (e)
-def test_e_cadence_switch_blends_with_pm_for_64_ticks():
-    """(e) After 900 s -> 60 s the new stratum ring starts empty: its p is the
-    logit blend with behavior.pm (weight n/(n + 64)) until it holds 64 entries;
-    the 900-s ring is never used at 60 s."""
+def test_e_cadence_switch_blends_with_the_transferred_ring_for_64_ticks():
+    """(e) After 900 s -> 60 s the new stratum ring starts empty. Round 4: its
+    small-sample prior is the cadence transfer - the same daypart's 900-s
+    ring's p made conservative by the learned power v (m_calib.xfer_prior),
+    p_900^(1/v) - logit-blended with weight n/(n + 64) until the 60-s ring
+    holds 64 entries; the issued p is marked provisional:cc_transfer; pm is
+    no longer the prior while a source ring exists."""
     rng = np.random.default_rng(21)
     rig = Rig(daypart="wd_day")
     for _ in range(300):
@@ -202,24 +205,58 @@ def test_e_cadence_switch_blends_with_pm_for_64_ticks():
         p = rig.p(E, "marg_int", ts)
         u = m_calib.uniform(S, E, "marg_int", ts)
         # commits precede scoring in a tick: the ring after the step is the one used
-        ring = m_calib.ring(rig.model(), "marg_int", st60)
+        model = rig.model()
+        ring = m_calib.ring(model, "marg_int", st60)
         n = 0 if ring is None else len(ring)
         conf = calib.p_from_ring(ring if ring is not None else calib.Ring(), x, u)
+        deg = emit.read_dict(rig.store, S, E, emit.DEGRADED, ts)
         if k < 64:
             assert n < 64
-            want = calib.blend_small_sample(conf, pm, n)
+            src = m_calib.ring(model, "marg_int", st900)
+            v = m_calib.xfer_v(model[m_calib.XFER].get(m_calib.xfer_key("marg_int", 900, 60)))
+            assert 1.0 <= v <= m_calib.XFER_V_MAX
+            prior = calib.p_from_ring(src, x, u) ** (1.0 / v)
+            want = calib.blend_small_sample(conf, prior, n)
             above = 0 if ring is None else int(np.sum(ring.scores > calib._r32(x)))
             if above:                          # own-history floor of the blend
                 want = max(want, above / (n + 1.0))
             assert p == m_calib.issued(want)
+            assert deg.get("marg_int") == "provisional:cc_transfer"
             blended += 1
-            if n == 0:
-                assert p == pytest.approx(pm, rel=1e-6)
         if n >= 64:
-            assert p == m_calib.issued(conf)        # pm no longer used
+            assert p == m_calib.issued(conf)        # native: no prior
+            assert "marg_int" not in deg
     assert blended == 64
     assert m_calib.ring_size(rig.model(), "marg_int", st60) >= 64
     assert m_calib.ring_size(rig.model(), "marg_int", st900) == calib.RING_M
+    # the 60-s scores share the 900-s null here: v has moved from 2 towards 1
+    v = m_calib.xfer_v(rig.model()[m_calib.XFER][m_calib.xfer_key("marg_int", 900, 60)])
+    assert v < m_calib.XFER_V0
+
+
+def test_e2_cadence_transfer_is_conservative_when_the_new_cadence_is_heavier():
+    """A 60-s null three times as heavy as the 900-s one (Exp(3) vs Exp(1):
+    exactly the power model with v = 3): the learned v rises above the
+    prior 2, and the provisional p stay in band (realised rate of p <= 0.01
+    on the transfer ticks <= 2x) where the raw 900-s ring is ~ 20x
+    anti-conservative."""
+    rng = np.random.default_rng(5)
+    rig = Rig(daypart="wd_day")
+    for _ in range(300):
+        rig.step({E: {"marg_int": float(rng.exponential())}})
+    ps, raw = [], []
+    st900 = calib.stratum_key("wd_day", 900)
+    src = m_calib.ring(rig.model(), "marg_int", st900)
+    for k in range(60):
+        x = float(rng.exponential(3.0))
+        ts = rig.step({E: {"marg_int": x}}, dt=60.0)
+        ps.append(rig.p(E, "marg_int", ts))
+        raw.append(calib.p_from_ring(src, x, 0.5))
+    v = m_calib.xfer_v(rig.model()[m_calib.XFER][m_calib.xfer_key("marg_int", 900, 60)])
+    assert v > m_calib.XFER_V0
+    ps, raw = np.asarray(ps), np.asarray(raw)
+    assert np.mean(raw <= 0.01) > 0.1
+    assert np.mean(ps <= 0.01) <= 0.02 + 1e-9
 
 
 # ---------------------------------------------------------------- (f)
@@ -277,3 +314,43 @@ def test_g_nan_in_gives_nan_out():
     assert math.isnan(m_calib.p_value(calib.Ring(), NAN, 0.5, 0.3))
     assert math.isnan(m_calib.p_from_snapshot(
         rig.model(), "t2", calib.stratum_key("wd_day", 900), NAN, 0.5, pm=0.3))
+
+
+def test_e3_canonical_60s_t_stream_thinned_and_transferred():
+    """Round 4, canonical mode, 900 -> 60 s: a T-stream ring admits one row per
+    900-s slot (a rule on ts), so after 900 minutes it holds 60 rows, not 256
+    minutes of one daypart; until it has native support its p takes the
+    transfer from the 900-s ring (provisional:cc_transfer), with v learned
+    from every committed native row; a null shared by both cadences stays
+    calibrated."""
+    from helpers import run_engine, set_trust
+    rig = Rig(daypart="wd_day")
+    cfg = {"grain_mode": "canonical"}
+    rng = np.random.default_rng(1)
+
+    def step(x, dt, training=False):
+        ts = rig.t
+        emit.write_scores(rig.store, S, E, ts, {"timing": x})
+        rig.write_tctx(E, ts, dt)
+        run_engine(rig.eng, rig.store, ts, training=training, dt=dt, config=cfg)
+        set_trust(rig.store, S, E, [ts], 1.0, quarantine=0.0)
+        rig.t = ts + dt
+        return ts
+
+    rig.t = (int(rig.t) // 3600 + 1) * 3600.0
+    for _ in range(300):
+        step(float(rng.exponential()), 900.0, training=True)
+    ps, deg = [], []
+    for _ in range(900):
+        ts = step(float(rng.exponential()), 60.0)
+        ps.append(rig.p(E, "timing", ts))
+        deg.append(emit.read_dict(rig.store, S, E, emit.DEGRADED, ts).get("timing"))
+    m = rig.model()
+    n60 = m_calib.ring_size(m, "timing", calib.stratum_key("wd_day", 60))
+    assert 55 <= n60 <= 62                                    # ~ 900 / 15 (minus the commit delay)
+    k, n = m[m_calib.XFER][m_calib.xfer_key("timing", 900, 60)]
+    assert n >= 850                                           # learnt from every committed row
+    assert 1.0 <= m_calib.xfer_v([k, n]) < 1.5                 # the cadences share the null
+    assert deg[-1] == "provisional:cc_transfer"               # still < 64 native rows
+    ps = np.asarray(ps)
+    assert np.mean(ps <= 0.01) <= 0.02 and np.mean(ps <= 0.05) <= 0.1

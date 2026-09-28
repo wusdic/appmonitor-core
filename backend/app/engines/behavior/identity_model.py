@@ -382,6 +382,41 @@ def label_stats(LL: np.ndarray, D2: np.ndarray, lab: np.ndarray, n_lab: int,
     return out
 
 
+def typicality_fits(D2: np.ndarray, lab: np.ndarray, names: Sequence[str],
+                    rid: Mapping[str, Any]) -> Dict[str, List[Any]]:
+    """Per entity [c, nu, held-out sample, n]: the scaled chi-square fitted to
+    its HELD-OUT genuine squared distances (blocked CV, D2[:, own label]),
+    (log c, log nu) shrunk toward the role (lib/m_identity.shrink_typicality),
+    plus <= TYP_KEEP evenly spaced order statistics of the held-out sample for
+    the empirical floor (m_identity.typicality_p).
+
+    Why (eval round 4): the identity score used to be -log10 of the self
+    posterior, whose null moved with every daily refit (modality calibration
+    a_m, b_m) and every role relabel (the own class is a candidate): pack A's
+    API clients scored 0.005-0.009 live against a warm-up ring whose maximum
+    was 0.003-0.005 (p < 1e-3 on 25x the nominal share of clean ticks).
+    Calibrating the distance on held-out windows of the SAME model version
+    makes the score's null the same whatever the version."""
+    fits: Dict[str, Tuple[float, float, int]] = {}
+    samples: Dict[str, np.ndarray] = {}
+    for c, e in enumerate(names):
+        rows = np.flatnonzero(lab == c)
+        h = D2[rows, c] if rows.size else np.zeros(0)
+        h = np.sort(h[np.isfinite(h)])
+        cc, nu = MI.fit_scaled_chi2(h)
+        fits[e] = (cc, nu, int(h.size))
+        samples[e] = h
+    shr = MI.shrink_typicality(fits, {e: rid.get(e) for e in names})
+    out: Dict[str, List[Any]] = {}
+    for e, (cc, nu) in shr.items():
+        h = samples.get(e, np.zeros(0))
+        n = int(h.size)
+        if n > MI.TYP_KEEP:
+            h = h[np.round(np.linspace(0, n - 1, MI.TYP_KEEP)).astype(int)]
+        out[e] = [float(cc), float(nu), [round(float(x), 4) for x in h], n]
+    return out
+
+
 def nearest_labels(Yw: np.ndarray, lab: np.ndarray, n_lab: int, k: int = N_NEAR
                    ) -> List[List[int]]:
     """k nearest other labels by Bhattacharyya distance of diagonal Gaussians."""
@@ -733,6 +768,7 @@ class IdentityModelEngine(Engine):
 
         # ------------------------------------------------ calibration
         calib, cal_n = self._fit_calibration(LL, BG, lab, idw)
+        typ = typicality_fits(D2, lab, names, rid)
 
         # ------------------------------------------------ class identifiability
         classes = self._class_identifiability(Y, lab, names, rid, fold, trains, full.A)
@@ -757,7 +793,7 @@ class IdentityModelEngine(Engine):
             "class_means": class_means, "class_var": class_var,
             "bg": {"mu": full.bg_mu.tolist(), "prec": full.bg_prec.tolist(),
                    "logdet": full.bg_logdet},
-            "llr_calib": calib, "llr_n": cal_n,
+            "llr_calib": calib, "llr_n": cal_n, "typ": typ,
             "confusion": conf, "anonymity_sets": anon, "stats": stats, "classes": classes,
             "distinctive": self._distinctive(store, s, X, lab, names, rid, now),
             "modality_share": share, "modality_share_ts": share_ts,

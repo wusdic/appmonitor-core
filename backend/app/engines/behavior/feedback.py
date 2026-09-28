@@ -5,7 +5,8 @@ this for the entity), not against what analysts care about (is it
 malicious). Verdicts close that gap without touching calibration:
 
   * precision per (family, contributor) ~ Beta(1 + TP, 1 + FP) gives B26 a
-    bounded risk multiplier pi = clip(E[prec] / 0.5, 0.2, 2);
+    bounded risk multiplier pi = clip(E[prec] / 0.5, 0.2, 1) (feedback lowers a
+    family's weight, never raises it: lib/m_feedback.PREC_CLIP);
   * after >= 20 labelled incidents a stacking logistic regression on the
     per-family excess surprise re-weights the families in fusion (B25), with
     an L2 penalty toward UNIFORM weights (lambda = 5) so a handful of noisy

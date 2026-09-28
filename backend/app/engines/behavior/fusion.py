@@ -36,14 +36,14 @@ How:
      12 seeds x 2e5 ticks, one M = 256 ring, 4-tick commit delay): realised
      rate at q <= 1e-3 is 1.19x nominal with the xi >= 0 floor and 1.01x
      (0.90 - 1.11) with the predictive floor; 0.97x at 1e-4. Raw HMP: 1.09x.
-     Robust fit: excesses beyond the 99.9 % bound of the maximum of n_u
-     exponential excesses (scale estimated from ranks) are replaced by
-     their expected order statistics before the PWM fit
-     (calib.winsorise_exceedances): -log10 of a valid p has an exponential
-     tail, so a heavier fitted tail only comes from contaminating extremes
-     (warm-up p_all of 1e-21 .. 1e-37 gave xi ~ 0.3 - 0.5 and saturated
-     q_all near 5e-4, integration §8). A clean ring's fit is touched in
-     ~1 % of refits (META_WINSOR_ALPHA).
+     Robust fit (round 4): calib.robust_tail - at most 2 % of the ring (6 of
+     256 entries) beyond the 99 % outlier bound of n_u exponential excesses
+     (scale from ranks) is trimmed from the fit AND from the counts, rate =
+     (n_u - k) / (n - k). The earlier winsorisation (at 99.9 %, no bound on
+     the count, outliers kept in n) left 1 % attack-level rows at 0.3x; -log10 of a
+     valid p has an exponential tail, so a heavier fitted tail only comes
+     from contaminating extremes (warm-up p_all of 1e-21 .. 1e-37 gave xi ~
+     0.3 - 0.5 and saturated q_all near 5e-4, integration §8).
   3. Evidence CUSUM over instantaneous evidence only: S = max(0, S - ln q_inst - 3)
      (lib/seq), alarm while S >= h = (ln ARL - 3.07)/0.94 with ARL = 33 d in
      ticks (h = 5.31 at 900 s, 8.19 at 60 s). S is not reset on alarm (it
@@ -52,15 +52,52 @@ How:
      at onsets (S crosses h), which realise the 33-day ARL (measured
      0.029-0.033 onsets per entity-day at 60/900/3600 s). A tick with no
      instantaneous evidence (q_inst NaN) leaves S unchanged and cannot alarm.
-     Audit: once per hour per system one entity (round robin) is checked by
-     a moving-block bootstrap (1 h blocks, 200 resampled days) of its
-     trusted q_inst over the last 7 d (24 h of 900-s ticks holds too few
-     extremes to estimate a 1/33-per-day rate); a realised rate above 2x the
-     target raises that entity's h by 5 % (at most +20 % in total), a rate
-     at or below target relaxes it by 1 %.
+     Audit (round 4): h is derived from the entity's own calibrated
+     per-stream null, not the nominal formula (which assumes iid uniform q).
+     Once per hour per system AUDIT_KEYS keys (round robin) get solve_h: a
+     moving-block bootstrap (1-h blocks, 1000 resampled days) of the q_inst
+     history of their trusted PERIODS over the last 7 d (gating.period_
+     trusted: governor tick present, not quarantined at the tick before -
+     the old selection by trust >= 0.5 kept only q_inst >= ~3e-3 at 900 s,
+     i.e. the audit selected its null stream by the statistic it audits),
+     raw and with its tail above the 0.9 quantile redrawn from the fitted
+     exponential tail; h* = the smallest h whose restarted-CUSUM alarm rate
+     (ARL0's definition) is <= the target, max over the two paths, in
+     [h_nominal, 2 h_nominal]. h_mult moves towards h* / h_nominal by at most
+     +0.25 / -0.05 per audit. Simulated (tests/engines/test_b25_evidence_arl
+     .py): uniform q 0.97x target (h* = nominal); -ln q 1.5x heavier 19.6x at
+     the nominal h, median 1.3x at h*.
   4. Paths: single tick when e_day(q_all) <= 0.03 alpha_mult (feedback
      alpha_mult per system); evidence alarm; accumulator alarm (any
      behavior.acc_alarm) with the e_day of its own p.
+     Adaptive conformal layer (round 4): the e_day of the single-tick path
+     (and of the severity grading, behavior.e_day) is e_day_raw 10^theta.
+     theta = system + key shift per ACI stratum (tick type h / q / t|cc; tick
+     mode tick|cc), tracked at three levels e_day <= 3 / 0.3 / 0.03 by ACI
+     (Gibbs & Candes 2021, quantile tracking on the log threshold: theta +=
+     eta (err - alpha_l), alpha_l = the level's null rate per tick): the
+     decision level directly, the shallow ones 10 - 100x faster and
+     extrapolated to the decision depth by the power-law model theta_l
+     proportional to -log10 alpha_l (aci_shift: max of the direct and the
+     extrapolated shift). Guarantee: with a fixed step the long-run error
+     frequency of any sequence is within (range + eta) / (eta T) of alpha_l.
+     It must not hide attacks: the key tier tracks the decision level only
+     (its errors are alarms, each opening an incident; shallow key levels
+     learnt a persistent sub-alarm attack - pack A T7 - and extrapolated it),
+     the shallow levels are pooled over the system (one key ~1/n_keys of the
+     evidence); a tick is observed only live and when its
+     PERIOD is trusted - the governor's previous tick exists and did not
+     quarantine the key (the state before the tick: its own alarm opens its
+     incident, so ticks inside an open incident or a suspect / drifting /
+     rejected regime are never observed); per key, tick type and level at
+     most one error counts per hour (decision level) or per 86400 / (4 l)
+     s (shallow level l: ~1/4 of its null error rate per key-day), so a
+     persistent sub-alarm run of one key among 35 moved the pooled shift by
+     0.08 decades in a day, inside the null jitter (0.17); theta_sys in
+     [-1, 3], theta_key in [-1, 2], total <= 3 decades. Simulated 35 entities at 900 s (tests/engines/
+     test_b25_aci.py): q = U^1.5 (10.7x / 21x nominal on h / q ticks) ->
+     0.8 / 1.3x; a calibrated null stays in [0.5, 2]. behavior.alarm carries
+     e_day_raw and aci (decades).
   5. Severity from e_day (combine.e_day_severity, thresholds x alpha_mult).
      HIGH needs >= 2 axes with family e_day <= 0.03 within 4 ticks, or 2
      consecutive ticks at e_day <= 3e-3 alpha_mult, or a discrete finding >=
@@ -86,24 +123,20 @@ How:
      at ts = now means "no alarm"; behavior.q_all has a row whenever fusion
      ran for the key (NaN when nothing was scored).
 
-Meta rings learn through lib/gating exactly as B24's rings (contract H):
-row t is committed D = max(4 ticks, D_min_s) later, admitted with
-probability trust(t) (seeded thinning: a ring cannot take a fractional
-weight, and dropping partially trusted ticks would cut the null's tail),
-held while quarantined, released / rebased / frozen by model.control.
-Every admission weight is capped by the governor's row-evidence weight
-(m_governor.evidence_weight, behavior.trust_evidence: no alarm, no finding
->= MEDIUM, every accumulator < h/2 at the row; written on live ticks only).
-A normal live commit's trust already contains it; it binds for a release,
-which commits held rows with trust_prov (no accumulator factor): without
-the cap a breadth accumulator at p 1e-28 entered a live meta_all ring
-(integration §8). Warm-up rows are not gated by their own evidence: a
-version of this cap that also gated warm-up rows (their trust is 1 by
-definition) truncated each ring's null tail - pack A seed 0 single-tick
-e_day <= 0.03 on clean control ticks rose from 5.3x to 18x nominal, and a
-q_inst-based factor on top (the rings' own output) to 62x (integration
-§8.2). Warm-up extremes are handled by the robust tail fit instead.
- A
+Meta rings learn through lib/gating exactly as B24's rings (contract H,
+round 4): row t is committed D = max(4 ticks, D_min_s) later with the trust
+of its PERIOD (null_ring=True: gating.period_weight / release_weight), held
+while quarantined, released / rebased / frozen by model.control. Not with
+behavior.trust, whose evidence factor is q_inst itself, i.e. the rings'
+own output: that was the selection feedback measured in integration §8.2
+(a q_inst-based factor took pack A to 62x) and in round 4 (exact null: 3.7 -
+6.3x at 1e-3 .. 1e-4). The W7 row-evidence cap on releases is removed for
+the same reason; a released attack is trimmed by the robust tail. Below
+900 s the per-tick-type strata ('t', and meta_inst_t) admit one row per
+900-s slot (a rule on ts) so they span 64 h at every cadence, and while
+they are young (< 64) their prior is the raw p made conservative by a
+learned power, p^(1/v) (_t_prior; P(p_raw <= 0.05) = 0.05^(1/v), v0 = 2):
+after a 900 -> 60 s switch they start empty. A
 rollback deletes ring entries after the onset (the rings carry ts) and moves
 the journal rows after it to held; a version change resets the rings. Row
 values are kept 1 d (the same horizon B24 has for behavior.score), so rows
@@ -135,10 +168,12 @@ at half weight and an alarm that needs it is capped at MEDIUM.
 Store: reads behavior.p, behavior.axes, behavior.acc_alarm, behavior.degraded,
 behavior.common.flag, behavior.calib_health@(s, __system__), feature.tctx,
 behavior.trust / trust_prov / quarantine and model.control / model.link (via
-gating), behavior.trust_evidence (m_governor.evidence_weight), model.feedback (m_feedback), store.events, store.matches; writes
+gating: period trust), model.feedback (m_feedback), store.events, store.matches; writes
 behavior.p_family (dict), behavior.q_inst / q_all / e_day / evidence
 (1-element float32 vec rings), behavior.alarm (dict, alarm ticks only),
-model.calib['meta'] (meta rings and B25 bookkeeping), pipeline_degraded events.
+model.calib['meta'] (meta rings and B25 bookkeeping, incl. the key's ACI state),
+model.calib@(s, __system__)['aci'] (the system ACI state; B24 keeps 'health' in the
+same dict), pipeline_degraded events.
 """
 from __future__ import annotations
 
@@ -152,7 +187,7 @@ import numpy as np
 
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, MetricKind, Severity
-from .lib import calib, combine, emit, gating, m_calib, m_feedback, m_governor, seq, timebins
+from .lib import calib, combine, emit, gating, m_calib, m_feedback, seq, timebins
 from .lib import grains as GR
 from .lib.classkeys import CLASS_PREFIX, SYSTEM_KEY
 from .lib.detectors import (ACC_DETECTORS, DETECTOR_INDEX, DETECTOR_INFO, DETECTORS, FAMILIES,
@@ -197,16 +232,40 @@ SCHEDULE_SHIFT_LOOKBACK_S = 86400.0
 DEGRADED_FRAC = 0.3
 DEGRADED_EVENT_EVERY_S = 3600.0
 
-# evidence audit
-H_MULT_MAX = 1.2
-H_MULT_STEP_UP = 0.05
-H_MULT_STEP_DOWN = 0.01
+# evidence audit: h from the entity's calibrated per-stream null (round 4)
+H_MULT_MAX = 2.0          # solved h <= 2 x nominal (a 25x excess needs ~1.6x at 900 s)
+H_MULT_STEP_UP = 0.25     # per audit, towards the solved h
+H_MULT_STEP_DOWN = 0.05
 AUDIT_PERIOD_S = 3600.0
+AUDIT_KEYS = 4            # keys audited per system and hour (round robin)
 AUDIT_WINDOW_S = 7 * 86400.0
 AUDIT_MIN_S = 2 * 86400.0
-AUDIT_BOOT_DAYS = 200.0
+AUDIT_BOOT_DAYS = 1000.0
 AUDIT_BLOCK_S = 3600.0
-AUDIT_TRUST_MIN = 0.5
+TAIL_SMOOTH_Q = 0.9        # solve_h: redraw resampled values above this quantile
+AUDIT_TRUST_MIN = 0.5     # unused since round 4 (period trust); kept for old imports
+
+# evidence CUSUM input calibration per key and stream (round 4; _qcal)
+QCAL = "qcal"
+
+# per-tick-type ('t') meta strata below 900 s (round 4)
+THIN_SLOT_S = 900.0        # one admission per 900-s slot
+XFER = "xfer"              # meta[STATE]: {'<kind>@<t stratum>': [k, n]} raw-p transfer counts
+_T_TAG = "|t:t|"           # calib.meta_stratum_key of tick type t
+
+# adaptive conformal inference on the single-tick decision (round 4; module
+# docstring "Adaptive conformal layer")
+ACI = "aci"
+ACI_ETA_SYS = 0.05        # decades per counted error, system pool (per tick type)
+ACI_ETA_KEY = 0.1         # decades per counted error, per key and tick type
+ACI_TH_MIN = -1.0         # never more than 10x more permissive than the rings
+ACI_TH_MAX_SYS = 3.0
+ACI_TH_MAX_KEY = 2.0
+ACI_TH_MAX = 3.0          # total shift <= 3 decades
+ACI_ERR_GAP_S = 3600.0    # at most one counted error per key, tick type, level and hour
+ACI_LEVELS = (3.0, 0.3, SINGLE_E_DAY)   # e_day levels tracked (multi-level ACI); last = decision
+ACI_ETA_LEVEL = (0.3, 0.6, 1.0)         # step x per level: the shallow levels see 10 - 100x the
+                                        # errors, and their jitter is amplified by the extrapolation
 
 PATH_SINGLE = "single_tick"
 PATH_EVIDENCE = "evidence_cusum"
@@ -357,13 +416,10 @@ META_WINSOR_ALPHA = 0.001
 
 
 def meta_tail(ring: calib.Ring, ts: float = _NAN) -> Optional[calib.GPDTail]:
-    """GPD tail of a meta ring with the predictive xi floor 1/n_u, fitted to
-    winsorised exceedances (module docstring, "Tail shape")."""
-    n = len(ring)
-    if n < calib.MIN_EXCEED:
-        return None
-    n_u = max(calib.MIN_EXCEED, n - 1 - int(math.floor(calib.TAIL_Q * (n - 1))))
-    return calib.fit_tail(ring, now_ts=ts, xi_min=1.0 / n_u, winsor_alpha=META_WINSOR_ALPHA)
+    """GPD tail of a meta ring: calib.robust_tail (the predictive xi floor
+    1/n_u fitted to the exceedances left after trimming at most 2 % of the
+    ring as contamination; module docstring, "Tail shape")."""
+    return calib.robust_tail(ring, now_ts=ts)
 
 
 def meta_add(ring: calib.Ring, score: float, ts: float, count: int) -> int:
@@ -445,6 +501,219 @@ def audit_rate(q: np.ndarray, h: float, dt_s: float, rng: np.random.Generator,
     idx = (starts[:, None] + np.arange(b)[None, :]).reshape(-1)[:length]
     _, onsets = evidence_path(q[idx], h)
     return onsets / float(days)
+
+
+# ======================================================= adaptive conformal
+def aci_key(tau: Optional[str], cc: int) -> str:
+    """ACI stratum of a tick: its type ('h', 'q', 't|<cc>'; tick mode 'tick|<cc>')."""
+    if tau is None:
+        return f"tick|{int(cc)}"
+    return f"t|{int(cc)}" if tau == "t" else str(tau)
+
+
+def aci_step(theta: float, err: bool, alpha_star: float, eta: float, lo: float,
+             hi: float) -> float:
+    """One ACI update in decades of e_day (quantile tracking on the log
+    threshold, Gibbs & Candes 2021 in score space): theta + eta (err - alpha*),
+    clipped to [lo, hi]. With a fixed eta the long-run error frequency of
+    any sequence satisfies |mean err - alpha*| <= (hi - lo + eta) / (eta T)."""
+    th = float(theta) + float(eta) * ((1.0 if err else 0.0) - float(alpha_star))
+    return lo if th < lo else hi if th > hi else th
+
+
+def _levels(v: Any) -> List[float]:
+    """Per-level thetas of one ACI key (a list aligned to ACI_LEVELS; a bare
+    number from an older state is the decision level)."""
+    n = len(ACI_LEVELS)
+    if isinstance(v, (list, tuple)) and len(v) == n:
+        out = [_f(x) for x in v]
+        return [x if x == x else 0.0 for x in out]
+    x = _f(v)
+    return [0.0] * (n - 1) + [x if x == x else 0.0]
+
+
+def aci_shift(sys_th: Optional[Mapping[str, Any]], key_th: Optional[Mapping[str, Any]],
+              k: str, alpha_star: float = _NAN) -> float:
+    """Total shift in decades applied to a tick's e_day (multi-level ACI).
+
+    theta_l = system + key theta at each level l of ACI_LEVELS (e_day <= 3,
+    0.3, 0.03). The decision level tracks its own rate directly but learns
+    slowly (~alpha* per row); the shallow levels learn 10 - 100x faster. A
+    power-law distortion of q (P(q <= x) = x^(1/a)) needs a shift
+    proportional to the level's depth in decades, theta_l = (a - 1) d_l with
+    d_l = -log10 alpha_l, so the shallow levels are extrapolated to the
+    decision depth through the origin: theta = max(theta_0.03, max_l theta_l
+    d_0.03 / d_l). Without alpha* (NaN) only the decision level is used.
+    Clipped to [ACI_TH_MIN, ACI_TH_MAX]."""
+    ts_ = _levels((sys_th or {}).get(k))
+    tk_ = _levels((key_th or {}).get(k))
+    th = [a + b for a, b in zip(ts_, tk_)]
+    t = th[-1]
+    a = _f(alpha_star)
+    if a == a and 0.0 < a < 1.0:
+        d_dec = -math.log10(a)
+        for lvl, v in zip(ACI_LEVELS[:-1], th[:-1]):
+            al = a * lvl / SINGLE_E_DAY
+            if 0.0 < al < 1.0 and v > 0.0:
+                t = max(t, v * d_dec / -math.log10(al))
+    return ACI_TH_MIN if t < ACI_TH_MIN else ACI_TH_MAX if t > ACI_TH_MAX else t
+
+
+def aci_update(sys_st: Dict[str, Any], key_st: Dict[str, Any], k: str, e_raw: float,
+               alpha_star: float, ts: float) -> bool:
+    """Fold one committed, period-trusted live row into every level of both
+    ACI tiers. At level l (e_day threshold ACI_LEVELS[l], null rate alpha_l =
+    alpha* l / 0.03) err_l = the row's raw e_day under that level's CURRENT
+    total shift would have crossed it. Counted errors are rate-limited per
+    key, tick type and level (ACI_ERR_GAP_S): an error within the gap is not
+    counted and does not move that level either way. Returns the decision
+    level's err as counted."""
+    e = _f(e_raw)
+    a = _f(alpha_star)
+    if not (e == e and a == a and 0.0 < a < 1.0):
+        return False
+    sth = sys_st.setdefault("th", {})
+    kth = key_st.setdefault("th", {})
+    last = key_st.setdefault("last_err", {})
+    s_l, k_l = _levels(sth.get(k)), _levels(kth.get(k))
+    t_l = last.get(k)
+    t_l = list(t_l) if isinstance(t_l, (list, tuple)) and len(t_l) == len(ACI_LEVELS) \
+        else [None] * len(ACI_LEVELS)
+    err_dec = False
+    for i, lvl in enumerate(ACI_LEVELS):
+        al = a * lvl / SINGLE_E_DAY
+        if not 0.0 < al < 1.0:
+            continue
+        err = e * 10.0 ** (s_l[i] + k_l[i]) <= lvl
+        if err:
+            # per key: at most one error per level and gap; the gap of a
+            # shallow level is ~ 1 / (4 x its null error rate per key-day,
+            # >= lvl beta) so that one key's persistent sub-alarm run adds
+            # little to the pooled count (the decision level: 1 h)
+            gap = ACI_ERR_GAP_S if i == len(ACI_LEVELS) - 1 else \
+                min(86400.0, max(ACI_ERR_GAP_S, 86400.0 / (4.0 * lvl)))
+            tl = _f(t_l[i])
+            if tl == tl and 0.0 <= ts - tl < gap:
+                continue
+            t_l[i] = float(ts)
+        f = ACI_ETA_LEVEL[i]
+        s_l[i] = aci_step(s_l[i], err, al, f * ACI_ETA_SYS, ACI_TH_MIN, ACI_TH_MAX_SYS)
+        if i == len(ACI_LEVELS) - 1:
+            # the key tier tracks the decision level only: its errors are
+            # alarms, each of which opens an incident (the key is then not
+            # observed); a shallow key level would learn a persistent
+            # SUB-alarm attack of its own key and extrapolate it to the
+            # decision depth (pack A T7). Shallow levels are pooled over the
+            # system, where one key is ~1/n_keys of the evidence.
+            k_l[i] = aci_step(k_l[i], err, al, f * ACI_ETA_KEY, ACI_TH_MIN, ACI_TH_MAX_KEY)
+        if i == len(ACI_LEVELS) - 1:
+            err_dec = err
+    sth[k], kth[k], last[k] = s_l, k_l, t_l
+    sys_st["n"] = int(sys_st.get("n", 0)) + 1
+    sys_st["n_err"] = int(sys_st.get("n_err", 0)) + int(err_dec)
+    return err_dec
+
+
+def reset_alarms(x: np.ndarray, h: float, max_count: int, chunk: int = 4096) -> int:
+    """Alarms of the CUSUM S = max(0, S + x_t) RESTARTED at 0 after each
+    alarm (the run lengths whose mean is the ARL), counted up to max_count + 1
+    (the caller only needs "more than max_count"). Vectorised per chunk:
+    S_t = C_t - min(C_base, min C_s) with C the cumulative sum since the last
+    restart."""
+    C = np.cumsum(np.asarray(x, dtype=np.float64))
+    n = C.size
+    start, base, count = 0, 0.0, 0
+    while start < n and count <= max_count:
+        end = min(n, start + chunk)
+        seg = C[start:end]
+        m = np.minimum(np.minimum.accumulate(seg), base)
+        hit = np.flatnonzero(seg - m >= h)
+        if hit.size:
+            tau = start + int(hit[0])
+            count += 1
+            base = float(C[tau])
+            start = tau + 1
+        else:
+            base = float(m[-1])
+            start = end
+    return count
+
+
+def _solve_h_path(x: np.ndarray, h_base: float, target: float, days: float,
+                  mult_max: float, iters: int) -> Tuple[float, float]:
+    """Bisection of reset_alarms on one bootstrap increment path x."""
+    cap = int(math.floor(target * days))            # rate <= target  <=>  count <= cap
+    n0 = reset_alarms(x, h_base, 10 * cap + 10)
+    rate0 = n0 / float(days)
+    if n0 <= cap:
+        return float(h_base), rate0
+    lo, hi = float(h_base), float(h_base) * float(mult_max)
+    if reset_alarms(x, hi, cap) > cap:
+        return hi, rate0
+    for _ in range(int(iters)):
+        mid = 0.5 * (lo + hi)
+        if reset_alarms(x, mid, cap) > cap:
+            lo = mid
+        else:
+            hi = mid
+    return hi, rate0
+
+
+def solve_h(q: np.ndarray, h_base: float, dt_s: float, rng: np.random.Generator,
+            target: float, days: float = AUDIT_BOOT_DAYS, block_s: float = AUDIT_BLOCK_S,
+            mult_max: float = H_MULT_MAX, iters: int = 6) -> Tuple[float, float]:
+    """The evidence threshold from the entity's own per-stream null (round 4).
+
+    A moving-block bootstrap (blocks of max(4, block_s / dt) ticks, `days` of
+    resampled stream) of the period-trusted q history gives increments
+    x = -ln q - 3; the alarm rate of the CUSUM restarted after each alarm
+    (ARL0's definition; reset_alarms) is a decreasing function of h, so the
+    smallest h in [h_base, mult_max h_base] whose rate <= target is found by
+    bisection (mult_max h_base when even that exceeds the target). Two paths
+    from the same resampled positions:
+      * raw: the history's own values - keeps the dependence of consecutive
+        extremes exactly, but can only recycle the few extremes 7 days hold;
+      * tail-smoothed: every resampled value above the history's 0.9
+        quantile of -ln q redrawn from the exponential tail fitted to the
+        history's exceedances (Lomax predictive: scale ~ InvGamma(n_u, n_u
+        mean excess)) - extrapolates the marginal tail, loses the joint
+        values of a cluster (not its positions).
+    h* = max of the two. Measured (tests/engines/test_b25_evidence_arl.py,
+    8 x 7-day histories, realised onset rate of the live no-reset CUSUM on
+    3000 fresh days, x target): iid uniform 0.97 (h* = h_base in 7 of 8);
+    q = U^1.25 / U^1.5 (-ln q 1.25 / 1.5x heavier) 5.7 / 19.6 at h_base,
+    median 1.3 / 1.3 at h*. Strong serial dependence (AR(1) 0.7 of the
+    probit, runs of 4 equal q) is only partly corrected (median 2.8 / 6.8x
+    from 6.5 / 10.8x): 7 days hold few independent clusters. Returns (h*, rate at
+    h_base per day, from the raw path); (NaN, NaN) with fewer than 4 blocks
+    of finite q."""
+    q = np.asarray(q, dtype=np.float64).reshape(-1)
+    q = q[np.isfinite(q)]
+    b = max(4, int(round(block_s / dt_s)))
+    if q.size < 4 * b:
+        return _NAN, _NAN
+    length = int(math.ceil(days * 86400.0 / dt_s))
+    nb = int(math.ceil(length / b))
+    starts = rng.integers(0, q.size - b + 1, size=nb)
+    idx = (starts[:, None] + np.arange(b)[None, :]).reshape(-1)[:length]
+    y = -np.log(np.clip(q, combine.P_FLOOR, 1.0))
+    yb = y[idx]
+    h_raw, rate0 = _solve_h_path(yb - seq.EVIDENCE_DRIFT, h_base, target, days, mult_max,
+                                 iters)
+    h_star = h_raw
+    u = float(np.quantile(y, TAIL_SMOOTH_Q))
+    exc = y[y > u] - u
+    if exc.size >= 10 and h_raw < h_base * mult_max:
+        n_u = exc.size
+        sig = float(np.mean(exc))
+        ys = yb.copy()
+        tail = ys > u
+        k = int(np.count_nonzero(tail))
+        lam = rng.gamma(n_u, 1.0 / (n_u * sig), size=k)
+        ys[tail] = u + rng.exponential(1.0, size=k) / lam
+        h_sm, _ = _solve_h_path(ys - seq.EVIDENCE_DRIFT, h_base, target, days, mult_max, iters)
+        h_star = max(h_raw, h_sm)
+    return h_star, rate0
 
 
 # ======================================================================== BH
@@ -564,7 +833,7 @@ class _MRow(NamedTuple):
     s_all: float
     stratum: str
     grain: Optional[Tuple] = None     # spec v2.1: (s_inst_h, st_all, st_inst_t, st_inst_h)
-    wev: float = 1.0                  # governor evidence weight at ts (m_governor.evidence_weight)
+    aci: Optional[Tuple] = None       # round 4: (e_day raw, ACI key, alpha*, training, dt)
 
 
 class _MetaLearner(gating.GatedLearner):
@@ -595,12 +864,15 @@ class _SysCtx(NamedTuple):
     daypart: str
     b24_failed: bool
     grain: Optional[Dict[str, Any]] = None    # spec v2.1 tick context (canonical mode)
+    aci: Optional[Dict[str, Any]] = None      # round 4: the system's ACI state
+    qcal: Optional[Dict[str, Any]] = None     # round 4: the system's CUSUM-input calibration
 
 
 class _Rec:
     """Phase-1 result of one key, finalised after the system-wide BH."""
     __slots__ = ("e", "is_class", "st", "q_all", "e_day", "S", "S_prev", "h", "updated",
-                 "ev_alarm", "fused", "sig", "fam_axes", "acc", "e_acc", "row", "gx")
+                 "ev_alarm", "fused", "sig", "fam_axes", "acc", "e_acc", "row", "gx",
+                 "e_raw", "aci")
 
     def __init__(self, **kw: Any) -> None:
         for k in self.__slots__:
@@ -613,7 +885,7 @@ class FusionEngine(Engine):
     consumes = ["behavior.p", "behavior.axes", "behavior.acc_alarm", "behavior.degraded",
                 "behavior.common.flag", "behavior.calib_health", "feature.tctx",
                 "behavior.trust", "behavior.trust_prov", "behavior.quarantine",
-                "behavior.trust_evidence", "model.feedback", "model.control", "model.link", "store.events",
+                "model.feedback", "model.control", "model.link", "store.events",
                 "store.matches"]
     produces = ["behavior.p_family", "behavior.q_inst", "behavior.q_all", "behavior.e_day",
                 "behavior.evidence", "behavior.alarm", "model.calib.meta",
@@ -630,6 +902,7 @@ class FusionEngine(Engine):
         self._keys: Dict[Tuple[str, str], str] = {}
         self._reset_flag = False
         self._ret_store: Optional[weakref.ref] = None
+        self._aci_sys: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------- plumbing
     def _learner(self, d_min_s: Any) -> _MetaLearner:
@@ -639,7 +912,8 @@ class FusionEngine(Engine):
             lr = self._learners[d] = _MetaLearner(
                 name=LEARNER, init=new_meta, update=self._update, fetch=self._fetch,
                 dump=m_calib.to_json, load=lambda blob: blob, merge=self._merge,
-                on_rebase=self._on_rebase, d_min_s=d, ckpt_every_s=math.inf, clock=Q_ALL)
+                on_rebase=self._on_rebase, d_min_s=d, ckpt_every_s=math.inf, clock=Q_ALL,
+                null_ring=True)
         return lr
 
     def _ensure_retention(self, store) -> None:
@@ -671,18 +945,18 @@ class FusionEngine(Engine):
         v = meta[STATE]["pending"].get(ts)
         if v is None:
             return None                              # older than the value horizon
-        wev = m_governor.evidence_weight(store, s, e, ts)
+        aci = None
+        if isinstance(v[-1], (tuple, list)):         # round 4: ACI fields last
+            aci, v = tuple(v[-1]), v[:-1]
         if len(v) > 3:                               # spec v2.1 row
-            return _MRow(s, e, ts, v[0], v[1], v[2], (v[3], v[4], v[5], v[6]), wev)
-        return _MRow(s, e, ts, v[0], v[1], v[2], None, wev)
+            return _MRow(s, e, ts, v[0], v[1], v[2], (v[3], v[4], v[5], v[6]), aci)
+        return _MRow(s, e, ts, v[0], v[1], v[2], None, aci)
 
     def _update(self, meta: Dict[str, Any], row: _MRow, w: float) -> Dict[str, Any]:
         w = float(w)
         w = 0.0 if not w > 0.0 else (1.0 if w > 1.0 else w)     # NaN -> 0
-        # the governor's row-evidence cap: binds for released rows (trust_prov
-        # has no accumulator factor); module docstring "Meta rings learn ..."
-        if row.wev < w:
-            w = row.wev
+        # w is the PERIOD's trust (lib/gating.period_weight / release_weight,
+        # null_ring=True): module docstring "Meta rings learn ..."
         if w >= 1.0:
             admit = True
         elif w > 0.0:
@@ -699,11 +973,29 @@ class FusionEngine(Engine):
                      (META_INST_H, s_h, st_h))
         else:
             items = ((META_INST, row.s_inst, row.stratum), (META_ALL, row.s_all, row.stratum))
+        dt = _f(row.aci[4]) if row.aci is not None and len(row.aci) > 4 else _NAN
+        slot = int(round(row.ts)) % int(THIN_SLOT_S) if dt == dt else 0
         for kind, x, stratum in items:
             if not x == x or stratum is None:
                 continue
             key = self._ring_key(kind, stratum)
             r = meta.get(key)
+            if row.grain is not None and _T_TAG in stratum and dt == dt:
+                # round 4: per-tick-type strata ('t', only at dt < 900): learn
+                # the raw-p transfer while young (meta_xfer_v) and admit one
+                # row per 900-s slot (a rule on ts), so the ring spans 64 h at
+                # every cadence (lib/calib, calibration.py THIN_SLOT_S)
+                if r is None or len(r) < m_calib.XFER_LEARN_N:
+                    xs = st.setdefault(XFER, {})
+                    kk = xs.get(key)
+                    kk = [0.0, 0.0] if not isinstance(kk, list) or len(kk) != 2 else kk
+                    kk[0] = float(kk[0]) + (1.0 if 10.0 ** (-x) <= m_calib.XFER_X else 0.0)
+                    kk[1] = float(kk[1]) + 1.0
+                    xs[key] = kk
+                if dt < THIN_SLOT_S:
+                    lo = int(round(dt)) if kind == META_ALL else 0
+                    if not lo <= slot < lo + int(round(dt)):
+                        continue
             if r is None:
                 r = meta[key] = calib.Ring()
                 refit[key] = meta_phase(row.e, key)
@@ -772,8 +1064,10 @@ class FusionEngine(Engine):
             ch = store.latest_derived(s, SYSTEM_KEY, CALIB_HEALTH)
             chv = ch.value if ch is not None and isinstance(ch.value, Mapping) else None
             wm = [m_calib.weight_mult(chv, d) for d in DETECTORS] if chv else _ONES
+            aci_st = self._system_aci(store, s, now)
             sc = _SysCtx(s, fw, m_feedback.alpha_mult(store, s), wm, h_base, daypart, b24_failed,
-                         gctx)
+                         gctx, aci_st, aci_st.setdefault(QCAL, {}))
+            self._aci_sys = sc.aci
             recs: List[_Rec] = []
             for e in keys:
                 rec = self._phase1(ctx, store, sc, e, now, dt, cc, learner)
@@ -784,7 +1078,21 @@ class FusionEngine(Engine):
                 for rec in recs:
                     n_out += self._finalise(ctx, store, sc, rec, now, dt, bh)
             self._audit(store, s, keys, now, dt, h_base, gctx)
+        self._aci_sys = None
         return n_out
+
+    @staticmethod
+    def _system_aci(store, s: str, now: float) -> Dict[str, Any]:
+        """The system-level ACI state in model.calib@(s, __system__)['aci']
+        (B24 keeps its health state in the same dict; each touches its own key)."""
+        m = store.get_model(s, SYSTEM_KEY, MODEL)
+        if not isinstance(m, dict):
+            m = {"layout": m_calib.LAYOUT}
+            store.put_model(s, SYSTEM_KEY, MODEL, m, ts=now)
+        a = m.get(ACI)
+        if not isinstance(a, dict):
+            a = m[ACI] = {"th": {}, "n": 0, "n_err": 0}
+        return a
 
     # -------------------------------------------------------------- phase 1
     def _phase1(self, ctx: Context, store, sc: _SysCtx, e: str, now: float, dt: float, cc: int,
@@ -856,11 +1164,20 @@ class FusionEngine(Engine):
                         m_calib.uniform(s, e, META_INST, now), fz.p_inst)
         q_all = meta_q(meta.get(self._ring_key(META_ALL, stratum)), s_all,
                        m_calib.uniform(s, e, META_ALL, now), fz.p_all)
+        e_raw = combine.e_day(q_all, dt)
+        akey = aci_key(None, cc)
+        theta = aci_shift((sc.aci or {}).get("th"), (st.get(ACI) or {}).get("th"), akey,
+                          SINGLE_E_DAY * dt / 86400.0)
+        e_day = e_raw * 10.0 ** theta if e_raw == e_raw else _NAN
+        self._aci_observe(ctx, store, sc, e, st, now, dt, akey, e_raw,
+                          SINGLE_E_DAY * dt / 86400.0)
         if s_inst == s_inst or s_all == s_all:
-            pend[now] = (s_inst, s_all, stratum)
-        e_day = combine.e_day(q_all, dt)
+            pend[now] = (s_inst, s_all, stratum,
+                         (e_raw, akey, SINGLE_E_DAY * dt / 86400.0, bool(ctx.training), dt))
         # --- 3) evidence CUSUM
-        S, updated, ev_alarm = evidence_update(S_prev, q_inst, h)
+        obs = self._qcal_observable(ctx, store, s, e, now, dt)
+        S, updated, ev_alarm = evidence_update(
+            S_prev, self._qcal(sc.qcal, f"inst|{cc}", q_inst, obs, now), h)
         st["S"] = S
         # --- writes
         store.add_vec(s, e, Q_INST, now, [m_calib.issued(q_inst)], window_s=win)
@@ -892,7 +1209,8 @@ class FusionEngine(Engine):
                 e_acc = combine.e_day(min(fin), dt)
         return _Rec(e=e, is_class=e.startswith(CLASS_PREFIX), st=st, q_all=q_all, e_day=e_day,
                     S=S, S_prev=S_prev, h=h, updated=updated, ev_alarm=ev_alarm, fused=fz,
-                    sig=sig, fam_axes=None, acc=acc, e_acc=e_acc, row=row)
+                    sig=sig, fam_axes=None, acc=acc, e_acc=e_acc, row=row, e_raw=e_raw,
+                    aci=theta)
 
     # ------------------------------------------------------ spec v2.1 streams
     def _phase1_grain(self, ctx: Context, store, sc: _SysCtx, e: str, now: float, dt: float,
@@ -941,21 +1259,31 @@ class FusionEngine(Engine):
         p_t = _stream_p(rowl, _INST_T_IDX, sc.fw, wm)
         p_h = _stream_p(rowl, _INST_H_IDX, sc.fw, wm) if gx["h_due"] else _NAN
         s_t, s_h, s_all = meta_score(p_t), meta_score(p_h), meta_score(fz.p_all)
-        q_t = meta_q(meta.get(self._ring_key(META_INST_T, st_t)), s_t,
-                     m_calib.uniform(s, e, META_INST, now), p_t)
+        r_t = meta.get(self._ring_key(META_INST_T, st_t))
+        q_t = meta_q(r_t, s_t, m_calib.uniform(s, e, META_INST, now),
+                     self._t_prior(st, META_INST_T, st_t, r_t, p_t))
         q_h = meta_q(meta.get(self._ring_key(META_INST_H, st_h)), s_h,
                      m_calib.uniform(s, e, META_INST_H, now), p_h)
-        q_all = meta_q(meta.get(self._ring_key(META_ALL, st_all)), s_all,
-                       m_calib.uniform(s, e, META_ALL, now), fz.p_all)
+        r_all = meta.get(self._ring_key(META_ALL, st_all))
+        q_all = meta_q(r_all, s_all, m_calib.uniform(s, e, META_ALL, now),
+                       self._t_prior(st, META_ALL, st_all, r_all, fz.p_all))
+        e_raw = q_all * gx["mult"] if q_all == q_all else _NAN
+        akey = aci_key(tau, gx["cc"])
+        theta = aci_shift((sc.aci or {}).get("th"), (st.get(ACI) or {}).get("th"), akey,
+                          SINGLE_E_DAY / gx["mult"])
+        e_day = e_raw * 10.0 ** theta if e_raw == e_raw else _NAN
+        self._aci_observe(ctx, store, sc, e, st, now, dt, akey, e_raw, SINGLE_E_DAY / gx["mult"])
         if s_t == s_t or s_all == s_all or s_h == s_h:
-            pend[now] = (s_t, s_all, st_all, s_h, st_all, st_t, st_h)
-        e_day = q_all * gx["mult"] if q_all == q_all else _NAN
+            pend[now] = (s_t, s_all, st_all, s_h, st_all, st_t, st_h,
+                         (e_raw, akey, SINGLE_E_DAY / gx["mult"], bool(ctx.training), dt))
         # evidence CUSUMs: S_t every tick, S_h on H ticks
-        S, upd_t, al_t = evidence_update(S_prev, q_t, h)
+        obs = self._qcal_observable(ctx, store, s, e, now, dt)
+        S, upd_t, al_t = evidence_update(S_prev, self._qcal(sc.qcal, f"t|{gx['cc']}", q_t, obs, now),
+                                         h)
         st["S"] = S
         Sh, upd_h, al_h = Sh_prev, False, False
         if gx["h_due"]:
-            Sh, upd_h, al_h = evidence_update(Sh_prev, q_h, h_h)
+            Sh, upd_h, al_h = evidence_update(Sh_prev, self._qcal(sc.qcal, "h", q_h, obs, now), h_h)
             st["S_h"] = Sh
         store.add_vec(s, e, Q_INST, now, [m_calib.issued(q_t)], window_s=win)
         store.add_vec(s, e, Q_ALL, now, [m_calib.issued(q_all)], window_s=win)
@@ -1007,7 +1335,81 @@ class FusionEngine(Engine):
                     S=S_rep, S_prev=S_prev_rep, h=h_rep, updated=upd_t or upd_h,
                     ev_alarm=ev_alarm, fused=fz, sig=sig, fam_axes=None, acc=acc, e_acc=e_acc,
                     row=row, gx={"tau": tau, "stream": stream, "prov_cap": prov_cap,
-                                 "per": per, "corr_s": gx["corr_s"]})
+                                 "per": per, "corr_s": gx["corr_s"]}, e_raw=e_raw, aci=theta)
+
+    @staticmethod
+    def _qcal_observable(ctx: Context, store, s: str, e: str, now: float, dt: float) -> bool:
+        """A live tick of a trusted period (the governor's previous tick
+        present and not quarantining the key), as for ACI."""
+        if ctx.training:
+            return False
+        tr = store.vec_at(s, e, gating.TRUST, now - dt)
+        if tr is None or not len(tr) or not math.isfinite(float(tr[0])):
+            return False
+        return not gating.is_quarantined(store, s, e, now, dt)
+
+    @staticmethod
+    def _qcal(qc: Optional[Dict[str, Any]], stream: str, q: float, observe: bool,
+              now: float) -> float:
+        """Round 4: the evidence CUSUM input on the SYSTEM's calibrated live
+        null. q_inst is meta-calibrated per key by a ring that lags a live
+        shift (pack A seed 0: one control key's q_inst.h at <= 1e-3 on 3 % of
+        its live H rows, 31x). Per system, stream and cadence the live share
+        of q <= 0.05 on ticks of trusted periods (decayed, half-life 3 d)
+        gives the power v of P(q <= x) = x^(1/v) (m_calib.pcal_v: v = 1 until
+        the excess is significant, never below 1), and the CUSUM takes
+        q^(1/v). Pooled over the system's keys on purpose: a key-level
+        version learnt a persistent SUB-alarm attack of its own key within
+        hours (pack A T7, one rare-resource access per tick for a day: the
+        key's share of q <= 0.05 rose, v followed, the CUSUM never alarmed),
+        where one key of a system moves the pooled share by ~1/n_keys; ticks
+        inside an open incident / suspect regime are not observed at all.
+        The audit's solved h covers each key's own excess and dependence."""
+        if not q == q or qc is None:
+            return q
+        stats = qc.get(stream)
+        out = m_calib.pcal_apply(q, m_calib.pcal_v(stats))
+        if observe:
+            qc[stream] = m_calib.pcal_observe(stats, q <= m_calib.PCAL_X, now)
+        return out
+
+    @staticmethod
+    def _aci_observe(ctx: Context, store, sc: _SysCtx, e: str, st: Dict[str, Any], now: float,
+                     dt: float, akey: str, e_raw: float, alpha_star: float) -> None:
+        """Round 4: one ACI observation, at scoring time, of a live tick whose
+        PERIOD is trusted: the governor ran at t - dt (finite behavior.trust)
+        and the key was not quarantined then (gating.is_quarantined: the state
+        BEFORE this tick). The tick's own alarm opens its incident and
+        quarantines the key from t on, so a rule on quarantine at t (or on the
+        row's trust) would never see an error - the selection bias of the
+        rings again. Ticks inside an open incident or a suspect / drifting /
+        rejected regime (an attack under way) are not observed; together
+        with the per-hour rate limit an attack contributes at most one error
+        per level and hour before its incident opens."""
+        if ctx.training or sc.aci is None or not e_raw == e_raw:
+            return
+        tr = store.vec_at(sc.s, e, gating.TRUST, now - dt)
+        if tr is None or not len(tr) or not math.isfinite(float(tr[0])):
+            return
+        if gating.is_quarantined(store, sc.s, e, now, dt):
+            return
+        aci_update(sc.aci, st.setdefault(ACI, {}), akey, e_raw, alpha_star, now)
+
+    def _t_prior(self, st: Mapping[str, Any], kind: str, stratum: str,
+                 ring: Optional[calib.Ring], p_raw: float) -> float:
+        """Small-sample prior of a meta ring: the raw wHMP p, and for a
+        per-tick-type ('t') stratum while it is young (< SMALL_N) the raw p
+        made conservative by the learned power, p^(1/v) (m_calib.xfer_v over
+        the stratum's own committed rows: P(p_raw <= 0.05) = 0.05^(1/v);
+        prior v = 2). After a 900 -> 60 s switch these strata start empty and
+        the raw HMP of freshly transferred B24 p (calibration.py) is their only
+        evidence; round 4, integration §10.7 item 2."""
+        if _T_TAG not in stratum or not p_raw == p_raw:
+            return p_raw
+        if ring is not None and len(ring) >= calib.SMALL_N:
+            return p_raw
+        v = m_calib.xfer_v((st.get(XFER) or {}).get(self._ring_key(kind, stratum)))
+        return min(1.0, max(0.0, p_raw)) ** (1.0 / v)
 
     def _daypart(self, store, s: str, e: str, now: float, fallback: str) -> str:
         """daypart from B01's feature.tctx at now (dict or vec form), else config."""
@@ -1237,6 +1639,8 @@ class FusionEngine(Engine):
             "acc": sorted(d for d, _ in rec.acc),
             "n_axes": n_axes,
             "rules": rules,
+            "e_day_raw": rec.e_raw,          # before the ACI shift (round 4)
+            "aci": rec.aci,                  # decades: e_day = e_day_raw 10^aci
         }
         if gx is not None:
             alarm["tau"] = gx["tau"]
@@ -1276,19 +1680,20 @@ class FusionEngine(Engine):
                 cand.append(e)
         if not cand:
             return
-        e = cand[int(now // AUDIT_PERIOD_S) % len(cand)]
-        st = store.get_model(s, e, MODEL)[META].get(STATE)
-        if not isinstance(st, dict):
-            return
-        if gctx is None:
-            self._audit_stream(store, s, e, st, now, Q_INST, dt, h_base, "h_mult", "audit",
-                               1.0 / EVIDENCE_ARL_DAYS)
-            return
-        self._audit_stream(store, s, e, st, now, Q_INST, dt, gctx["h_t"], "h_mult", "audit",
-                           1.0 / GR.evidence_arl_days("t", GR.CANONICAL))
-        per_h = GR.stream_period_s("h", dt, GR.CANONICAL)
-        self._audit_stream(store, s, e, st, now, Q_INST_H, per_h, gctx["h_h"], "h_mult_h",
-                           "audit_h", 1.0 / GR.evidence_arl_days("h", GR.CANONICAL))
+        k0 = int(now // AUDIT_PERIOD_S) * AUDIT_KEYS
+        for e in dict.fromkeys(cand[(k0 + i) % len(cand)] for i in range(AUDIT_KEYS)):
+            st = store.get_model(s, e, MODEL)[META].get(STATE)
+            if not isinstance(st, dict):
+                continue
+            if gctx is None:
+                self._audit_stream(store, s, e, st, now, Q_INST, dt, h_base, "h_mult", "audit",
+                                   1.0 / EVIDENCE_ARL_DAYS)
+                continue
+            self._audit_stream(store, s, e, st, now, Q_INST, dt, gctx["h_t"], "h_mult",
+                               "audit", 1.0 / GR.evidence_arl_days("t", GR.CANONICAL))
+            per_h = GR.stream_period_s("h", dt, GR.CANONICAL)
+            self._audit_stream(store, s, e, st, now, Q_INST_H, per_h, gctx["h_h"], "h_mult_h",
+                               "audit_h", 1.0 / GR.evidence_arl_days("h", GR.CANONICAL))
 
     def _audit_stream(self, store, s: str, e: str, st: Dict[str, Any], now: float, name: str,
                       per_s: float, h_base: float, mult_key: str, rec_key: str,
@@ -1297,24 +1702,23 @@ class FusionEngine(Engine):
         if ts.size * per_s < AUDIT_MIN_S:
             return
         q = M[:, 0].astype(np.float64)
-        tt, TM = store.vec_since(s, e, gating.TRUST, now - AUDIT_WINDOW_S)
-        if tt.size:                                  # trusted ticks only (null stream)
-            idx = np.searchsorted(tt, ts)
-            ok = idx < tt.size
-            ok[ok] = tt[idx[ok]] == ts[ok]
-            tv = np.full(ts.size, _NAN)
-            tv[ok] = TM[idx[ok], 0]
-            q = q[tv >= AUDIT_TRUST_MIN]
+        # the null stream: ticks of trusted PERIODS (gating.period_trusted: a
+        # governor tick, not quarantined), never selected by trust >= 0.5,
+        # whose evidence factor is q_inst itself (the audit would only see
+        # ticks with q_inst >= ~3e-3 at 900 s and never find an excess)
+        q = q[gating.period_trusted(store, s, e, ts)]
         if q.size * per_s < AUDIT_MIN_S:
             return
         h_mult = float(st.get(mult_key, 1.0))
         rng = np.random.default_rng(zlib.crc32(f"{s}|{e}|{int(now)}".encode("utf-8")))
-        rate = audit_rate(q, h_base * h_mult, per_s, rng)
-        if not rate == rate:
+        h_star, rate = solve_h(q, h_base, per_s, rng, target)
+        if not h_star == h_star:
             return
-        if rate > 2.0 * target:
-            h_mult = min(H_MULT_MAX, h_mult + H_MULT_STEP_UP)
-        elif rate <= target:
-            h_mult = max(1.0, h_mult - H_MULT_STEP_DOWN)
+        goal = min(H_MULT_MAX, max(1.0, h_star / h_base))
+        if goal > h_mult:
+            h_mult = min(goal, h_mult + H_MULT_STEP_UP)
+        else:
+            h_mult = max(goal, h_mult - H_MULT_STEP_DOWN)
         st[mult_key] = h_mult
-        st[rec_key] = {"ts": now, "rate": rate, "h_mult": h_mult, "n": int(q.size)}
+        st[rec_key] = {"ts": now, "rate": rate, "h_star": h_star, "h_mult": h_mult,
+                       "n": int(q.size)}

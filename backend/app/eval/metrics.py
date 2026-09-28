@@ -84,7 +84,7 @@ EVENT_KINDS = frozenset({
     "link_retracted", "new_entity_matched", "new_entity_unmatched", "class_transition",
     "class_split", "class_merge", "peer_outlier", "system_shift", "coherent_shift",
     "class_shift", "class_adoption_risky", "schedule_shift", "beacon", "budget_exceeded",
-    "baseline_creep", "regime", "pipeline_degraded"})
+    "baseline_creep", "first_access_system", "regime", "pipeline_degraded"})
 # discrete event kind -> owner engine (engines.md), for 'B16'-style expectations
 EVENT_OWNER = {
     "first_seen": "b08", "rare_access": "b08", "class_adopted": "b08",
@@ -96,7 +96,8 @@ EVENT_OWNER = {
     "class_split": "b02", "class_merge": "b02", "peer_outlier": "b02",
     "system_shift": "b05", "coherent_shift": "b05", "class_shift": "b18",
     "class_adoption_risky": "b18", "schedule_shift": "b07", "beacon": "b12",
-    "budget_exceeded": "b13", "baseline_creep": "b14", "regime": "b28", "incident": "b27"}
+    "budget_exceeded": "b13", "baseline_creep": "b14", "first_access_system": "b21",
+    "regime": "b28", "incident": "b27"}
 KNOWN_NAMES = frozenset(DETECTORS) | AXES_VOCAB | EVENT_KINDS | frozenset(FAMILIES)
 
 # Per-engine CPU budgets at 40 entities (architecture section 7), ms per tick.
@@ -408,6 +409,9 @@ def _strs(v: Any) -> List[str]:
     return out
 
 
+NON_FEATURES = frozenset({"entity"})   # perturbed_features markers that are not features
+
+
 def _norm_feature(name: Any) -> str:
     s = str(name.get("feature") or name.get("name") or name.get("key") or "") \
         if isinstance(name, Mapping) else str(name)
@@ -671,20 +675,46 @@ class RunView:
                 out |= {x.lower() for x in _strs(ex.get("detectors"))}
         return out
 
-    def notifications(self, inc: Mapping[str, Any]) -> int:
+    def was_notified(self, inc: Mapping[str, Any]) -> bool:
+        """The episode was a notifying incident at some point: an open /
+        escalate notification, or (no events recorded) a history point with
+        status open / acked. An incident suppressed by a feedback policy or
+        parented by common mode from birth never was."""
+        if self.incident_events(inc, ("open", "escalate")):
+            return True
+        if self.ev_by_incident.get(str(inc.get("id", ""))):
+            return False
+        return any(str(p.get("status", "open")) in ("open", "acked") for p in self.history(inc))
+
+    def incident_events(self, inc: Mapping[str, Any], states: Iterable[str],
+                        since: float = -math.inf) -> List[Dict[str, Any]]:
+        """This episode's incident notifications in `states`, ts >= since."""
+        lo, hi = self._episode_span(inc)
+        lo = max(lo, since)
+        want = {str(s) for s in states}
+        return [e for e in self.ev_by_incident.get(str(inc.get("id", "")), [])
+                if e.get("kind") == "incident" and lo <= float(e.get("ts", 0.0)) <= hi
+                and str((e.get("extra") or {}).get("state", "")).lower() in want]
+
+    def notifications(self, inc: Mapping[str, Any], since: float = -math.inf) -> int:
+        """open / escalate notifications of this episode (from `since`: an
+        incident detected by escalation counts only what it sent from the
+        attack's onset on, not the notifications of its earlier FP life)."""
         lo, hi = self._episode_span(inc)
         evs = [e for e in self.ev_by_incident.get(str(inc.get("id", "")), [])
                if e.get("kind") == "incident" and lo <= float(e.get("ts", 0.0)) <= hi]
         if evs:
             return sum(1 for e in evs
                        if str((e.get("extra") or {}).get("state", "")).lower()
-                       in ("open", "escalate"))
+                       in ("open", "escalate") and float(e.get("ts", 0.0)) >= since)
         # no incident events recorded: the open plus every escalation
         n, best = 0, -1
         for p in self.history(inc):
             r = sev_rank(p.get("severity"))
             if r > best:
-                n, best = n + 1, r
+                if float(p.get("ts", 0.0)) >= since:
+                    n += 1
+                best = r
         return n
 
 
@@ -762,19 +792,105 @@ def _detect_on(view: RunView, row: Mapping[str, Any], keys: Set[str]) -> Dict[st
                 if best is None or ts < best[0]:
                     best = (ts, inc, matched)
                 break
+    esc = _escalation_on(view, row, keys, lo, hi, req)
     out: Dict[str, Any] = {
-        "detected": best is not None,
+        "detected": best is not None or esc is not None,
+        "detected_open": best is not None,          # the opening-only rule (secondary)
+        "detected_escalation": esc is not None,
         "n_incidents": len({str(i.get("id", id(i))) for i in cands}),   # reopenings: once
         "max_severity": (SEVERITIES[max(view.max_severity(i) for i in cands)] if cands else None),
         "incident_ids": sorted({str(i.get("id")) for i in cands}),
     }
     if best is not None:
-        ts, inc, matched = best
+        out.update({"t_detect_open": best[0], "ttd_s_open": best[0] - t_start,
+                    "ttd_ticks_open": _ticks_between(view.tick_ts, t_start, best[0], view.dt)})
+    if esc is not None:
+        out["escalation"] = {"incident": str(esc[1].get("id")), "t_escalate": esc[3],
+                             "t_notify": esc[0], "from": esc[4], "to": esc[5],
+                             "gained_axes": esc[6]}
+        if esc[1] is not None and str(esc[1].get("id")) not in out["incident_ids"]:
+            out["n_incidents"] += 1
+            out["incident_ids"] = sorted(out["incident_ids"] + [str(esc[1].get("id"))])
+            ms = view.max_severity(esc[1])
+            if out["max_severity"] is None or ms > sev_rank(out["max_severity"]):
+                out["max_severity"] = SEVERITIES[ms]
+    pick = None
+    if best is not None and (esc is None or best[0] <= esc[0]):
+        pick = (best[0], best[1], best[2], "open")
+    elif esc is not None:
+        pick = (esc[0], esc[1], esc[2], "escalation")
+    if pick is not None:
+        ts, inc, matched, how = pick
         out.update({"t_detect": ts, "ttd_s": ts - t_start,
                     "ttd_ticks": _ticks_between(view.tick_ts, t_start, ts, view.dt),
                     "tp_incident": str(inc.get("id")), "matched": matched,
-                    "notifications": view.notifications(inc)})
+                    "detected_by": how,
+                    "notifications": view.notifications(
+                        inc, since=t_start if how == "escalation" else -math.inf)})
     return out
+
+
+ESCALATE_MIN_SEV = SEV_RANK["medium"]
+
+
+def _escalation_on(view: RunView, row: Mapping[str, Any], keys: Set[str], lo: float,
+                   hi: float, req: int) -> Optional[Tuple[float, Dict[str, Any], List[str],
+                                                          float, str, str, List[str]]]:
+    """Detection by escalation (eval.md gate 1, lead decision round 4).
+
+    An attack on an entity whose incident is already open when it starts
+    (an FP incident, or an earlier episode of the same attack chain) is
+    folded into that incident by B27 instead of opening a new one. It is a
+    detection iff, inside [t_start, t_end + grace], the incident
+      * rises by >= 1 severity level above its level at t_start, to at least
+        max(MEDIUM, required severity),
+      * gains at least one of the scenario's expected axes that it did not
+        carry at t_start, and
+      * emits an 'escalate' notification (at or after that point).
+    Returns (t_notify, incident, matched axes, t_escalate, sev_from, sev_to,
+    gained axes) of the earliest such escalation, else None."""
+    exp_axes = [str(a) for a in row.get("expected_axes") or []]
+    if not exp_axes:
+        return None
+    need = max(ESCALATE_MIN_SEV, req)
+    best = None
+    for inc in view.incidents:
+        if not (view.inc_keys(inc) & keys):
+            continue
+        if float(inc.get("opened", 0.0)) >= lo - 1e-6:
+            continue                              # opened in the window: the opening rule
+        hist = view.history(inc)
+        before = None
+        for p in hist:
+            if float(p.get("ts", 0.0)) < lo - 1e-6:
+                before = p
+        if before is None or before.get("status") == "closed":
+            continue                              # not open at the attack's onset
+        sev0 = sev_rank(before.get("severity"))
+        ax0 = {str(a).lower() for a in before.get("axes") or ()}
+        for p in hist:
+            ts = float(p.get("ts", 0.0))
+            if ts < lo - 1e-6:
+                continue
+            if ts > hi + 1e-6 or p.get("status") == "closed":
+                break
+            sev = sev_rank(p.get("severity"))
+            if sev < need or sev < sev0 + 1:
+                continue
+            gained = {str(a).lower() for a in p.get("axes") or ()} - ax0
+            ok, matched = expected_match({"expected_axes": exp_axes}, gained)
+            if not (ok and matched):
+                continue
+            notes = [float(e.get("ts", 0.0)) for e in view.incident_events(inc, ("escalate",),
+                                                                           since=ts)
+                     if float(e.get("ts", 0.0)) <= hi + 1e-6]
+            if not notes:
+                continue
+            tn = min(notes)
+            if best is None or tn < best[0]:
+                best = (tn, inc, matched, ts, SEVERITIES[sev0], SEVERITIES[sev], sorted(gained))
+            break
+    return best
 
 
 def scenario_outcome(view: RunView, idx: int) -> Dict[str, Any]:
@@ -793,6 +909,9 @@ def scenario_outcome(view: RunView, idx: int) -> Dict[str, Any]:
             parts.append(_detect_on(view, row, sub))
         detected = all(p["detected"] for p in parts)
         res = {"detected": detected,
+               "detected_open": all(p["detected_open"] for p in parts),
+               "detected_escalation": detected and any(p.get("detected_by") == "escalation"
+                                                       for p in parts),
                "n_incidents": sum(p["n_incidents"] for p in parts),
                "incident_ids": [i for p in parts for i in p["incident_ids"]],
                "max_severity": max((p["max_severity"] for p in parts if p["max_severity"]),
@@ -801,22 +920,33 @@ def scenario_outcome(view: RunView, idx: int) -> Dict[str, Any]:
         if detected:
             last = max(parts, key=lambda p: p["t_detect"])
             res.update({k: last[k] for k in ("t_detect", "ttd_s", "ttd_ticks", "tp_incident",
-                                             "matched")})
+                                             "matched", "detected_by")})
             res["notifications"] = float(np.mean([p["notifications"] for p in parts]))
             res["tp_incidents"] = [p["tp_incident"] for p in parts]
+        if res["detected_open"]:
+            last = max(parts, key=lambda p: p["t_detect_open"])
+            res.update({k: last[k] for k in ("t_detect_open", "ttd_s_open", "ttd_ticks_open")})
     else:
         res = _detect_on(view, row, exp)
         if res["detected"]:
             res["tp_incidents"] = [res["tp_incident"]]
     dl = deadline_s(row, view.dt)
     loud = base in LOUD if row.get("loudness") is None else row.get("loudness") == "loud"
-    within = res["detected"]
-    if within and dl is not None:
-        within = res["ttd_s"] <= dl + 1e-6
-    if within and loud:
-        # loud: <= 2 ticks at 900 s, <= 30 min wall at any other cadence
-        within = (res["ttd_ticks"] <= TARGETS["loud_ttd_ticks"] if abs(view.dt - 900.0) < 1
-                  else res["ttd_s"] <= TARGETS["loud_ttd_wall_s"])
+
+    def in_deadline(det: bool, ttd_s: Optional[float], ttd_ticks: Optional[int]) -> bool:
+        ok = det
+        if ok and dl is not None:
+            ok = ttd_s <= dl + 1e-6
+        if ok and loud:
+            # loud: <= 2 ticks at 900 s, <= 30 min wall at any other cadence
+            ok = (ttd_ticks <= TARGETS["loud_ttd_ticks"] if abs(view.dt - 900.0) < 1
+                  else ttd_s <= TARGETS["loud_ttd_wall_s"])
+        return bool(ok)
+
+    within = in_deadline(res["detected"], res.get("ttd_s"), res.get("ttd_ticks"))
+    # the opening-only rule of eval.md before round 4, kept as a secondary metric
+    res["within_deadline_open"] = in_deadline(res["detected_open"], res.get("ttd_s_open"),
+                                              res.get("ttd_ticks_open"))
     episodes = max(1, len(keys) if mode == "all" else 1)
     res.update({
         "scenario_id": sid, "base": base, "pack": view.pack, "seed": view.seed,
@@ -907,6 +1037,7 @@ def far_counts(view: RunView) -> Dict[str, Any]:
     # within 24 h): the gate counts incidents, the reopenings are reported
     # as n_reopened; its severity is the max over the counted episodes
     per_id: Dict[str, Tuple[Mapping[str, Any], str, float, int]] = {}
+    notified: Set[str] = set()
     n_reopened = 0
     for inc in view.incidents:
         k = _key(str(inc.get("system", "")), inc.get("entity", ""))
@@ -917,6 +1048,8 @@ def far_counts(view: RunView) -> Dict[str, Any]:
             continue
         iid = str(inc.get("id", id(inc)))
         r = view.max_severity(inc)
+        if view.was_notified(inc):
+            notified.add(iid)
         if iid in per_id:
             n_reopened += 1
             first = per_id[iid]
@@ -939,6 +1072,10 @@ def far_counts(view: RunView) -> Dict[str, Any]:
         "entity_days": total, "n_control": len(view.control), "dt": view.dt,
         "n_low": counts["low"], "n_medium": counts["medium"], "n_high": counts["high"],
         "n_reopened": n_reopened,
+        # incidents >= LOW that were ever notifying (not suppressed by a
+        # feedback policy or common-mode parent for their whole life): gate 12
+        "n_low_notified": sum(1 for iid, (_, _, _, r) in per_id.items()
+                              if r >= SEV_RANK["low"] and iid in notified),
         "n_critical": counts["critical"],
         "far_low": counts["low"] / total if total > 0 else None,
         "far_medium": counts["medium"] / total if total > 0 else None,
@@ -1495,7 +1632,9 @@ def explanation_stats(view: RunView, outcomes: Sequence[Dict[str, Any]]) -> Dict
     hits, cf = [], []
     for o in outcomes:
         row = next((r for r in view.truth if str(r.get("scenario_id")) == o["scenario_id"]), {})
-        pf = {_norm_feature(f) for f in row.get("perturbed_features") or []}
+        # 'entity' (L6 renumbering, L8 new employee) is a whole-entity marker,
+        # not a feature an attribution can rank: such rows have no hit@3
+        pf = {_norm_feature(f) for f in row.get("perturbed_features") or []} - NON_FEATURES
         for iid in o.get("tp_incidents") or []:
             inc = by_id.get(iid)
             if inc is None:
@@ -1838,7 +1977,17 @@ def gate_detection(scores: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     checks.append(check("range F1 (Tatbul 2018; report)", rp["f1"], None, None,
                         bootstrap_ci([r.get("f1") for r in rng])))
     checks.append(check("point-adjusted F1 (reference only)", pp["f1"], None, None))
+    # the opening-only rule (eval.md before round 4), reported so that the
+    # escalation rule hides nothing: recall counting only incidents OPENED
+    # in the scenario window, and how many detections were escalations
+    r_open = _frac(o.get("within_deadline_open", o["within_deadline"]) for o in threat)
+    n_esc = sum(1 for o in threat if o["within_deadline"] and o.get("detected_by") == "escalation")
+    checks.append(check("overall threat recall, opening-only rule (secondary; report)", r_open,
+                        None, None))
+    checks.append(check("detections by escalation of an open incident (report)", n_esc, None,
+                        None))
     return gate("Detection", r_all, TARGETS["overall_recall"], checks,
+                recall_open=r_open, n_by_escalation=n_esc,
                 recall_raw=_recall(threat, within=False), range=rp, point_adjusted=pp,
                 n_loud=len(loud), n_subtle=len(subtle),
                 missed=[f"{o['pack']}/{o['seed']}/{o['scenario_id']}" for o in threat
@@ -1985,6 +2134,10 @@ def gate_burden(scores: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
               check("class incidents per class-wide legit event (max)", mx,
                     TARGETS["class_incidents_per_event"],
                     _le(mx, TARGETS["class_incidents_per_event"]))]
+    # secondary (report): the TPs of the opening-only rule alone
+    op = [o.get("notifications", 1) for o in outs if o.get("detected_by", "open") == "open"]
+    checks.append(check("notifications per TP incident, opened in window only (report)",
+                        float(np.mean(op)) if op else None, None, None))
     return gate("Alert burden", notif, TARGETS["notif_per_tp"], checks)
 
 
@@ -2194,9 +2347,17 @@ def feedback_gate(base: Sequence[Dict[str, Any]], fb: Sequence[Dict[str, Any]]) 
                     [check("paired feedback runs", None, "same (pack, seed) as a full run",
                            None)])
     n_labels = sum(s.get("labels_added", 0) for s in fb)
-    b_low = sum(s["far"]["n_low"] for s in base)
-    f_low = sum(s["far"]["n_low"] for s in fb)
+    # control incidents the analyst is notified of (eval.md gate 12, round 4):
+    # an incident a pattern policy suppresses from its first tick is the
+    # suppression working, not a false alarm; the raw count is reported
+    key = "n_low_notified" if all("n_low_notified" in s["far"] for s in list(base) + list(fb)) \
+        else "n_low"
+    b_low = sum(s["far"][key] for s in base)
+    f_low = sum(s["far"][key] for s in fb)
     cut = (b_low - f_low) / b_low if b_low > 0 else None
+    rb_low = sum(s["far"]["n_low"] for s in base)
+    rf_low = sum(s["far"]["n_low"] for s in fb)
+    cut_raw = (rb_low - rf_low) / rb_low if rb_low > 0 else None
     rb = _recall([o for s in base for o in s["scenarios"] if o["loudness"] != "p2"])
     rf = _recall([o for s in fb for o in s["scenarios"] if o["loudness"] != "p2"])
     drop = None if rb is None or rf is None else rb - rf
@@ -2206,7 +2367,9 @@ def feedback_gate(base: Sequence[Dict[str, Any]], fb: Sequence[Dict[str, Any]]) 
                     None if not enough else _ge(cut, TARGETS["feedback_cut"])),
               check("recall drop", drop, TARGETS["feedback_recall_drop"],
                     None if not enough else _le(drop, TARGETS["feedback_recall_drop"])),
-              check("labels given (precondition)", n_labels, 20, None)]
+              check("labels given (precondition)", n_labels, 20, None),
+              check("control incidents >= LOW cut, suppressed incidents included (report)",
+                    cut_raw, None, None)]
     return gate("Feedback", cut, TARGETS["feedback_cut"], checks)
 
 

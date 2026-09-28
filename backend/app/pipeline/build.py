@@ -14,7 +14,8 @@ the same tick (producer before consumer):
   behavior   B01 feature_vector (the activity clock every learner gates on)
              -> B02 peer_group -> B03 baseline -> B04 likelihood (behavior.z)
              -> B05 common_mode (reads z) -> B06 .. B18 detectors
-             -> B23 feedback -> B24 calibration (behavior.p) -> B25 fusion
+             -> B21 cross_system (P2) -> B23 feedback
+             -> B24 calibration (behavior.p) -> B25 fusion
              -> B26 risk -> B27 incident -> B28 governor -> B29 explain
              -> B30 portrait
   signature  rule_match -> correlation
@@ -47,6 +48,7 @@ from ..engines.behavior.changepoint import ChangepointEngine
 from ..engines.behavior.class_monitor import ClassMonitorEngine
 from ..engines.behavior.client_identity import ClientIdentityEngine
 from ..engines.behavior.common_mode import CommonModeEngine
+from ..engines.behavior.cross_system import CrossSystemEngine
 from ..engines.behavior.entity_link import EntityLinkEngine
 from ..engines.behavior.explain import ExplainEngine
 from ..engines.behavior.feature_vector import FeatureVectorEngine
@@ -123,8 +125,12 @@ def _explain_engines() -> list:
 
 def build_registry(sig_store: Optional[SignatureStore] = None, composite_rules=None, *,
                    config: Optional[Dict[str, Any]] = None, pack: Any = None,
-                   seed: int = 0) -> Registry:
+                   seed: int = 0, p2: bool = True) -> Registry:
     """The production registry, in architecture.md §1 order.
+
+    `p2=False` leaves out the P2 engines (today B21 cross_system), e.g. for
+    the v2 tick-mode golden fingerprint, which predates them (eval.md gate 13
+    decides whether they stay enabled by default).
 
     `sig_store` / `composite_rules` default to the files under DATA_DIR.
     `config`, `pack` and `seed` are accepted for the eval runner's factory
@@ -164,7 +170,9 @@ def build_registry(sig_store: Optional[SignatureStore] = None, composite_rules=N
             AttributionEngine(),            # B16
             EntityLinkEngine(),             # B17
             ClassMonitorEngine(),           # B18
-            # P2 B19-B22 are gated by the ablation gate and not registered
+            # P2 B19, B20, B22 are gated by the ablation gate and not registered;
+            # B21 cross_system is the only detector of T20 (lateral access)
+            *([CrossSystemEngine()] if p2 else []),   # B21 (feature.active of every system)
             FeedbackEngine(),               # B23
             CalibrationEngine(),            # B24
             FusionEngine(),                 # B25

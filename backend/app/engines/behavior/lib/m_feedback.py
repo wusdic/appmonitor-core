@@ -69,7 +69,7 @@ Accessors (all read-only):
     family_weights(src) -> {family: w}                 # B25: w_f = this * weight_mult
     family_weight(src, family) -> float
     precision(src, family, key=None) -> (mean, n)      # Beta(1+TP, 1+FP)
-    risk_mult(src, family, key=None) -> float          # B26 pi = clip(E[prec]/0.5, 0.2, 2)
+    risk_mult(src, family, key=None) -> float          # B26 pi = clip(E[prec]/0.5, 0.2, 1)
     alpha_mult(src, system) -> float                   # B25: e_day thresholds x this
     allowlisted(store, system, entity, dim, value, now=None) -> bool   # B08 / B12
     allowlist_values(store, system, entity, dim, now=None) -> set[str]
@@ -108,7 +108,16 @@ from .stages import stage_for_category, stage_for_event, stages_for
 MODEL = "model.feedback"
 
 # ---------------------------------------------------------------- constants
-PREC_CLIP = (0.2, 2.0)          # pi = clip(E[prec] / 0.5, 0.2, 2)
+# pi = clip(E[prec] / 0.5, 0.2, 1): feedback may LOWER a family's risk weight,
+# never raise it above the calibrated null (evaluator round 4, gate 12). The
+# spec's upper clip 2 let tp labels on the attack incidents an analyst reviews
+# first (change 12 tp / 3 fp, shape 7 / 1.5, intensity 5 / 1 on pack A seed 0)
+# multiply that family's evidence on EVERY entity: the labelled set is
+# selected (newest / loudest first), so its precision is not the family's
+# precision on unlabelled traffic, and L_ref = 60 is fixed on clean replays.
+# Measured: mean control-entity risk 30.9 -> 36.3 and 12 -> 15 risk
+# reopenings of control incidents with the feedback on (pack A seed 0).
+PREC_CLIP = (0.2, 1.0)
 KEY_PRIOR = 2.0                 # key-level Beta shrinks to the family mean with this strength
 W_FLOOR = 0.1                   # no family is ever weighted out of fusion entirely
 ALPHA_MIN, ALPHA_MAX = 0.25, 4.0
@@ -232,7 +241,7 @@ def _counts(v: Any) -> Tuple[float, float]:
 
 
 def risk_mult(src: Any, family: str, key: Optional[str] = None) -> float:
-    """B26 feedback multiplier pi = clip(E[prec] / 0.5, 0.2, 2); 1.0 unlabelled."""
+    """B26 feedback multiplier pi = clip(E[prec] / 0.5, 0.2, 1); 1.0 unlabelled."""
     mean, _ = precision(src, family, key)
     return min(PREC_CLIP[1], max(PREC_CLIP[0], mean / 0.5))
 

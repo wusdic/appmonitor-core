@@ -22,7 +22,10 @@ Trust (architecture section 3):
   quarantine = open incident (keyed by this entity) OR regime in
                {suspect, drifting, rejected}
   ctx.training => trust = trust_prov = 1 unless a lib-4 match >= HIGH exists
-  (one-tick lag), and the regime machine does not run (a warm-up is by
+  (one-tick lag; a HIGH match inside its learnt per-(entity, rule) habit
+  envelope, lib/m_habit, does not count: sanctioned recurring automation such
+  as a nightly backup would otherwise never leave a trusted night hour for
+  B13), and the regime machine does not run (a warm-up is by
   definition the reference period; a SUSPECT carried out of it would
   deadlock the first live tick).
   trust_evidence = on live ticks only, the live trust's gates on the row
@@ -149,6 +152,7 @@ from ...models.schema import (BehaviorEvent, DerivedMetric, EntityProfile, Incid
 from .lib import combine, emit, gating, m_class, m_cp, m_feedback, m_link, seq
 from .lib import grains as GR
 from .lib import m_governor as MG
+from .lib import m_habit as HB
 from .lib.classkeys import CLASS_PREFIX, is_class
 from .lib.detectors import ACC_DETECTORS, DETECTOR_INDEX, DETECTOR_INFO, arl_days
 from .lib.features import FEATURE_DIM, GROUP_ORDER, GROUPS
@@ -483,6 +487,12 @@ def episode_groups(axes: Set[str]) -> List[str]:
     return out or list(DEFAULT_GROUPS)
 
 
+def _habitual_high(store: Any, s: str, e: str, m: Any) -> bool:
+    """A HIGH (never CRITICAL) lib-4 match inside its habit envelope."""
+    sev = str(getattr(m.severity, "value", m.severity)).lower()
+    return sev == HB.SEVERITY and HB.habituated(store, s, e, m.signature_id, float(m.ts))
+
+
 # ============================================================== per-tick inputs
 class _Sys:
     """Per-system reads shared by every key of one tick (one indexed query each)."""
@@ -689,7 +699,12 @@ class GovernorEngine(Engine):
         ob.events = evs
         ob.findings_med = any(ev.severity in FINDING_SEV for ev in evs
                               if ev.kind in DISCRETE_KINDS)
-        ob.lib4_high = any(m.severity in HIGH_SEV for m in sc.matches.get(e, []))
+        # a HIGH match inside its learnt per-(entity, rule) envelope (lib/m_habit,
+        # B26 runs before us) is sanctioned recurring activity, not a HIGH
+        # finding: it neither zeroes the warm-up trust nor counts as a
+        # malicious source (lead decision, round 4)
+        ob.lib4_high = any(m.severity in HIGH_SEV and not _habitual_high(store, s, e, m)
+                           for m in sc.matches.get(e, []))
         ob.creep_slope, ob.creep_axes = _NAN, set()
         for ev in evs:
             if ev.kind == "baseline_creep":

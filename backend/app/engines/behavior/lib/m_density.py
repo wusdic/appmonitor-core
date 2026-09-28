@@ -49,6 +49,9 @@ model.density@(s, e | 'class:<rid>') layout (a dict stored by reference):
     box    (g, h)       Box approximation SPE / theta1 ~ g chi2_h, fitted on
                         OUT-OF-SAMPLE normalised SPE (NaN: no SPE evidence)
     box_src             'oos' | 'crossfit' | 'class' | 'given' | None
+    null                {'spe': (g, d1, d2) | None, 't2': (s, d2) | None} or
+                        absent: the cross-fitted F null (below) that replaces
+                        the Box / Hotelling p when present
     class_key, class_w  the class model shrunk towards and its weight
     fitted_ts           ts of the fit
     chol_cache          robustcov.CholCache of Sigma[cols, cols] (LRU of 8
@@ -76,6 +79,35 @@ Why SPE is normalised by theta1: the Box parameters are fitted on SPE of rows
 the model had not seen, which are collected across successive refits; theta1
 is the model's own expected SPE, so SPE / theta1 has the same scale across
 refits whose k differs.
+
+Cross-fitted null (round 4; model["null"], built by B06 with `null_stats` /
+`null_params`). The Gaussian p-values above are anti-conservative on live
+data (pack A seed 0, clean control H rows: SPE p < 1e-3 at 11x nominal, T2 at
+44x; KS 0.29 / 0.17). Two measured reasons: (1) the OOS SPE ring mixed values
+of successive, younger models (its mean fell from 19 to 1 over the warm-up)
+and a moment-matched g chi2_h has a light tail; (2) the standardised
+residuals are not one stationary Gaussian: their scale drifts by +-25 %
+between multi-day periods (mean zi^2 per dim 0.50 -> 0.38 -> 0.50 over the
+3600-s warm-up, the 900-s warm-up and live), so relative to its median SPE
+has a log-sd of 0.64 and q99.9 / q50 = 8-18 where chi2_14 gives 5.5. The
+null is therefore taken from the model's own out-of-sample errors on its
+training population: the buffer is split into K = 4 contiguous time blocks,
+each block is scored under a model refitted without it (same robust fit and
+class / H shrink), and the held-out SPE / theta1 and T2 / q are summarised by
+their log-moments. A scale mixture of chi2 (the scale varying between rows)
+is a scaled F, so
+    SPE / theta1 ~ g F(d1, d2),  d1 = theta1^2 / theta2 of the current model
+                                 (Box's dof of the residual eigenvalues);
+    T2 / q       ~ s F(q, d2'),  s rescaled from the folds' n to the full n
+                                 by the Hotelling factor (n^2 - 1)/(n (n - q));
+d2 and the scale solve the log-moment equations Var log F = psi1(d1/2) +
+psi1(d2/2), E log F = log(d2/d1) + psi(d1/2) - psi(d2/2). d2 -> inf gives
+back g chi2_d1 / d1 and the Hotelling F. Pack A seed 0, clean control live
+rows, model p before -> after (engine run): SPE KS 0.29 -> 0.04, p < 1e-3 at
+11x -> 2.1x nominal; T2 0.17 -> 0.12, 44x -> 4.1x; T2_q 0.33 -> 0.03, 74x ->
+7x; SPE_q 0.06 -> 0.05, 2.3x -> 0.7x. Held-out SPE uses the full model's k
+and theta1 (see B06 cross_null). Without a null (young entity, < 64 rows) the
+Gaussian p-values above are used and B06 marks the detectors provisional.
 """
 from __future__ import annotations
 
@@ -239,14 +271,119 @@ def score_model(model: Mapping[str, Any], z: Any) -> Score:
     zcomp[model["cols"]] = comp
     spe = spe_n = p_spe = _NAN
     th = float(model["theta1"])
+    nl = model.get("null")
     if th == th:
         U = model["U_c"]
         r = comp - U @ (U.T @ comp)
         spe = float(r @ r)
         spe_n = spe / th
-        g, h = model["box"]
-        p_spe = robustcov.spe_p(spe_n, g, h)
+        if nl is not None and nl.get("spe") is not None:
+            p_spe = f_sf(spe_n, *nl["spe"])
+        else:
+            g, h = model["box"]
+            p_spe = robustcov.spe_p(spe_n, g, h)
+    if nl is not None and nl.get("t2") is not None and t2 == t2:
+        s_t2, d2 = nl["t2"]
+        p_t2 = f_sf(t2 / q, s_t2, float(q), d2)
     return Score(t2, q, p_t2, wh, spe, spe_n, p_spe, zfull, zcomp, n_pred, int(model["k"]))
+
+
+# ================================================================ null
+NULL_D2_MIN = 1.0        # heaviest tail allowed (F with 1 denominator dof)
+NULL_D2_MAX = 1e4        # ~ no scale mixing: g chi2_d1 / d1
+NULL_MIN_ROWS = 64       # held-out rows needed for a null
+
+
+def f_sf(x: float, scale: float, d1: float, d2: float) -> float:
+    """P(scale F(d1, d2) > x), floored like the other model p-values."""
+    x, scale = float(x), float(scale)
+    if not (x == x and scale > 0.0 and d1 > 0.0 and d2 > 0.0):
+        return _NAN
+    if x <= 0.0:
+        return 1.0
+    return max(float(special.fdtrc(d1, d2, x / scale)), 1e-300)
+
+
+def _solve_d2(excess: float) -> float:
+    """d2 with psi1(d2 / 2) = excess (the log-variance not explained by the
+    numerator dof), clipped to [NULL_D2_MIN, NULL_D2_MAX]."""
+    if not excess > float(special.polygamma(1, NULL_D2_MAX / 2.0)):
+        return NULL_D2_MAX
+    if excess >= float(special.polygamma(1, NULL_D2_MIN / 2.0)):
+        return NULL_D2_MIN
+    lo, hi = NULL_D2_MIN, NULL_D2_MAX           # psi1 is decreasing: bisect in log d2
+    for _ in range(60):
+        mid = math.sqrt(lo * hi)
+        if float(special.polygamma(1, mid / 2.0)) > excess:
+            lo = mid
+        else:
+            hi = mid
+    return math.sqrt(lo * hi)
+
+
+def null_stats(values: np.ndarray, dof: Optional[np.ndarray] = None) -> Optional[Dict[str, float]]:
+    """Log-moment summary of held-out statistics x_i > 0 (SPE / theta1, or
+    T2 / q with dof = q_i): {'n', 'mlog', 'vlog', 'a', 'va', 'psi1'} where
+    a_i = log x_i + log q_i - psi(q_i / 2) (T2 only). None below
+    NULL_MIN_ROWS usable values."""
+    x = np.asarray(values, dtype=np.float64)
+    ok = np.isfinite(x) & (x > 0.0)
+    if dof is not None:
+        dof = np.asarray(dof, dtype=np.float64)
+        ok &= np.isfinite(dof) & (dof > 0.0)
+    if int(ok.sum()) < NULL_MIN_ROWS:
+        return None
+    lx = np.log(x[ok])
+    out = {"n": float(ok.sum()), "mlog": float(lx.mean()), "vlog": float(lx.var(ddof=1))}
+    if dof is not None:
+        q = dof[ok]
+        a = lx + np.log(q) - special.digamma(q / 2.0)
+        out.update(a=float(a.mean()), va=float(a.var(ddof=1)),
+                   psi1=float(np.mean(special.polygamma(1, q / 2.0))))
+    return out
+
+
+
+def null_spe(st: Mapping[str, float], d1: float) -> Optional[Tuple[float, float, float]]:
+    """(g, d1, d2) of SPE / theta1 ~ g F(d1, d2) from null_stats of held-out
+    SPE / theta1 and the scoring model's d1."""
+    if st is None or not (d1 > 0.0 and math.isfinite(d1)):
+        return None
+    d2 = _solve_d2(st["vlog"] - float(special.polygamma(1, d1 / 2.0)))
+    lg = (st["mlog"] - math.log(d2 / d1) - float(special.digamma(d1 / 2.0))
+          + float(special.digamma(d2 / 2.0)))
+    return math.exp(lg), float(d1), d2
+
+
+def null_t2(st: Mapping[str, float], n_full: float, n_fold: float, qbar: float
+            ) -> Optional[Tuple[float, float]]:
+    """(s, d2) of T2 / q ~ s F(q, d2) from null_stats (with dof) of held-out
+    T2 / q scored under fold models of size n_fold, rescaled to a model of
+    size n_full by the ratio of the Hotelling factors (n^2 - 1)/(n (n - q))
+    (a fold model with fewer rows inflates held-out T2 more)."""
+    if st is None or "a" not in st:
+        return None
+    d2 = _solve_d2(st["va"] - st["psi1"])
+    ls = st["a"] - math.log(d2) + float(special.digamma(d2 / 2.0))
+
+    def c(n: float) -> float:
+        return (n * n - 1.0) / (n * (n - qbar))
+    ratio = c(n_full) / c(n_fold) if (n_full > qbar + 1.0 and n_fold > qbar + 1.0) else 1.0
+    return math.exp(ls) * ratio, d2
+
+
+def residual_dof(model: Mapping[str, Any]) -> float:
+    """Box's dof theta1^2 / theta2 of the residual eigenvalues (NaN without a
+    residual subspace)."""
+    Sc = model.get("Sigma_c")
+    k = int(model.get("k", 0))
+    if Sc is None or not np.asarray(Sc).size:
+        return _NAN
+    lam = np.linalg.eigvalsh(np.asarray(Sc, dtype=np.float64))[::-1][k:]
+    lam = lam[lam > 0.0]
+    if not lam.size:
+        return _NAN
+    return float(lam.sum() ** 2 / np.sum(lam * lam))
 
 
 def score(store: Any, s: str, e: str, z: Any) -> Optional[Score]:
@@ -371,9 +508,21 @@ def descriptor(model: Mapping[str, Any]) -> Dict[str, Any]:
         "young": bool(model.get("class_w", 0.0) > 0.0),
         "class_key": model.get("class_key"), "class_w": _f(model.get("class_w", 0.0)),
         "spe_box": {"g": _f(g), "h": _f(h), "src": model.get("box_src")},
+        "null": _null_desc(model.get("null"), _f),
         "pcs": pcs,
         "unmodelled": [FEATURE_NAMES_V2[i] for i in range(FEATURE_DIM) if i not in modelled],
     }
+
+
+def _null_desc(nl: Any, f: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(nl, Mapping):
+        return None
+    out: Dict[str, Any] = {"src": "crossfit"}
+    if nl.get("spe") is not None:
+        out["spe"] = {"g": f(nl["spe"][0]), "d1": f(nl["spe"][1]), "d2": f(nl["spe"][2])}
+    if nl.get("t2") is not None:
+        out["t2"] = {"s": f(nl["t2"][0]), "d2": f(nl["t2"][1])}
+    return out
 
 
 def describe(store: Any, s: str, e: str) -> Dict[str, Any]:

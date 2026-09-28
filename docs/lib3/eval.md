@@ -20,6 +20,8 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
 
 1. Detection
    - True positive: an incident that meets the required severity, opens within [t_start, t_end + max(4 ticks, 1 h)], and whose axes or detectors include at least one expected one.
+   - True positive by escalation (lead decision, round 4): an attack on an entity whose incident is already open at t_start is folded into that incident by B27 (one incident per episode) instead of opening its own. It counts as a detection if, within [t_start, t_end + max(4 ticks, 1 h)], that incident's severity rises by at least one level above its level at t_start to at least max(MEDIUM, required severity), it gains at least one of the scenario's expected AXES it did not carry at t_start, and an `escalate` notification of it is emitted at or after that point. TTD is taken from that notification. A reopening inside the window is an opening, not an escalation.
+   - The opening-only rule (the rule before round 4) is kept as a reported secondary metric: `recall_open` / "overall threat recall, opening-only rule", and per scenario `detected_open`, `within_deadline_open`, `ttd_s_open`; `detected_by` says which rule produced the TTD (the earlier of the two). FAR (gate 3) still counts per incident id.
    - Loud scenarios (T1, T6, T6b, T9, T11, T12): recall 1.00 across all seeds, TTD ≤ 2 ticks at 900 s (≤ 30 min wall).
    - Subtle scenarios (T2, T3, T4, T4b, T5, T7, T8, T9b, T10, T13–T19, T21): recall ≥ 0.90 pooled, each within its own deadline.
    - Overall threat recall ≥ 0.95.
@@ -38,7 +40,7 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
 4. Legitimate scenarios L1–L16: at least 95% of seed × scenario runs stay at or below the allowed severity, and affected entities and classes keep max risk < 30.
 
 5. Alert burden
-   - Notifications per TP incident ≤ 3.
+   - Notifications per TP incident ≤ 3 (open + escalate notifications of the TP incident's episode; for a TP by escalation only those sent from t_start on, i.e. not the notifications of its earlier FP life). The mean over TPs opened in the window alone is reported as a secondary check.
    - Incidents per episode = 1 (for example T2 over 5 days).
    - Class-wide legitimate changes: at most 1 class incident per event.
 
@@ -80,7 +82,7 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
    - T21 class detection in ≥ 90% of seeds; L1, L2 and L3 class incidents ≤ LOW.
 
 10. Explanation
-    - hit@3 ≥ 0.8 against perturbed_features.
+    - hit@3 ≥ 0.8 against perturbed_features. The whole-entity marker 'entity' (L6 renumbering, L8 new employee) is not a feature an attribution can rank: such rows have no hit@3 (round 4).
     - Counterfactual validity ≥ 0.9, measured on the full recomputed decision via replay; the scope includes stateful detectors.
     - A natural-unit range is present in 100% of incidents.
 
@@ -90,7 +92,7 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
     - p5–p95 coverage of held-out ticks within [0.85, 0.95].
     - Class portraits exist for 100% of role, static and pool classes.
 
-12. Feedback: a simulated analyst with 5% label noise and 5 labels per day cuts control incidents ≥ LOW by ≥ 50% after 20 labels, with recall dropping by ≤ 0.02. Suppression escape behaves as in unit test B23. The analyst dismisses fp verdicts with scope = pattern (B23 builds suppression policies only from widened scopes) and labels the rest with scope = this; the cut compares each feedback run with the full run of the same (pack, seed). Ablation deltas (gate 13) are likewise taken against the full runs of the same (pack, seed).
+12. Feedback: a simulated analyst with 5% label noise and 5 labels per day cuts control incidents ≥ LOW by ≥ 50% after 20 labels, with recall dropping by ≤ 0.02. Suppression escape behaves as in unit test B23. The analyst dismisses fp verdicts with scope = pattern (B23 builds suppression policies only from widened scopes) and labels the rest with scope = this; the cut compares each feedback run with the full run of the same (pack, seed). The cut counts control incidents ≥ LOW that were ever NOTIFYING (an open / escalate notification, else a history point with status open / acked): an incident a pattern policy suppresses from its first tick is the suppression working and never reaches the analyst (round 4); the cut over all incidents, suppressed ones included, is reported as a secondary check. Ablation deltas (gate 13) are likewise taken against the full runs of the same (pack, seed).
 
 13. Ablation
     - Δrecall and ΔFAR are reported per scenario with each engine disabled.

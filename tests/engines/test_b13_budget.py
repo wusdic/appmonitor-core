@@ -371,3 +371,51 @@ def test_seven_day_horizon_expects_its_own_day_type_composition():
     # the 6-workday actual sum is at its expectation, not 20 % above it
     adj = np.log(makeup + unit) - np.log(ebar[20] + unit)
     assert np.log(540.0 + unit) - (np.log(450.0 + unit) + adj) == pytest.approx(0.0, abs=1e-12)
+
+
+def _seven_day_null_p(seed: int, rho: float = 0.5, n_hist: int = 18, n_eval: int = 10,
+                      inflate: bool = True) -> List[float]:
+    """7-d tail p of clean days after an n_hist-day history of a volume with
+    an AR(1) day effect (log-sd 0.25, lag-1 correlation rho) and LogNormal
+    hourly noise, through the engine's own fitting functions."""
+    from app.engines.behavior import budget as B
+    rng = np.random.default_rng(seed)
+    days = n_hist + n_eval
+    e, x = np.zeros(days), rng.normal()
+    for d in range(days):
+        x = rho * x + math.sqrt(1.0 - rho * rho) * rng.normal()
+        e[d] = 0.25 * x
+    prof = 1e6 * (0.3 + np.exp(-((np.arange(24) - 14) / 4.0) ** 2))
+    v = (prof[None, :] * np.exp(e[:, None] + 0.4 * rng.normal(size=(days, 24)))).ravel()
+    unit = ABS_FLOOR_DEFAULT["bytes_up"] * B.UNIT_FRAC
+    dtypes = np.zeros(B.HIST_DAYS, dtype=np.int64)
+    out: List[float] = []
+    for D in range(n_hist, days):
+        hv = np.full(NHIST, np.nan)
+        h0 = D * 24 - NHIST
+        idx = np.arange(NHIST) + h0
+        hv[idx >= 0] = v[idx[idx >= 0]]
+        L = B.log_windows(window_sums(hv), unit)
+        med, scale = B.phase_stats(L, dtypes, B.MIN_PHASE_N_YOUNG)
+        scale = B.floor_scale(med, scale)
+        tl = B.BudgetEngine._own_tail(L, med, scale, dtypes, B.MIN_POOL_IMMATURE)
+        pinf = B.seven_day_pinf(L, dtypes) if inflate else np.ones(24)
+        for h in range(24):
+            w7 = v[D * 24 + h - 167: D * 24 + h + 1].sum()
+            rz = (math.log(w7 + unit) - med[B.H_7D, 0, h]) / (scale[B.H_7D, 0, h] * pinf[h])
+            out.append(float(tail_p(np.array([rz]), tl[B.H_7D][None, :5],
+                                    tl[B.H_7D][None, 5:])[0]))
+    return out
+
+
+def test_seven_day_residual_is_predictive_under_day_regimes():
+    """Round 4: the 7-d median rests on ~n_days / 7 independent weeks; its
+    error belongs to a new window's residual. Without the predictive term
+    the 7-d tail p of clean days is < 1e-2 on ~3x the nominal share (pack A
+    live: 7-d cells 11.9x at 1e-3); with it, at most nominal."""
+    old = np.array([p for s in range(16) for p in _seven_day_null_p(s, inflate=False)])
+    new = np.array([p for s in range(16) for p in _seven_day_null_p(s)])
+    assert np.mean(old < 1e-2) / 1e-2 > 2.0                    # the failure mode
+    assert np.mean(new < 1e-2) / 1e-2 < 1.2
+    assert np.mean(new < 1e-3) / 1e-3 < 1.5
+    assert np.mean(new < 0.1) / 0.1 > 0.4                      # not degenerate

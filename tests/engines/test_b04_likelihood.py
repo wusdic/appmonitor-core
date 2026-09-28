@@ -560,3 +560,30 @@ def test_perf_per_entity(trained):
     run_engine(eng, st, t)
     per = (time.perf_counter() - t0) / len(ENTS)
     assert per < 0.01, f"{per * 1e3:.2f} ms per entity"
+
+
+# --------------------------------------- round 4: provisional Q -> degraded
+@pytest.mark.parametrize("pi,flagged", [(0.2, True), (0.9, False)])
+def test_q_score_on_provisional_transfer_writes_degraded(pi, flagged):
+    """Contract M: a Q score whose features rest mostly on the H -> Q transfer
+    (native share pi < 0.5) is written with behavior.degraded
+    'provisional:q_transfer'; a native-dominated one is not."""
+    from app.engines.behavior import likelihood as LK
+    store = make_store()
+    e = "10.9.9.1"
+    store.register_entity(S, e)
+    nf = F.FEATURE_DIM
+    pf = np.random.default_rng(2).uniform(0.05, 1.0, nf)
+    sc = LK.FeatureScores(np.zeros(nf), np.zeros(nf), pf, pf, pf, np.full(nf, np.nan))
+    nan = np.full(nf, np.nan)
+    cur = MB.Pred(nan, nan, nan, nan, nan, nan, nan, nan, prov=np.full(nf, pi))
+    eng = LK.LikelihoodEngine()
+    t = T0 + 900.0
+    eng._write_q(store, S, e, t, sc, cur, LK.GroupLayout([]), 900.0, state_q=None)
+    dg = emit.read_dict(store, S, e, emit.DEGRADED, t)
+    if flagged:
+        assert dg == {d: LK.PROV_CAUSE for d in LK.DETS_Q}
+    else:
+        assert not dg
+    pm = emit.read_row(store, S, e, emit.PM, t)
+    assert math.isfinite(pm["marg_shape_q"]) and math.isfinite(pm["marg_int_q"])

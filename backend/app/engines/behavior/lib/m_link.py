@@ -459,3 +459,98 @@ def conf(lo: float) -> float:
     if not math.isfinite(x):
         return _NAN
     return 1.0 / (1.0 + math.exp(-x)) if x >= 0 else math.exp(x) / (1.0 + math.exp(x))
+
+
+# ================================================== actor evidence (round 4)
+# Fellegi-Sunter agreement fields for "same actor" beyond the modality LLRs,
+# for B17's pairs (A silent predecessor, B new entity):
+#   'tok'   B shares a RARE categorical value with A (dim=value used by at most
+#           FS_RARE_ENT other entities of the system: an IP-hopping actor's
+#           private destination / template follows it from address to address);
+#   'hand'  temporal handoff: A's last activity within FS_HANDOFF_S before B's
+#           first (the actor moves; a DHCP renewal or a hop is immediate);
+#   'stk'   B's dominant client stack is one A was seen with.
+# The m / u probabilities are learned by EM (conditional independence, latent
+# match status) over every pair B17 has compared in the system, with Beta
+# priors (FS_PRIOR) so that a system with a handful of pairs keeps sane
+# weights; weights are capped at +-FS_CAP nats like every modality.
+FS_FIELDS = ("tok", "hand", "stk")
+FS_HANDOFF_S = 2 * 3600.0
+FS_RARE_ENT = 1.5
+FS_CAP = 4.0
+FS_KEEP = 512
+# prior (mean, strength) of m (agreement among matches) and u (among non-matches)
+FS_PRIOR = {"tok": ((0.8, 10.0), (0.02, 10.0)), "hand": ((0.8, 10.0), (0.1, 10.0)),
+            "stk": ((0.9, 10.0), (0.5, 10.0))}
+FS_PI_PRIOR = (0.05, 20.0)
+
+
+def fs_em(obs: Sequence[Sequence[Any]], iters: int = 50) -> Dict[str, Any]:
+    """EM for the two-class Fellegi-Sunter model on binary agreement vectors
+    (rows: one value per FS_FIELDS, 1 / 0 / None = missing, skipped). MAP
+    estimates under Beta priors. Returns {'m': {f: .}, 'u': {f: .}, 'pi': ., 'n': .}."""
+    X = [[(None if v is None else float(v)) for v in row] for row in obs
+         if len(row) == len(FS_FIELDS)]
+    m = {f: FS_PRIOR[f][0][0] for f in FS_FIELDS}
+    u = {f: FS_PRIOR[f][1][0] for f in FS_FIELDS}
+    pi = FS_PI_PRIOR[0]
+    for _ in range(iters if X else 0):
+        g = []
+        for row in X:
+            lm, lu = math.log(pi), math.log(1.0 - pi)
+            for f, v in zip(FS_FIELDS, row):
+                if v is None:
+                    continue
+                lm += math.log(m[f] if v >= 0.5 else 1.0 - m[f])
+                lu += math.log(u[f] if v >= 0.5 else 1.0 - u[f])
+            mx = max(lm, lu)
+            g.append(math.exp(lm - mx) / (math.exp(lm - mx) + math.exp(lu - mx)))
+        a0, s0 = FS_PI_PRIOR
+        pi = (sum(g) + a0 * s0) / (len(g) + s0)
+        for k, f in enumerate(FS_FIELDS):
+            (mm, ms), (um, us) = FS_PRIOR[f]
+            nm = am = nu = au = 0.0
+            for gi, row in zip(g, X):
+                v = row[k]
+                if v is None:
+                    continue
+                nm += gi
+                am += gi * v
+                nu += 1.0 - gi
+                au += (1.0 - gi) * v
+            m[f] = min(0.999, max(0.001, (am + mm * ms) / (nm + ms)))
+            u[f] = min(0.999, max(0.001, (au + um * us) / (nu + us)))
+    return {"m": m, "u": u, "pi": pi, "n": len(X)}
+
+
+def fs_weights(params: Optional[Mapping[str, Any]]) -> Dict[str, Tuple[float, float]]:
+    """{field: (agree weight, disagree weight)} in nats, capped at +-FS_CAP."""
+    p = params if isinstance(params, Mapping) and params.get("m") else fs_em([], iters=0)
+    out = {}
+    for f in FS_FIELDS:
+        m, u = float(p["m"][f]), float(p["u"][f])
+        wa = max(-FS_CAP, min(FS_CAP, math.log(m / u)))
+        wd = max(-FS_CAP, min(FS_CAP, math.log((1.0 - m) / (1.0 - u))))
+        out[f] = (wa, wd)
+    return out
+
+
+def fs_score(gamma: Mapping[str, Any], weights: Mapping[str, Tuple[float, float]],
+             params: Optional[Mapping[str, Any]] = None) -> float:
+    """Sum of the agreement weights of the observed fields (None = missing: 0).
+    An agreement carrying its own frequency-based u (gamma['u_<field>'], the
+    chance that a random non-matching pair shares that very value: Winkler's
+    frequency-based FS weights) is weighted ln(m / u) with m from `params`
+    (the EM fit), capped at +-FS_CAP; otherwise the field's EM weight."""
+    p = params if isinstance(params, Mapping) and params.get("m") else fs_em([], iters=0)
+    tot = 0.0
+    for f in FS_FIELDS:
+        v = gamma.get(f)
+        if v is None:
+            continue
+        wa, wd = weights[f]
+        u = gamma.get(f"u_{f}")
+        if v and isinstance(u, (int, float)) and u > 0.0:
+            wa = max(-FS_CAP, min(FS_CAP, math.log(float(p["m"][f]) / float(u))))
+        tot += wa if v else wd
+    return tot

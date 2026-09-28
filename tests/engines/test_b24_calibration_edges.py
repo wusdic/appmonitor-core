@@ -87,19 +87,44 @@ def test_live_missing_trust_admits_nothing():
     assert all(0.0 < p < 1.0 for p in ps)     # empty ring: p = U, never 1
 
 
-def test_partial_trust_thins_admission_deterministically():
-    def run():
-        rng = np.random.default_rng(4)
-        rig = Rig(daypart="wd_day")
-        for _ in range(204):
-            rig.step({E: {"marg_int": float(rng.exponential())}}, trust=0.5)
-        return rig
-    a, b = run(), run()
-    n = ring_n(a)
-    assert 70 <= n <= 130                     # ~ 200 x 0.5
-    ra = m_calib.ring(a.model(), "marg_int", ST)
-    rb = m_calib.ring(b.model(), "marg_int", ST)
-    assert np.array_equal(ra.scores, rb.scores) and np.array_equal(ra.ts, rb.ts)
+def test_live_admission_ignores_the_row_trust_but_not_the_period():
+    """Round 4 (lib/gating.period_weight): a live row enters the null rings by
+    its PERIOD's trust only. behavior.trust carries the row's own evidence
+    factor (clip(log10(e_inst / 0.1), 0, 1), [no alarm]), so thinning by it
+    truncated the rings' tail; a partial or zero trust without quarantine is
+    admitted, a degraded governor tick (NaN) is not, a quarantined one is held."""
+    rng = np.random.default_rng(4)
+    rig = Rig(daypart="wd_day")
+    for _ in range(104):
+        rig.step({E: {"marg_int": float(rng.exponential())}}, trust=0.3)
+    d = gating.commit_delay_ticks(DT)
+    assert ring_n(rig) == 104 - d                 # every committed row (the old rule: ~30)
+    rig2 = Rig(daypart="wd_day")
+    for _ in range(24):
+        rig2.step({E: {"marg_int": float(rng.exponential())}}, trust=float("nan"))
+    assert ring_n(rig2) == 0 and rig2.model()["n_admit"] == 0
+    rig3 = Rig(daypart="wd_day")
+    for _ in range(24):
+        rig3.step({E: {"marg_int": float(rng.exponential())}}, trust=0.0, quarantine=1.0)
+    assert ring_n(rig3) <= 1 and len(rig3.model()["gate"].held) >= 20
+
+
+def test_admission_is_independent_of_the_row_score():
+    """The same score stream with the governor's evidence factor computed
+    from each row's own p (as B28 does): every committed row is admitted,
+    so the ring holds the null's upper tail (the old rule dropped it)."""
+    rng = np.random.default_rng(9)
+    rig = Rig(daypart="wd_day")
+    xs = rng.exponential(1.0, 160)
+    for x in xs:
+        p_row = math.exp(-float(x))
+        tr = min(1.0, max(0.0, math.log10(max(p_row * 96.0, 1e-300) / 0.1)))
+        rig.step({E: {"marg_int": float(x)}}, trust=tr)
+    r = m_calib.ring(rig.model(), "marg_int", ST)
+    d = gating.commit_delay_ticks(DT)
+    top = np.sort(xs[:len(xs) - d])[-5:]
+    assert len(r) == len(xs) - d
+    assert np.allclose(np.sort(r.scores)[-5:], [calib._r32(v) for v in top])
 
 
 def test_immature_entity_is_not_admitted_until_n_eff_48():

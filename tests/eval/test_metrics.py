@@ -369,6 +369,21 @@ def test_explanation_hit3_and_natural_range():
     assert ex["natural_range"] == [True, True]
 
 
+def test_hit3_skips_the_whole_entity_marker():
+    # L6 / L8 rows list perturbed_features ['entity']: no attribution can rank
+    # it, so the row has no hit@3 (it used to count as a miss); the
+    # counterfactual check is unaffected
+    ts = TICKS[20]
+    row = truth("T18", ["10.20.1.16"], ts, ts + 10 * DT, perturbed_features=["entity"])
+    i1 = inc("i1", "10.20.1.16", ts, "medium", explanation={
+        "attributions": [{"feature": "flows"}], "counterfactual_valid": False})
+    ex = M.score_run(make_run(truth=[row], incidents=[i1]))["explanation"]
+    assert ex["hit3"] == [] and ex["cf_valid"] == [False]
+    row["perturbed_features"] = ["entity", "flows"]
+    ex = M.score_run(make_run(truth=[row], incidents=[i1]))["explanation"]
+    assert ex["hit3"] == [True]
+
+
 def _synthetic_scores():
     ts = TICKS[20]
     out = []
@@ -397,8 +412,8 @@ def test_compute_gates_structure_and_values():
     assert g["16_report"]["pass"] is True
     fb = M.feedback_gate(scores, scores)
     assert fb["pass"] is None                                  # < 20 labels: n/a
-    labelled = [dict(s, labels_added=10, far=dict(s["far"], n_low=0)) for s in scores]
-    base = [dict(s, far=dict(s["far"], n_low=4)) for s in scores]
+    labelled = [dict(s, labels_added=10, far=dict(s["far"], n_low=0, n_low_notified=0)) for s in scores]
+    base = [dict(s, far=dict(s["far"], n_low=4, n_low_notified=4)) for s in scores]
     fb = M.feedback_gate(base, labelled)
     assert fb["pass"] is True and fb["value"] == 1.0
     abl = M.ablation_table(scores, {"b14": [dict(s, scenarios=[dict(o, within_deadline=False)
@@ -412,8 +427,8 @@ def test_feedback_and_ablation_compare_the_same_pack_seeds():
     used to be compared with ALL full runs (the cut and the FAR delta mixed
     packs and seeds)."""
     scores = _synthetic_scores()
-    base = [dict(s, far=dict(s["far"], n_low=4)) for s in scores]
-    fb = [dict(base[0], labels_added=25, far=dict(base[0]["far"], n_low=2))]
+    base = [dict(s, far=dict(s["far"], n_low=4, n_low_notified=4)) for s in scores]
+    fb = [dict(base[0], labels_added=25, far=dict(base[0]["far"], n_low=2, n_low_notified=2))]
     g = M.feedback_gate(base, fb)
     assert g["value"] == pytest.approx(0.5)          # 4 -> 2 on the paired run, not 12 -> 2
     abl = M.ablation_table(base, {"b04": [dict(base[0], far=dict(base[0]["far"], n_low=4))]})
@@ -473,3 +488,100 @@ def test_report_renders_ablation_and_meta_sections(tmp_path):
     html = (tmp_path / "eval_report.html").read_text(encoding="utf-8")
     assert "Ablation (one engine disabled)" in html and "b14" in html
     assert "Before / after" in html and "round 2" in html and "1_detection" in html
+
+
+# ------------------------------------------------------ detection by escalation
+def _esc_run(hist, events, axes_exp=("exfil",), req="medium", opened_off=-20):
+    ts = TICKS[40]
+    t_open = ts + opened_off * DT
+    h = [dict(p, ts=t_open + p["ts"] * DT if p["ts"] < 0 else ts + p["ts"] * DT) for p in hist]
+    run = make_run(truth=[truth("T4", ["10.20.1.11"], ts, ts + 16 * DT, max_ttd="6h",
+                                expected_axes=list(axes_exp), required_severity=req)],
+                   incidents=[inc("i1", "10.20.1.11", t_open, h[-1]["severity"],
+                                  axes=tuple(h[-1]["axes"]), history=h)],
+                   events=[ev(f"n{j}", "10.20.1.11", ts + o * DT, "incident", incident_id="i1",
+                              extra={"state": st}) for j, (o, st) in enumerate(events)])
+    return run, ts
+
+
+def _p(t, sev, axes, status="open"):
+    return {"ts": t, "severity": sev, "status": status, "axes": list(axes), "kinds": []}
+
+
+def test_escalation_of_an_open_incident_with_new_expected_axis_is_a_detection():
+    """Lead decision (round 4): an attack folded into an already-open (FP)
+    incident is detected when, inside the window, the incident rises >= 1
+    level to >= MEDIUM, gains an expected axis and emits 'escalate'. TTD is
+    taken from that escalation; the opening-only rule stays a secondary
+    field. Without the rule this scenario is missed (no incident opened in
+    the window)."""
+    hist = [_p(-1, "low", ["identity"]), _p(3, "high", ["identity", "exfil"])]
+    run, ts = _esc_run(hist, [(-19, "open"), (3, "escalate"), (5, "escalate")])
+    o = M.score_run(run)["scenarios"][0]
+    assert o["detected"] and o["detected_by"] == "escalation"
+    assert not o["detected_open"] and not o["within_deadline_open"]
+    assert o["t_detect"] == ts + 3 * DT and o["ttd_ticks"] == 4 and o["within_deadline"]
+    assert o["escalation"]["gained_axes"] == ["exfil"]
+    # notifications from the onset on: the two escalations, not the FP's open
+    assert o["notifications"] == 2
+    g = M.gate_detection([M.score_run(run)])
+    assert g["details"]["recall_open"] == 0.0 and g["details"]["n_by_escalation"] == 1
+
+
+@pytest.mark.parametrize("case", ["no_new_axis", "no_level_rise", "below_medium",
+                                  "no_notification", "closed_before", "unexpected_axis"])
+def test_escalation_requirements(case):
+    hist = [_p(-1, "low", ["identity"]), _p(3, "high", ["identity", "exfil"])]
+    notes = [(3, "escalate")]
+    axes_exp = ("exfil",)
+    if case == "no_new_axis":
+        hist = [_p(-1, "low", ["exfil"]), _p(3, "high", ["exfil"])]
+    elif case == "no_level_rise":
+        hist = [_p(-1, "high", ["identity"]), _p(3, "high", ["identity", "exfil"])]
+    elif case == "below_medium":
+        hist = [_p(-1, "info", ["identity"]), _p(3, "low", ["identity", "exfil"])]
+    elif case == "no_notification":
+        notes = [(3, "update")]
+    elif case == "closed_before":
+        hist = [_p(-2, "low", ["identity"]), _p(-1, "low", ["identity"], "closed"),
+                _p(3, "high", ["identity", "exfil"])]
+    elif case == "unexpected_axis":
+        axes_exp = ("c2",)
+    run, _ = _esc_run(hist, notes, axes_exp=axes_exp)
+    o = M.score_run(run)["scenarios"][0]
+    if case == "closed_before":
+        # a REOPENING in the window is an opening (split_episodes), not an escalation
+        assert o["detected"] and o["detected_by"] == "open"
+    else:
+        assert not o["detected"] and not o.get("detected_escalation")
+
+
+def test_escalation_needs_the_required_severity():
+    hist = [_p(-1, "low", ["identity"]), _p(3, "medium", ["identity", "exfil"])]
+    run, _ = _esc_run(hist, [(3, "escalate")], req="high")
+    assert not M.score_run(run)["scenarios"][0]["detected"]
+
+
+def test_feedback_cut_counts_notified_control_incidents():
+    """Gate 12 (round 4): an incident a pattern policy suppresses from its
+    first tick never reaches the analyst; the cut counts the notifying
+    control incidents and reports the raw count as a secondary check."""
+    ts = TICKS[40]
+    hist_sup = [{"ts": ts, "severity": "low", "status": "suppressed", "axes": ["volume"]}]
+    hist_open = [{"ts": ts, "severity": "low", "status": "open", "axes": ["volume"]}]
+    base = make_run(incidents=[inc("i1", "10.20.1.12", ts, "low", history=hist_open),
+                               inc("i2", "10.20.1.13", ts, "low", history=hist_open)])
+    fb = make_run(labels_added=25,
+                  incidents=[inc("i1", "10.20.1.12", ts, "low", history=hist_sup),
+                             inc("i2", "10.20.1.13", ts, "low", history=hist_open)])
+    sb, sf = M.score_run(base), M.score_run(fb)
+    assert (sb["far"]["n_low"], sb["far"]["n_low_notified"]) == (2, 2)
+    assert (sf["far"]["n_low"], sf["far"]["n_low_notified"]) == (2, 1)
+    g = M.feedback_gate([sb], [sf])
+    assert g["value"] == pytest.approx(0.5)
+    raw = [c for c in g["details"]["checks"] if "suppressed incidents included" in c["name"]][0]
+    assert raw["value"] == pytest.approx(0.0)
+    # an open notification event makes it notifying whatever its status history
+    fb.events = [ev("n1", "10.20.1.12", ts, "incident", incident_id="i1",
+                    extra={"state": "open"})]
+    assert M.score_run(fb)["far"]["n_low_notified"] == 2

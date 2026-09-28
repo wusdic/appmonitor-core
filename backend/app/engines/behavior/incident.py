@@ -9,7 +9,15 @@ notifications per episode, and lets feedback suppress a known-benign
 pattern without touching calibration or risk.
 
 Opening (never during ctx.training; everything else still runs):
-  * an alarm (behavior.alarm at ts = now, any path, entity or class key);
+  * an alarm (behavior.alarm at ts = now, any path, entity or class key)
+    that carries NEW evidence (evaluator round 4): a single-tick path always
+    does; an accumulator / evidence-CUSUM path only when one of its
+    statistics reaches a new extreme (smaller calibrated p, larger S) or
+    first crosses. B14 keeps a chart's latch for 2 (t_alarm - tau-hat) of
+    clean time and B25 re-emits the latched path every tick, so without
+    this a drained chart kept TP incidents open >= 24 h after the attack
+    and reopened closed ones (see _alarm_new); after a close a new episode
+    must go one decade beyond the level the statistic had drained to;
   * a discrete finding >= MEDIUM (store.events of the contract F discrete
     kinds, status not suppressed);
   * risk >= 30 (Medium) on the last two risk rows AND a family at
@@ -28,7 +36,10 @@ Join: the live incident of the same entity whatever its gap (one incident
   <= max(4 ticks, 1 h). Otherwise a closed incident of the key closed
   within 24 h is reopened with its id (not one closed by a label: a
   labelled case is final for B23), else a new one opens.
-Escalate on a severity increase or a new axis.
+Escalate on a severity increase or a new axis; NOTIFY an escalation only on
+  a severity-level rise above what was announced, or on a kill-chain stage
+  (lib/stages, 'behavior' excluded) not announced yet, at most once per 6 h
+  per incident (evaluator round 4: 7.05 notifications per TP incident).
 Close (never on risk):
   (a) the governor regime becomes RETURNED (a transition seen in
       behavior.regime or a regime event after the incident (re)opened);
@@ -37,8 +48,13 @@ Close (never on risk):
       notification here);
   (c) a label on the incident, one of its events, or its entity / class
       (verdict other than 'unsure') -> labelled;
-  (d) quiet -> timeout: no alarm or finding for max(8 ticks, 2 h), every
+  (d) quiet -> timeout: no alarm carrying new evidence or finding for
+      max(8 ticks, 2 h), every
       accumulator < h/4 and e_day(q_inst) >= 1 on the last 4 q_inst rows.
+      An accumulator at or above h/4 (or latched) that is DRAINING (no new
+      extreme for the quiet window and receded one decade, p x 10, from it)
+      does not block (round 4): its evidence is old, and B28 keeps the key
+      quarantined (the learners' protection) until B14 restarts the chart.
       Accumulator level L ~ ln(1/p) / ln(ARL_ticks) from the calibrated p
       of every accumulator, cusum / mcusum included (lib/detectors.acc_level,
       shared with B28: the exponential tail P(S >= x) ~ e^(-theta x) of a
@@ -106,6 +122,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, Incident, Severity
 from .lib import emit, m_class, m_feedback
 from .lib import grains as GR
+from .lib import m_habit as HB
 from .lib import stages as STG
 from .lib.classkeys import CLASS_PREFIX, SYSTEM_KEY, class_kind, is_class
 from .lib.detectors import (ACC_DETECTORS, DETECTOR_INDEX, DETECTORS, FAMILY_DEFAULT_AXES,
@@ -156,6 +173,17 @@ PBD_MAX = 8
 EVIDENCE_EVERY_S = HOUR                    # repeat alarm entries at most hourly unless new
 MAX_EVIDENCE, EVIDENCE_HEAD = 512, 64
 QUEUE_MAX = 200
+# escalate notifications (evaluator round 4): a severity-level rise always
+# notifies; new axes notify only when they add a kill-chain stage the
+# incident has not announced yet (lib/stages; plain behavioural axes such as
+# timing / transport / app_error are evidence, not news), at most once per
+# ESCALATE_STAGE_GAP_S per incident
+ESCALATE_STAGE_GAP_S = 6 * HOUR
+_PLAIN_STAGE = "behavior"
+# accumulator latches (evaluator round 4): a re-emitted accumulator /
+# evidence-CUSUM alarm is new evidence only when its statistic reaches a new
+# extreme; after a close a new episode needs one decade beyond the close level
+REOPEN_DECADE = 10.0
 LIVE = ("open", "acked", "suppressed")
 RESYNC_S = HOUR
 
@@ -222,6 +250,11 @@ def acc_level_from_p(p: float, detector: str, dt_s: float,
     lib/detectors.acc_level scale, also used by B28). spec v2.1: period_s
     counts the ARL in the detector's grain periods (grains.period_s)."""
     return acc_level(p, detector, dt_s, period_s)
+
+
+def incident_stages(axes: Iterable[str]) -> Set[str]:
+    """Kill-chain stages of an incident's axes, the plain 'behavior' stage excluded."""
+    return STG.stages_for(axes) - {_PLAIN_STAGE}
 
 
 class TokenBucket:
@@ -311,7 +344,7 @@ class _Live:
     """Per live incident bookkeeping (reconstructible from the Incident)."""
     __slots__ = ("id", "s", "key", "last_hit", "since", "announced", "supp", "pbd", "axes",
                  "feats", "new", "tokens", "tok_dirty", "ev_ts", "held_sent", "regime_ts",
-                 "event_ids", "lib4")
+                 "event_ids", "lib4", "n_rank", "n_stages", "n_stage_ts")
 
     def __init__(self, inc: Incident, now: float, announced: bool = False) -> None:
         self.id = inc.id
@@ -333,6 +366,10 @@ class _Live:
         self.regime_ts = -math.inf
         self.event_ids: List[str] = []
         self.lib4: Dict[str, float] = {}     # signature -> last lib-4 evidence entry ts
+        # what the analyst has been told (a restart assumes the current state)
+        self.n_rank = sev_rank(inc.severity) if announced else -1
+        self.n_stages: Set[str] = incident_stages(self.axes) if announced else set()
+        self.n_stage_ts = -math.inf
         for ent in inc.evidence or []:
             if not isinstance(ent, Mapping):
                 continue
@@ -392,13 +429,18 @@ class _StoreState:
         self.pending: Dict[str, Dict[str, List[Any]]] = {}     # s -> {inc id: [state, t_q]}
         # (s, e, signature) -> [first_ts, n_ticks, last_ts]: lib/stages habit rule
         self.habits: Dict[Tuple[str, str, str], List[float]] = {}
+        # (s, key) -> {accumulator detector | '__ev__': [extreme, ts of it]}:
+        # min calibrated p of each accumulator / max evidence-CUSUM S (new-peak rule)
+        self.acc_track: Dict[Tuple[str, str], Dict[str, List[float]]] = {}
+        self.acc_tick: Dict[Tuple[str, str], Set[str]] = {}     # this tick's updates
 
 
 class _Trig:
-    __slots__ = ("alarm", "findings", "risk", "matches", "habitual")
+    __slots__ = ("alarm", "alarm_new", "findings", "risk", "matches", "habitual")
 
     def __init__(self) -> None:
         self.alarm: Optional[Dict[str, Any]] = None
+        self.alarm_new = False                   # the alarm carries new evidence
         self.findings: List[BehaviorEvent] = []
         self.risk: Optional[Dict[str, Any]] = None
         self.matches: List[Any] = []
@@ -440,6 +482,7 @@ class IncidentEngine(Engine):
         if st is None or (st.last_run is not None and now < st.last_run):
             st = self._states[store] = _StoreState()        # new store / clock went back
         lo = st.last_run if st.last_run is not None else now - dt
+        st.acc_tick = {}
         budget = (ctx.config or {}).get("alert_budget") or {}
         cap_e = float(budget.get("entity_per_hour", 3))
         cap_s = float(budget.get("system_per_day", 20))
@@ -567,7 +610,9 @@ class IncidentEngine(Engine):
         for k in keys:
             m = store.latest_derived(s, k, ALARM)
             if m is not None and m.ts == now and isinstance(m.value, Mapping):
-                T(k).alarm = dict(m.value)
+                t = T(k)
+                t.alarm = dict(m.value)
+                t.alarm_new = self._alarm_new(store, st, s, k, now, dt, t.alarm)
         for ev in reversed(store.events(s, since=lo, kinds=DISCRETE_KINDS, limit=5000)):
             if ev.id in st.seen_ev or ev.ts > now:
                 continue
@@ -582,10 +627,15 @@ class IncidentEngine(Engine):
             st.seen_m[mk] = mt.ts
             tr = T(mt.entity)
             tr.matches.append(mt)
-            # habits are learnt from every tick, warm-up included (as in B26)
-            tr.habitual.append(STG.habit_step(st.habits, (s, mt.entity, str(mt.signature_id)),
-                                              float(mt.ts))
-                               and LEVELS[sev_rank(mt.severity)] in STG.HABIT_SEVERITIES)
+            # habits are learnt from every tick, warm-up included (as in B26);
+            # a HIGH match is habitual only inside the per-(entity, rule)
+            # envelope B26 learnt from trusted history (lib/m_habit)
+            sev_n = LEVELS[sev_rank(mt.severity)]
+            tr.habitual.append(
+                (STG.habit_step(st.habits, (s, mt.entity, str(mt.signature_id)), float(mt.ts))
+                 and sev_n in STG.HABIT_SEVERITIES)
+                or (sev_n == HB.SEVERITY
+                    and HB.habituated(store, s, mt.entity, mt.signature_id, float(mt.ts))))
         regime_ev: Dict[str, List[BehaviorEvent]] = {}
         for ev in store.events(s, since=lo, kinds=("regime",), limit=1000):
             if ev.id in st.seen_ev:
@@ -595,7 +645,7 @@ class IncidentEngine(Engine):
         if not training:
             for k in keys:
                 t = trig.get(k)
-                if (t is not None and (t.alarm is not None or any(
+                if (t is not None and ((t.alarm is not None and t.alarm_new) or any(
                         sev_rank(e.severity) >= OPEN_FINDING_RANK for e in t.findings))):
                     continue
                 if self._live_for(store, st, s, k) is not None:
@@ -630,8 +680,11 @@ class IncidentEngine(Engine):
             if lv is None or inc is None or inc.status not in LIVE:
                 continue
             reason = self._regime_reason(store, s, inc, lv, regime_ev.get(inc.entity, ()))
-            if reason is None and not fusion_failed and self._quiet(store, s, inc, lv, now, dt):
-                reason = "timeout"
+            if reason is None and not fusion_failed:
+                self._acc_update(store, st, s, inc.entity, now, dt)
+                if self._quiet(store, s, inc, lv, now, dt,
+                               st.acc_track.get((s, inc.entity), {})):
+                    reason = "timeout"
             if reason is not None:
                 self._close(store, st, inc, reason, now, out, touched)
                 continue
@@ -642,6 +695,14 @@ class IncidentEngine(Engine):
                 touched.add(inc.id)
                 if lv.announced:
                     out.append((inc, "update", {"reason": "label_queue"}))
+
+        # --- keep every tracked key's accumulator memory current (a key with
+        # no alarm and no incident must still forget a drained statistic)
+        for (ts_, tk) in [kk for kk in st.acc_track if kk[0] == s]:
+            if st.acc_track.get((ts_, tk)):
+                self._acc_update(store, st, s, tk, now, dt)
+            else:
+                st.acc_track.pop((ts_, tk), None)
 
         # --- 5) campaigns
         if changed:
@@ -724,6 +785,106 @@ class IncidentEngine(Engine):
             return -math.log(max(1e-12, 1.0 - min(max(r, 0.0), 99.999) / 100.0))
         x_old = x_of(r_old) * 2.0 ** (-max(0.0, now - last) / RISK_OLD_HL_S)
         return 100.0 * (1.0 - math.exp(-max(0.0, x_of(r_now) - x_old)))
+
+    # ------------------------------------------------- accumulator latches
+    def _acc_update(self, store, st: _StoreState, s: str, k: str, now: float,
+                    dt: float) -> Set[str]:
+        """Fold this tick's calibrated accumulator p of key k into its
+        tracker (once per tick); returns the accumulators whose statistic
+        reached a new extreme now (a smaller p than any since tracking began,
+        or first tracked: at or above h/4, or latched). An accumulator back
+        below h/4 and unlatched is dropped, so its next crossing is new."""
+        cache = st.acc_tick.get((s, k))
+        if cache is not None:
+            return cache
+        new: Set[str] = set()
+        tr = st.acc_track.get((s, k))
+        row = store.vec_at(s, k, P, now)
+        if row is not None:
+            latch = emit.read_dict(store, s, k, ACC_ALARM, now)
+            for d, i in _ACC_IDX:
+                p = float(row[i])
+                if not math.isfinite(p):
+                    continue                     # unscored here (H detector between H ticks)
+                per = GR.period_s(d, dt, GR.CANONICAL) if self._canon else None
+                hot = acc_level_from_p(p, d, dt, per) >= ACC_QUIET_LEVEL \
+                    or _f(latch.get(d)) >= 0.5
+                ent = tr.get(d) if tr is not None else None
+                if ent is None:
+                    if hot:
+                        if tr is None:
+                            tr = st.acc_track[(s, k)] = {}
+                        tr[d] = [p, now, p]
+                        new.add(d)
+                    continue
+                ent[2] = p
+                if p < ent[0]:
+                    ent[0], ent[1] = p, now
+                    new.add(d)
+                elif not hot:
+                    del tr[d]
+        st.acc_tick[(s, k)] = new
+        return new
+
+    def _alarm_new(self, store, st: _StoreState, s: str, k: str, now: float, dt: float,
+                   a: Mapping[str, Any]) -> bool:
+        """Does this alarm carry NEW evidence? (evaluator round 4)
+
+        Accumulators (B07 / B11-B14 charts and windows) and B25's evidence
+        CUSUM stay latched after the evidence stops: B14 keeps a chart's
+        latch until 2 (t_alarm - tau-hat) of clean time, so after a 24-h
+        attack detected at its end the chart alarmed for ~2 more days and
+        B25 re-emitted an accumulator-path alarm on every tick (pack A seed
+        0: 5 of 6 TP incidents still open 24 h after the attack, cusum /
+        mcusum latched with calibrated p 0.1-0.5 on a drained chart). A
+        latched statistic that is still rising makes new extremes (a CUSUM
+        under a persisting shift delta > k grows by delta - k per row);
+        after the shift ends it drains (mean step -k) and under the null
+        re-reaches its peak with probability ~ exp(-2 k x) for an overshoot
+        x. So a single-tick (or any other) path is always new; an
+        accumulator / evidence-CUSUM path is new only when one of its
+        statistics reaches a new extreme (a smaller calibrated p, a larger
+        S) or first crosses. A non-new alarm joins its incident as evidence
+        but neither opens / reopens one nor restarts the quiet clock."""
+        paths = {str(x) for x in (a.get("paths") or ()) if x} or {str(a.get("path") or "")}
+        latched = {"accumulator", "evidence_cusum"}
+        if paths - latched:
+            new = True
+        else:
+            new = False
+        acc_new = self._acc_update(store, st, s, k, now, dt)
+        if "accumulator" in paths and acc_new & {str(d) for d in a.get("acc") or ()}:
+            new = True
+        S = _f(a.get("evidence"))
+        h = _f(a.get("h"))
+        tr = st.acc_track.get((s, k))
+        ent = tr.get("__ev__") if tr is not None else None
+        if "evidence_cusum" in paths and S == S:
+            if ent is None or a.get("onset"):
+                if tr is None:
+                    tr = st.acc_track[(s, k)] = {}
+                tr["__ev__"] = [S, now, S]
+                new = True
+            else:
+                ent[2] = S
+                if S > ent[0]:
+                    ent[0], ent[1] = S, now
+                    new = True
+        elif ent is not None and S == S and h == h and S < h:
+            del tr["__ev__"]                     # back below h: the next crossing is new
+        return new
+
+    def _rearm_tracker(self, st: _StoreState, s: str, k: str) -> None:
+        """At a close: a later episode must go one decade beyond the level the
+        statistics had drained to (p / 10, S + ln 10), not beat the old peak."""
+        tr = st.acc_track.get((s, k))
+        if not tr:
+            return
+        for d, ent in tr.items():
+            if d == "__ev__":
+                ent[0] = ent[2] + math.log(REOPEN_DECADE)
+            else:
+                ent[0] = ent[2] / REOPEN_DECADE
 
     # --------------------------------------------------------- common mode
     @staticmethod
@@ -831,7 +992,8 @@ class IncidentEngine(Engine):
                out: List[Tuple[Incident, str, Dict[str, Any]]], touched: Set[str],
                changed: Set[str], parent: Optional[Incident] = None,
                force: Optional[Dict[str, Any]] = None) -> Optional[Incident]:
-        openers = (t.alarm is not None or t.risk is not None or force is not None
+        openers = ((t.alarm is not None and t.alarm_new) or t.risk is not None
+                   or force is not None
                    or any(sev_rank(e.severity) >= OPEN_FINDING_RANK and e.status != "suppressed"
                           for e in t.findings))
         inc, how = self._target(store, st, s, k, now, dt, reopen=openers and not training)
@@ -908,6 +1070,7 @@ class IncidentEngine(Engine):
             self._evidence(inc, {"ts": now, "source": "b27", "state": "promoted"})
             self._mark_events(store, inc, lv, "open")
             self._notify(tok, s, inc, "escalate" if lv.announced else "open")
+            self._told(lv, inc)
             return inc
 
         # feedback suppression (and its escape)
@@ -929,14 +1092,44 @@ class IncidentEngine(Engine):
                 self._evidence(inc, {"ts": now, "source": "feedback", "state": "escaped"})
                 self._mark_events(store, inc, lv, "open")
                 self._notify(tok, s, inc, "escalate" if lv.announced else "open")
+                self._told(lv, inc)
                 return inc
             if lv.supp == "policy":
                 return inc
         if state is not None:
             self._notify(tok, s, inc, state, reopened=(how == "reopen"))
-        elif grew:
+            self._told(lv, inc)
+        elif grew and self._escalate_due(lv, inc, now):
             self._notify(tok, s, inc, "escalate")
         return inc
+
+    @staticmethod
+    def _told(lv: _Live, inc: Incident) -> None:
+        lv.n_rank = sev_rank(inc.severity)
+        lv.n_stages = incident_stages(lv.axes)
+
+    def _escalate_due(self, lv: _Live, inc: Incident, now: float) -> bool:
+        """Escalate notifications (evaluator round 4: 7.05 notifications per
+        TP incident against 3; on pack A seed 0 two thirds of the escalations
+        were a new plain axis at an unchanged severity, e.g. timing /
+        transport / app_error days into a CRITICAL incident). Notify when the
+        severity LEVEL rises above what was announced, or when the axes add
+        a kill-chain stage (lib/stages, 'behavior' excluded) not announced
+        yet, the latter at most once per ESCALATE_STAGE_GAP_S per incident
+        (a stage that arrives inside the gap is announced by the next due
+        escalation). Other new axes are evidence (and in the close
+        notification), not news."""
+        rank = sev_rank(inc.severity)
+        stages = incident_stages(lv.axes)
+        if rank > lv.n_rank:
+            lv.n_rank = rank
+            lv.n_stages = stages
+            return True
+        if stages - lv.n_stages and now - lv.n_stage_ts >= ESCALATE_STAGE_GAP_S:
+            lv.n_stages = stages
+            lv.n_stage_ts = now
+            return True
+        return False
 
     def _merge(self, store, st: _StoreState, s: str, k: str, inc: Incident, lv: _Live,
                t: _Trig, now: float, dt: float, force: Optional[Dict[str, Any]]) -> bool:
@@ -966,7 +1159,9 @@ class IncidentEngine(Engine):
             hit = True
         a = t.alarm
         if a is not None:
-            hit = True
+            # a re-emitted latch whose statistic made no new extreme joins as
+            # evidence but does not restart the quiet clock (_alarm_new)
+            hit = hit or t.alarm_new
             kinds.add("alarm")
             sev = max(sev, max(1, sev_rank(a.get("severity"))))
             ax = canonical_axes(a.get("axes"))
@@ -1135,10 +1330,22 @@ class IncidentEngine(Engine):
                 reason = _REGIME_CLOSE[state]
         return reason
 
-    def _quiet(self, store, s: str, inc: Incident, lv: _Live, now: float, dt: float) -> bool:
+    def _quiet(self, store, s: str, inc: Incident, lv: _Live, now: float, dt: float,
+               track: Optional[Mapping[str, List[float]]] = None) -> bool:
         """(d): quiet for max(8 ticks, 2 h), accumulators < h/4, and
-        e_day(q_inst) >= 1 on the last 4 rows (NaN rows are neutral)."""
+        e_day(q_inst) >= 1 on the last 4 rows (NaN rows are neutral).
+        An accumulator at or above h/4 (or latched) does not block when it is
+        DRAINING: its statistic has made no new extreme for the quiet window
+        and has receded at least one decade (p x 10) from it (evaluator round
+        4, see _alarm_new)."""
         win = max(QUIET_TICKS * dt, QUIET_S)
+        track = track or {}
+
+        def draining(d: str) -> bool:
+            # no new extreme for the quiet window AND receded one decade from it
+            # (a plateau, e.g. a persisting shift at the reference value k, holds)
+            ent = track.get(d)
+            return ent is not None and now - ent[1] >= win and ent[2] >= REOPEN_DECADE * ent[0]
         if now - lv.last_hit < win:
             return False
         k = inc.entity
@@ -1159,10 +1366,10 @@ class IncidentEngine(Engine):
                 if qi * DAY / rdt < Q_E_DAY_MIN:
                     return False
         acc = emit.read_dict(store, s, k, ACC_ALARM, now)
-        if any(_f(v) >= 0.5 for v in acc.values()):
+        if any(_f(v) >= 0.5 and not draining(d) for d, v in acc.items()):
             return False
         if self._canon:
-            return self._quiet_h(store, s, k, now, dt)
+            return self._quiet_h(store, s, k, now, dt, draining)
         # every accumulator, cusum / mcusum included, on the calibrated-p scale
         # (integration R13.2 / R14.4: m_cp.level, the raw max S/h over 48
         # charts, is >= h/4 on ~88 % of null ticks, so '< h/4' on it would
@@ -1170,12 +1377,12 @@ class IncidentEngine(Engine):
         row = store.vec_at(s, k, P, now)
         if row is not None:
             for d, i in _ACC_IDX:
-                if acc_level_from_p(float(row[i]), d, dt) >= ACC_QUIET_LEVEL:
+                if acc_level_from_p(float(row[i]), d, dt) >= ACC_QUIET_LEVEL and not draining(d):
                     return False
         return True
 
     @staticmethod
-    def _quiet_h(store, s: str, k: str, now: float, dt: float) -> bool:
+    def _quiet_h(store, s: str, k: str, now: float, dt: float, draining=lambda d: False) -> bool:
         """spec v2.1 (cadence.md §9.3): the latest H-stream evidence (<= 1 h
         old) must be quiet too, and every accumulator's LATEST p (H ones are
         written hourly) below the quiet level on its own period's ARL."""
@@ -1194,11 +1401,12 @@ class IncidentEngine(Engine):
                 if not fin.size:
                     continue
                 per = GR.period_s(d, dt, GR.CANONICAL)
-                if acc_level_from_p(float(col[fin[-1]]), d, dt, per) >= ACC_QUIET_LEVEL:
+                if acc_level_from_p(float(col[fin[-1]]), d, dt, per) >= ACC_QUIET_LEVEL \
+                        and not draining(d):
                     return False
         tail = store.derived_tail(s, k, ACC_ALARM, 1)
         if tail and tail[-1].ts >= lo and isinstance(tail[-1].value, dict) \
-                and any(_f(v) >= 0.5 for v in tail[-1].value.values()):
+                and any(_f(v) >= 0.5 and not draining(d) for d, v in tail[-1].value.items()):
             return False                         # the latest accumulator latch still holds
         return True
 
@@ -1215,6 +1423,7 @@ class IncidentEngine(Engine):
         touched.add(inc.id)
         self._mark_events(store, inc, lv, "closed")
         st.key_last[(inc.system, inc.entity)] = inc.last_seen
+        self._rearm_tracker(st, inc.system, inc.entity)
         if lv.announced:
             out.append((inc, "close", {"close_reason": reason, **(extra or {})}))
         self._forget(st, inc.id)

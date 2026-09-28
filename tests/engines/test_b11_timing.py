@@ -565,3 +565,87 @@ def test_active_tick_without_a_true_gap_writes_undefined_descriptors():
     feed.tick(E, T0 + DT, [])                           # a silent tick writes nothing
     run_engine(eng, st, T0 + DT, training=True, dt=DT)
     assert timing(st, T0 + DT) is None
+
+
+# ------------------------------------------------ round 4: the F null of pm
+def _mixed_human_times(rng, t0: float, t1: float, block: float = 3 * 3600.0) -> np.ndarray:
+    """A human whose session mix changes every 3 h (think-time median and
+    break length drawn per block, log-sd 0.8): the window-to-window spread of
+    overdispersion that clean pack-A personas show."""
+    out, t = [], t0
+    while t < t1:
+        b1 = min(t + block, t1)
+        mu = LN8 + 0.8 * rng.standard_normal()
+        brk = 300.0 * math.exp(0.8 * rng.standard_normal())
+        out.append(human_times(rng, t, b1, think=(mu, 1.0), brk=brk))
+        t = b1
+    return np.concatenate(out)
+
+
+def test_null_pm_calibrated_when_overdispersion_varies_between_windows():
+    """7 d of training then 4 d live of the same process: the window test's
+    pm stays near nominal (HEAD's phi-scaled chi2: p < 1e-2 on ~20x and
+    p < 1e-3 on 130-220x the nominal share of these ticks)."""
+    pms = []
+    for seed in (0, 1):
+        st, eng = make_store(), TimingEngine()
+        feed = Feed(st)
+        rng = np.random.default_rng(seed)
+        n_tr, n_live = 7 * 96, 4 * 96
+        times = _mixed_human_times(rng, T0 - DT, T0 + (n_tr + n_live + 10) * DT)
+        now = run_stream(st, feed, eng, times, T0, n_tr)
+        t_live = [now + i * DT for i in range(1, n_live + 1)]
+        set_trust(st, S, E, t_live, 1.0)
+        for t in t_live:
+            feed.tick(E, t, per_tick(times, t, DT))
+            run_engine(eng, st, t)
+            pms.append(pm(st, t))
+            assert score(st, t) == pytest.approx(-math.log10(max(pm(st, t), 1e-300)), rel=1e-4)
+    p = np.asarray(pms)
+    p = p[np.isfinite(p)]
+    assert p.size > 600
+    assert np.mean(p < 1e-2) / 1e-2 < 4.0
+    assert np.mean(p < 1e-3) / 1e-3 < 5.0
+    g, nu = TM.null_params(model(st), 0, 20.0)
+    assert g > 0.0 and TM.NU_MIN <= nu < TM.NU_MAX           # a scale mixture was learned
+
+
+def test_null_params_reduce_to_scaled_chi2_without_spread():
+    """With committed G/df exactly chi2_df / df scaled by phi (no window-to-
+    window spread beyond the multinomial) the F null has a large nu and its
+    p matches phi-scaled chi2."""
+    rng = np.random.default_rng(4)
+    df, phi = 20.0, 1.7
+    st = TM.new_state()
+    st[TM.T] = 0.0
+    for r in phi * rng.chisquare(df, 4000) / df:
+        k = TM.DISP + TM.DISP_W * 1
+        lr = math.log(r)
+        st[k:k + 3] += (1.0, lr, lr * lr)
+    m = {"state": st}
+    g, nu = TM.null_params(m, 1, df)
+    assert nu > 200.0 and g == pytest.approx(phi, rel=0.05)
+    from scipy import special
+    for x in (1.5, 2.5, 3.5):
+        assert TM.null_pm(m, 1, x * df, df) == pytest.approx(
+            float(special.chdtrc(df, x * df / phi)), rel=0.35)
+
+
+def test_prior_dominated_null_is_marked_provisional():
+    """While the daypart's null rests on fewer than PHI_PRIOR_W committed
+    windows, a scored tick carries behavior.degraded 'provisional:timing_null';
+    after two days of training it does not."""
+    from app.engines.behavior import timing as TI
+    st, eng = make_store(), TimingEngine()
+    feed = Feed(st)
+    rng = np.random.default_rng(9)
+    times = human_times(rng, T0 - DT, T0 + 300 * DT)
+    early = []
+    for i in range(200):
+        now = T0 + i * DT
+        feed.tick(E, now, per_tick(times, now, DT), DT)
+        run_engine(eng, st, now, training=True, dt=DT)
+        if pm(st, now) == pm(st, now):
+            early.append(emit.read_dict(st, S, E, emit.DEGRADED, now).get(DETECTOR))
+    assert early and early[0] == TI.PROV_CAUSE
+    assert early[-1] is None

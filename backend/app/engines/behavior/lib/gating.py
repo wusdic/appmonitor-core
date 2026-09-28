@@ -65,6 +65,16 @@ Private bookkeeping lives under '_' keys of gate.applied, so the frozen
 GateState layout is unchanged. ckpt_every_s = inf disables checkpoints
 (rollback then replays the journal from init()).
 
+Null calibration rings (round 4): GatedLearner(null_ring=True) - B24's
+detector rings and B25's meta rings - commit with the trust of the row's
+PERIOD instead of behavior.trust (period_weight: live 1 unless the governor
+tick at ts is missing / NaN or the entity was quarantined at ts; training
+the warm-up trust; release_weight: 1 for rows the governor releases or
+rebases; the last release window also covers rows of it committed later).
+behavior.trust's evidence factor and [no alarm] are functions of the row's
+own score, and a ring that admits by its own score truncates the null tail
+it estimates (see period_weight). Every other learner is unchanged.
+
 Replay ordering: journal and held are kept sorted by ts and replay folds
 rows in ascending ts, i.e. restore + replay equals an offline fit on the
 rows <= tau with their recorded weights. A released row is journaled with
@@ -411,6 +421,98 @@ def commit_candidates(store: "MetricStore", s: str, e: str, learner: str, last_t
     return list(zip(ts, w_eff, w_prov))
 
 
+def period_weight(store: "MetricStore", s: str, e: str, ts: float, training: bool,
+                  w_eff: float) -> float:
+    """Admission weight of row ts into a NULL CALIBRATION RING (B24 detector
+    rings, B25 meta rings): the trust of the row's PERIOD, never of the row's
+    own evidence.
+
+    Why (integration round 4): behavior.trust = trust_prov x [period] x
+    [accumulators < h/2], and trust_prov = clip(log10(e_inst / 0.1), 0, 1) x
+    [no alarm] x [no finding >= MEDIUM] is a function of the row's own fused
+    p. A ring that admits rows with that weight truncates its own null tail
+    exactly where it is fitted, and the truncation feeds back: a ring k x too
+    light gives q k x too small, which thins every row with p_true < k/96 (at
+    900 s) out of the ring, which makes it lighter still. Simulated on an
+    exact Exp(1) null (one M = 256 ring, GPD refit every 16 admissions): the
+    trust weight gives 4.5 / 6.8 / 11x nominal at p <= 1e-3 / 3e-4 / 1e-4,
+    period-only admission 1.1 / 1.1 / 1.4x (tests/lib/test_calib_admission.py).
+
+    Returns, for a live row: 0 when the governor's tick at ts is missing or
+    degraded (trust NaN: nothing vouches for the period), 0 when the entity
+    was quarantined at ts (open incident or regime suspect / drifting /
+    rejected: an entity-level period verdict), else 1. In training the
+    warm-up trust (w_eff: 1 unless a lib-4 match >= HIGH, a period flag of
+    the signature library, not of this row's detector scores) is kept."""
+    if training:
+        return _clip01(float(w_eff), 0.0)
+    tr = store.vec_at(s, e, TRUST, ts)
+    if tr is None or not len(tr) or not math.isfinite(float(tr[0])):
+        return 0.0
+    q = store.vec_at(s, e, QUARANTINE, ts)
+    if q is not None and len(q):
+        v = float(q[0])
+        if v == v and v > 0.5:
+            return 0.0
+    return 1.0
+
+
+def release_weight(store: "MetricStore", s: str, e: str, ts: float) -> float:
+    """Admission weight of a HELD row that the governor releases (RETURNED,
+    an incident closed while the regime is normal) or rebases (ACCEPTED)
+    into a null calibration ring: the governor's verdict on the period is
+    'normal after all', so the row is admitted whatever its own score
+    (1.0), unless its governor tick is missing or degraded (0.0). Rejected
+    periods are never released (frozen: held rows are dropped). Robustness
+    against an attack period released by mistake comes from the rings'
+    contamination-bounded tail fit (lib/calib.fit_tail, trim), not from
+    thinning the released rows by their own evidence."""
+    tr = store.vec_at(s, e, TRUST, ts)
+    if tr is None or not len(tr) or not math.isfinite(float(tr[0])):
+        return 0.0
+    return 1.0
+
+
+def period_trusted(store: "MetricStore", s: str, e: str, ts: np.ndarray) -> np.ndarray:
+    """Vectorised period trust of an ascending ts grid (B25's evidence audit):
+    a finite governor trust exists at ts, and the entity was NOT quarantined
+    at the PREVIOUS grid point (the state before the row: an alarm row opens
+    its own incident, so quarantine at its own ts would select the null
+    stream by the row's score - the audit would never see an excess). The
+    first row uses the latest quarantine value before it. Missing trust rows
+    count as untrusted, missing quarantine rows as not quarantined."""
+    tq = np.asarray(ts, dtype=np.float64).reshape(-1)
+    out = np.zeros(tq.size, dtype=bool)
+    if not tq.size:
+        return out
+    t, M = store.vec_since(s, e, TRUST, float(tq[0]) - _TS_EPS)
+    t = np.asarray(t, dtype=np.float64)
+    if not t.size:
+        return out
+    v = _col0(M)
+    idx = np.searchsorted(t, tq - _TS_EPS, side="left")
+    ok = idx < t.size
+    ok[ok] = np.abs(t[idx[ok]] - tq[ok]) <= _TS_EPS
+    fin = np.zeros(tq.size, dtype=bool)
+    fin[ok] = np.isfinite(v[idx[ok]])
+    lo = float(tq[0]) - 7 * 86400.0
+    tq2, Q = store.vec_since(s, e, QUARANTINE, lo)
+    tq2 = np.asarray(tq2, dtype=np.float64)
+    if not tq2.size:
+        return fin
+    qv = _col0(Q)
+    qdef = ~np.isnan(qv)
+    tq2, qv = tq2[qdef], qv[qdef]
+    if not tq2.size:
+        return fin
+    # the latest defined quarantine value strictly before each row
+    j = np.searchsorted(tq2, tq - _TS_EPS, side="left") - 1
+    quar = np.zeros(tq.size, dtype=bool)
+    has = j >= 0
+    quar[has] = qv[j[has]] > 0.5
+    return fin & ~quar
+
+
 def is_quarantined(store: "MetricStore", s: str, e: str, now: float, dt_s: float) -> bool:
     """quarantine(t - 1): latest non-NaN behavior.quarantine with ts < now (> 0.5);
     none within HELD_MAX_AGE_S -> False.
@@ -515,6 +617,10 @@ class GatedLearner(Generic[S]):
     ckpt_every_s: float = CKPT_EVERY_S
     clock: str = DEFAULT_CLOCK
     window_s: Optional[float] = None     # spec v2.1: grain learners (min trust over the grain)
+    # null calibration rings (B24, B25): commit with the PERIOD's trust
+    # (period_weight / release_weight) instead of the row's behavior.trust,
+    # whose evidence factor is a function of the row's own score
+    null_ring: bool = False
 
     # ------------------------------------------------------------------ step
     def step(self, store: "MetricStore", s: str, e: str, state: S, gate: GateState,
@@ -553,8 +659,15 @@ class GatedLearner(Generic[S]):
                 else:
                     r = self.fetch(store, s, e, ts)
                     if r is not None:
-                        state = self.update(state, r, w_eff)
-                        g.journal.append(CommitRow(ts, w_eff, w_prov))
+                        w = w_eff
+                        if self.null_ring:
+                            w = period_weight(store, s, e, ts, training, w_eff)
+                            if not w > 0.0 and not training and _released(g, ts):
+                                # the tail of a released quarantine: rows in
+                                # (end - D, end] were not held yet at the release
+                                w = release_weight(store, s, e, ts)
+                        state = self.update(state, r, w)
+                        g.journal.append(CommitRow(ts, w, w_prov))
                 g.last_ts = max(g.last_ts, ts)
         frontier = commit_frontier(now, dt_s, self.d_min_s)
         if frontier - g.last_ckpt_ts >= self.ckpt_every_s:
@@ -684,8 +797,9 @@ class GatedLearner(Generic[S]):
             x = self.fetch(store, s, e, r.ts)
             if x is None:
                 continue
-            state = self.update(state, x, r.w_prov)
-            insort(g.journal, CommitRow(r.ts, r.w_prov, r.w_prov), key=_row_ts)
+            w = release_weight(store, s, e, r.ts) if self.null_ring else r.w_prov
+            state = self.update(state, x, w)
+            insort(g.journal, CommitRow(r.ts, w, r.w_prov), key=_row_ts)
             lo_ts = min(lo_ts, r.ts)
         if lo_ts <= pc:
             _add_barrier(g, _prev(lo_ts), pc)
@@ -851,6 +965,15 @@ class GatedLearner(Generic[S]):
 
 
 # ================================================================== helpers
+def _released(g: GateState, ts: float) -> bool:
+    """ts lies in the last release window the gate applied ([t0, t1])."""
+    rel = g.applied.get("release")
+    if not isinstance(rel, (list, tuple)) or len(rel) != 2:
+        return False
+    t0, t1 = _dec_f(rel[0], math.nan), _dec_f(rel[1], math.nan)
+    return t0 - _TS_EPS <= float(ts) <= t1 + _TS_EPS
+
+
 def _prune(g: GateState, now: float) -> None:
     """Drop journal / held rows older than 8 d and events no restorable
     checkpoint can predate. Replaces lists (never mutates shared ones)."""

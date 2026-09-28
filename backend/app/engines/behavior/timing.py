@@ -22,13 +22,21 @@ depends on the 60 / 900 / 3600-s cadence):
      release or replay it up to 8 d later, so its `fetch` must still find it.
   3. Score against the model as of the last commit: the recent 6-h window
      (running sums of the rows in (now - 6 h, now], recomputed exactly every
-     256 ticks) against the committed 7-d decayed histogram. score.timing =
-     JSD in bits (B24 turns it into a conformal p). behavior.pm = the
-     two-sample G test (G = 2 N JSD_pi) scaled by the entity's learned
-     overdispersion phi (bursty, correlated gaps are not multinomial) against
-     chi2_df. Accumulator on axis temporal: acc_alarm when pm <= budget ·
-     dt / 86400, a union bound over the day's ticks, so the timing budget
-     (0.005 alarms per entity-day, lib/detectors) holds at any cadence.
+     256 ticks) against the committed 7-d decayed histogram. behavior.pm =
+     the two-sample G test (G = 2 N JSD_pi) against the entity's learned
+     null G/df ~ g F(df, nu) (m_timing.null_params: bursty, correlated gaps
+     are not multinomial, and their overdispersion varies from window to
+     window; per daypart log-moments of G/df of committed ticks). score.timing
+     = -log10 pm (B24 turns it into a conformal p). DEVIATION (round 4): the
+     spec's score is the JSD; the JSD of a window depends on its gap count
+     and on the daypart's gap mix, so B24's rings, which pool dayparts while
+     a stratum is small, compared unlike windows (pack A seed 0: B24 made the
+     JSD p < 1e-3 on 18.8x the nominal share of clean live ticks against
+     8.5x for the old pm); -log10 of a calibrated pm is pivotal. The JSD is
+     still published in profile.extra.timing ('jsd'). Accumulator on axis
+     temporal: acc_alarm when pm <= budget · dt / 86400, a union bound over
+     the day's ticks, so the timing budget (0.005 alarms per entity-day,
+     lib/detectors) holds at any cadence.
   4. Descriptors of the recent window go to behavior.timing (B15 / B16 / B30):
      burstiness B = (sd - mean)/(sd + mean) and memory M = corr(gap_i,
      gap_i+1) over active gaps (< 30 min: a single overnight gap would
@@ -59,7 +67,6 @@ import math
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
-from scipy import special
 
 from ...core.engine import Context, Engine
 from ...models.schema import DerivedMetric, EntityProfile, MetricKind
@@ -88,11 +95,12 @@ ROW_KEEP_S = G.JOURNAL_MAX_AGE_S + 3600.0   # rows must outlive journal and held
 WIN_RECOMPUTE_EVERY = 256         # exact recompute of the running window sums
 SESSION_GAP_DEFAULT_S = 1800.0
 SESSION_GAP_CLIP = (120.0, 7200.0)          # B10's clip of G_e
-DISP_RATIO_CAP = 25.0             # one anomalous window cannot inflate phi much
+DISP_RATIO_CAP = TM.R_MAX         # one anomalous window cannot inflate the null much
 P_FLOOR = 1e-300
 PM_STORE_FLOOR = m_calib.P_ISSUED_FLOOR     # behavior.pm is float32: no stored 0
 PROFILE_EVERY_S = 3600.0          # portraits (B30) refresh every 2 h
 AXES_PM_MAX = 0.05                # axes are written when the detector contributes
+PROV_CAUSE = emit.cause(emit.PROVISIONAL, "timing_null")   # null still prior-dominated
 
 PERIOD_WINDOW_S = 7200.0          # rfft over the last 2 h
 PERIOD_BIN_S = 5.0
@@ -459,8 +467,7 @@ def score_window(summ: WindowStats, model: Mapping[str, Any],
     if summ.n_eff < RECENT_MIN_N or n_l < LONG_MIN_N:
         return _NAN, _NAN, _NAN
     jsd, g, df = _compare(summ.hist, summ.n_eff, h_l, n_l)
-    phi = TM.dispersion(model, daypart)
-    pm = max(P_FLOOR, float(special.chdtrc(df, g / phi)))
+    pm = max(P_FLOOR, TM.null_pm(model, daypart, g, df))
     return jsd, pm, g / df
 
 
@@ -516,8 +523,8 @@ def _fold(state: np.ndarray, hist: np.ndarray, w2: float, g: Tuple[float, ...],
     """state += a * (a sample of statistics), in place. g = (W, mean, M2) of
     active gaps, t = (W, mean, M2) of ln within-session gaps and p = (W, mx,
     my, Cxx, Cyy, Cxy) of active pairs carry per-gap weights; w2 is a sum of
-    squared per-gap weights (so it scales by a^2); disp is [W, S] per daypart
-    (tick weights)."""
+    squared per-gap weights (so it scales by a^2); disp is [W, S1, S2] per
+    daypart (tick weights)."""
     state[TM.HIST] += a * hist
     state[TM.W2] += a * a * w2
     _fold_moments(state, TM.GW, TM.GM, TM.GM2, a * g[0], g[1], a * g[2])
@@ -536,7 +543,7 @@ def _fold(state: np.ndarray, hist: np.ndarray, w2: float, g: Tuple[float, ...],
         state[TM.PXY] += a * p[5] + dx * dy * f
         state[TM.PW] = w
     if disp is not None:
-        state[TM.DISP:TM.DISP + 2 * TM.N_DAYPARTS] += a * disp
+        state[TM.DISP:TM.DISP + TM.DISP_W * TM.N_DAYPARTS] += a * disp
 
 
 def _update(state: np.ndarray, row: Tuple[float, np.ndarray, List[float]],
@@ -559,10 +566,12 @@ def _update(state: np.ndarray, row: Tuple[float, np.ndarray, List[float]],
     _fold(state, rw * counts.astype(np.float64), rw * rw * n, g, tt, p, None, a)
     gr, dp = st[S_GR], st[S_DP]
     if gr == gr and dp == dp and 0 <= int(dp) < TM.N_DAYPARTS:
-        # dispersion: tick weight a (trust x decay), G/df capped
-        k = TM.DISP + 2 * int(dp)
+        # dispersion: tick weight a (trust x decay), log-moments of G/df clipped
+        k = TM.DISP + TM.DISP_W * int(dp)
+        lr = math.log(min(max(float(gr), TM.R_MIN), DISP_RATIO_CAP))
         state[k] += a
-        state[k + 1] += a * min(max(float(gr), 0.0), DISP_RATIO_CAP)
+        state[k + 1] += a * lr
+        state[k + 2] += a * lr * lr
     return state
 
 
@@ -579,7 +588,7 @@ def _merge(own: np.ndarray, other: np.ndarray, w: float) -> np.ndarray:
     p = (float(other[TM.PW]), float(other[TM.PX]), float(other[TM.PY]),
          float(other[TM.PXX]), float(other[TM.PYY]), float(other[TM.PXY]))
     _fold(own, other[TM.HIST], float(other[TM.W2]), g, tt, p,
-          other[TM.DISP:TM.DISP + 2 * TM.N_DAYPARTS], a)
+          other[TM.DISP:TM.DISP + TM.DISP_W * TM.N_DAYPARTS], a)
     return own
 
 
@@ -680,13 +689,14 @@ def strict_period(times: Any) -> Tuple[float, float, int]:
 # ================================================================ the engine
 class _Rec:
     """One entity's per-tick outcome, written after the periodicity pass."""
-    __slots__ = ("s", "e", "model", "status", "summ", "score", "pm", "alarm")
+    __slots__ = ("s", "e", "model", "status", "summ", "score", "pm", "alarm", "prov")
 
     def __init__(self, s: str, e: str, model: Dict[str, Any], status: str,
                  summ: Optional[WindowStats], score: float, pm: float,
                  alarm: Optional[int]) -> None:
         self.s, self.e, self.model, self.status = s, e, model, status
         self.summ, self.score, self.pm, self.alarm = summ, score, pm, alarm
+        self.prov = False
 
 
 class TimingEngine(Engine):
@@ -781,9 +791,12 @@ class TimingEngine(Engine):
                 alarm = 0 if ctx.training else int(pm <= alpha)
         elif status == _DEGRADED:
             summ = None
+        prov = pm == pm and TM.null_support(model, daypart) < TM.PHI_PRIOR_W
         self._learn(ctx, s, e, model, now, dt, frontier)
         rows.prune(now - ROW_KEEP_S)
-        return _Rec(s, e, model, status, summ, score, pm, alarm)
+        rec = _Rec(s, e, model, status, summ, score, pm, alarm)
+        rec.prov = bool(prov)
+        return rec
 
     def _learn(self, ctx: Context, s: str, e: str, model: Dict[str, Any], now: float,
                dt: float, frontier: float) -> None:
@@ -850,10 +863,11 @@ class TimingEngine(Engine):
             return 1
         if r.score == r.score:
             emit.write_scores(
-                store, s, e, now, {DETECTOR: r.score},
+                store, s, e, now, {DETECTOR: _neglog10(r.pm)},
                 pm={DETECTOR: max(r.pm, PM_STORE_FLOOR)} if r.pm == r.pm else None,
                 axes={DETECTOR: AXES} if (r.pm <= AXES_PM_MAX or r.alarm) else None,
                 acc_alarm={DETECTOR: r.alarm} if r.alarm is not None else None,
+                degraded={DETECTOR: PROV_CAUSE} if r.prov else None,
                 window_s=win)
         per, pp = TM.period(model, now)
         if r.summ is None and not pp == pp and r.status != _OK:
@@ -864,6 +878,7 @@ class TimingEngine(Engine):
         # the entity is active (contract M; integration round 2)
         desc = r.summ.descriptors() if r.summ is not None else dict(_NO_DESC)
         desc["period"], desc["period_p"] = per, pp
+        model["live"]["jsd"] = r.score
         model["live"]["recent"] = desc
         store.add_derived(DerivedMetric(name=SERIES, value=dict(desc), ts=now, system=s,
                                         entity=e, window_s=win, kind=MetricKind.CATEGORICAL,
@@ -959,6 +974,11 @@ def _push_events(live: Dict[str, Any], t: np.ndarray, now: float) -> None:
     live["ev_new"] = int(live.get("ev_new", 0)) + int(t.size)
 
 
+def _neglog10(p: float) -> float:
+    """score.timing: -log10 of the window test's p (NaN stays NaN)."""
+    return -math.log10(max(float(p), P_FLOOR)) if p == p else _NAN
+
+
 def _json(v: float, nd: int = 4) -> Optional[float]:
     v = float(v)
     return round(v, nd) if math.isfinite(v) else None
@@ -972,6 +992,7 @@ def _write_profile(store: Any, s: str, e: str, model: Dict[str, Any],
     p = store.profile(s, e) or EntityProfile(system=s, entity=e)
     out: Dict[str, Any] = {k: _json(v) for k, v in d.items()}
     out["recent"] = {k: _json(v) for k, v in recent.items()}
+    out["jsd"] = _json(model["live"].get("jsd", _NAN))
     out["hist"] = TM.as_float_list(TM.hist_probs(model))
     out["version"] = int(model.get("version", 0))
     out["updated"] = now

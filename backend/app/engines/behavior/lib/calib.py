@@ -50,6 +50,30 @@ refit every 16 ticks, 2e5 null ticks; realised rate / nominal):
     s exceeds all n null draws (conformal p < 1/(n+1)), so the tail must
     not report more. Matters for bounded scores (JSD) where the clipped
     xi = -0.5 end point lies beyond the true bound.
+  * (round 4, evaluator) tail p >= rate 10^-(s - u), i.e. an exponential
+    floor of scale 1/ln 10 (P_SCORE_SIGMA), when the score
+    is -log10 of the detector's own p-value pm (m_calib.tail_sigma_min):
+    the issued p never decays faster beyond u than pm itself, i.e. B24 may
+    make a detector p more conservative in the tail, never more extreme
+    than its own model says relative to u. Why: the rings of the H-stream
+    detectors turn over in weeks (24 rows a day over 4 dayparts, M = 256),
+    so live scores are compared with warm-up scores for the whole of a
+    pack, and those were compressed - a young model's honest predictive
+    (B06's cross-fitted null, B16's held-out typicality) is heavier than
+    the mature one's. The PWM tail of a compressed ring is steep and was
+    extrapolated beyond the ring maximum: pack A seed 0, clean control
+    ticks, x nominal at p < 1e-3, pm -> issued p: t2 2.7 -> 29, spe 2.1 ->
+    12, timing 8.2 -> 8.7 (58 of 102 tail hits beyond the ring maximum);
+    replayed with the floor: t2 2.7, spe 1.4, timing 3.2, budget_vol 1.8.
+    For an exact null (pm uniform) the scale of the excess is exactly
+    1/ln 10, so the floor binds only through sampling noise
+    (tests/lib/test_calib_sigma_floor.py).
+
+Round 4: B24 and B25 fit robust_tail - at most TRIM_EPS (2 %) of the ring
+trimmed as contamination (trim_count) and the predictive shape floor
+xi >= 1/n_u - because their rings now admit every row of a trusted period
+whatever its own score (lib/gating.period_weight). fit_tail (xi >= 0,
+optional winsorisation) is kept for other callers.
 """
 from __future__ import annotations
 
@@ -72,6 +96,7 @@ RATE_RATIO_BAND = (0.5, 2.0)
 
 XI_FLOOR = 0.0          # fit_tail: xi below this -> exponential tail (module docstring)
 P_FLOOR = 1e-300        # tail p floor (same as combine.P_FLOOR)
+P_SCORE_SIGMA = 1.0 / math.log(10.0)   # tail scale of -log10 U: floor for p-scores (docstring)
 _XI_ZERO = 1e-9         # |xi| below this is the exponential limit (as evt.gpd_sf)
 _KEY_SEP = "@"          # ring_key separator: '<detector>@<stratum>'
 _STRATUM_SEP = "|"      # stratum separator: 'daypart|cc'
@@ -507,6 +532,91 @@ def winsorise_exceedances(y: np.ndarray, alpha: float) -> np.ndarray:
     return np.sort(out)
 
 
+def trim_count(y: np.ndarray, alpha: float, k_max: int) -> int:
+    """Number of top exceedances to drop as contamination (robust_tail).
+
+    y: exceedances sorted ascending (>= 0). The null model of the outlier
+    test is the one of winsorise_exceedances: excesses exponential with a
+    scale s estimated from ranks (the median inlier y_(m), m = ceil((n - k)
+    / 2), is the m-th smallest of n draws: s = y_(m) / (H_n - H_{n-m})),
+    iterated with the count k of entries above the bound s (ln n + ln
+    1/alpha), beyond which the largest of n clean excesses lies with
+    probability ~alpha. k is capped at k_max, the contamination bound: at
+    most that many entries are ever treated as foreign, so a heavy but clean
+    tail cannot be trimmed away wholesale. alpha not in (0, 1), k_max <= 0
+    or a non-positive scale -> 0."""
+    n = int(y.size)
+    k_max = int(k_max)
+    if n < 2 or k_max <= 0 or not 0.0 < float(alpha) < 1.0:
+        return 0
+    em = _exp_order_means(n)
+    lnb = math.log(n) + math.log(1.0 / float(alpha))
+    k = 0
+    for _ in range(6):
+        m = max(1, (n - k + 1) // 2)
+        sc = float(y[m - 1]) / float(em[m - 1])
+        if not sc > 0.0:
+            return 0
+        k_new = min(k_max, n - int(np.searchsorted(y, sc * lnb, side="right")))
+        if k_new == k:
+            break
+        k = k_new
+    return max(0, k)
+
+
+# robust_tail: the contamination-bounded tail used by B24 and B25 (round 4)
+TRIM_ALPHA = 0.01       # outlier test level (a clean 26-exceedance tail is trimmed in ~3.5 % of fits)
+TRIM_EPS = 0.02         # contamination bound: at most ceil(0.02 n) entries dropped (6 at M = 256)
+
+
+def robust_tail(ring: Ring, now_ts: float = float("nan"), alpha: float = TRIM_ALPHA,
+                eps: float = TRIM_EPS) -> Optional[GPDTail]:
+    """The tail of a NULL ring whose admission does not look at the row's own
+    score (lib/gating.period_weight): PWM-GPD over u = q_0.90 fitted to the
+    exceedances left after trimming at most ceil(eps n) contaminating top
+    entries (trim_count), with the predictive shape floor xi >= 1 / n_u.
+
+    Why trimming instead of score-based exclusion (integration round 4): a
+    ring that refuses rows by their own score truncates the tail it fits
+    (4.5 - 11x anti-conservative at 1e-3 .. 1e-4 on an exact null, see
+    gating.period_weight). Admitting every row of a trusted period instead
+    lets a few foreign rows in (an attack released by the governor, a warm-up
+    extreme); up to the bound they are removed from the fit and from the
+    counts: rate = (n_u - k) / (n - k). Measured on a streaming M = 256
+    ring, Exp null, refit every 16 admissions, 3 x 3e4 ticks (realised /
+    nominal at p <= 1e-3 / 3e-4 / 1e-4): clean 1.07 / 0.93 / 0.89; with 1 %
+    attack-level contamination admitted 0.92 / 1.16 / 1.35, where the
+    untrimmed fits give 0.08 - 0.35 (the tail bloats) - tests/lib/
+    test_calib_admission.py. The shape floor 1 / n_u is the Bayesian
+    predictive of an exponential tail whose scale is estimated from n_u
+    excesses (Lomax; engines.md B25 "Tail shape"): the plug-in xi >= 0 was
+    1.2 - 1.4x at the same levels. None when fewer than MIN_EXCEED
+    exceedances remain."""
+    sc = ring.scores
+    n = int(sc.size)
+    if n < MIN_EXCEED:
+        return None
+    u = float(np.quantile(sc, TAIL_Q))
+    j = int(sc.searchsorted(u, "right"))
+    y = sc[j:] - u
+    n_u = int(y.size)
+    if n_u < MIN_EXCEED:
+        return None
+    k_max = min(int(math.ceil(float(eps) * n)), n_u - MIN_EXCEED)
+    k = trim_count(y, alpha, k_max) if k_max > 0 else 0
+    if k:
+        y = y[:n_u - k]
+    m = n_u - k
+    xi, sigma = evt.gpd_pwm_fit(y)
+    xi, sigma = float(xi), float(sigma)
+    xi_min = 1.0 / m
+    if xi < xi_min:
+        xi = xi_min
+        sigma = float(np.mean(y)) * (1.0 - xi)
+    tail = GPDTail(u=u, xi=xi, sigma=sigma, rate=m / (n - k), n=n, fitted_ts=float(now_ts))
+    return tail if tail.valid() else None
+
+
 def fit_tail(ring: Ring, now_ts: float = float("nan"),
              xi_min: float = XI_FLOOR, winsor_alpha: Optional[float] = None
              ) -> Optional[GPDTail]:
@@ -551,16 +661,25 @@ def fit_tail(ring: Ring, now_ts: float = float("nan"),
     return tail if tail.valid() else None
 
 
-def p_from_ring(ring: Ring, s: float, u: float, tail: Optional[GPDTail] = None) -> float:
+def p_from_ring(ring: Ring, s: float, u: float, tail: Optional[GPDTail] = None,
+                sigma_min: float = 0.0) -> float:
     """Calibrated p of score s.
 
     1. s NaN -> NaN.
     2. If `tail` (or ring.gpd) exists and s > tail.u:
          p = tail.rate * evt.gpd_sf(s - tail.u, tail.xi, tail.sigma)
+       and, with sigma_min > 0, at least tail.rate * exp(-(s - tail.u) / sigma_min)
        floored at 1e-300 (this is how p < 1/(M+1) is reached), and capped
        at 1/(n+1) when s is above every ring entry (see module docstring).
     3. Otherwise the randomised conformal p on the ring.
     Complexity O(log M).
+
+    `sigma_min` (round 4, evaluator): a lower bound on the tail scale for a
+    score that is -log10 of the detector's own p-value (P_SCORE_SIGMA,
+    see m_calib.tail_sigma_min): beyond u the issued p then never decays
+    faster than the detector's model p itself, rate 10^-(s - u) (a floor
+    on the tail function, not on the fitted sigma: with xi > 0 a raised
+    sigma would over-shoot). Default 0: off.
 
     s is float32-rounded first (as stored), for both branches. A tail with
     unusable parameters (see GPDTail.valid) is ignored. u is only used by the
@@ -572,6 +691,11 @@ def p_from_ring(ring: Ring, s: float, u: float, tail: Optional[GPDTail] = None) 
     t = ring.gpd if tail is None else tail
     if t is not None and x > t.u and t.valid():
         p = t.sf(x)
+        if sigma_min > 0.0:
+            # never faster than the exponential tail of scale sigma_min
+            q = t.rate * math.exp(-(x - t.u) / sigma_min)
+            if q > p:
+                p = q
         n = ring.scores.size
         if n and x > ring.scores[-1]:
             cap = 1.0 / (n + 1)

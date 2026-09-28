@@ -76,6 +76,15 @@ rollback / release / rebase or link seed; the day's fits are spread over
     median; phases without own samples take the peers' median level.
     Without mature peers, an entity with >= 7 days fits its own tail;
     younger ones stay unscored (NaN).
+  * Round 4: the 7-d scale used for the threshold and the tail p of a live
+    window is multiplied by seven_day_pinf = sqrt(1 + (pi/2) / (n_days/7)):
+    the same-phase median of overlapping 7-d windows rests on ~n_days / 7
+    independent weeks, an error the in-sample residuals do not contain
+    (pack A live: 7-d cells at 11.9x nominal at 1e-3). And on the young
+    peer path, a phase with no trusted own sample but an untrusted recurring
+    observed pattern (>= RECUR_MIN_DAYS days; rows committed with weight 0,
+    kept apart in the ring as 'ox' / 'oc') takes the entity's observed level
+    instead of the peers' (_observed_fill: the L15 nightly backup).
 Alarm on (Q, H) when B > z_q AND B - median > abs_floor_Q (config
 'budget_abs_floor', defaults below) AND, except for exfil, the common-mode
 guard passes. Peers are the class members (m_class, >= 3 in the system),
@@ -190,6 +199,7 @@ MIN_PHASE_N = 4
 PHASE_SMOOTH = 2                   # scale: running median over +-2 local hours
 MIN_SCALE_N = 10                   # days of one day type for its own scale
 MIN_PHASE_N_YOUNG = 2
+RECUR_MIN_DAYS = 4                 # untrusted observations that make a phase 'own' (round 4)
 MIN_POOL = 96                      # pooled residuals for an own tail
 MIN_POOL_IMMATURE = 48
 TAIL_U_Q = 0.98
@@ -344,9 +354,14 @@ class _Distinct:
 # =============================================================== model
 def new_state() -> Dict[str, np.ndarray]:
     """Committed ring: local hour index per slot (-1 empty), sum w x, sum w
-    dt/3600, covered fraction of the hour."""
+    dt/3600, covered fraction of the hour; and (round 4) the rows the gate
+    committed with weight 0 (untrusted: e.g. training trust 0 on a HIGH
+    lib-4 match), unweighted: sum x and covered fraction ('ox', 'oc'). They
+    never enter the fitted history; they only replace the PEERS' level at
+    phases without any trusted own sample (see _observed_fill)."""
     return {"hour": np.full(NB, -1, dtype=np.int64), "sx": np.zeros((NB, NQ)),
-            "sw": np.zeros(NB), "sc": np.zeros(NB)}
+            "sw": np.zeros(NB), "sc": np.zeros(NB), "ox": np.zeros((NB, NQ)),
+            "oc": np.zeros(NB)}
 
 
 def _copy_state(st: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
@@ -367,6 +382,8 @@ def new_fit() -> Dict[str, Any]:
         # 7-d day-type composition (round 2): per day type the median hourly
         # rate profile, and per phase the usual expected 7-d sum
         "prof": np.full((NQ, 2, 24), nan), "e7bar": np.full((NQ, 24), nan),
+        # round 4: predictive inflation of the live 7-d residual per phase
+        "pinf": np.ones((NQ, 24)),
     }
 
 
@@ -392,7 +409,7 @@ def _update(st: Dict[str, np.ndarray], row: Tuple[float, int, float, np.ndarray]
     (state, row, w): rows older than the ring slot's hour are dropped, so a
     release of old held rows or a replay lands exactly where it belongs."""
     _ts, a, frac, x = row
-    if not (w > 0.0):
+    if not (w >= 0.0):
         return st
     sl = int(a) % NB
     hr = st["hour"]
@@ -403,6 +420,14 @@ def _update(st: Dict[str, np.ndarray], row: Tuple[float, int, float, np.ndarray]
         st["sx"][sl] = 0.0
         st["sw"][sl] = 0.0
         st["sc"][sl] = 0.0
+        if "ox" in st:
+            st["ox"][sl] = 0.0
+            st["oc"][sl] = 0.0
+    if w == 0.0:
+        if "ox" in st:                      # observed but untrusted (round 4)
+            st["ox"][sl] += x
+            st["oc"][sl] += frac
+        return st
     st["sx"][sl] += w * x
     st["sw"][sl] += w * frac
     st["sc"][sl] += frac
@@ -423,19 +448,29 @@ def _merge(own: Dict[str, np.ndarray], other: Dict[str, np.ndarray],
     own["sx"][newer] = w * other["sx"][newer]
     own["sw"][newer] = w * other["sw"][newer]
     own["sc"][newer] = other["sc"][newer]
+    if "ox" in own:                         # a predecessor's untrusted rows stay its own
+        own["ox"][newer] = 0.0
+        own["oc"][newer] = 0.0
     return own
 
 
 def _dump(st: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-    return {"hour": st["hour"].copy(), "sx": st["sx"].astype(np.float32),
-            "sw": st["sw"].astype(np.float32), "sc": st["sc"].astype(np.float32)}
+    out = {"hour": st["hour"].copy(), "sx": st["sx"].astype(np.float32),
+           "sw": st["sw"].astype(np.float32), "sc": st["sc"].astype(np.float32)}
+    if "ox" in st:
+        out["ox"], out["oc"] = st["ox"].astype(np.float32), st["oc"].astype(np.float32)
+    return out
 
 
 def _load(blob: Any) -> Dict[str, np.ndarray]:
-    return {"hour": np.array(blob["hour"], dtype=np.int64),
-            "sx": np.array(blob["sx"], dtype=np.float64).reshape(NB, NQ),
-            "sw": np.array(blob["sw"], dtype=np.float64),
-            "sc": np.array(blob["sc"], dtype=np.float64)}
+    st = {"hour": np.array(blob["hour"], dtype=np.int64),
+          "sx": np.array(blob["sx"], dtype=np.float64).reshape(NB, NQ),
+          "sw": np.array(blob["sw"], dtype=np.float64),
+          "sc": np.array(blob["sc"], dtype=np.float64)}
+    st["ox"] = (np.array(blob["ox"], dtype=np.float64).reshape(NB, NQ) if "ox" in blob
+                else np.zeros((NB, NQ)))
+    st["oc"] = np.array(blob["oc"], dtype=np.float64) if "oc" in blob else np.zeros(NB)
+    return st
 
 
 # ============================================================ statistics
@@ -614,17 +649,47 @@ def phase_stats(L: np.ndarray, dtypes: np.ndarray, min_n: int
     scale = np.where(np.isnan(med), np.nan, scale)
     scale = np.where(np.isnan(scale), np.nan, _nanmed(scale[..., _SMOOTH_IDX], -2)[0])
     if aux is not None:
-        m24 = np.full((2, 24), np.nan)
-        for t in (0, 1):
-            sel = dtypes == t
-            if sel.any():
-                m24[t] = _nanmed(aux[sel], 0)[0]
-        m24 = np.where(np.isnan(m24), _nanmed(aux, 0)[0], m24)
-        dev24 = aux - m24[dtypes]
+        dev24 = daily_deviations(aux, dtypes)
         s7 = 1.4826 * _nanmed(np.abs(dev24 - _nanmed(dev24, 0)[0]), 0)[0] / SQRT7
         with np.errstate(invalid="ignore"):
             scale[H_7D] = np.where(np.isnan(s7), scale[H_7D], np.fmax(scale[H_7D], s7))
     return med, scale
+
+
+def daily_deviations(aux: np.ndarray, dtypes: np.ndarray) -> np.ndarray:
+    """dev[days, 24]: rolling 24-h log sums about their day-type median (the
+    series phase_stats' 7-d scale floor is built from)."""
+    m24 = np.full((2, 24), np.nan)
+    for t in (0, 1):
+        sel = dtypes == t
+        if sel.any():
+            m24[t] = _nanmed(aux[sel], 0)[0]
+    m24 = np.where(np.isnan(m24), _nanmed(aux, 0)[0], m24)
+    return aux - m24[dtypes]
+
+
+def seven_day_pinf(L: np.ndarray, dtypes: np.ndarray) -> np.ndarray:
+    """Predictive inflation [24] of the 7-d scale (round 4): sqrt(1 + (pi/2)
+    / n_ind), n_ind = n_days / 7 (>= 1) with n_days the days whose rolling
+    24-h sum is valid at that phase. 1 without the auxiliary row.
+
+    Why: the live 7-d residual is standardised by the same-phase median and
+    scale of the history's 7-d windows, and its tail p is read off those
+    windows' own (in-sample) residuals. Consecutive 7-d windows share 6 days,
+    so the median rests on ~n_days / 7 independent weeks and its error
+    (variance (pi/2) sigma^2 / n_ind for a median) is part of a new window's
+    residual but of none of the in-sample ones. Pack A seed 0 live (16-20
+    days of history): the 7-d cells had p < 1e-3 on 11.9x the nominal share
+    of clean control cells, the 1-h / 8-h / day cells 1.2-1.4x. Simulated
+    daily-regime histories (18 days, day-effect lag-1 correlation 0 / 0.5 /
+    0.8, 40 seeds): p < 1e-2 on 2.5 / 2.9 / 4.0x nominal without the term,
+    0.6 / 0.6 / 0.7x with it (p < 1e-3: <= 0.3x). Only the 7-d horizon is
+    affected (its windows overlap; the others do not)."""
+    if L.shape[0] <= NH:
+        return np.ones(24)
+    dev = daily_deviations(L[NH], dtypes)
+    n_ind = np.maximum(np.sum(np.isfinite(dev), axis=0) / 7.0, 1.0)
+    return np.sqrt(1.0 + 0.5 * math.pi / n_ind)
 
 
 _SMOOTH_IDX = np.clip(np.arange(24)[None, :] + np.arange(-PHASE_SMOOTH, PHASE_SMOOTH + 1)[:, None],
@@ -1351,9 +1416,18 @@ class BudgetEngine(Engine):
                 # entity's scales rescaled by its own median
                 src = SRC_PEER
                 m_own, s_own = phase_stats(L, dtypes, MIN_PHASE_N_YOUNG)
+                sc_in = np.where(np.isnan(pool["scale"]), s_own, pool["scale"])
+                # round 4: a phase the entity has no trusted sample of, but
+                # where it was observed (untrusted) on >= RECUR_MIN_DAYS days,
+                # takes its own observed level, not the peers'
+                obs = self._observed_fill(r.model["state"], q, day0, v, ok, dtypes, unit)
+                if obs is not None:
+                    m_obs, s_obs = obs
+                    use = np.isnan(m_own) & np.isfinite(m_obs)
+                    m_own = np.where(use, m_obs, m_own)
+                    sc_in = np.where(use, np.fmax(sc_in, s_obs), sc_in)
                 med = np.where(np.isnan(m_own), pool["level"], m_own)
-                scale = floor_scale(med, np.where(np.isnan(pool["scale"]), s_own,
-                                                  pool["scale"]), count_unit=cu)
+                scale = floor_scale(med, sc_in, count_unit=cu)
                 tl = np.broadcast_to(pool["tail"], (NH, pool["tail"].shape[-1]))
             elif n_days >= MIN_OWN_DAYS:
                 src = SRC_OWN_IMMATURE
@@ -1365,6 +1439,9 @@ class BudgetEngine(Engine):
             return
         fit["src"][q], fit["unit"][q] = src, unit
         fit["prof"][q], fit["e7bar"][q] = prof, e7bar
+        if "pinf" not in fit:
+            fit["pinf"] = np.ones((NQ, 24))
+        fit["pinf"][q] = seven_day_pinf(L, dtypes)
         fit["med"][q], fit["scale"][q] = med, scale
         fit["tail"][q], fit["body"][q] = tl[:, :5], tl[:, 5:]
         fit["rp99"][q], fit["pmh"][q], fit["rthr"][q] = np.nan, np.nan, np.nan
@@ -1375,6 +1452,48 @@ class BudgetEngine(Engine):
             if Pmed is not None:
                 fit["rp99"][q], fit["pmh"][q], fit["rthr"][q] = self._guard_history(
                     W, Pmed, dtypes, unit)
+
+    @staticmethod
+    def _observed_fill(st: Mapping[str, np.ndarray], q: int, day0: int, v: np.ndarray,
+                       ok: np.ndarray, dtypes: np.ndarray, unit: float
+                       ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """(median, scale) per (horizon, day type, phase) of the history with
+        its untrusted hours filled by what was observed there ('ox' / 'oc'),
+        for phases with >= RECUR_MIN_DAYS samples; None when no hour needs it.
+
+        Why (round 4, integration.md §10.7 item 1): a sanctioned nightly
+        backup matches a HIGH lib-4 rule every night, so its night rows are
+        committed with trust 0; its own ring then holds no night hour (and no
+        valid 7-d window at all) and the peer fallback put the PEERS' level
+        there: 6.8 GB of 7-d upload against a 20.8 MB 'usual' (pack B,
+        10.20.9.5, fit_source peer), a permanent budget alarm. The entity's
+        own recurring pattern is better evidence of its usual level than
+        other hosts'. Poisoning is bounded: only phases WITHOUT any trusted
+        own sample use it, only on the young-entity peer path, and only after
+        the same phase recurred on RECUR_MIN_DAYS days; the scale carries the
+        median's estimation error (x sqrt(1 + (pi/2) / n))."""
+        if "ox" not in st:
+            return None
+        hours = day0 * 24 + np.arange(NHIST, dtype=np.int64)
+        sl = hours % NB
+        seen = (st["hour"][sl] == hours) & (st["oc"][sl] >= MIN_COV) & ~ok
+        if not seen.any():
+            return None
+        vf = v.copy()
+        vf[seen] = st["ox"][sl[seen], q] / st["oc"][sl[seen]]
+        Lf = log_windows(window_sums(vf), unit)
+        _prof, corr7, _e = composition_7d(vf, dtypes, unit)
+        Lf[H_7D] = Lf[H_7D] - corr7
+        med, scale = phase_stats(Lf, dtypes, RECUR_MIN_DAYS)
+        n = np.zeros((NH, 2, 24))
+        for t in (0, 1):
+            sel = dtypes == t
+            n_t = np.sum(np.isfinite(Lf[:NH][:, sel, :]), axis=1) if sel.any() else 0
+            n[:, t] = np.where(n_t >= RECUR_MIN_DAYS, n_t,
+                               np.sum(np.isfinite(Lf[:NH]), axis=1))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            scale = scale * np.sqrt(1.0 + 0.5 * math.pi / np.maximum(n, 1.0))
+        return med, scale
 
     @staticmethod
     def _own_tail(L: np.ndarray, med: np.ndarray, scale: np.ndarray, dtypes: np.ndarray,
@@ -1495,6 +1614,12 @@ class BudgetEngine(Engine):
         Bt = B.T                                                   # (NQ, NH)
         lm = fit["med"][:, :, dti, h].copy()                      # log(W + unit) space
         sc = fit["scale"][:, :, dti, h]
+        pinf = fit.get("pinf")
+        if pinf is not None:
+            # round 4: the 7-d residual is predictive (seven_day_pinf); the
+            # threshold and the tail p both use the inflated scale
+            sc = sc.copy()
+            sc[:, H_7D] = sc[:, H_7D] * pinf[:, h]
         tl = fit["tail"]
         unit = fit["unit"][:, None]
         # the current 7-d window's day-type composition (see composition_7d)
@@ -1638,6 +1763,7 @@ class BudgetEngine(Engine):
             p = np.fmin(p, ares["p"])
             alarm |= ares["alarm"]
         scores, pms, axes, accs = {}, {}, {}, {}
+        weak: Dict[str, str] = {}
         axis_p: Dict[str, float] = {}
         for ax in AXES:
             d = AXIS_DETECTOR[ax]
@@ -1651,6 +1777,15 @@ class BudgetEngine(Engine):
                 continue
             pax = max(P_FLOOR, min(1.0, fin.size * float(fin.min())))
             axis_p[ax] = pax
+            # contract M: an axis scored against the peers' tail / levels,
+            # or an immature own history, is a weaker reference than B13's
+            # model assumes (its p stays valid; B24 calibrates it)
+            srcs = set(int(x) for x in model["fit"]["src"][AXIS_Q[ax]][
+                np.isfinite(pa.reshape(-1, NH)).any(axis=1)])
+            if SRC_PEER in srcs:
+                weak[d] = emit.cause(emit.FALLBACK, "peer")
+            elif SRC_OWN_IMMATURE in srcs:
+                weak[d] = emit.cause(emit.INSUFFICIENT_SUPPORT, "budget_history")
             scores[d] = -math.log10(pax)
             pms[d] = max(pax, PM_STORE_FLOOR)
             al = int(bool(alarm[AXIS_Q[ax]].any()))
@@ -1658,7 +1793,8 @@ class BudgetEngine(Engine):
             if al or pax <= AXES_PM_MAX:
                 axes[d] = [ax]
         emit.write_scores(store, s, e, now, scores, pm=pms or None, axes=axes or None,
-                          acc_alarm=accs or None, degraded=r.degraded or None, window_s=win)
+                          acc_alarm=accs or None, degraded={**weak, **r.degraded} or None,
+                          window_s=win)
         store.add_derived(DerivedMetric(name=SERIES, value=_series_value(res), ts=now, system=s,
                                         entity=e, window_s=win, kind=MetricKind.CATEGORICAL,
                                         inputs=[NAT, "act.objs", "act.stream"]))

@@ -37,6 +37,7 @@ model.identity@(s, '__system__') layout (JSON-like, arrays as lists):
      'means': {e: [r]},  'class_means': {ck: [r]}, 'class_var': {ck: [r]},
      'bg': {'mu': [r], 'prec': [[r x r]], 'logdet': float},
      'llr_calib': {m: [a, b]}, 'llr_n': {m: [n_genuine, n_impostor]},
+     'typ': {e: [c, nu, [held-out d2 order statistics <= 128], n_heldout]},
      'confusion': {e: {j: share}}, 'anonymity_sets': [[e, ...], ...],
      'stats': {e: {'recall1', 'recallK', 'eer_hard', 'eer_pair': {j: eer},
                    't99', 'separability', 'near': [3 nearest impostors],
@@ -75,6 +76,8 @@ Public API (all pure reads; nothing here mutates a model):
     llr_calib(model, m) -> (a, b);  calibrate(model, m, llr, cap=LLR_CAP) -> nats
     confusion(model, e, j=None);  confusable_with(model, e) -> [j]
     anonymity_set(model, e) -> [e, ...];  anonymity_sets(model) -> [[...]]
+    typicality_p(model, e, d2) -> p;  self_typicality(model, z, e) -> p
+    fit_scaled_chi2(h) -> (c, nu);  shrink_typicality(fits, group_of) -> {e: (c, nu)}
     stats(model, e) -> dict;  t99(model, e);  eer_hard(model, e);  separability(model, e)
     nearest(model, e) -> [j];  class_stats(model, ck) -> dict
     descriptors(model, e) -> JSON-safe dict for profile.extra.identity / portraits
@@ -641,6 +644,126 @@ def stats(model: Any, e: str) -> Dict[str, Any]:
 
 def t99(model: Any, e: str) -> float:
     return _f(stats(model, e).get("t99"))
+
+
+# ============================================== held-out typicality calibration
+# (round 4) The identity score is the tail p of the window's squared LDA
+# distance to the entity's mean, calibrated on the entity's own HELD-OUT
+# genuine distances from B15's blocked CV (fitted by the same model version
+# that scores it). A scaled chi-square c * chi2_nu is matched to the held-out
+# median and 90th percentile (two-quantile fit), then (log c, log nu) are
+# shrunk toward the role's median with weight n / (n + TYP_KAPPA): a machine
+# persona's within-entity scatter is far below the pooled (WCCN) average, and
+# 30-100 held-out windows alone give a noisy tail. The empirical held-out
+# sample (<= TYP_KEEP order statistics) floors p: p >= #{h >= d2} / (n + 1),
+# so the parametric tail may add resolution beyond the sample but never
+# contradict it.
+TYP_Q = (0.5, 0.9)
+TYP_KAPPA = 30.0
+TYP_KEEP = 128
+TYP_NU = (0.25, 2000.0)
+
+
+def _chi2_ratio(nu: float) -> float:
+    from scipy.special import chdtri
+    return float(chdtri(nu, 1.0 - TYP_Q[1]) / chdtri(nu, 1.0 - TYP_Q[0]))
+
+
+def fit_scaled_chi2(h: Any) -> Tuple[float, float]:
+    """(c, nu) with c * chi2_nu matching the median and 90th percentile of the
+    held-out squared distances h; (NaN, NaN) with fewer than 5 finite values."""
+    from scipy.special import chdtri
+    h = np.asarray(h, dtype=np.float64)
+    h = h[np.isfinite(h) & (h > 0.0)]
+    if h.size < 5:
+        return _NAN, _NAN
+    q50, q90 = (float(x) for x in np.quantile(h, TYP_Q))
+    if not q50 > 0.0:
+        return _NAN, _NAN
+    rho = max(q90 / q50, 1.0 + 1e-9)
+    lo, hi = math.log(TYP_NU[0]), math.log(TYP_NU[1])
+    if rho >= _chi2_ratio(TYP_NU[0]):
+        nu = TYP_NU[0]
+    elif rho <= _chi2_ratio(TYP_NU[1]):
+        nu = TYP_NU[1]
+    else:
+        for _ in range(60):                   # the ratio falls monotonically in nu
+            mid = 0.5 * (lo + hi)
+            if _chi2_ratio(math.exp(mid)) > rho:
+                lo = mid
+            else:
+                hi = mid
+        nu = math.exp(0.5 * (lo + hi))
+    c = q50 / float(chdtri(nu, 0.5))
+    return float(c), float(nu)
+
+
+def shrink_typicality(fits: Mapping[str, Tuple[float, float, int]],
+                      group_of: Mapping[str, Any], kappa: float = TYP_KAPPA
+                      ) -> Dict[str, Tuple[float, float]]:
+    """Shrink each entity's (log c, log nu) toward its group's median (the
+    role) with weight n/(n+kappa). An entity without a role keeps its own fit
+    (a pooled median would mix machines and people, whose scatter differs by
+    orders of magnitude); an entity without a finite fit takes its group's
+    value, else the median over every fit."""
+    groups: Dict[Any, List[Tuple[float, float]]] = {}
+    for e, (c, nu, n) in fits.items():
+        if c == c and nu == nu and c > 0 and nu > 0:
+            groups.setdefault(group_of.get(e), []).append((math.log(c), math.log(nu)))
+    if len(groups) > 1:
+        groups.pop(None, None)             # role-less fits do not define a role's median
+    every = [x for v in groups.values() for x in v]
+    if not every:
+        return {}
+    glob = (float(np.median([x[0] for x in every])), float(np.median([x[1] for x in every])))
+    med = {g: (float(np.median([x[0] for x in v])), float(np.median([x[1] for x in v])))
+           for g, v in groups.items() if len(v) >= 2}
+    out: Dict[str, Tuple[float, float]] = {}
+    for e, (c, nu, n) in fits.items():
+        grp = group_of.get(e)
+        g = med.get(grp, glob) if grp is not None else glob
+        if grp is None and c == c and nu == nu and c > 0 and nu > 0:
+            out[e] = (float(c), float(nu))
+            continue
+        if c == c and nu == nu and c > 0 and nu > 0:
+            w = float(n) / (float(n) + kappa)
+            lc = w * math.log(c) + (1.0 - w) * g[0]
+            ln = w * math.log(nu) + (1.0 - w) * g[1]
+        else:
+            lc, ln = g
+        out[e] = (math.exp(lc), math.exp(ln))
+    return out
+
+
+def typicality_p(model: Any, e: str, d2: float) -> float:
+    """Held-out-calibrated tail p of a squared LDA distance d2 to entity e's
+    mean (see the block comment above). NaN when the model has no typicality
+    fit for e (older model layout or e not enrolled) or d2 is not finite."""
+    from scipy.special import chdtrc
+    typ = (model.get("typ") or {}).get(e) if isinstance(model, Mapping) else None
+    if not typ or not (d2 == d2) or math.isinf(d2):
+        return _NAN
+    c, nu = float(typ[0]), float(typ[1])
+    if not (c > 0.0 and nu > 0.0):
+        return _NAN
+    p = float(chdtrc(nu, max(d2, 0.0) / c))
+    ho = typ[2] if len(typ) > 2 else None
+    if ho:
+        h = np.asarray(ho, dtype=np.float64)
+        n = int(typ[3]) if len(typ) > 3 else h.size
+        # own-sample floor, in held-out-sample units (h is an even thinning)
+        frac = float(np.sum(h >= d2)) / h.size
+        p = max(p, frac * n / (n + 1.0))
+    return float(min(1.0, max(p, 1e-300)))
+
+
+def self_typicality(model: Any, z: Any, e: str) -> float:
+    """typicality_p of window z (LDA space) under entity e's own mean."""
+    m = entity_mean(model, e)
+    z = np.asarray(z, dtype=np.float64).reshape(-1)
+    if m is None or m.size != z.size or not np.all(np.isfinite(z)):
+        return _NAN
+    return typicality_p(model, e, float(np.sum((z - m) ** 2)))
 
 
 def eer_hard(model: Any, e: str) -> float:

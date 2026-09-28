@@ -24,14 +24,24 @@ How (docs/lib3/engines.md B24):
     fit's u). Every tail actually used is therefore at most 16 additions old,
     as with an eager refit every 16 ticks, while a null ring (90 % body
     scores) refits ~40 % less often; a fit costs ~80 us, the largest per-tick
-    item. Counters start at a per-ring phase so refits spread over ticks. Two
-    guards from lib/calib (see its docstring for the measurements): xi is
-    floored at 0 (a spuriously bounded fit would give p = 1e-300 to the next
-    null tick past its end point), and the tail p is capped at 1/(n+1)
-    beyond the ring maximum.
+    item. Counters start at a per-ring phase so refits spread over ticks. The
+    fit is calib.robust_tail (round 4): at most 2 % of the ring trimmed as
+    contamination, xi floored at the predictive 1/n_u (a spuriously bounded
+    fit would give p = 1e-300 to the next null tick past its end point; the
+    plug-in floor 0 was 1.2 - 1.4x anti-conservative on an exact null), and
+    the tail p is capped at 1/(n+1) beyond the ring maximum.
+  * p-score tail floor (round 4, evaluator): when the row's score is
+    -log10 of its own pm (m_calib.tail_sigma_min: every detector but
+    bocpd / seq / pm-less beacon rows), the tail p is at least
+    rate 10^-(s - u) - beyond u B24 never issues a p that decays faster
+    than the detector's model p. The H-stream rings hold compressed warm-up
+    scores for weeks and their steep fits were extrapolated beyond the ring
+    maximum (pack A seed 0 clean control ticks, x nominal at 1e-3: t2
+    29 -> 3.4, spe 12 -> 2.1, timing 8.7 -> 4.4; lib/calib docstring).
   * Small samples (|C| < 64, e.g. a new stratum after a cadence switch): the
     conformal p is logit-blended with weight n/(n+64) against the first
-    usable prior of the entity's own rings of the other dayparts (pooled),
+    usable prior of the cadence transfer (cadence-class strata, below), the
+    entity's own rings of the other dayparts (pooled),
     the pm prior, the class-pooled ring (the union of the role members'
     rings for the same key, >= 64 entries) and, for identity only, the
     entity's own settled-regime ring of the same daypart.
@@ -51,23 +61,61 @@ How (docs/lib3/engines.md B24):
     (integration §8.2): per detector it was uniform, but it removed the
     extreme warm-up p that B25's meta rings had been absorbing live
     detector miscalibration with (pack A: single-tick exceedance 34-60x).
-  * Admission (contract H). Rings learn through lib/gating: a scored tick is
-    committed D = max(4 ticks, 600 s) later with its trust weight, held while
-    the entity is quarantined, released / rebased / frozen by model.control.
-    A ring cannot take a fractional weight, so a committed row is admitted
-    with probability trust (seeded thinning, deterministic under replay):
-    dropping every partially trusted tick would cut the null's upper tail
-    out of the ring and make p anti-conservative. Admission also needs entity
-    maturity n_eff >= 48 (model.baseline n_eff, or the engine's own count of
-    trusted commits in 15-minute equivalents, whichever is larger): scores
-    of an immature model do not describe the entity's null. On live ticks a
-    commit's weight is also capped by the governor's evidence weight of the
-    row (m_governor.evidence_weight): live trust already contains it, but a
-    release commits held rows with trust_prov, which has no accumulator
-    factor, so without the cap an accumulator at alarm level entered its
-    own null ring. Warm-up commits keep trust 1 (the reference period fills
-    the rings; with the cap an entity whose first p are extreme could never
-    learn the null that would calibrate them).
+  * Admission (contract H, round 4). Rings learn through lib/gating with
+    null_ring=True: a scored tick is committed D = max(4 ticks, 600 s) later,
+    held while the entity is quarantined, released / rebased / frozen by
+    model.control, and admitted with the trust of its PERIOD only
+    (gating.period_weight: live 0 when the governor's tick at ts is missing
+    or NaN or the entity was quarantined at ts, else 1; warm-up the warm-up
+    trust; a release or rebase is the governor's verdict that the period
+    was normal, gating.release_weight = 1). Never with behavior.trust: its
+    evidence factor clip(log10(e_inst / 0.1), 0, 1) and [no alarm] are
+    functions of the row's own fused p, so the rings refused their own
+    upper tail and the feedback made them lighter every refit (exact null,
+    one ring: 4.5 / 6.8 / 11x nominal at 1e-3 / 3e-4 / 1e-4; pack A seed 0:
+    34 % of live control ticks had trust 0; tests/lib/
+    test_calib_admission.py). The W7 cap by the governor's row-evidence
+    weight is removed for the same reason. Foreign rows that a trusted
+    period lets in (a released attack, a warm-up extreme) are handled by the
+    contamination-bounded tail (calib.robust_tail: at most 2 % of the ring
+    trimmed as outliers, predictive xi >= 1/n_u): 1 % attack-level
+    contamination keeps the realised rate in [0.5, 2]x where the untrimmed
+    fit was < 0.35x. Admission also needs entity maturity n_eff >= 48
+    (model.baseline n_eff, or the engine's own count of trusted commits in
+    15-minute equivalents, whichever is larger): scores of an immature model
+    do not describe the entity's null. Canonical mode below 900 s: a
+    cadence-class (T-stream) ring admits one row per 900-s slot (a rule on
+    ts), so it spans 64 h of history at every cadence instead of 4.3 h of
+    one daypart at 60 s - the window statistics (budget, timing, jsd) are
+    almost constant over an hour and such a ring held ~one independent value.
+  * Cadence transfer (round 4, m_calib.xfer_*): a cadence-class stratum with
+    < 64 entries (after the 900 -> 60 s switch of pack E / the Runtime)
+    takes as its small-sample prior the same detector and daypart's ring at
+    the nearest other cadence with >= 64 entries, p_src^(1/v): v >= 1 is
+    learned from the entity's native rows (P(p_src <= 0.05) = 0.05^(1/v)),
+    EB-shrunk to v0 = 2, as the H -> Q omega transfer is. The issued p is
+    marked behavior.degraded 'provisional:cc_transfer' until native support.
+  * Live power correction (round 4, m_calib.pcal_*): the prequential audit
+    found every detector scored out of sample (the model as of the last
+    commit, D >= 1 row before the scored one), but warm-up and live rows not
+    exchangeable - a STEP at go-live, not a drift (pack A seed 0, share of
+    clean control rows above the late-warm-up 99th percentile: spe 0 % ->
+    27-30 %, t2 -> 13-15 %, identity -> 9-14 %, marg_shape_q -> 6-16 % on
+    every live day), so rings still holding warm-up rows issue anti-
+    conservative live p. Per system, detector and stratum class (grain h /
+    q, else the cadence class) B24 counts the live share of ring p <= 0.05
+    on ticks of trusted periods (the governor's previous tick present and
+    not quarantined - an attack under way is never observed; decayed,
+    half-life 3 d) and issues p^(1/v), P(p <= x) = x^(1/v), from
+    the share's 3-sigma lower bound (v = 1, no change, until the excess is
+    significant, then the point estimate; never below 1). State:
+    model.calib@(s, __system__)["pcal"].
+  * pm prior calibrated on the pm ring (round 4, m_calib.pm_prior): >= 100
+    entries: conformal + tail p of -log10 pm against the entity's own pm
+    history; 8 .. 99: pm^(1/v), v the power MLE over the ring shrunk to 1.
+    A detector whose pm is routinely extreme (B06's young covariance: 1e-9
+    .. 1e-13 on ordinary hours, mini pack t2 at 744x nominal) no longer
+    passes it on to a small ring.
   * Rollback deletes ring entries with ts > rollback_to (the ring carries
     ts). Checkpoint + replay, the generic GatedLearner route, cannot work
     here: behavior.score is retained for 1 d, so replaying committed rows
@@ -80,9 +128,7 @@ How (docs/lib3/engines.md B24):
     KS D of the randomised p on trusted committed ticks (last 2048, needs
     >= 1024) and the realised rate of e_day <= 0.03 against its expectation
     on all committed ticks (decayed, half-life 14 d, needs >= 10 expected).
-    The rate uses all non-quarantined commits, not only trusted ones: an
-    exceedance lowers its own tick's trust, so on trusted ticks the realised
-    rate would be ~0 and every detector would look broken. KS D > 0.05 or a
+    The rate uses all admitted commits (period trust, round 4). KS D > 0.05 or a
     rate ratio outside [0.5, 2] gives weight_mult = 0.5 (lib/calib).
   * NaN score (degraded / unscored) gives NaN p, never 1. behavior.p is a
     float32 ring, so an issued p is floored at the smallest normal float32
@@ -101,12 +147,14 @@ decision ticks, so admission happens there only. The health rate uses
 e_day = p * 86400 / period_s(d).
 
 Store: reads behavior.score, behavior.pm, behavior.p (own, at commit time,
-for health), behavior.trust / trust_prov / quarantine (via gating),
-behavior.trust_evidence (m_governor.evidence_weight, live commits),
+for health), behavior.trust / trust_prov / quarantine (via gating: period
+weight),
 feature.tctx, behavior.regime, model.control, model.link, model.class,
 model.baseline (n_eff only); writes behavior.p (emit.write_pvalues),
 behavior.degraded {Q detector: 'provisional:q_transfer'} (canonical mode),
+{cadence-class detector: 'provisional:cc_transfer'} (round 4),
 model.calib@(s, e | class:<id>) and @(s, __system__) (health state),
+model.calib@(s, __system__)['pcal'] (live power correction, round 4),
 behavior.calib_health@(s, __system__) (dict series, one point per tick,
 the value object changes only when re-evaluated, hourly) and
 profile.extra.calibration. The layout of model.calib is documented in
@@ -126,7 +174,7 @@ import numpy as np
 
 from ...core.engine import Context, Engine
 from ...models.schema import DerivedMetric, EntityProfile, MetricKind
-from .lib import calib, combine, emit, gating, m_calib, m_class, m_governor, timebins
+from .lib import calib, combine, emit, gating, m_calib, m_class, timebins
 from .lib import grains as GR
 from .lib.classkeys import CLASS_PREFIX, SYSTEM_KEY
 from .lib.detectors import DETECTOR_INDEX, DETECTOR_INFO, DETECTORS, N_DETECTORS, Q_DETECTORS
@@ -165,6 +213,11 @@ PROV_MIN = 0.5
 _PROV_CAUSE = emit.cause(emit.PROVISIONAL, "q_transfer")
 _STREAM = [str(DETECTOR_INFO[d]["stream"]) for d in DETECTORS]
 _Q_POS = {d: i for i, d in enumerate(Q_DETECTORS)}
+# cadence-class strata that may take the cadence transfer (m_calib.xfer_*):
+# every detector but identity (its own (daypart, regime) strata)
+_XFER_OK = [i != _ID_IDX for i in range(N_DETECTORS)]
+THIN_SLOT_S = 900.0
+_XFER_CAUSE = emit.cause(emit.PROVISIONAL, "cc_transfer")
 _PM_KEYS: Dict[Tuple[int, bool], List[str]] = {}
 
 
@@ -174,6 +227,21 @@ def _pm_keys(cc: int, canonical: bool) -> List[str]:
     keys = _PM_KEYS.get(k)
     if keys is None:
         keys = _PM_KEYS[k] = [m_calib.pm_ring_key(d, cc, canonical) for d in DETECTORS]
+    return keys
+
+
+_PCAL_KEYS: Dict[Tuple[int, bool], List[str]] = {}
+
+
+def _pcal_keys(cc: int, canonical: bool) -> List[str]:
+    """Live power-correction key of every detector (m_calib.pcal_key): the
+    H / Q grain in canonical mode (identity 'h'), else the cadence class."""
+    k = (int(cc), bool(canonical))
+    keys = _PCAL_KEYS.get(k)
+    if keys is None:
+        keys = _PCAL_KEYS[k] = [m_calib.pcal_key(d, _STREAM[i] if canonical and _STREAM[i] != "t"
+                                                 else int(cc))
+                                for i, d in enumerate(DETECTORS)]
     return keys
 
 
@@ -189,7 +257,6 @@ class _Row(NamedTuple):
     dt: float
     grain: Optional[Dict[str, Any]] = None     # spec v2.1: {'dp_h', 'dp_q', 'prov'}
     pm: Optional[np.ndarray] = None            # behavior.pm row at ts (pm rings)
-    wev: float = 1.0                           # governor evidence weight (live commits)
 
 
 # ----------------------------------------------------------------- pending
@@ -253,7 +320,7 @@ def _phase(e: str, key: str) -> int:
 
 
 def _refit(r: calib.Ring, ts: float) -> None:
-    r.gpd = calib.fit_tail(r, now_ts=ts)
+    r.gpd = calib.robust_tail(r, now_ts=ts)     # contamination-bounded, xi >= 1/n_u
 
 
 def _tail_due(r: calib.Ring, count: int, x: float) -> bool:
@@ -459,7 +526,7 @@ class CalibrationEngine(Engine):
     name = "behavior.calibration"
     layer = "behavior"
     consumes = ["behavior.score", "behavior.pm", "behavior.trust", "behavior.trust_prov",
-                "behavior.quarantine", "behavior.trust_evidence", "feature.tctx", "behavior.regime", "model.control",
+                "behavior.quarantine", "feature.tctx", "behavior.regime", "model.control",
                 "model.link", "model.class", "model.baseline"]
     produces = ["behavior.p", "behavior.degraded", "model.calib", "behavior.calib_health",
                 "profile.extra.calibration"]
@@ -478,6 +545,10 @@ class CalibrationEngine(Engine):
         self._ret_store: Optional[weakref.ref] = None
         self._keys: Dict[Tuple[str, str], List[str]] = {}
         self._training = False
+        self._xfer_hit = False
+        self._refit_cur: Optional[Dict[str, int]] = None
+        self._now = _NAN
+        self._pcal: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------- plumbing
     def _learner(self, d_min_s: Any) -> _RingLearner:
@@ -487,7 +558,8 @@ class CalibrationEngine(Engine):
             lr = self._learners[d] = _RingLearner(
                 name=LEARNER, init=new_model, update=self._update, fetch=self._fetch,
                 dump=m_calib.to_json, load=self._load, merge=self._merge,
-                on_rebase=self._on_rebase, d_min_s=d, ckpt_every_s=math.inf, clock=SCORE)
+                on_rebase=self._on_rebase, d_min_s=d, ckpt_every_s=math.inf, clock=SCORE,
+                null_ring=True)
         return lr
 
     def _ensure_retention(self, store) -> None:
@@ -568,19 +640,14 @@ class CalibrationEngine(Engine):
             dt, terc = (cc if cc else dt0), 0
             if GR.canonical(self._config):
                 grain = self._grain_ctx(store, s, e, ts, dt)
-        # the governor's row-evidence cap (live rows only; it binds for a
-        # release, whose trust_prov has no accumulator factor - live trust
-        # already contains it). Warm-up rows carry none: rings must fill from
-        # the reference period or the entity's own null is never learnt.
-        wev = 1.0 if self._training else m_governor.evidence_weight(store, s, e, ts)
+        # admission weight: the PERIOD's trust (lib/gating.period_weight /
+        # release_weight, null_ring=True), never the row's own evidence
         return _Row(s, e, ts, row, store.vec_at(s, e, P, ts), dp, terc, dt, grain,
-                    store.vec_at(s, e, PM, ts), wev)
+                    store.vec_at(s, e, PM, ts))
 
     def _update(self, model: Dict[str, Any], row: _Row, w: float) -> Dict[str, Any]:
         w = float(w)
         w = 0.0 if not w > 0.0 else (1.0 if w > 1.0 else w)     # NaN -> 0
-        if row.wev < w:
-            w = row.wev
         mature = max(self._n_base, float(model["n_own"])) >= MATURITY_N_EFF
         model["n_own"] = float(model["n_own"]) + w * row.dt / MATURITY_UNIT_S
         if w >= 1.0:
@@ -598,11 +665,24 @@ class CalibrationEngine(Engine):
                                       calib.identity_stratum_key(row.daypart, row.tercile, cc))
             rings, refit = model[RINGS], model["refit"]
             ts = row.ts
+            # spec v2.1 canonical, Delta t < 900: a cadence-class (T-stream)
+            # ring admits one row per 900-s slot (a rule on ts, not on the
+            # score), so it spans the same wall-clock history at every cadence
+            # (256 rows = 64 h, not 4.3 h of one daypart at 60 s: the window
+            # statistics - budget, timing, jsd - are nearly constant over an
+            # hour, and a ring of them held one independent value)
+            thin = (row.grain is not None and row.dt < THIN_SLOT_S
+                    and int(round(ts)) % int(THIN_SLOT_S) >= int(round(row.dt)))
+            xst = model.setdefault(m_calib.XFER, {})
             for i, x in enumerate(row.scores.tolist()):
                 if not math.isfinite(x):
                     continue
                 key = keys[i]
                 r = rings.get(key)
+                if _XFER_OK[i] and (row.grain is None or _STREAM[i] == "t"):
+                    self._xfer_learn(rings, xst, i, row, cc, x, r)
+                    if thin:
+                        continue
                 if r is None:
                     r = rings[key] = calib.Ring()
                 r.add(x, ts)
@@ -620,11 +700,35 @@ class CalibrationEngine(Engine):
                     r = rings.get(key)
                     if r is None:
                         r = rings[key] = calib.Ring()
-                    r.add(x, ts)            # atom masses only: never tail-fitted
+                    r.add(x, ts)
+                    c = refit.get(key)      # round 4: tail-fitted lazily (_prior)
+                    refit[key] = (_phase(row.e, key) if c is None else c) + 1
             model["n_admit"] = int(model["n_admit"]) + 1
         if row.pvals is not None:
             self._sink.append((row.ts, row.dt, row.pvals, admit, row.grain is not None))
         return model
+
+    @staticmethod
+    def _xfer_learn(rings: Mapping, xst: Dict[str, Any], i: int, row: _Row, cc: int, x: float,
+                    native: Optional[calib.Ring]) -> None:
+        """Round 4: learn the cadence-transfer power of detector i from one
+        committed native row (m_calib.xfer_*): count u = p_src(x) <= XFER_X
+        while the native stratum is still young."""
+        if native is not None and len(native) >= m_calib.XFER_LEARN_N:
+            return
+        d = DETECTORS[i]
+        c, src = m_calib.xfer_source(rings, d, row.daypart, cc)
+        if src is None:
+            return
+        u = calib.p_from_ring(src, x, m_calib.uniform(row.s, row.e, d, row.ts))
+        if u != u:
+            return
+        k = m_calib.xfer_key(d, c, cc)
+        st = xst.get(k)
+        st = [0.0, 0.0] if not isinstance(st, list) or len(st) != 2 else st
+        st[0] = float(st[0]) + (1.0 if u <= m_calib.XFER_X else 0.0)
+        st[1] = float(st[1]) + 1.0
+        xst[k] = st
 
     def _on_rebase(self, model: Dict[str, Any], tau: float) -> Dict[str, Any]:
         _reset_rings(model)
@@ -664,18 +768,22 @@ class CalibrationEngine(Engine):
             if hs is not None:
                 hs = _ensure_health(hs)
             health_out = hs["out"] if hs is not None else {}
+            if not isinstance(sysm, dict):
+                sysm = {"layout": m_calib.LAYOUT}
+                store.put_model(s, SYSTEM_KEY, MODEL, sysm, ts=now)
+            self._pcal = sysm.setdefault(m_calib.PCAL, {})
             pool = _PoolCache(store, s)
             for e in keys:
                 self._sink = []
                 n_out += self._run_key(ctx, store, s, e, now, dt, cc, learner, pool, health_out)
                 if self._sink:
                     if hs is None:
-                        sysm = sysm if isinstance(sysm, dict) else {"layout": m_calib.LAYOUT}
                         hs = sysm[m_calib.HEALTH] = new_health()
                         store.put_model(s, SYSTEM_KEY, MODEL, sysm, ts=now)
                     for ts, dt_r, pv, trusted, canon in self._sink:
                         health_add(hs, ts, dt_r, pv, trusted, canon)
             self._sink = []
+            self._pcal = None
             if hs is not None:
                 self._write_health(store, s, hs, now, dt)
         return n_out
@@ -753,9 +861,14 @@ class CalibrationEngine(Engine):
         else:
             keys = self._keys_for(st, st_id)
         rings, refit = model[RINGS], model["refit"]
+        self._refit_cur, self._now = refit, now
         pm = store.vec_at(s, e, PM, now)
         out: Dict[str, float] = {}
         sizes: Dict[str, int] = {}
+        xfer_dg: Dict[str, str] = {}
+        pcal = self._pcal
+        pkeys = _pcal_keys(cc, grain is not None) if pcal is not None else None
+        observe = pcal is not None and self._pcal_observable(store, s, e, now, dt)
         for i, x in enumerate(row.tolist()):
             if x != x:
                 continue                    # unscored / degraded: p stays NaN
@@ -771,10 +884,26 @@ class CalibrationEngine(Engine):
                 if _tail_due(r, c, x):
                     _refit(r, now)
                     refit[key] = 0
-                p = calib.p_from_ring(r, x, u)          # = m_calib.p_value without a prior
+                # = m_calib.p_value without a prior; a p-score's tail is never
+                # steeper than its own pm (lib/calib, round 4 evaluator)
+                p = calib.p_from_ring(r, x, u, sigma_min=m_calib.tail_sigma_min(
+                    x, pm[i] if pm is not None and i < len(pm) else _NAN))
             else:
-                prior = self._prior(i, d, x, u, pm, pool, e, key, rings, dp, terc, cc, grain)
+                self._xfer_hit = False
+                prior = self._prior(i, d, x, u, pm, pool, e, key, rings, dp, terc, cc, grain,
+                                    model.get(m_calib.XFER))
                 p = m_calib.p_value(r, x, u, prior)
+                if self._xfer_hit:
+                    xfer_dg[d] = _XFER_CAUSE
+            if pkeys is not None:
+                # round 4: the live power correction (m_calib.pcal_*), v from
+                # the evidence BEFORE this row, then this row observed
+                pk = pkeys[i]
+                st_p = pcal.get(pk)
+                p_ring = p
+                p = m_calib.pcal_apply(p, m_calib.pcal_v(st_p))
+                if observe and p_ring == p_ring:
+                    pcal[pk] = m_calib.pcal_observe(st_p, p_ring <= m_calib.PCAL_X, now)
             out[d] = p if p >= P_ISSUED_FLOOR else P_ISSUED_FLOOR   # float32 ring
             sizes[d] = n
         if out:
@@ -788,6 +917,10 @@ class CalibrationEngine(Engine):
                 dg = {d: _PROV_CAUSE for d, v in grain["prov"].items() if v and d in out}
                 if dg:
                     emit.write_degraded(store, s, e, now, dg, window_s=int(dt))
+            if xfer_dg:
+                # round 4: a cadence-class stratum still on the transfer from
+                # the old cadence (m_calib.xfer_prior): provisional until native
+                emit.write_degraded(store, s, e, now, xfer_dg, window_s=int(dt))
         code = _encode(dp, terc, dt)
         if grain is not None:
             mask = sum(1 << _Q_POS[d] for d, v in grain["prov"].items() if v)
@@ -798,9 +931,21 @@ class CalibrationEngine(Engine):
             self._profile(store, s, e, now, model, st, st_id, sizes, health_out)
         return len(out)
 
+    def _pcal_observable(self, store, s: str, e: str, now: float, dt: float) -> bool:
+        """Round 4: a live tick of a trusted PERIOD - the governor's previous
+        tick exists (finite trust) and did not quarantine the key (the state
+        before the tick; the tick's own alarm cannot exclude it)."""
+        if self._training:
+            return False
+        tr = store.vec_at(s, e, gating.TRUST, now - dt)
+        if tr is None or not len(tr) or not math.isfinite(float(tr[0])):
+            return False
+        return not gating.is_quarantined(store, s, e, now, dt)
+
     def _prior(self, i: int, d: str, x: float, u: float, pm: Optional[np.ndarray],
                pool: _PoolCache, e: str, key: str, rings: Mapping, dp: str, terc: int,
-               cc: int = 0, grain: Optional[Mapping[str, Any]] = None) -> float:
+               cc: int = 0, grain: Optional[Mapping[str, Any]] = None,
+               xfer: Optional[Mapping] = None) -> float:
         """Small-sample prior: the entity's own rings of the other dayparts at
         this cadence (pooled, >= 64 entries), else the pm prior (pm[d] with
         its atoms randomised over their mass in the entity's pm ring,
@@ -815,6 +960,11 @@ class CalibrationEngine(Engine):
         cadence is a better prior than any of them. A cadence switch still
         falls through to pm (no ring of the new cadence exists; its pm ring
         is new too, so the atoms use the Laplace mass for 16 admitted ticks)."""
+        if cc and _XFER_OK[i] and (grain is None or _STREAM[i] == "t"):
+            p, c_src = m_calib.xfer_prior(rings, xfer, d, dp, cc, x, u)
+            if p == p:
+                self._xfer_hit = True
+                return p
         if i != _ID_IDX and grain is not None and _STREAM[i] != "t":
             # spec v2.1: the other dayparts of the same grain stratum
             g = _STREAM[i]
@@ -835,7 +985,17 @@ class CalibrationEngine(Engine):
                 if p == p:
                     return p
         if pm is not None:
-            r_pm = rings.get(_pm_keys(cc, grain is not None)[i])
+            pkey = _pm_keys(cc, grain is not None)[i]
+            r_pm = rings.get(pkey)
+            if r_pm is not None and len(r_pm) >= m_calib.PM_CAL_N and self._refit_cur is not None:
+                # the calibrated pm prior uses the pm ring's tail: refit lazily
+                # as the detector rings are (_tail_due)
+                c = self._refit_cur.get(pkey)
+                if c is None:
+                    c = self._refit_cur[pkey] = _phase(e, pkey)
+                if _tail_due(r_pm, c, m_calib.pm_score(float(pm[i]))):
+                    _refit(r_pm, self._now)
+                    self._refit_cur[pkey] = 0
             v = m_calib.pm_prior(r_pm, float(pm[i]), u)
             if v == v:
                 return v

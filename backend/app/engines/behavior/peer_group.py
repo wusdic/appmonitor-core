@@ -45,8 +45,10 @@ run; an id is inherited when J >= 0.3, otherwise minted, with class_split /
 class_merge when one old role feeds several new ones or vice versa. A role
 retires after 3 runs without a matching cluster. Names are made from data in
 natural units (human/automated, dominant family, active window, volume tier,
-top-3 class-vs-rest Cohen's d). Soft membership P(c|e) is proportional to
-exp(-D_role(e, medoid_c)/d90_c), with d90_c floored at D90_FLOOR: sampling
+top-3 class-vs-rest Cohen's d). Soft membership P(c|e) is the posterior of
+an exponential distance model per role, P(c|e) proportional to
+exp(-D_role(e, medoid_c)/s_c) / s_c with s_c = d90_c / ln 10 (round 4,
+soft_membership), with d90_c floored at D90_FLOOR: sampling
 noise of a few ticks alone moves a descriptor that far, so a tight role
 cannot reject its own new members.
 
@@ -99,11 +101,13 @@ from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import features as F
 from .lib import m_baseline as MB
 from .lib import m_client as MC
+from .lib import m_identity as MI
 from .lib import m_link
 from .lib import m_rhythm as MR
 from .lib import m_template as MT
 from .lib import m_timing as MTI
 from .lib import m_vocab as MV
+from .lib import grains as GR
 from .lib import timebins as TB
 from .lib.classkeys import ORG, SYSTEM_KEY, assign_key, pool_key, role_key, static_key
 from .lib.template import channel_of
@@ -118,6 +122,15 @@ FMT = 1
 
 REFIT_TICKS = 16
 REFIT_S = 6 * 3600.0
+# canonical grain mode (round 4, evaluator): the tick stride counts ticks of
+# at least one Q grain, i.e. a wall-clock stride of 16 x max(dt, 900 s)
+# (4 h at 900 s and at 60 s; the 6-h cap binds at 3600 s). Counted in raw
+# ticks, B02 re-clustered every 16 MINUTES after a 900 -> 60 s switch:
+# 90 refits a day, each a chance to split or merge a role (pack E seed 0:
+# consecutive-refit ARI min 0.68 against 0.94 on pack A; class:r4 of two
+# systems dissolved and re-formed within the hour, and its B05 / B18 series
+# went stale while it did not exist).
+REFIT_TICK_S = 900.0
 MIN_COMMITS = 48.0                 # committed active ticks to be clustered
 COLD_MIN_ACTIVE = 3                # active ticks before cold typing
 COLD_KEEP_S = 8 * 86400.0          # a cold record idle this long is dropped
@@ -314,6 +327,26 @@ def _fill(M: np.ndarray, sym: bool) -> np.ndarray:
     return M
 
 
+def role_families(fam: Mapping[str, float]) -> Dict[str, float]:
+    """The level-1 action mix: template families collapsed to channel|method
+    class (round 4). The full family (channel|method class|host|first path
+    segment) names a system's host and, for an API client, its own endpoint
+    subset: it is individual and system-specific, which the role descriptor
+    must not be ("coarse and does not depend on the individual"). On pack B
+    it put API-client pairs at a median role distance of 0.13 (ROLE_EPS is
+    0.15) through the family term alone (sqrt JSD ~0.55 within every
+    archetype), so HDBSCAN split roles along sampling noise refit after
+    refit (pack D: 3 roles on day 1, 12 roles and ARI 0.15 by day 30).
+    Collapsed, within-role distances halve (API 0.065, people 0.04) while
+    the machine / human / health separations stay. The full families remain
+    in level 2 (D_ind templates) and in the role names."""
+    out: Dict[str, float] = {}
+    for k, v in fam.items():
+        kk = "|".join(str(k).split("|")[:2])
+        out[kk] = out.get(kk, 0.0) + float(v)
+    return out
+
+
 def _role_terms(a: Sequence[_Desc], b: Sequence[_Desc]) -> Tuple[np.ndarray, ...]:
     Aa = np.array([d.A for d in a])
     Ab = np.array([d.A for d in b])
@@ -321,8 +354,10 @@ def _role_terms(a: Sequence[_Desc], b: Sequence[_Desc]) -> Tuple[np.ndarray, ...
     Ca = np.stack([d.clr for d in a])
     Cb = np.stack([d.clr for d in b])
     tC = np.minimum(1.0, np.linalg.norm(Ca[:, None, :] - Cb[None, :, :], axis=2) / NORM_AIT)
-    vocab = sorted({k for d in list(a) + list(b) for k in d.fam})
-    tF = _sqrt_jsd(_dense([d.fam for d in a], vocab), _dense([d.fam for d in b], vocab))
+    fa = [role_families(d.fam) for d in a]
+    fb = fa if b is a else [role_families(d.fam) for d in b]
+    vocab = sorted({k for f in fa + fb for k in f})
+    tF = _sqrt_jsd(_dense(fa, vocab), _dense(fb, vocab))
     tR = _one_minus_cos(np.stack([d.s48 for d in a]), np.stack([d.s48 for d in b]))
     tD = np.array([[float(x.dev != y.dev) for y in b] for x in a])
     return tA, tC, tF, tR, tD
@@ -392,7 +427,18 @@ def _hdbscan(D: np.ndarray, method: str, eps: float) -> np.ndarray:
             if float(D[np.ix_(ia, lab == b)].min()) <= eps:
                 parent[find(b)] = find(a)
     root = {c: find(c) for c in ids}
-    return np.array([root[x] if x >= 0 else -1 for x in lab.tolist()], dtype=int)
+    out = np.array([root[x] if x >= 0 else -1 for x in lab.tolist()], dtype=int)
+    # (round 4) the same epsilon rule for single points: a point EOM left out
+    # (with min_samples = 1 a member of a tight, even cluster can fall off at
+    # the split that selects it) joins the nearest cluster when it lies within
+    # eps of one of its members; only points farther than eps stay 'unique'
+    if (out >= 0).any():
+        members = np.flatnonzero(out >= 0)
+        for i in np.flatnonzero(out < 0):
+            j = members[int(np.argmin(D[i, members]))]
+            if float(D[i, j]) <= eps:
+                out[i] = out[j]
+    return out
 
 
 def _gap_linkage(D: np.ndarray) -> np.ndarray:
@@ -454,6 +500,53 @@ def level2(D: np.ndarray) -> np.ndarray:
     return lab
 
 
+def split_by_identity(lab: np.ndarray, ds: Sequence[_Desc],
+                      idm: Mapping[str, Any]) -> np.ndarray:
+    """Level-2 groups refined by B15's honest separability (round 4): inside
+    each HDBSCAN group, members enrolled in their system's model.identity stay
+    together only when B15's blocked CV lists them confusable (confusion share
+    >= 0.05 or pairwise EER >= 0.2, m_identity.confusable_with; transitively);
+    members B15 separates become their own sub-classes. Members that are not
+    enrolled keep HDBSCAN's grouping.
+
+    Why: HDBSCAN(min_cluster_size = 2, leaf) always groups points into
+    clusters of >= 2, whatever their absolute distance: pack B's 12 API
+    clients (every pairwise D_ind >= 0.30, each its own endpoints and period)
+    came out as 5 sub-classes and sub-class purity was 0.63-0.73 against the
+    0.8 target, although level 2 exists to separate individuals. D_ind has no
+    calibrated scale; B15's cross-validated confusability is exactly the
+    question 'can these two be told apart'."""
+    lab = np.asarray(lab, dtype=int).copy()
+    nxt = int(lab.max()) + 1 if lab.size else 0
+    for c in sorted(set(lab.tolist())):
+        idx = [i for i in range(len(ds)) if lab[i] == c]
+        enr = [i for i in idx if MI.stats(idm.get(ds[i].s), ds[i].e)]
+        if len(enr) < 2 and len(enr) == len(idx):
+            continue
+        parent = {i: i for i in enr}
+
+        def find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+        for a in enr:
+            conf = set(MI.confusable_with(idm.get(ds[a].s), ds[a].e))
+            for b in enr:
+                if b != a and ds[b].s == ds[a].s and ds[b].e in conf:
+                    parent[find(b)] = find(a)
+        roots = sorted({find(i) for i in enr})
+        keep_root = None if len(enr) < len(idx) else roots[0]   # non-enrolled keep label c
+        for r in roots:
+            if r == keep_root:
+                continue
+            for i in enr:
+                if find(i) == r:
+                    lab[i] = nxt
+            nxt += 1
+    return lab
+
+
 def _medoid(D: np.ndarray, idx: Sequence[int]) -> Tuple[int, float]:
     """(medoid index, d90 of the members' distances to it, floored)."""
     idx = list(idx)
@@ -462,6 +555,23 @@ def _medoid(D: np.ndarray, idx: Sequence[int]) -> Tuple[int, float]:
     others = [D[m, j] for j in idx if j != m]
     d90 = float(np.percentile(others, 90)) if others else 0.0
     return m, max(D90_FLOOR, d90)
+
+
+def soft_membership(D: np.ndarray, d90: Sequence[float]) -> np.ndarray:
+    """P(c | e) for rows of D (entities x roles): the posterior under an
+    exponential model of a member's distance to its role medoid whose 90th
+    percentile is the role's d90 (scale d90 / ln 10), equal role priors:
+        ln P(c | e) = -ln scale_c - D[e, c] / scale_c + const.
+    (round 4) The v2 weights exp(-D / d90_c) left out the density's 1/scale_c,
+    so a diffuse role (large d90) took mass from a tight role even at several
+    of its radii: pack A's new employee L8 sat at D = 0.08 from the human role
+    (d90 0.15) and 0.32 from a machine role (d90 0.27) and was typed with
+    p = 0.66 (gate: >= 0.8 within 3 ticks); the normalised posterior is 0.89."""
+    D = np.atleast_2d(np.asarray(D, dtype=np.float64))
+    sc = np.maximum(np.asarray(d90, dtype=np.float64), 1e-6)[None, :] / math.log(10.0)
+    logit = -np.log(sc) - D / sc
+    P = np.exp(logit - logit.max(axis=1, keepdims=True))
+    return P / P.sum(axis=1, keepdims=True)
 
 
 def match_ids(new: Sequence[Set[str]], old: Mapping[str, Set[str]]
@@ -504,7 +614,7 @@ class PeerGroupEngine(Engine):
     layer = "behavior"
     consumes = [BASELINE, VOCAB, RHYTHM, CLIENT, TIMING, CONTROL, LINK, QUARANTINE,
                 ACTIVE, NAT, "act.tokens", "tls.sni_etld1_set", "dns.qname_etld1_set",
-                "l4.dport_set", "client.stack_set"]
+                "l4.dport_set", "client.stack_set", MI.MODEL]
     produces = [MODEL, "profile.archetype", "profile.archetype_confidence",
                 "profile.extra.peer_group", "event.new_entity_matched",
                 "event.new_entity_unmatched", "event.class_transition", "event.class_split",
@@ -537,8 +647,13 @@ class PeerGroupEngine(Engine):
         n = 0
         new = None
         last = st.get("last_refit")
-        if last is None or st["ticks"] - int(st.get("refit_tick", 0)) >= REFIT_TICKS \
-                or now - float(last) >= REFIT_S or now < float(last):
+        if GR.canonical(ctx.config) and last is not None:
+            due = (now - float(last) >= min(REFIT_S, REFIT_TICKS * max(dt, REFIT_TICK_S)) - 1e-6
+                   or now < float(last))
+        else:
+            due = (last is None or st["ticks"] - int(st.get("refit_tick", 0)) >= REFIT_TICKS
+                   or now - float(last) >= REFIT_S or now < float(last))
+        if due:
             new, k = self._refit(ctx, mc, young, now)
             n += k
         ready = [k for k in young if k not in st["seen"]
@@ -635,9 +750,7 @@ class PeerGroupEngine(Engine):
                     tR[0, j] = 1.0 - min(1.0, float(d.s48 @ m.s48) / float(m.s48.max()))
         D = sum(w * _fill(t, False) for w, t in zip(W_ROLE, (tA, tC, tF, tR, tD)))[0]
         d90 = np.array([float(r.get("d90", D90_FLOOR)) for _, r in roles])
-        logit = -D / d90
-        P = np.exp(logit - logit.max())
-        P /= P.sum()
+        P = soft_membership(D[None, :], d90)[0]
         j = int(np.argmin(D))
         order = np.argsort(-P)[:3]
         return {"role": roles[j][0], "prob": float(P[j]), "D": float(D[j]), "d90": float(d90[j]),
@@ -900,9 +1013,7 @@ class PeerGroupEngine(Engine):
         k_of = {ids[j]: j for j in range(len(ids))}
         if clusters:
             Dm = D[:, med_idx]
-            logit = -Dm / np.asarray(d90s)[None, :]
-            P = np.exp(logit - logit.max(axis=1, keepdims=True))
-            P /= P.sum(axis=1, keepdims=True)
+            P = soft_membership(Dm, d90s)
         else:
             Dm = np.zeros((len(descs), 0))
             P = np.zeros((len(descs), 0))
@@ -1023,7 +1134,7 @@ class PeerGroupEngine(Engine):
             for r, i in enumerate(idx):
                 ds[i].med, ds[i].sd = med[r], sd[r]
         Dind = ind_distance(ds)
-        lab = level2(Dind)
+        lab = split_by_identity(level2(Dind), ds, {s: MI.get(store, s) for s in by_sys})
         groups = [sorted(np.nonzero(lab == c)[0].tolist()) for c in sorted(set(lab.tolist()))]
         sets = [{ds[i].key for i in g} for g in groups]
         old = {sid: set(x.get("members") or []) for sid, x in mc["subs"].items()
