@@ -1,0 +1,1784 @@
+{
+ "pack": "B",
+ "seed": 1,
+ "dt": 900.0,
+ "scenario_window": [
+  1749657600.0,
+  1750694400.0
+ ],
+ "disabled_engines": [],
+ "labels_added": 0,
+ "aborted": null,
+ "scenarios": [
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000006"
+   ],
+   "t_detect_open": 1749777300.0,
+   "ttd_s_open": 900.0,
+   "ttd_ticks_open": 2,
+   "t_detect": 1749777300.0,
+   "ttd_s": 900.0,
+   "ttd_ticks": 2,
+   "tp_incident": "inc0000006",
+   "matched": [
+    "B08 novelty",
+    "B13 budget_exfil",
+    "B14 cusum",
+    "exfil",
+    "categorical"
+   ],
+   "detected_by": "open",
+   "notifications": 3,
+   "tp_incidents": [
+    "inc0000006"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T2",
+   "base": "T2",
+   "pack": "B",
+   "seed": 1,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.1.12"
+   ],
+   "t_start": 1749776400.0,
+   "t_end": 1750208400.0,
+   "required_severity": "medium",
+   "deadline_s": 259200.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000023"
+   ],
+   "t_detect_open": 1749856500.0,
+   "ttd_s_open": 112500.0,
+   "ttd_ticks_open": 126,
+   "t_detect": 1749856500.0,
+   "ttd_s": 112500.0,
+   "ttd_ticks": 126,
+   "tp_incident": "inc0000023",
+   "matched": [
+    "B14 cusum",
+    "B13 budget_vol",
+    "volume"
+   ],
+   "detected_by": "open",
+   "notifications": 3,
+   "tp_incidents": [
+    "inc0000023"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T3",
+   "base": "T3",
+   "pack": "B",
+   "seed": 1,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.4.30"
+   ],
+   "t_start": 1749744000.0,
+   "t_end": 1750608000.0,
+   "required_severity": "low",
+   "deadline_s": 172800.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000037"
+   ],
+   "t_detect_open": 1750011300.0,
+   "ttd_s_open": 8100.0,
+   "ttd_ticks_open": 10,
+   "t_detect": 1750011300.0,
+   "ttd_s": 8100.0,
+   "ttd_ticks": 10,
+   "tp_incident": "inc0000037",
+   "matched": [
+    "B14 cusum",
+    "B13 budget_vol",
+    "volume"
+   ],
+   "detected_by": "open",
+   "notifications": 6,
+   "tp_incidents": [
+    "inc0000037"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T4",
+   "base": "T4",
+   "pack": "B",
+   "seed": 1,
+   "label": "malicious",
+   "system": "oa-portal",
+   "entities": [
+    "oa-portal|10.30.4.41"
+   ],
+   "t_start": 1750003200.0,
+   "t_end": 1750176000.0,
+   "required_severity": "low",
+   "deadline_s": 10800.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000042"
+   ],
+   "t_detect_open": 1750090500.0,
+   "ttd_s_open": 900.0,
+   "ttd_ticks_open": 2,
+   "t_detect": 1750090500.0,
+   "ttd_s": 900.0,
+   "ttd_ticks": 2,
+   "tp_incident": "inc0000042",
+   "matched": [
+    "B14 cusum",
+    "B13 budget_vol",
+    "volume"
+   ],
+   "detected_by": "open",
+   "notifications": 5,
+   "tp_incidents": [
+    "inc0000042"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T4b",
+   "base": "T4b",
+   "pack": "B",
+   "seed": 1,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.4.33"
+   ],
+   "t_start": 1750089600.0,
+   "t_end": 1750262400.0,
+   "required_severity": "low",
+   "deadline_s": 10800.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000024"
+   ],
+   "t_detect_open": 1749863700.0,
+   "ttd_s_open": 900.0,
+   "ttd_ticks_open": 2,
+   "t_detect": 1749863700.0,
+   "ttd_s": 900.0,
+   "ttd_ticks": 2,
+   "tp_incident": "inc0000024",
+   "matched": [
+    "B11 timing"
+   ],
+   "detected_by": "open",
+   "notifications": 3,
+   "tp_incidents": [
+    "inc0000024"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T8",
+   "base": "T8",
+   "pack": "B",
+   "seed": 1,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.1.15"
+   ],
+   "t_start": 1749862800.0,
+   "t_end": 1749891600.0,
+   "required_severity": "low",
+   "deadline_s": 28800.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000022"
+   ],
+   "t_detect_open": 1749917700.0,
+   "ttd_s_open": 900.0,
+   "ttd_ticks_open": 2,
+   "t_detect": 1749917700.0,
+   "ttd_s": 900.0,
+   "ttd_ticks": 2,
+   "tp_incident": "inc0000022",
+   "matched": [
+    "B12 beacon",
+    "B08 novelty",
+    "timing"
+   ],
+   "detected_by": "open",
+   "notifications": 5,
+   "tp_incidents": [
+    "inc0000022"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T10",
+   "base": "T10",
+   "pack": "B",
+   "seed": 1,
+   "label": "malicious",
+   "system": "api-gateway",
+   "entities": [
+    "api-gateway|10.40.4.51"
+   ],
+   "t_start": 1749916800.0,
+   "t_end": 1750176000.0,
+   "required_severity": "medium",
+   "deadline_s": 14400.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000027"
+   ],
+   "t_detect_open": 1749868200.0,
+   "ttd_s_open": 1800.0,
+   "ttd_ticks_open": 3,
+   "t_detect": 1749868200.0,
+   "ttd_s": 1800.0,
+   "ttd_ticks": 3,
+   "tp_incident": "inc0000027",
+   "matched": [
+    "B08 novelty",
+    "exfil",
+    "categorical"
+   ],
+   "detected_by": "open",
+   "notifications": 4,
+   "tp_incidents": [
+    "inc0000027"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T14",
+   "base": "T14",
+   "pack": "B",
+   "seed": 1,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.1.13"
+   ],
+   "t_start": 1749866400.0,
+   "t_end": 1750039200.0,
+   "required_severity": "medium",
+   "deadline_s": 3600.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000033"
+   ],
+   "t_detect_open": 1749933900.0,
+   "ttd_s_open": 13500.0,
+   "ttd_ticks_open": 16,
+   "t_detect": 1749933900.0,
+   "ttd_s": 13500.0,
+   "ttd_ticks": 16,
+   "tp_incident": "inc0000033",
+   "matched": [
+    "B14 cusum",
+    "B08 novelty",
+    "B28 regime",
+    "volume"
+   ],
+   "detected_by": "open",
+   "notifications": 5,
+   "tp_incidents": [
+    "inc0000033"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T15",
+   "base": "T15",
+   "pack": "B",
+   "seed": 1,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.9.5"
+   ],
+   "t_start": 1749920400.0,
+   "t_end": 1750104000.0,
+   "required_severity": "high",
+   "deadline_s": 180900.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "low",
+   "incident_ids": [
+    "inc0000053"
+   ],
+   "t_detect_open": 1750214700.0,
+   "ttd_s_open": 6300.0,
+   "ttd_ticks_open": 8,
+   "t_detect": 1750214700.0,
+   "ttd_s": 6300.0,
+   "ttd_ticks": 8,
+   "tp_incident": "inc0000053",
+   "matched": [
+    "exfil"
+   ],
+   "detected_by": "open",
+   "notifications": 1,
+   "tp_incidents": [
+    "inc0000053"
+   ],
+   "within_deadline_open": false,
+   "scenario_id": "T18",
+   "base": "T18",
+   "pack": "B",
+   "seed": 1,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.1.16"
+   ],
+   "t_start": 1750208400.0,
+   "t_end": 1750251600.0,
+   "required_severity": "low",
+   "deadline_s": 5400.0,
+   "within_deadline": false,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 3,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000065",
+    "inc0000069",
+    "inc0000072"
+   ],
+   "t_detect_open": 1750382100.0,
+   "ttd_s_open": 900.0,
+   "ttd_ticks_open": 2,
+   "t_detect": 1750382100.0,
+   "ttd_s": 900.0,
+   "ttd_ticks": 2,
+   "tp_incident": "inc0000065",
+   "matched": [
+    "B13 budget_exfil",
+    "B08 novelty",
+    "exfil"
+   ],
+   "detected_by": "open",
+   "notifications": 3,
+   "tp_incidents": [
+    "inc0000065"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T19",
+   "base": "T19",
+   "pack": "B",
+   "seed": 1,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.1.70",
+    "erp-prod|10.20.1.71",
+    "erp-prod|10.20.1.72"
+   ],
+   "t_start": 1750381200.0,
+   "t_end": 1750462200.0,
+   "required_severity": "low",
+   "deadline_s": 54000.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 3.0
+  }
+ ],
+ "legit": [
+  {
+   "scenario_id": "L4",
+   "base": "L4",
+   "pack": "B",
+   "seed": 1,
+   "label": "legit_change",
+   "entities": [],
+   "t_start": 1749830400.0,
+   "t_end": 1750608000.0,
+   "max_severity": null,
+   "allowed": "info",
+   "n_incidents": 0,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": null,
+   "max_risk": null,
+   "sev_ok": true,
+   "risk_ok": true,
+   "member_ok": true,
+   "ok": true
+  },
+  {
+   "scenario_id": "L7",
+   "base": "L7",
+   "pack": "B",
+   "seed": 1,
+   "label": "legit_change",
+   "entities": [
+    "oa-portal|10.30.2.50"
+   ],
+   "t_start": 1749657600.0,
+   "t_end": 1750694400.0,
+   "max_severity": "low",
+   "allowed": "info",
+   "n_incidents": 3,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": "low",
+   "max_risk": 72.74939727783203,
+   "sev_ok": false,
+   "risk_ok": false,
+   "member_ok": true,
+   "ok": false
+  },
+  {
+   "scenario_id": "L11",
+   "base": "L11",
+   "pack": "B",
+   "seed": 1,
+   "label": "legit_change",
+   "entities": [],
+   "t_start": 1749657600.0,
+   "t_end": 1750694400.0,
+   "max_severity": null,
+   "allowed": "info",
+   "n_incidents": 0,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": null,
+   "max_risk": null,
+   "sev_ok": true,
+   "risk_ok": true,
+   "member_ok": true,
+   "ok": true
+  },
+  {
+   "scenario_id": "L15",
+   "base": "L15",
+   "pack": "B",
+   "seed": 1,
+   "label": "legit_change",
+   "entities": [
+    "erp-prod|10.20.9.9",
+    "oa-portal|10.30.9.9",
+    "api-gateway|10.40.9.9",
+    "api-gateway|10.40.9.6"
+   ],
+   "t_start": 1749657600.0,
+   "t_end": 1750694400.0,
+   "max_severity": "high",
+   "allowed": "info",
+   "n_incidents": 5,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": "high",
+   "max_risk": 96.29045104980469,
+   "sev_ok": false,
+   "risk_ok": false,
+   "member_ok": true,
+   "ok": false
+  }
+ ],
+ "far": {
+  "entity_days": 276.0,
+  "n_control": 23,
+  "dt": 900.0,
+  "n_low": 53,
+  "n_medium": 20,
+  "n_high": 1,
+  "n_reopened": 16,
+  "n_low_notified": 53,
+  "n_critical": 0,
+  "far_low": 0.19202898550724637,
+  "far_medium": 0.07246376811594203,
+  "groups": {
+   "steady": {
+    "n_low": 24,
+    "days": 120.0
+   },
+   "bursty": {
+    "n_low": 29,
+    "days": 156.0
+   }
+  },
+  "false_alarms": [
+   {
+    "id": "inc0000001",
+    "entity": "api-gateway|10.40.4.57",
+    "opened": 1749661200.0,
+    "severity": "low",
+    "axes": [
+     "change",
+     "timing"
+    ]
+   },
+   {
+    "id": "inc0000002",
+    "entity": "erp-prod|10.20.4.32",
+    "opened": 1749686400.0,
+    "severity": "low",
+    "axes": [
+     "identity"
+    ]
+   },
+   {
+    "id": "inc0000003",
+    "entity": "oa-portal|10.30.2.27",
+    "opened": 1749686400.0,
+    "severity": "medium",
+    "axes": [
+     "categorical",
+     "identity",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000004",
+    "entity": "oa-portal|10.30.2.22",
+    "opened": 1749694500.0,
+    "severity": "low",
+    "axes": [
+     "sequence",
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000005",
+    "entity": "api-gateway|10.40.4.54",
+    "opened": 1749696300.0,
+    "severity": "low",
+    "axes": [
+     "breadth"
+    ]
+   },
+   {
+    "id": "inc0000007",
+    "entity": "oa-portal|10.30.4.40",
+    "opened": 1749700800.0,
+    "severity": "low",
+    "axes": [
+     "sequence"
+    ]
+   },
+   {
+    "id": "inc0000009",
+    "entity": "oa-portal|10.30.2.29",
+    "opened": 1749716100.0,
+    "severity": "low",
+    "axes": [
+     "shape"
+    ]
+   },
+   {
+    "id": "inc0000010",
+    "entity": "oa-portal|10.30.2.21",
+    "opened": 1749720600.0,
+    "severity": "low",
+    "axes": [
+     "c2"
+    ]
+   },
+   {
+    "id": "inc0000012",
+    "entity": "erp-prod|10.20.4.31",
+    "opened": 1749729600.0,
+    "severity": "high",
+    "axes": [
+     "temporal",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000013",
+    "entity": "oa-portal|10.30.4.42",
+    "opened": 1749771000.0,
+    "severity": "low",
+    "axes": [
+     "app_error",
+     "comp",
+     "temporal",
+     "transport"
+    ]
+   },
+   {
+    "id": "inc0000014",
+    "entity": "oa-portal|10.30.2.25",
+    "opened": 1749772800.0,
+    "severity": "low",
+    "axes": [
+     "categorical",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000015",
+    "entity": "oa-portal|10.30.2.26",
+    "opened": 1749772800.0,
+    "severity": "low",
+    "axes": [
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000018",
+    "entity": "erp-prod|10.20.1.11",
+    "opened": 1749801600.0,
+    "severity": "low",
+    "axes": [
+     "breadth",
+     "change",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000019",
+    "entity": "oa-portal|10.30.2.24",
+    "opened": 1749809700.0,
+    "severity": "medium",
+    "axes": [
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000020",
+    "entity": "api-gateway|10.40.4.55",
+    "opened": 1749820500.0,
+    "severity": "medium",
+    "axes": [
+     "categorical",
+     "exfil",
+     "shape"
+    ]
+   },
+   {
+    "id": "inc0000026",
+    "entity": "oa-portal|10.30.2.23",
+    "opened": 1749866400.0,
+    "severity": "medium",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000028",
+    "entity": "oa-portal|10.30.2.22",
+    "opened": 1749873600.0,
+    "severity": "low",
+    "axes": [
+     "identity"
+    ]
+   },
+   {
+    "id": "inc0000029",
+    "entity": "erp-prod|10.20.1.21",
+    "opened": 1749888900.0,
+    "severity": "low",
+    "axes": [
+     "shape"
+    ]
+   },
+   {
+    "id": "inc0000030",
+    "entity": "api-gateway|10.40.4.54",
+    "opened": 1749891600.0,
+    "severity": "low",
+    "axes": [
+     "categorical",
+     "sequence"
+    ]
+   },
+   {
+    "id": "inc0000031",
+    "entity": "oa-portal|10.30.2.21",
+    "opened": 1749901500.0,
+    "severity": "low",
+    "axes": [
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000032",
+    "entity": "api-gateway|10.40.4.53",
+    "opened": 1749908700.0,
+    "severity": "low",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000034",
+    "entity": "oa-portal|10.30.4.40",
+    "opened": 1749988800.0,
+    "severity": "medium",
+    "axes": [
+     "exfil",
+     "identity"
+    ]
+   },
+   {
+    "id": "inc0000035",
+    "entity": "oa-portal|10.30.4.42",
+    "opened": 1750004100.0,
+    "severity": "low",
+    "axes": [
+     "categorical",
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000039",
+    "entity": "erp-prod|10.20.4.31",
+    "opened": 1750032000.0,
+    "severity": "low",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000041",
+    "entity": "oa-portal|10.30.2.24",
+    "opened": 1750079700.0,
+    "severity": "medium",
+    "axes": [
+     "temporal",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000044",
+    "entity": "erp-prod|10.20.4.32",
+    "opened": 1750104000.0,
+    "severity": "low",
+    "axes": [
+     "app_error",
+     "categorical",
+     "change"
+    ]
+   },
+   {
+    "id": "inc0000045",
+    "entity": "oa-portal|10.30.2.29",
+    "opened": 1750122900.0,
+    "severity": "medium",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000048",
+    "entity": "oa-portal|10.30.2.28",
+    "opened": 1750136400.0,
+    "severity": "medium",
+    "axes": [
+     "breadth",
+     "categorical",
+     "temporal",
+     "timing",
+     "transport",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000049",
+    "entity": "erp-prod|10.20.1.18",
+    "opened": 1750149000.0,
+    "severity": "medium",
+    "axes": [
+     "breadth",
+     "change",
+     "identity",
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000050",
+    "entity": "oa-portal|10.30.2.21",
+    "opened": 1750185000.0,
+    "severity": "low",
+    "axes": [
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000051",
+    "entity": "api-gateway|10.40.4.55",
+    "opened": 1750208400.0,
+    "severity": "low",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000052",
+    "entity": "oa-portal|10.30.2.23",
+    "opened": 1750208400.0,
+    "severity": "medium",
+    "axes": [
+     "temporal",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000054",
+    "entity": "api-gateway|10.40.4.57",
+    "opened": 1750220100.0,
+    "severity": "low",
+    "axes": [
+     "shape",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000055",
+    "entity": "oa-portal|10.30.2.27",
+    "opened": 1750275000.0,
+    "severity": "medium",
+    "axes": [
+     "exfil"
+    ]
+   },
+   {
+    "id": "inc0000056",
+    "entity": "oa-portal|10.30.2.29",
+    "opened": 1750283100.0,
+    "severity": "low",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000058",
+    "entity": "oa-portal|10.30.4.40",
+    "opened": 1750305600.0,
+    "severity": "low",
+    "axes": [
+     "change",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000059",
+    "entity": "oa-portal|10.30.2.21",
+    "opened": 1750311000.0,
+    "severity": "medium",
+    "axes": [
+     "exfil"
+    ]
+   },
+   {
+    "id": "inc0000061",
+    "entity": "erp-prod|10.20.1.11",
+    "opened": 1750326300.0,
+    "severity": "low",
+    "axes": [
+     "exfil"
+    ]
+   },
+   {
+    "id": "inc0000062",
+    "entity": "api-gateway|10.40.4.53",
+    "opened": 1750347900.0,
+    "severity": "low",
+    "axes": [
+     "exfil"
+    ]
+   },
+   {
+    "id": "inc0000063",
+    "entity": "api-gateway|10.40.4.54",
+    "opened": 1750369500.0,
+    "severity": "low",
+    "axes": [
+     "exfil",
+     "sequence"
+    ]
+   },
+   {
+    "id": "inc0000064",
+    "entity": "api-gateway|10.40.4.52",
+    "opened": 1750381200.0,
+    "severity": "low",
+    "axes": [
+     "identity"
+    ]
+   },
+   {
+    "id": "inc0000067",
+    "entity": "api-gateway|10.40.4.56",
+    "opened": 1750401900.0,
+    "severity": "medium",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000070",
+    "entity": "oa-portal|10.30.2.27",
+    "opened": 1750420800.0,
+    "severity": "medium",
+    "axes": [
+     "peer"
+    ]
+   },
+   {
+    "id": "inc0000071",
+    "entity": "erp-prod|10.20.1.18",
+    "opened": 1750436100.0,
+    "severity": "low",
+    "axes": [
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000073",
+    "entity": "oa-portal|10.30.2.23",
+    "opened": 1750496400.0,
+    "severity": "low",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000074",
+    "entity": "api-gateway|10.40.4.55",
+    "opened": 1750516200.0,
+    "severity": "medium",
+    "axes": [
+     "exfil",
+     "identity",
+     "sequence"
+    ]
+   },
+   {
+    "id": "inc0000077",
+    "entity": "api-gateway|10.40.4.53",
+    "opened": 1750575600.0,
+    "severity": "low",
+    "axes": [
+     "app_error",
+     "comp",
+     "sequence"
+    ]
+   },
+   {
+    "id": "inc0000078",
+    "entity": "oa-portal|10.30.4.42",
+    "opened": 1750590000.0,
+    "severity": "low",
+    "axes": [
+     "shape",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000080",
+    "entity": "api-gateway|10.40.4.56",
+    "opened": 1750608900.0,
+    "severity": "medium",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000082",
+    "entity": "erp-prod|10.20.1.17",
+    "opened": 1750643100.0,
+    "severity": "low",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000083",
+    "entity": "oa-portal|10.30.2.21",
+    "opened": 1750643100.0,
+    "severity": "medium",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000085",
+    "entity": "oa-portal|10.30.2.23",
+    "opened": 1750652100.0,
+    "severity": "medium",
+    "axes": [
+     "identity",
+     "shape"
+    ]
+   },
+   {
+    "id": "inc0000086",
+    "entity": "oa-portal|10.30.2.24",
+    "opened": 1750671000.0,
+    "severity": "medium",
+    "axes": [
+     "breadth"
+    ]
+   }
+  ]
+ },
+ "range": {
+  "range": {
+   "precision": 0.05185657935904877,
+   "recall": 0.8716291351146168,
+   "f1": 0.0978893440544263
+  },
+  "point_adjusted": {
+   "precision": 0.29022957821676454,
+   "recall": 1.0,
+   "f1": 0.44988827277993876
+  },
+  "n_real": 10,
+  "n_pred": 143
+ },
+ "calibration": {
+  "ks": {
+   "marg_int": {
+    "D": 0.05657942802779109,
+    "n": 4001
+   },
+   "marg_shape": {
+    "D": 0.060531517180226146,
+    "n": 4001
+   },
+   "peer": {
+    "D": 0.09287551851369119,
+    "n": 4001
+   },
+   "t2": {
+    "D": 0.03130242119011839,
+    "n": 4001
+   },
+   "spe": {
+    "D": 0.02964800323614092,
+    "n": 4001
+   },
+   "offhours": {
+    "D": 0.01371675614573531,
+    "n": 26496
+   },
+   "silence": {
+    "D": 0.007047430674235022,
+    "n": 11520
+   },
+   "novelty": {
+    "D": 0.008025035982578421,
+    "n": 15636
+   },
+   "novelty_rate": {
+    "D": 0.01580089108432825,
+    "n": 15636
+   },
+   "jsd": {
+    "D": 0.04706735189756772,
+    "n": 15634
+   },
+   "client": {
+    "D": 0.05553957254201665,
+    "n": 15103
+   },
+   "seq": {
+    "D": 0.03491295181475934,
+    "n": 15636
+   },
+   "dwell": {
+    "D": 0.012062929370881159,
+    "n": 15103
+   },
+   "timing": {
+    "D": 0.07017290554235223,
+    "n": 17901
+   },
+   "beacon": {
+    "D": 0.008682462108740574,
+    "n": 15103
+   },
+   "budget_vol": {
+    "D": 0.029407026471147207,
+    "n": 26496
+   },
+   "budget_exfil": {
+    "D": 0.006526026460859535,
+    "n": 26496
+   },
+   "budget_breadth": {
+    "D": 0.02092775774462788,
+    "n": 26496
+   },
+   "cusum": {
+    "D": 0.05728192850519076,
+    "n": 4001
+   },
+   "mcusum": {
+    "D": 0.10995386046667277,
+    "n": 4001
+   },
+   "bocpd": {
+    "D": 0.050614662425538914,
+    "n": 3995
+   },
+   "creep": {
+    "D": 0.010748013968337071,
+    "n": 3650
+   },
+   "identity": {
+    "D": 0.05484460278673198,
+    "n": 3923
+   },
+   "cross_system": {
+    "D": 0.019294585005636966,
+    "n": 4001
+   },
+   "marg_int_q": {
+    "D": 0.018267679579927476,
+    "n": 15103
+   },
+   "marg_shape_q": {
+    "D": 0.022911774692239928,
+    "n": 15103
+   },
+   "t2_q": {
+    "D": 0.03689194875214025,
+    "n": 15103
+   },
+   "spe_q": {
+    "D": 0.03429931271970488,
+    "n": 15103
+   }
+  },
+  "exceedance": {
+   "0.03": {
+    "n": 26496,
+    "k": 43,
+    "expected": 8.28
+   },
+   "0.003": {
+    "n": 26496,
+    "k": 20,
+    "expected": 0.828
+   }
+  },
+  "exceedance_tau": {
+   "h": {
+    "0.03": {
+     "n": 6624,
+     "k": 24,
+     "expected": 5.52
+    },
+    "0.003": {
+     "n": 6624,
+     "k": 15,
+     "expected": 0.5519999999999999
+    }
+   },
+   "q": {
+    "0.03": {
+     "n": 19872,
+     "k": 19,
+     "expected": 2.76
+    },
+    "0.003": {
+     "n": 19872,
+     "k": 5,
+     "expected": 0.276
+    }
+   }
+  },
+  "cc": 900,
+  "dt": 900.0,
+  "entity_days": 276.0,
+  "evidence_cusum_alarms": 9,
+  "single_tick_alarms": 32,
+  "acc_path_alarms": {
+   "rhythm": 0,
+   "temporal_categorical": 21,
+   "budget": 0,
+   "change": 4
+  },
+  "acat_ticks": 0,
+  "acat_incident_ticks": 0
+ },
+ "poisoning": {
+  "scenarios": [
+   {
+    "scenario_id": "T2",
+    "base": "T2",
+    "control_bumps": 0,
+    "current_shift": 4.9673832158703135e-08,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": true,
+    "null_ks": 0.3846518085019875
+   },
+   {
+    "scenario_id": "T3",
+    "base": "T3",
+    "control_bumps": 0,
+    "current_shift": 0.0017250511491931951,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": false,
+    "closed_ok": true,
+    "null_ks": 0.06265657496723262
+   },
+   {
+    "scenario_id": "T4",
+    "base": "T4",
+    "control_bumps": 0,
+    "current_shift": 0.00021700909873586532,
+    "reference_shift": 0.0005735551723105324,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.06554597453901914
+   },
+   {
+    "scenario_id": "T4b",
+    "base": "T4b",
+    "control_bumps": 0,
+    "current_shift": 0.0011429933701304308,
+    "reference_shift": 0.0006370988166174122,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.07543105628923019
+   },
+   {
+    "scenario_id": "T8",
+    "base": "T8",
+    "control_bumps": 0,
+    "current_shift": 0.0,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.3244384381690143
+   },
+   {
+    "scenario_id": "T10",
+    "base": "T10",
+    "control_bumps": 0,
+    "current_shift": 0.0,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": true,
+    "null_ks": 0.1778978266702171
+   },
+   {
+    "scenario_id": "T14",
+    "base": "T14",
+    "control_bumps": 0,
+    "current_shift": 0.0,
+    "reference_shift": 0.007138469533016945,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.5935736141674433
+   },
+   {
+    "scenario_id": "T15",
+    "base": "T15",
+    "control_bumps": 0,
+    "current_shift": 0.0,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.7000457589698195
+   },
+   {
+    "scenario_id": "T18",
+    "base": "T18",
+    "control_bumps": 0,
+    "current_shift": 0.0018992516603369327,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.16198289306278013
+   },
+   {
+    "scenario_id": "T19",
+    "base": "T19",
+    "control_bumps": 0,
+    "current_shift": null,
+    "reference_shift": null,
+    "current_ok": null,
+    "reference_ok": null,
+    "golden_ok": null,
+    "closed_ok": false,
+    "null_ks": 0.43216246407892966
+   }
+  ],
+  "accepts": [],
+  "long_drift": []
+ },
+ "identification": {
+  "n_individuated": 10,
+  "window_top1": 1.0,
+  "window_top1_mean": 0.99756,
+  "tick_top1": null,
+  "eer_frac_ok": 1.0,
+  "spearman": 0.7067790375855405,
+  "twins_ok": false,
+  "t9": [],
+  "t9b": [],
+  "l6": [],
+  "t19": [
+   true
+  ]
+ },
+ "classes": {
+  "n": 40,
+  "ari": 0.7162125667646883,
+  "noise_frac": 0.125,
+  "sub_purity": 0.975,
+  "refit_ari_min": 0.9942741787483942,
+  "refit_ari_median": 1.0,
+  "id_churn": 0,
+  "l8": []
+ },
+ "explanation": {
+  "hit3": [
+   false,
+   false,
+   true,
+   true,
+   false,
+   false,
+   true,
+   false,
+   true,
+   true
+  ],
+  "cf_valid": [
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "natural_range": [
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "hit3_excluded": 0
+ },
+ "portrait": {
+  "jaccard": [
+   0.6,
+   0.5555555555555556,
+   1.0,
+   0.6,
+   1.0,
+   0.9090909090909091,
+   0.6666666666666666,
+   1.0,
+   1.0,
+   0.5454545454545454,
+   1.0,
+   1.0,
+   0.9166666666666666
+  ],
+  "template_recall": [
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   0.8,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   0.8,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0
+  ],
+  "coverage": 0.9590389016018307,
+  "n_coverage": 8740,
+  "coverage_grain": {
+   "h": 0.9190789473684211,
+   "q": 0.9361170592433976
+  },
+  "n_coverage_grain": {
+   "h": 1520,
+   "q": 5604
+  },
+  "class_portraits": [
+   true,
+   true,
+   true,
+   true,
+   true
+  ]
+ },
+ "robustness": {
+  "exceptions": 0,
+  "exception_heads": [],
+  "stale": 0,
+  "stale_heads": [],
+  "pipeline_degraded": 0,
+  "aborted": null,
+  "ablated": false
+ },
+ "cpu_mem": {
+  "wall_s": 1812.815045977,
+  "n_ticks": 1824,
+  "n_entities": 40,
+  "pipeline_s": 1769.542651812999,
+  "lib3_s": 1559.9893900019708,
+  "gen_s": 24.34156931999712,
+  "collect_s": 16.28638029799407,
+  "lib3_p95_ms": 1398.4609486994377,
+  "lib3_p95_ms_at35": 1223.653330112008,
+  "layers_ms_mean": {
+   "raw": 17.99870893695237,
+   "derived": 84.65436220612865,
+   "behavior": 855.2573410098524,
+   "signature": 11.154373473686631
+  },
+  "engine_ms_mean": {
+   "raw.l2l3": 1.2157082546894487,
+   "raw.l4flow": 2.6396703621405258,
+   "raw.http": 2.4505347963749315,
+   "raw.tls": 1.4802793034009243,
+   "raw.dns": 0.9442111253738403,
+   "raw.active_probe": 0.17820093476033785,
+   "raw.action_token": 6.719783891188471,
+   "raw.client_stack": 2.3703202719620444,
+   "derived.aggregation": 41.12969233174073,
+   "derived.periodicity": 5.7865220878207895,
+   "derived.trend": 24.726063984527922,
+   "derived.ratio": 2.9793988589132043,
+   "derived.entropy": 2.1992001634810054,
+   "derived.graph": 1.070712054965266,
+   "derived.session": 6.76277273396651,
+   "behavior.feature_vector": 37.55023935280348,
+   "behavior.peer_group": 4.440892242156623,
+   "behavior.baseline": 31.093747763387988,
+   "behavior.likelihood": 52.7791809690626,
+   "behavior.common_mode": 7.289773086968221,
+   "behavior.multivariate": 84.7478400310338,
+   "behavior.rhythm": 26.484743551726925,
+   "behavior.novelty": 23.140974203745525,
+   "behavior.client_identity": 8.099846047006155,
+   "behavior.sequence": 138.91634234838318,
+   "behavior.timing": 29.751276977752383,
+   "behavior.beacon": 1.8884557444406183,
+   "behavior.budget": 74.93443937364377,
+   "behavior.changepoint": 15.517218897012961,
+   "behavior.identity_model": 16.427337763405184,
+   "behavior.attribution": 30.722942191509535,
+   "behavior.entity_link": 5.385769368114109,
+   "behavior.class_monitor": 13.755333580807864,
+   "behavior.cross_system": 3.660000610606451,
+   "behavior.feedback": 0.871431340422612,
+   "behavior.calibration": 49.44232952934608,
+   "behavior.fusion": 70.58347891820104,
+   "behavior.risk": 8.884744224056863,
+   "behavior.incident": 2.485257142149892,
+   "behavior.governor": 15.211614360150538,
+   "behavior.explain": 6.926283767207408,
+   "behavior.portrait": 94.2658477203365,
+   "signature.rule_match": 8.781553051189372,
+   "signature.correlation": 2.372820413965536
+  },
+  "engine_ms_p95": {
+   "raw.l2l3": 2.4786236166954034,
+   "raw.l4flow": 4.945289373397826,
+   "raw.http": 4.75954909324646,
+   "raw.tls": 2.8882750988006576,
+   "raw.dns": 1.6939562022686003,
+   "raw.active_probe": 0.3071434065699577,
+   "raw.action_token": 15.284123468399033,
+   "raw.client_stack": 4.997593998908995,
+   "derived.aggregation": 64.37684516906737,
+   "derived.periodicity": 9.003011417388912,
+   "derived.trend": 38.377042198181144,
+   "derived.ratio": 4.82109854221344,
+   "derived.entropy": 3.528568899631499,
+   "derived.graph": 1.720758384466171,
+   "derived.session": 9.836539316177367,
+   "behavior.feature_vector": 54.32366580963134,
+   "behavior.peer_group": 41.132112884521476,
+   "behavior.baseline": 69.00944709777829,
+   "behavior.likelihood": 129.0861900329589,
+   "behavior.common_mode": 13.552771282196042,
+   "behavior.multivariate": 255.46701431274408,
+   "behavior.rhythm": 44.28417339324951,
+   "behavior.novelty": 35.96539783477783,
+   "behavior.client_identity": 12.225920343399046,
+   "behavior.sequence": 361.73027954101553,
+   "behavior.timing": 48.52034606933593,
+   "behavior.beacon": 3.243234765529632,
+   "behavior.budget": 140.12469100952146,
+   "behavior.changepoint": 53.92066078186034,
+   "behavior.identity_model": 57.18149375915518,
+   "behavior.attribution": 136.1009765625,
+   "behavior.entity_link": 25.901526927947984,
+   "behavior.class_monitor": 29.695914745330807,
+   "behavior.cross_system": 9.177421045303344,
+   "behavior.feedback": 2.536533761024475,
+   "behavior.calibration": 93.38677444458007,
+   "behavior.fusion": 266.7550674438476,
+   "behavior.risk": 12.869591522216796,
+   "behavior.incident": 5.409508872032164,
+   "behavior.governor": 25.485039615631095,
+   "behavior.explain": 24.799552249908157,
+   "behavior.portrait": 252.990567779541,
+   "signature.rule_match": 12.761738491058349,
+   "signature.correlation": 3.696114647388458
+  },
+  "bytes_per_entity": 8124518.625,
+  "bytes_per_entity_8d": 7576774.84009009
+ },
+ "variant": "full",
+ "job_s": 1813.416175304
+}

@@ -1,0 +1,3914 @@
+{
+ "generated": "2026-09-29T04:01:41+00:00",
+ "meta": {
+  "packs": [
+   "A",
+   "B",
+   "C",
+   "D",
+   "E",
+   "mini"
+  ],
+  "seeds": [
+   0,
+   1
+  ],
+  "errors": [],
+  "wall_s": 3822.379625411
+ },
+ "summary": {
+  "n_runs": 12,
+  "packs": [
+   "A",
+   "B",
+   "C",
+   "D",
+   "E",
+   "mini"
+  ],
+  "seeds": [
+   0,
+   1
+  ],
+  "gates_pass": 2,
+  "gates_fail": 12,
+  "gates_na": 2,
+  "all_pass": false
+ },
+ "gates": {
+  "1_detection": {
+   "name": "Detection",
+   "value": 0.7068965517241379,
+   "target": 0.95,
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "loud recall (all seeds)",
+      "value": 0.45,
+      "target": 1.0,
+      "pass": false
+     },
+     {
+      "name": "subtle recall (pooled, within deadline)",
+      "value": 0.8421052631578947,
+      "target": 0.9,
+      "pass": false
+     },
+     {
+      "name": "overall threat recall",
+      "value": 0.7068965517241379,
+      "target": 0.95,
+      "pass": false,
+      "ci95": [
+       0.6896551724137931,
+       0.7241379310344828
+      ]
+     },
+     {
+      "name": "range F1 (Tatbul 2018; report)",
+      "value": 0.14549170351893698,
+      "target": null,
+      "pass": null,
+      "ci95": [
+       0.1102688836533049,
+       0.3439224211179155
+      ]
+     },
+     {
+      "name": "point-adjusted F1 (reference only)",
+      "value": 0.4362807354102633,
+      "target": null,
+      "pass": null
+     },
+     {
+      "name": "overall threat recall, opening-only rule (secondary; report)",
+      "value": 0.7068965517241379,
+      "target": null,
+      "pass": null
+     },
+     {
+      "name": "detections by escalation of an open incident (report)",
+      "value": 0,
+      "target": null,
+      "pass": null
+     }
+    ],
+    "recall_open": 0.7068965517241379,
+    "n_by_escalation": 0,
+    "recall_raw": 0.9827586206896551,
+    "range": {
+     "precision": 0.07227873183492069,
+     "recall": 0.7082127786503304,
+     "f1": 0.14549170351893698
+    },
+    "point_adjusted": {
+     "precision": 0.22543629031324441,
+     "recall": 1.0,
+     "f1": 0.4362807354102633
+    },
+    "n_loud": 20,
+    "n_subtle": 38,
+    "missed": [
+     "A/0/T1",
+     "A/0/T5",
+     "A/0/T9",
+     "A/0/T12",
+     "A/1/T1",
+     "A/1/T6",
+     "A/1/T9",
+     "A/1/T9b",
+     "A/1/T12",
+     "B/0/T18",
+     "B/1/T18",
+     "E/1/T5'",
+     "E/1/T12'",
+     "E/0/T1'",
+     "E/0/T5'",
+     "E/0/T12'",
+     "mini/0/T6"
+    ]
+   }
+  },
+  "2_ttd": {
+   "name": "Time to detect",
+   "value": 2.5,
+   "target": "loud <= 2 ticks @900 s; E <= A + 15 min",
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "loud TTD A/T1",
+      "value": 5.0,
+      "target": 2,
+      "pass": false
+     },
+     {
+      "name": "loud TTD A/T11",
+      "value": 2.0,
+      "target": 2,
+      "pass": true
+     },
+     {
+      "name": "loud TTD A/T12",
+      "value": 12.5,
+      "target": 2,
+      "pass": false
+     },
+     {
+      "name": "loud TTD A/T6",
+      "value": 3.0,
+      "target": 2,
+      "pass": false
+     },
+     {
+      "name": "loud TTD A/T6b",
+      "value": 2.0,
+      "target": 2,
+      "pass": true
+     },
+     {
+      "name": "loud TTD A/T9",
+      "value": 31.0,
+      "target": 2,
+      "pass": false
+     },
+     {
+      "name": "loud TTD E/T1'",
+      "value": 3420.0,
+      "target": 1800.0,
+      "pass": false
+     },
+     {
+      "name": "loud TTD E/T12'",
+      "value": 3600.0,
+      "target": 1800.0,
+      "pass": false
+     },
+     {
+      "name": "loud TTD mini/T1",
+      "value": 2.0,
+      "target": 2,
+      "pass": true
+     },
+     {
+      "name": "loud TTD mini/T6",
+      "value": 2.5,
+      "target": 2,
+      "pass": false
+     },
+     {
+      "name": "Pack E T1 wall TTD <= Pack A + 15 min",
+      "value": 3420.0,
+      "target": 4500.0,
+      "pass": true
+     },
+     {
+      "name": "Pack E T5 wall TTD <= Pack A + 15 min",
+      "value": 6720.0,
+      "target": 5850.0,
+      "pass": false
+     },
+     {
+      "name": "Pack E T12 wall TTD <= Pack A + 15 min",
+      "value": 3600.0,
+      "target": 11250.0,
+      "pass": true
+     }
+    ],
+    "table": [
+     {
+      "pack": "A",
+      "scenario_id": "T1",
+      "base": "T1",
+      "dt": 900.0,
+      "loudness": "loud",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 0.0,
+      "ttd_ticks_median": 5.0,
+      "ttd_ticks_p90": 5.0,
+      "ttd_s_median": 3600.0,
+      "ttd_s_p90": 3600.0,
+      "ttd_s_ci95": [
+       3600.0,
+       3600.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "high",
+      "deadline_s": 1800.0
+     },
+     {
+      "pack": "A",
+      "scenario_id": "T11",
+      "base": "T11",
+      "dt": 900.0,
+      "loudness": "loud",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 900.0,
+      "ttd_s_p90": 900.0,
+      "ttd_s_ci95": [
+       900.0,
+       900.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "medium",
+      "deadline_s": 7200.0
+     },
+     {
+      "pack": "A",
+      "scenario_id": "T12",
+      "base": "T12",
+      "dt": 900.0,
+      "loudness": "loud",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 0.0,
+      "ttd_ticks_median": 12.5,
+      "ttd_ticks_p90": 12.9,
+      "ttd_s_median": 10350.0,
+      "ttd_s_p90": 10710.0,
+      "ttd_s_ci95": [
+       9900.0,
+       10800.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "medium",
+      "deadline_s": 2700.0
+     },
+     {
+      "pack": "A",
+      "scenario_id": "T13",
+      "base": "T13",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.5,
+      "ttd_ticks_p90": 2.9,
+      "ttd_s_median": 1350.0,
+      "ttd_s_p90": 1710.0,
+      "ttd_s_ci95": [
+       900.0,
+       1800.0
+      ],
+      "max_severity": "medium",
+      "required_severity": "medium",
+      "deadline_s": 1800.0
+     },
+     {
+      "pack": "A",
+      "scenario_id": "T16",
+      "base": "T16",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 13.0,
+      "ttd_ticks_p90": 13.0,
+      "ttd_s_median": 10800.0,
+      "ttd_s_p90": 10800.0,
+      "ttd_s_ci95": [
+       10800.0,
+       10800.0
+      ],
+      "max_severity": "high",
+      "required_severity": "medium",
+      "deadline_s": 21600.0
+     },
+     {
+      "pack": "A",
+      "scenario_id": "T17",
+      "base": "T17",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.5,
+      "ttd_ticks_p90": 2.9,
+      "ttd_s_median": 1350.0,
+      "ttd_s_p90": 1710.0,
+      "ttd_s_ci95": [
+       900.0,
+       1800.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "medium",
+      "deadline_s": 43200.0
+     },
+     {
+      "pack": "A",
+      "scenario_id": "T5",
+      "base": "T5",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 0.5,
+      "ttd_ticks_median": 6.5,
+      "ttd_ticks_p90": 7.7,
+      "ttd_s_median": 4950.0,
+      "ttd_s_p90": 6030.0,
+      "ttd_s_ci95": [
+       3600.0,
+       6300.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "medium",
+      "deadline_s": 3600.0
+     },
+     {
+      "pack": "A",
+      "scenario_id": "T6",
+      "base": "T6",
+      "dt": 900.0,
+      "loudness": "loud",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 0.5,
+      "ttd_ticks_median": 3.0,
+      "ttd_ticks_p90": 3.8,
+      "ttd_s_median": 1800.0,
+      "ttd_s_p90": 2520.0,
+      "ttd_s_ci95": [
+       900.0,
+       2700.0
+      ],
+      "max_severity": "high",
+      "required_severity": "high",
+      "deadline_s": 1800.0
+     },
+     {
+      "pack": "A",
+      "scenario_id": "T6b",
+      "base": "T6b",
+      "dt": 900.0,
+      "loudness": "loud",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 900.0,
+      "ttd_s_p90": 900.0,
+      "ttd_s_ci95": [
+       900.0,
+       900.0
+      ],
+      "max_severity": "high",
+      "required_severity": "high",
+      "deadline_s": 1800.0
+     },
+     {
+      "pack": "A",
+      "scenario_id": "T7",
+      "base": "T7",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 900.0,
+      "ttd_s_p90": 900.0,
+      "ttd_s_ci95": [
+       900.0,
+       900.0
+      ],
+      "max_severity": "medium",
+      "required_severity": "medium",
+      "deadline_s": 1800.0
+     },
+     {
+      "pack": "A",
+      "scenario_id": "T9",
+      "base": "T9",
+      "dt": 900.0,
+      "loudness": "loud",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 0.0,
+      "ttd_ticks_median": 31.0,
+      "ttd_ticks_p90": 32.6,
+      "ttd_s_median": 27000.0,
+      "ttd_s_p90": 28440.0,
+      "ttd_s_ci95": [
+       25200.0,
+       28800.0
+      ],
+      "max_severity": "high",
+      "required_severity": "high",
+      "deadline_s": 3600.0
+     },
+     {
+      "pack": "A",
+      "scenario_id": "T9b",
+      "base": "T9b",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 0.5,
+      "ttd_ticks_median": 16.5,
+      "ttd_ticks_p90": 28.1,
+      "ttd_s_median": 13950.0,
+      "ttd_s_p90": 24390.0,
+      "ttd_s_ci95": [
+       900.0,
+       27000.0
+      ],
+      "max_severity": "high",
+      "required_severity": "medium",
+      "deadline_s": 7200.0
+     },
+     {
+      "pack": "B",
+      "scenario_id": "T10",
+      "base": "T10",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 900.0,
+      "ttd_s_p90": 900.0,
+      "ttd_s_ci95": [
+       900.0,
+       900.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "medium",
+      "deadline_s": 14400.0
+     },
+     {
+      "pack": "B",
+      "scenario_id": "T14",
+      "base": "T14",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.5,
+      "ttd_ticks_p90": 2.9,
+      "ttd_s_median": 1350.0,
+      "ttd_s_p90": 1710.0,
+      "ttd_s_ci95": [
+       900.0,
+       1800.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "medium",
+      "deadline_s": 3600.0
+     },
+     {
+      "pack": "B",
+      "scenario_id": "T15",
+      "base": "T15",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 16.0,
+      "ttd_ticks_p90": 16.0,
+      "ttd_s_median": 13500.0,
+      "ttd_s_p90": 13500.0,
+      "ttd_s_ci95": [
+       13500.0,
+       13500.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "high",
+      "deadline_s": 180900.0
+     },
+     {
+      "pack": "B",
+      "scenario_id": "T18",
+      "base": "T18",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 1,
+      "recall": 0.5,
+      "within_deadline": 0.0,
+      "ttd_ticks_median": 8.0,
+      "ttd_ticks_p90": 8.0,
+      "ttd_s_median": 6300.0,
+      "ttd_s_p90": 6300.0,
+      "ttd_s_ci95": [
+       6300.0,
+       6300.0
+      ],
+      "max_severity": "low",
+      "required_severity": "low",
+      "deadline_s": 5400.0
+     },
+     {
+      "pack": "B",
+      "scenario_id": "T19",
+      "base": "T19",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 900.0,
+      "ttd_s_p90": 900.0,
+      "ttd_s_ci95": [
+       900.0,
+       900.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "low",
+      "deadline_s": 54000.0
+     },
+     {
+      "pack": "B",
+      "scenario_id": "T2",
+      "base": "T2",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 900.0,
+      "ttd_s_p90": 900.0,
+      "ttd_s_ci95": [
+       900.0,
+       900.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "medium",
+      "deadline_s": 259200.0
+     },
+     {
+      "pack": "B",
+      "scenario_id": "T3",
+      "base": "T3",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 117.5,
+      "ttd_ticks_p90": 124.3,
+      "ttd_s_median": 104850.0,
+      "ttd_s_p90": 110970.0,
+      "ttd_s_ci95": [
+       97200.0,
+       112500.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "low",
+      "deadline_s": 172800.0
+     },
+     {
+      "pack": "B",
+      "scenario_id": "T4",
+      "base": "T4",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 9.5,
+      "ttd_ticks_p90": 9.9,
+      "ttd_s_median": 7650.0,
+      "ttd_s_p90": 8010.0,
+      "ttd_s_ci95": [
+       7200.0,
+       8100.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "low",
+      "deadline_s": 10800.0
+     },
+     {
+      "pack": "B",
+      "scenario_id": "T4b",
+      "base": "T4b",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 900.0,
+      "ttd_s_p90": 900.0,
+      "ttd_s_ci95": [
+       900.0,
+       900.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "low",
+      "deadline_s": 10800.0
+     },
+     {
+      "pack": "B",
+      "scenario_id": "T8",
+      "base": "T8",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 900.0,
+      "ttd_s_p90": 900.0,
+      "ttd_s_ci95": [
+       900.0,
+       900.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "low",
+      "deadline_s": 28800.0
+     },
+     {
+      "pack": "D",
+      "scenario_id": "T20",
+      "base": "T20",
+      "dt": 3600.0,
+      "loudness": "p2",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 3600.0,
+      "ttd_s_p90": 3600.0,
+      "ttd_s_ci95": [
+       3600.0,
+       3600.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "low",
+      "deadline_s": 86400.0
+     },
+     {
+      "pack": "D",
+      "scenario_id": "T21",
+      "base": "T21",
+      "dt": 3600.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 3600.0,
+      "ttd_s_p90": 3600.0,
+      "ttd_s_ci95": [
+       3600.0,
+       3600.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "medium",
+      "deadline_s": 19200.0
+     },
+     {
+      "pack": "E",
+      "scenario_id": "T1'",
+      "base": "T1",
+      "dt": 60.0,
+      "loudness": "loud",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 0.5,
+      "ttd_ticks_median": 58.0,
+      "ttd_ticks_p90": 91.6,
+      "ttd_s_median": 3420.0,
+      "ttd_s_p90": 5436.0,
+      "ttd_s_ci95": [
+       900.0,
+       5940.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "high",
+      "deadline_s": 1800.0
+     },
+     {
+      "pack": "E",
+      "scenario_id": "T12'",
+      "base": "T12",
+      "dt": 60.0,
+      "loudness": "loud",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 0.0,
+      "ttd_ticks_median": 61.0,
+      "ttd_ticks_p90": 61.0,
+      "ttd_s_median": 3600.0,
+      "ttd_s_p90": 3600.0,
+      "ttd_s_ci95": [
+       3600.0,
+       3600.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "medium",
+      "deadline_s": 2700.0
+     },
+     {
+      "pack": "E",
+      "scenario_id": "T5'",
+      "base": "T5",
+      "dt": 60.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 0.0,
+      "ttd_ticks_median": 113.0,
+      "ttd_ticks_p90": 115.4,
+      "ttd_s_median": 6720.0,
+      "ttd_s_p90": 6864.0,
+      "ttd_s_ci95": [
+       6540.0,
+       6900.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "medium",
+      "deadline_s": 3600.0
+     },
+     {
+      "pack": "mini",
+      "scenario_id": "T1",
+      "base": "T1",
+      "dt": 900.0,
+      "loudness": "loud",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 900.0,
+      "ttd_s_p90": 900.0,
+      "ttd_s_ci95": [
+       900.0,
+       900.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "high",
+      "deadline_s": 1800.0
+     },
+     {
+      "pack": "mini",
+      "scenario_id": "T17",
+      "base": "T17",
+      "dt": 900.0,
+      "loudness": "subtle",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 1.0,
+      "ttd_ticks_median": 2.0,
+      "ttd_ticks_p90": 2.0,
+      "ttd_s_median": 900.0,
+      "ttd_s_p90": 900.0,
+      "ttd_s_ci95": [
+       900.0,
+       900.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "medium",
+      "deadline_s": 43200.0
+     },
+     {
+      "pack": "mini",
+      "scenario_id": "T6",
+      "base": "T6",
+      "dt": 900.0,
+      "loudness": "loud",
+      "n_runs": 2,
+      "n_detected": 2,
+      "recall": 1.0,
+      "within_deadline": 0.5,
+      "ttd_ticks_median": 2.5,
+      "ttd_ticks_p90": 2.9,
+      "ttd_s_median": 1350.0,
+      "ttd_s_p90": 1710.0,
+      "ttd_s_ci95": [
+       900.0,
+       1800.0
+      ],
+      "max_severity": "critical",
+      "required_severity": "high",
+      "deadline_s": 1800.0
+     }
+    ]
+   }
+  },
+  "3_far": {
+   "name": "False alarms on control entities",
+   "value": 0.15636722606120435,
+   "target": 0.2,
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "FAR >= LOW per entity-day",
+      "value": 0.15636722606120435,
+      "target": 0.2,
+      "pass": true,
+      "ci95": [
+       0.1468904244817374,
+       0.16584402764067127
+      ]
+     },
+     {
+      "name": "FAR >= MEDIUM per entity-day",
+      "value": 0.0420533070088845,
+      "target": 0.05,
+      "pass": true,
+      "ci95": [
+       0.04146100691016782,
+       0.04264560710760118
+      ]
+     },
+     {
+      "name": "HIGH+ total across runs",
+      "value": 9,
+      "target": 1,
+      "pass": false
+     },
+     {
+      "name": "CRITICAL total",
+      "value": 2,
+      "target": 0,
+      "pass": false
+     },
+     {
+      "name": "bursty vs steady FAR ratio",
+      "value": 1.0882593659782303,
+      "target": 2.0,
+      "pass": true
+     },
+     {
+      "name": "cadence invariance FAR(E@60s)/FAR(A@900s)",
+      "value": 1.3204633204633205,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": true
+     }
+    ],
+    "table": [
+     {
+      "pack": "A",
+      "seed": 0,
+      "entity_days": 76.0,
+      "n_low": 19,
+      "n_medium": 6,
+      "n_high": 2,
+      "n_critical": 0,
+      "far_low": 0.25,
+      "far_medium": 0.07894736842105263
+     },
+     {
+      "pack": "A",
+      "seed": 1,
+      "entity_days": 76.0,
+      "n_low": 18,
+      "n_medium": 3,
+      "n_high": 0,
+      "n_critical": 0,
+      "far_low": 0.23684210526315788,
+      "far_medium": 0.039473684210526314
+     },
+     {
+      "pack": "B",
+      "seed": 0,
+      "entity_days": 276.0,
+      "n_low": 46,
+      "n_medium": 17,
+      "n_high": 1,
+      "n_critical": 0,
+      "far_low": 0.16666666666666666,
+      "far_medium": 0.06159420289855073
+     },
+     {
+      "pack": "B",
+      "seed": 1,
+      "entity_days": 276.0,
+      "n_low": 53,
+      "n_medium": 20,
+      "n_high": 1,
+      "n_critical": 0,
+      "far_low": 0.19202898550724637,
+      "far_medium": 0.07246376811594203
+     },
+     {
+      "pack": "C",
+      "seed": 0,
+      "entity_days": 52.29166666666667,
+      "n_low": 5,
+      "n_medium": 1,
+      "n_high": 0,
+      "n_critical": 0,
+      "far_low": 0.09561752988047807,
+      "far_medium": 0.019123505976095617
+     },
+     {
+      "pack": "C",
+      "seed": 1,
+      "entity_days": 52.29166666666667,
+      "n_low": 10,
+      "n_medium": 1,
+      "n_high": 0,
+      "n_critical": 0,
+      "far_low": 0.19123505976095614,
+      "far_medium": 0.019123505976095617
+     },
+     {
+      "pack": "E",
+      "seed": 1,
+      "entity_days": 28.0,
+      "n_low": 10,
+      "n_medium": 1,
+      "n_high": 1,
+      "n_critical": 1,
+      "far_low": 0.35714285714285715,
+      "far_medium": 0.03571428571428571
+     },
+     {
+      "pack": "E",
+      "seed": 0,
+      "entity_days": 28.0,
+      "n_low": 8,
+      "n_medium": 1,
+      "n_high": 0,
+      "n_critical": 0,
+      "far_low": 0.2857142857142857,
+      "far_medium": 0.03571428571428571
+     },
+     {
+      "pack": "mini",
+      "seed": 0,
+      "entity_days": 4.0,
+      "n_low": 2,
+      "n_medium": 1,
+      "n_high": 0,
+      "n_critical": 0,
+      "far_low": 0.5,
+      "far_medium": 0.25
+     },
+     {
+      "pack": "mini",
+      "seed": 1,
+      "entity_days": 4.0,
+      "n_low": 1,
+      "n_medium": 0,
+      "n_high": 0,
+      "n_critical": 0,
+      "far_low": 0.25,
+      "far_medium": 0.0
+     },
+     {
+      "pack": "D",
+      "seed": 1,
+      "entity_days": 407.875,
+      "n_low": 48,
+      "n_medium": 10,
+      "n_high": 1,
+      "n_critical": 1,
+      "far_low": 0.11768311369904995,
+      "far_medium": 0.02451731535396874
+     },
+     {
+      "pack": "D",
+      "seed": 0,
+      "entity_days": 407.875,
+      "n_low": 44,
+      "n_medium": 10,
+      "n_high": 3,
+      "n_critical": 0,
+      "far_low": 0.10787618755746246,
+      "far_medium": 0.02451731535396874
+     }
+    ],
+    "groups": {
+     "bursty": [
+      116,
+      707.25
+     ],
+     "steady": [
+      148,
+      981.0833333333334
+     ]
+    }
+   }
+  },
+  "4_legit": {
+   "name": "Legitimate changes",
+   "value": 0.328125,
+   "target": 0.95,
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "seed x scenario runs within allowed severity",
+      "value": 0.328125,
+      "target": 0.95,
+      "pass": false,
+      "ci95": [
+       0.28125,
+       0.375
+      ]
+     },
+     {
+      "name": "affected entities / classes max risk < 30 (fraction)",
+      "value": 0.34375,
+      "target": 1.0,
+      "pass": false
+     }
+    ],
+    "table": [
+     {
+      "pack": "A",
+      "seed": 0,
+      "scenario_id": "L6",
+      "max_severity": "medium",
+      "allowed": "info",
+      "max_risk": 93.78900146484375,
+      "ok": false
+     },
+     {
+      "pack": "A",
+      "seed": 0,
+      "scenario_id": "L8",
+      "max_severity": "low",
+      "allowed": "info",
+      "max_risk": 78.00707244873047,
+      "ok": false
+     },
+     {
+      "pack": "A",
+      "seed": 0,
+      "scenario_id": "L7",
+      "max_severity": "medium",
+      "allowed": "info",
+      "max_risk": 86.22435760498047,
+      "ok": false
+     },
+     {
+      "pack": "A",
+      "seed": 0,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "A",
+      "seed": 0,
+      "scenario_id": "L15",
+      "max_severity": "medium",
+      "allowed": "info",
+      "max_risk": 67.6300048828125,
+      "ok": false
+     },
+     {
+      "pack": "A",
+      "seed": 1,
+      "scenario_id": "L6",
+      "max_severity": "high",
+      "allowed": "info",
+      "max_risk": 91.07345581054688,
+      "ok": false
+     },
+     {
+      "pack": "A",
+      "seed": 1,
+      "scenario_id": "L8",
+      "max_severity": "critical",
+      "allowed": "info",
+      "max_risk": 91.62433624267578,
+      "ok": false
+     },
+     {
+      "pack": "A",
+      "seed": 1,
+      "scenario_id": "L7",
+      "max_severity": "low",
+      "allowed": "info",
+      "max_risk": 52.47378921508789,
+      "ok": false
+     },
+     {
+      "pack": "A",
+      "seed": 1,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "A",
+      "seed": 1,
+      "scenario_id": "L15",
+      "max_severity": "medium",
+      "allowed": "info",
+      "max_risk": 62.70407485961914,
+      "ok": false
+     },
+     {
+      "pack": "B",
+      "seed": 0,
+      "scenario_id": "L4",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "B",
+      "seed": 0,
+      "scenario_id": "L7",
+      "max_severity": "medium",
+      "allowed": "info",
+      "max_risk": 75.30612182617188,
+      "ok": false
+     },
+     {
+      "pack": "B",
+      "seed": 0,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "B",
+      "seed": 0,
+      "scenario_id": "L15",
+      "max_severity": "critical",
+      "allowed": "info",
+      "max_risk": 99.9933853149414,
+      "ok": false
+     },
+     {
+      "pack": "B",
+      "seed": 1,
+      "scenario_id": "L4",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "B",
+      "seed": 1,
+      "scenario_id": "L7",
+      "max_severity": "low",
+      "allowed": "info",
+      "max_risk": 72.74939727783203,
+      "ok": false
+     },
+     {
+      "pack": "B",
+      "seed": 1,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "B",
+      "seed": 1,
+      "scenario_id": "L15",
+      "max_severity": "high",
+      "allowed": "info",
+      "max_risk": 96.29045104980469,
+      "ok": false
+     },
+     {
+      "pack": "C",
+      "seed": 0,
+      "scenario_id": "L2",
+      "max_severity": "high",
+      "allowed": "info",
+      "max_risk": 74.50901794433594,
+      "ok": false
+     },
+     {
+      "pack": "C",
+      "seed": 0,
+      "scenario_id": "L3",
+      "max_severity": "high",
+      "allowed": "info",
+      "max_risk": 96.70443725585938,
+      "ok": false
+     },
+     {
+      "pack": "C",
+      "seed": 0,
+      "scenario_id": "L10",
+      "max_severity": "critical",
+      "allowed": "low",
+      "max_risk": 99.9826431274414,
+      "ok": false
+     },
+     {
+      "pack": "C",
+      "seed": 0,
+      "scenario_id": "L13",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "C",
+      "seed": 0,
+      "scenario_id": "L7",
+      "max_severity": "low",
+      "allowed": "info",
+      "max_risk": 65.78467559814453,
+      "ok": false
+     },
+     {
+      "pack": "C",
+      "seed": 0,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "C",
+      "seed": 0,
+      "scenario_id": "L15",
+      "max_severity": "high",
+      "allowed": "info",
+      "max_risk": 99.46580505371094,
+      "ok": false
+     },
+     {
+      "pack": "C",
+      "seed": 1,
+      "scenario_id": "L2",
+      "max_severity": "medium",
+      "allowed": "info",
+      "max_risk": 72.80245971679688,
+      "ok": false
+     },
+     {
+      "pack": "C",
+      "seed": 1,
+      "scenario_id": "L3",
+      "max_severity": "high",
+      "allowed": "info",
+      "max_risk": 96.56661987304688,
+      "ok": false
+     },
+     {
+      "pack": "C",
+      "seed": 1,
+      "scenario_id": "L10",
+      "max_severity": "critical",
+      "allowed": "low",
+      "max_risk": 99.93904876708984,
+      "ok": false
+     },
+     {
+      "pack": "C",
+      "seed": 1,
+      "scenario_id": "L13",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "C",
+      "seed": 1,
+      "scenario_id": "L7",
+      "max_severity": "low",
+      "allowed": "info",
+      "max_risk": 81.25466918945312,
+      "ok": false
+     },
+     {
+      "pack": "C",
+      "seed": 1,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "C",
+      "seed": 1,
+      "scenario_id": "L15",
+      "max_severity": "medium",
+      "allowed": "info",
+      "max_risk": 55.05635452270508,
+      "ok": false
+     },
+     {
+      "pack": "E",
+      "seed": 1,
+      "scenario_id": "L7",
+      "max_severity": "low",
+      "allowed": "info",
+      "max_risk": 56.63618850708008,
+      "ok": false
+     },
+     {
+      "pack": "E",
+      "seed": 1,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "E",
+      "seed": 1,
+      "scenario_id": "L15",
+      "max_severity": "critical",
+      "allowed": "info",
+      "max_risk": 96.6528549194336,
+      "ok": false
+     },
+     {
+      "pack": "E",
+      "seed": 0,
+      "scenario_id": "L7",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": 49.81657028198242,
+      "ok": false
+     },
+     {
+      "pack": "E",
+      "seed": 0,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "E",
+      "seed": 0,
+      "scenario_id": "L15",
+      "max_severity": "critical",
+      "allowed": "info",
+      "max_risk": 99.78887176513672,
+      "ok": false
+     },
+     {
+      "pack": "mini",
+      "seed": 0,
+      "scenario_id": "L14",
+      "max_severity": "high",
+      "allowed": "info",
+      "max_risk": 93.1472396850586,
+      "ok": false
+     },
+     {
+      "pack": "mini",
+      "seed": 0,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "mini",
+      "seed": 0,
+      "scenario_id": "L15",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": 13.852682113647461,
+      "ok": true
+     },
+     {
+      "pack": "mini",
+      "seed": 1,
+      "scenario_id": "L14",
+      "max_severity": "high",
+      "allowed": "info",
+      "max_risk": 96.14051818847656,
+      "ok": false
+     },
+     {
+      "pack": "mini",
+      "seed": 1,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "mini",
+      "seed": 1,
+      "scenario_id": "L15",
+      "max_severity": "low",
+      "allowed": "info",
+      "max_risk": 15.927687644958496,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 1,
+      "scenario_id": "L1",
+      "max_severity": "critical",
+      "allowed": "low",
+      "max_risk": 94.2804183959961,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 1,
+      "scenario_id": "L4",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "D",
+      "seed": 1,
+      "scenario_id": "L5",
+      "max_severity": "critical",
+      "allowed": "low",
+      "max_risk": 58.1649169921875,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 1,
+      "scenario_id": "L9",
+      "max_severity": "high",
+      "allowed": "low",
+      "max_risk": 98.90611267089844,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 1,
+      "scenario_id": "L12",
+      "max_severity": "low",
+      "allowed": "info",
+      "max_risk": 16.18463706970215,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 1,
+      "scenario_id": "L14",
+      "max_severity": "high",
+      "allowed": "info",
+      "max_risk": 57.95817565917969,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 1,
+      "scenario_id": "L16",
+      "max_severity": "critical",
+      "allowed": "info",
+      "max_risk": 45.24965286254883,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 1,
+      "scenario_id": "L7",
+      "max_severity": "medium",
+      "allowed": "info",
+      "max_risk": 60.22565841674805,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 1,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "D",
+      "seed": 1,
+      "scenario_id": "L15",
+      "max_severity": "critical",
+      "allowed": "info",
+      "max_risk": 99.80531311035156,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 0,
+      "scenario_id": "L1",
+      "max_severity": "critical",
+      "allowed": "low",
+      "max_risk": 93.92096710205078,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 0,
+      "scenario_id": "L4",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "D",
+      "seed": 0,
+      "scenario_id": "L5",
+      "max_severity": "critical",
+      "allowed": "low",
+      "max_risk": 53.620628356933594,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 0,
+      "scenario_id": "L9",
+      "max_severity": "critical",
+      "allowed": "low",
+      "max_risk": 97.84516906738281,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 0,
+      "scenario_id": "L12",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": 21.464969635009766,
+      "ok": true
+     },
+     {
+      "pack": "D",
+      "seed": 0,
+      "scenario_id": "L14",
+      "max_severity": "high",
+      "allowed": "info",
+      "max_risk": 48.88915252685547,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 0,
+      "scenario_id": "L16",
+      "max_severity": "critical",
+      "allowed": "info",
+      "max_risk": 84.0885009765625,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 0,
+      "scenario_id": "L7",
+      "max_severity": "low",
+      "allowed": "info",
+      "max_risk": 37.7523307800293,
+      "ok": false
+     },
+     {
+      "pack": "D",
+      "seed": 0,
+      "scenario_id": "L11",
+      "max_severity": null,
+      "allowed": "info",
+      "max_risk": null,
+      "ok": true
+     },
+     {
+      "pack": "D",
+      "seed": 0,
+      "scenario_id": "L15",
+      "max_severity": "high",
+      "allowed": "info",
+      "max_risk": 52.16667556762695,
+      "ok": false
+     }
+    ]
+   }
+  },
+  "5_burden": {
+   "name": "Alert burden",
+   "value": 3.028248587570622,
+   "target": 3.0,
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "notifications per TP incident",
+      "value": 3.028248587570622,
+      "target": 3.0,
+      "pass": false
+     },
+     {
+      "name": "incidents per episode",
+      "value": 1.271186440677966,
+      "target": 1.0,
+      "pass": false
+     },
+     {
+      "name": "class incidents per class-wide legit event (max)",
+      "value": 1,
+      "target": 1,
+      "pass": true
+     },
+     {
+      "name": "notifications per TP incident, opened in window only (report)",
+      "value": 3.028248587570622,
+      "target": null,
+      "pass": null
+     }
+    ]
+   }
+  },
+  "6_poisoning": {
+   "name": "Poisoning and reversibility",
+   "value": 2,
+   "target": 0,
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "current anchor within 0.3 sigma15 of pre-onset (fraction)",
+      "value": 1.0,
+      "target": 1.0,
+      "pass": true
+     },
+     {
+      "name": "reference anchor within 0.1 sigma15 (fraction)",
+      "value": 1.0,
+      "target": 1.0,
+      "pass": true
+     },
+     {
+      "name": "golden unchanged (fraction)",
+      "value": 0.8636363636363636,
+      "target": 1.0,
+      "pass": false
+     },
+     {
+      "name": "model.control bumps inside malicious windows",
+      "value": 2,
+      "target": 0,
+      "pass": false
+     },
+     {
+      "name": "incident closed within max(8 ticks, 2 h) of attack end",
+      "value": 0.4222222222222222,
+      "target": 1.0,
+      "pass": false
+     },
+     {
+      "name": "null KS D after attack (median)",
+      "value": 0.1187069579984942,
+      "target": 0.05,
+      "pass": false
+     },
+     {
+      "name": "legit accepts within deadline (fraction)",
+      "value": 0.0,
+      "target": 1.0,
+      "pass": false
+     },
+     {
+      "name": "entities DRIFTING > 14 d without label queue",
+      "value": 0,
+      "target": 0,
+      "pass": true
+     },
+     {
+      "name": "rollback replay == offline fit within 1e-6",
+      "value": null,
+      "target": 1e-06,
+      "pass": null
+     }
+    ],
+    "long_drift": []
+   }
+  },
+  "7_calibration": {
+   "name": "Calibration",
+   "value": 0.19285206888059173,
+   "target": 0.05,
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "max over detectors of median KS D",
+      "value": 0.19285206888059173,
+      "target": 0.05,
+      "pass": false
+     },
+     {
+      "name": "exceedance e_day<=0.003 cc=60 (observed/nominal)",
+      "value": 11.904761904761903,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.03 cc=60 (observed/nominal)",
+      "value": 2.9761904761904763,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.003 cc=900 (observed/nominal)",
+      "value": 29.799719351958153,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.03 cc=900 (observed/nominal)",
+      "value": 5.265977803291236,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": false
+     },
+     {
+      "name": "exceedance e_day<=0.003 cc=3600 (observed/nominal)",
+      "value": 8.992438176987534,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.03 cc=3600 (observed/nominal)",
+      "value": 2.656856734109953,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": false
+     },
+     {
+      "name": "exceedance e_day<=0.003 cc=60 tick type h (observed/nominal)",
+      "value": 11.904761904761903,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.03 cc=60 tick type h (observed/nominal)",
+      "value": 3.5714285714285716,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.003 cc=60 tick type q (observed/nominal)",
+      "value": 23.809523809523807,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.03 cc=60 tick type q (observed/nominal)",
+      "value": 4.761904761904762,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.003 cc=60 tick type t (observed/nominal)",
+      "value": 0.0,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.03 cc=60 tick type t (observed/nominal)",
+      "value": 0.0,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.003 cc=900 tick type h (observed/nominal)",
+      "value": 20.20820575627679,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.03 cc=900 tick type h (observed/nominal)",
+      "value": 3.674219228413963,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": false
+     },
+     {
+      "name": "exceedance e_day<=0.003 cc=900 tick type q (observed/nominal)",
+      "value": 48.984590264312686,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.03 cc=900 tick type q (observed/nominal)",
+      "value": 8.44984182059394,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": false
+     },
+     {
+      "name": "exceedance e_day<=0.003 cc=3600 tick type h (observed/nominal)",
+      "value": 8.992438176987534,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": null
+     },
+     {
+      "name": "exceedance e_day<=0.03 cc=3600 tick type h (observed/nominal)",
+      "value": 2.656856734109953,
+      "target": [
+       0.5,
+       2.0
+      ],
+      "pass": false
+     },
+     {
+      "name": "evidence-CUSUM alarms per entity-day",
+      "value": 0.05093780848963475,
+      "target": 0.045,
+      "pass": false
+     },
+     {
+      "name": "accumulator path 'budget' rate per entity-day",
+      "value": 0.0023692003948667328,
+      "target": 0.02,
+      "pass": true
+     },
+     {
+      "name": "accumulator path 'change' rate per entity-day",
+      "value": 0.008292201382033564,
+      "target": 0.04,
+      "pass": true
+     },
+     {
+      "name": "accumulator path 'rhythm' rate per entity-day",
+      "value": 0.0,
+      "target": 0.03,
+      "pass": true
+     },
+     {
+      "name": "accumulator path 'temporal_categorical' rate per entity-day",
+      "value": 0.0775913129318855,
+      "target": 0.04,
+      "pass": false
+     },
+     {
+      "name": "ACAT masking at incident ticks",
+      "value": 0,
+      "target": 0,
+      "pass": true
+     }
+    ],
+    "ks_by_detector": {
+     "marg_int": 0.08594526664391297,
+     "marg_shape": 0.05983370558044407,
+     "peer": 0.0550347160218983,
+     "t2": 0.07057901394106111,
+     "spe": 0.047082631111847434,
+     "offhours": 0.014760685999530065,
+     "silence": 0.013039809299922545,
+     "novelty": 0.012119300779355302,
+     "novelty_rate": 0.027156382494290213,
+     "jsd": 0.05148792619650136,
+     "client": 0.0802435575657777,
+     "seq": 0.033505171611994844,
+     "dwell": 0.01866216785314767,
+     "timing": 0.07435684002774567,
+     "beacon": 0.016581226971685403,
+     "budget_vol": 0.027313115723150577,
+     "budget_exfil": 0.006526026460859535,
+     "budget_breadth": 0.021200397743767987,
+     "cusum": 0.06228435352979084,
+     "mcusum": 0.19285206888059173,
+     "bocpd": 0.04780569728298543,
+     "creep": 0.01731891304409411,
+     "identity": 0.07777640156235546,
+     "cross_system": 0.03378047244717375,
+     "marg_int_q": 0.034393438611959454,
+     "marg_shape_q": 0.02645626381430488,
+     "t2_q": 0.07519228818651172,
+     "spe_q": 0.06982952017319033
+    },
+    "acat_ticks_all": 0
+   }
+  },
+  "8_identification": {
+   "name": "Identification",
+   "value": 1.0,
+   "target": 0.95,
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "window top-1 (K=4)",
+      "value": 1.0,
+      "target": 0.95,
+      "pass": true
+     },
+     {
+      "name": "per-tick top-1 @900 s",
+      "value": null,
+      "target": 0.85,
+      "pass": null
+     },
+     {
+      "name": "personas with EER_hard <= 0.05",
+      "value": 1.0,
+      "target": 0.9,
+      "pass": true
+     },
+     {
+      "name": "twins confusable (EER_hard > 0.2, listed)",
+      "value": 0.1,
+      "target": 1.0,
+      "pass": false
+     },
+     {
+      "name": "Spearman(separability, CV recall)",
+      "value": 0.7223219124790812,
+      "target": 0.8,
+      "pass": false
+     },
+     {
+      "name": "T9 looks_like correct",
+      "value": 1.0,
+      "target": 1.0,
+      "pass": true
+     },
+     {
+      "name": "T9b unknown_identity",
+      "value": 1.0,
+      "target": 0.9,
+      "pass": true
+     },
+     {
+      "name": "L6 link recall",
+      "value": 1.0,
+      "target": 0.95,
+      "pass": true
+     },
+     {
+      "name": "L6 negative control never linked",
+      "value": true,
+      "target": true,
+      "pass": true
+     },
+     {
+      "name": "T19 actor chain recovered",
+      "value": 1.0,
+      "target": 0.9,
+      "pass": true
+     }
+    ]
+   }
+  },
+  "9_classes": {
+   "name": "Classes",
+   "value": 0.7545152967194987,
+   "target": 0.9,
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "level-1 role ARI vs archetypes",
+      "value": 0.7545152967194987,
+      "target": 0.9,
+      "pass": false,
+      "ci95": [
+       0.6793795343671252,
+       0.7797873245427478
+      ]
+     },
+     {
+      "name": "noise/unique fraction",
+      "value": 0.08705216844751729,
+      "target": 0.1,
+      "pass": true
+     },
+     {
+      "name": "level-2 sub-class purity",
+      "value": 1.0,
+      "target": 0.8,
+      "pass": true
+     },
+     {
+      "name": "ARI between consecutive refits (min)",
+      "value": 0.9553349875930521,
+      "target": 0.95,
+      "pass": true
+     },
+     {
+      "name": "ID churn with unchanged membership",
+      "value": 3,
+      "target": 0,
+      "pass": false
+     },
+     {
+      "name": "L8 typing prob >= 0.8 within 3 ticks",
+      "value": 1.0,
+      "target": 1.0,
+      "pass": true
+     },
+     {
+      "name": "T21 class detection",
+      "value": 1.0,
+      "target": 0.9,
+      "pass": true
+     },
+     {
+      "name": "L1-L3 class incidents <= LOW",
+      "value": 0.6666666666666666,
+      "target": 1.0,
+      "pass": false
+     }
+    ]
+   }
+  },
+  "10_explanation": {
+   "name": "Explanation",
+   "value": 0.7142857142857143,
+   "target": 0.8,
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "hit@3 vs perturbed_features",
+      "value": 0.7142857142857143,
+      "target": 0.8,
+      "pass": false
+     },
+     {
+      "name": "TP incidents without a rankable feature ('entity' marker; not in hit@3)",
+      "value": 0,
+      "target": null,
+      "pass": null
+     },
+     {
+      "name": "counterfactual validity",
+      "value": 0.9841269841269841,
+      "target": 0.9,
+      "pass": true
+     },
+     {
+      "name": "natural-unit range present",
+      "value": 1.0,
+      "target": 1.0,
+      "pass": true
+     }
+    ]
+   }
+  },
+  "11_portrait": {
+   "name": "Portrait",
+   "value": 0.9166666666666666,
+   "target": 0.8,
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "typical-hours Jaccard",
+      "value": 0.9166666666666666,
+      "target": 0.8,
+      "pass": true
+     },
+     {
+      "name": "top-5 template recall",
+      "value": 1.0,
+      "target": 0.8,
+      "pass": true
+     },
+     {
+      "name": "p5-p95 coverage of held-out ticks",
+      "value": 0.9638865470311935,
+      "target": [
+       0.85,
+       0.95
+      ],
+      "pass": false
+     },
+     {
+      "name": "p5-p95 coverage of held-out H rows (spec v2.1)",
+      "value": 0.9579517704517704,
+      "target": [
+       0.85,
+       0.95
+      ],
+      "pass": false
+     },
+     {
+      "name": "p5-p95 coverage of held-out Q rows (spec v2.1)",
+      "value": 0.9581988369625896,
+      "target": [
+       0.85,
+       0.95
+      ],
+      "pass": false
+     },
+     {
+      "name": "class portraits exist",
+      "value": 1.0,
+      "target": 1.0,
+      "pass": true
+     }
+    ]
+   }
+  },
+  "12_feedback": {
+   "name": "Feedback",
+   "value": null,
+   "target": 0.5,
+   "pass": null,
+   "details": {
+    "checks": [
+     {
+      "name": "paired feedback runs",
+      "value": null,
+      "target": "run with --feedback",
+      "pass": null
+     }
+    ]
+   }
+  },
+  "13_ablation": {
+   "name": "Ablation",
+   "value": null,
+   "target": "each P0/P1 engine sole/main detector of >= 1 scenario",
+   "pass": null,
+   "details": {
+    "checks": [
+     {
+      "name": "ablation runs",
+      "value": null,
+      "target": "run with --ablate",
+      "pass": null
+     }
+    ]
+   }
+  },
+  "14_cpu_mem": {
+   "name": "CPU and memory",
+   "value": 2017.9047925050004,
+   "target": 360.0,
+   "pass": false,
+   "details": {
+    "checks": [
+     {
+      "name": "each pack-seed wall time (max)",
+      "value": 2017.9047925050004,
+      "target": 360.0,
+      "pass": false
+     },
+     {
+      "name": "live lib-3 p95 per tick scaled to 35 entities",
+      "value": 1245.7168518052413,
+      "target": 80.0,
+      "pass": false
+     },
+     {
+      "name": "bytes per entity at end (max)",
+      "value": 14401893.783783784,
+      "target": 12582912,
+      "pass": false
+     },
+     {
+      "name": "Pack E bytes per entity extrapolated to 8 d",
+      "value": 73215876.37837838,
+      "target": 12582912,
+      "pass": false
+     },
+     {
+      "name": "smoke total (20 ent, 180x900 s)",
+      "value": 80.3318959599992,
+      "target": 30.0,
+      "pass": false
+     },
+     {
+      "name": "smoke lib-3",
+      "value": 67.26756760697754,
+      "target": 12.0,
+      "pass": false
+     }
+    ],
+    "engine_ms_mean": {
+     "behavior.attribution": 30.32008822761715,
+     "behavior.baseline": 31.59163064777036,
+     "behavior.beacon": 1.4549993031661206,
+     "behavior.budget": 72.09813106230867,
+     "behavior.calibration": 49.45776029127209,
+     "behavior.changepoint": 15.619740139524163,
+     "behavior.class_monitor": 13.560798051936949,
+     "behavior.client_identity": 7.726014777991304,
+     "behavior.common_mode": 6.590971838913334,
+     "behavior.cross_system": 3.5634128979899913,
+     "behavior.entity_link": 5.362465541867749,
+     "behavior.explain": 6.853155896849611,
+     "behavior.feature_vector": 34.77010592767748,
+     "behavior.feedback": 0.6029740789001883,
+     "behavior.fusion": 69.53471477098594,
+     "behavior.governor": 12.869193698164008,
+     "behavior.identity_model": 16.735068122708515,
+     "behavior.incident": 1.820972410341553,
+     "behavior.likelihood": 51.4481777124663,
+     "behavior.multivariate": 86.83078926372683,
+     "behavior.novelty": 22.665387468944783,
+     "behavior.peer_group": 4.314851501634926,
+     "behavior.portrait": 95.12352191307673,
+     "behavior.rhythm": 26.1058701021337,
+     "behavior.risk": 8.351069648007199,
+     "behavior.sequence": 133.25062458825963,
+     "behavior.timing": 29.604172861105518,
+     "derived.aggregation": 40.851483841400366,
+     "derived.entropy": 2.204813991997578,
+     "derived.graph": 1.0802770244749014,
+     "derived.periodicity": 5.664798766338033,
+     "derived.ratio": 2.983556735979338,
+     "derived.session": 6.594365258025708,
+     "derived.trend": 24.141023947140344,
+     "raw.action_token": 6.787222836969724,
+     "raw.active_probe": 0.18059905345021068,
+     "raw.client_stack": 2.3955088255978474,
+     "raw.dns": 0.9549768707678143,
+     "raw.http": 2.500714794027838,
+     "raw.l2l3": 1.233340824846762,
+     "raw.l4flow": 2.6744432873744763,
+     "raw.tls": 1.5129903749389164,
+     "signature.correlation": 2.275768012520138,
+     "signature.rule_match": 8.987804193322251
+    },
+    "budgets_ms_at_40": {
+     "B01": 12,
+     "B02": 1,
+     "B03": 7,
+     "B04": 6,
+     "B05": 1,
+     "B06": 5,
+     "B07": 1,
+     "B08": 3,
+     "B09": 1,
+     "B10": 5,
+     "B11-B13": 6,
+     "B14": 3,
+     "B15": 5,
+     "B16": 10,
+     "B17": 1,
+     "B18": 3,
+     "P2": 6,
+     "B23-B28": 9,
+     "B30": 5
+    }
+   }
+  },
+  "15_robustness": {
+   "name": "Robustness",
+   "value": 0,
+   "target": 0,
+   "pass": true,
+   "details": {
+    "checks": [
+     {
+      "name": "engine exceptions (strict)",
+      "value": 0,
+      "target": 0,
+      "pass": true
+     },
+     {
+      "name": "stale lib-3 series (> 2 periods)",
+      "value": 0,
+      "target": 0,
+      "pass": true
+     },
+     {
+      "name": "pipeline_degraded on clean runs",
+      "value": 0,
+      "target": 0,
+      "pass": true
+     },
+     {
+      "name": "aborted runs",
+      "value": 0,
+      "target": 0,
+      "pass": true
+     }
+    ],
+    "exception_heads": [],
+    "aborted": [],
+    "stale_heads": []
+   }
+  },
+  "16_report": {
+   "name": "Design table regenerated from eval_report.json",
+   "value": 15,
+   "target": 15,
+   "pass": true,
+   "details": {
+    "checks": [
+     {
+      "name": "rows generated",
+      "value": 15,
+      "target": 15,
+      "pass": true
+     }
+    ],
+    "table_md": "| # | Gate | Value | Target | Pass |\n|---|---|---|---|---|\n| 1 | Detection | 0.7069 | 0.95 | no |\n| 2 | Time to detect | 2.5 | loud <= 2 ticks @900 s; E <= A + 15 min | no |\n| 3 | False alarms on control entities | 0.1564 | 0.2 | no |\n| 4 | Legitimate changes | 0.3281 | 0.95 | no |\n| 5 | Alert burden | 3.028 | 3 | no |\n| 6 | Poisoning and reversibility | 2 | 0 | no |\n| 7 | Calibration | 0.1929 | 0.05 | no |\n| 8 | Identification | 1 | 0.95 | no |\n| 9 | Classes | 0.7545 | 0.9 | no |\n| 10 | Explanation | 0.7143 | 0.8 | no |\n| 11 | Portrait | 0.9167 | 0.8 | no |\n| 12 | Feedback | – | 0.5 | n/a |\n| 13 | Ablation | – | each P0/P1 engine sole/main detector of >= 1 scenario | n/a |\n| 14 | CPU and memory | 2018 | 360 | no |\n| 15 | Robustness | 0 | 0 | yes |"
+   }
+  }
+ },
+ "scenarios": [
+  {
+   "pack": "A",
+   "scenario_id": "T1",
+   "base": "T1",
+   "dt": 900.0,
+   "loudness": "loud",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 0.0,
+   "ttd_ticks_median": 5.0,
+   "ttd_ticks_p90": 5.0,
+   "ttd_s_median": 3600.0,
+   "ttd_s_p90": 3600.0,
+   "ttd_s_ci95": [
+    3600.0,
+    3600.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "high",
+   "deadline_s": 1800.0
+  },
+  {
+   "pack": "A",
+   "scenario_id": "T11",
+   "base": "T11",
+   "dt": 900.0,
+   "loudness": "loud",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 900.0,
+   "ttd_s_p90": 900.0,
+   "ttd_s_ci95": [
+    900.0,
+    900.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "medium",
+   "deadline_s": 7200.0
+  },
+  {
+   "pack": "A",
+   "scenario_id": "T12",
+   "base": "T12",
+   "dt": 900.0,
+   "loudness": "loud",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 0.0,
+   "ttd_ticks_median": 12.5,
+   "ttd_ticks_p90": 12.9,
+   "ttd_s_median": 10350.0,
+   "ttd_s_p90": 10710.0,
+   "ttd_s_ci95": [
+    9900.0,
+    10800.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "medium",
+   "deadline_s": 2700.0
+  },
+  {
+   "pack": "A",
+   "scenario_id": "T13",
+   "base": "T13",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.5,
+   "ttd_ticks_p90": 2.9,
+   "ttd_s_median": 1350.0,
+   "ttd_s_p90": 1710.0,
+   "ttd_s_ci95": [
+    900.0,
+    1800.0
+   ],
+   "max_severity": "medium",
+   "required_severity": "medium",
+   "deadline_s": 1800.0
+  },
+  {
+   "pack": "A",
+   "scenario_id": "T16",
+   "base": "T16",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 13.0,
+   "ttd_ticks_p90": 13.0,
+   "ttd_s_median": 10800.0,
+   "ttd_s_p90": 10800.0,
+   "ttd_s_ci95": [
+    10800.0,
+    10800.0
+   ],
+   "max_severity": "high",
+   "required_severity": "medium",
+   "deadline_s": 21600.0
+  },
+  {
+   "pack": "A",
+   "scenario_id": "T17",
+   "base": "T17",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.5,
+   "ttd_ticks_p90": 2.9,
+   "ttd_s_median": 1350.0,
+   "ttd_s_p90": 1710.0,
+   "ttd_s_ci95": [
+    900.0,
+    1800.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "medium",
+   "deadline_s": 43200.0
+  },
+  {
+   "pack": "A",
+   "scenario_id": "T5",
+   "base": "T5",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 0.5,
+   "ttd_ticks_median": 6.5,
+   "ttd_ticks_p90": 7.7,
+   "ttd_s_median": 4950.0,
+   "ttd_s_p90": 6030.0,
+   "ttd_s_ci95": [
+    3600.0,
+    6300.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "medium",
+   "deadline_s": 3600.0
+  },
+  {
+   "pack": "A",
+   "scenario_id": "T6",
+   "base": "T6",
+   "dt": 900.0,
+   "loudness": "loud",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 0.5,
+   "ttd_ticks_median": 3.0,
+   "ttd_ticks_p90": 3.8,
+   "ttd_s_median": 1800.0,
+   "ttd_s_p90": 2520.0,
+   "ttd_s_ci95": [
+    900.0,
+    2700.0
+   ],
+   "max_severity": "high",
+   "required_severity": "high",
+   "deadline_s": 1800.0
+  },
+  {
+   "pack": "A",
+   "scenario_id": "T6b",
+   "base": "T6b",
+   "dt": 900.0,
+   "loudness": "loud",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 900.0,
+   "ttd_s_p90": 900.0,
+   "ttd_s_ci95": [
+    900.0,
+    900.0
+   ],
+   "max_severity": "high",
+   "required_severity": "high",
+   "deadline_s": 1800.0
+  },
+  {
+   "pack": "A",
+   "scenario_id": "T7",
+   "base": "T7",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 900.0,
+   "ttd_s_p90": 900.0,
+   "ttd_s_ci95": [
+    900.0,
+    900.0
+   ],
+   "max_severity": "medium",
+   "required_severity": "medium",
+   "deadline_s": 1800.0
+  },
+  {
+   "pack": "A",
+   "scenario_id": "T9",
+   "base": "T9",
+   "dt": 900.0,
+   "loudness": "loud",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 0.0,
+   "ttd_ticks_median": 31.0,
+   "ttd_ticks_p90": 32.6,
+   "ttd_s_median": 27000.0,
+   "ttd_s_p90": 28440.0,
+   "ttd_s_ci95": [
+    25200.0,
+    28800.0
+   ],
+   "max_severity": "high",
+   "required_severity": "high",
+   "deadline_s": 3600.0
+  },
+  {
+   "pack": "A",
+   "scenario_id": "T9b",
+   "base": "T9b",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 0.5,
+   "ttd_ticks_median": 16.5,
+   "ttd_ticks_p90": 28.1,
+   "ttd_s_median": 13950.0,
+   "ttd_s_p90": 24390.0,
+   "ttd_s_ci95": [
+    900.0,
+    27000.0
+   ],
+   "max_severity": "high",
+   "required_severity": "medium",
+   "deadline_s": 7200.0
+  },
+  {
+   "pack": "B",
+   "scenario_id": "T10",
+   "base": "T10",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 900.0,
+   "ttd_s_p90": 900.0,
+   "ttd_s_ci95": [
+    900.0,
+    900.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "medium",
+   "deadline_s": 14400.0
+  },
+  {
+   "pack": "B",
+   "scenario_id": "T14",
+   "base": "T14",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.5,
+   "ttd_ticks_p90": 2.9,
+   "ttd_s_median": 1350.0,
+   "ttd_s_p90": 1710.0,
+   "ttd_s_ci95": [
+    900.0,
+    1800.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "medium",
+   "deadline_s": 3600.0
+  },
+  {
+   "pack": "B",
+   "scenario_id": "T15",
+   "base": "T15",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 16.0,
+   "ttd_ticks_p90": 16.0,
+   "ttd_s_median": 13500.0,
+   "ttd_s_p90": 13500.0,
+   "ttd_s_ci95": [
+    13500.0,
+    13500.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "high",
+   "deadline_s": 180900.0
+  },
+  {
+   "pack": "B",
+   "scenario_id": "T18",
+   "base": "T18",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 1,
+   "recall": 0.5,
+   "within_deadline": 0.0,
+   "ttd_ticks_median": 8.0,
+   "ttd_ticks_p90": 8.0,
+   "ttd_s_median": 6300.0,
+   "ttd_s_p90": 6300.0,
+   "ttd_s_ci95": [
+    6300.0,
+    6300.0
+   ],
+   "max_severity": "low",
+   "required_severity": "low",
+   "deadline_s": 5400.0
+  },
+  {
+   "pack": "B",
+   "scenario_id": "T19",
+   "base": "T19",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 900.0,
+   "ttd_s_p90": 900.0,
+   "ttd_s_ci95": [
+    900.0,
+    900.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "low",
+   "deadline_s": 54000.0
+  },
+  {
+   "pack": "B",
+   "scenario_id": "T2",
+   "base": "T2",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 900.0,
+   "ttd_s_p90": 900.0,
+   "ttd_s_ci95": [
+    900.0,
+    900.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "medium",
+   "deadline_s": 259200.0
+  },
+  {
+   "pack": "B",
+   "scenario_id": "T3",
+   "base": "T3",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 117.5,
+   "ttd_ticks_p90": 124.3,
+   "ttd_s_median": 104850.0,
+   "ttd_s_p90": 110970.0,
+   "ttd_s_ci95": [
+    97200.0,
+    112500.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "low",
+   "deadline_s": 172800.0
+  },
+  {
+   "pack": "B",
+   "scenario_id": "T4",
+   "base": "T4",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 9.5,
+   "ttd_ticks_p90": 9.9,
+   "ttd_s_median": 7650.0,
+   "ttd_s_p90": 8010.0,
+   "ttd_s_ci95": [
+    7200.0,
+    8100.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "low",
+   "deadline_s": 10800.0
+  },
+  {
+   "pack": "B",
+   "scenario_id": "T4b",
+   "base": "T4b",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 900.0,
+   "ttd_s_p90": 900.0,
+   "ttd_s_ci95": [
+    900.0,
+    900.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "low",
+   "deadline_s": 10800.0
+  },
+  {
+   "pack": "B",
+   "scenario_id": "T8",
+   "base": "T8",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 900.0,
+   "ttd_s_p90": 900.0,
+   "ttd_s_ci95": [
+    900.0,
+    900.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "low",
+   "deadline_s": 28800.0
+  },
+  {
+   "pack": "D",
+   "scenario_id": "T20",
+   "base": "T20",
+   "dt": 3600.0,
+   "loudness": "p2",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 3600.0,
+   "ttd_s_p90": 3600.0,
+   "ttd_s_ci95": [
+    3600.0,
+    3600.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "low",
+   "deadline_s": 86400.0
+  },
+  {
+   "pack": "D",
+   "scenario_id": "T21",
+   "base": "T21",
+   "dt": 3600.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 3600.0,
+   "ttd_s_p90": 3600.0,
+   "ttd_s_ci95": [
+    3600.0,
+    3600.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "medium",
+   "deadline_s": 19200.0
+  },
+  {
+   "pack": "E",
+   "scenario_id": "T1'",
+   "base": "T1",
+   "dt": 60.0,
+   "loudness": "loud",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 0.5,
+   "ttd_ticks_median": 58.0,
+   "ttd_ticks_p90": 91.6,
+   "ttd_s_median": 3420.0,
+   "ttd_s_p90": 5436.0,
+   "ttd_s_ci95": [
+    900.0,
+    5940.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "high",
+   "deadline_s": 1800.0
+  },
+  {
+   "pack": "E",
+   "scenario_id": "T12'",
+   "base": "T12",
+   "dt": 60.0,
+   "loudness": "loud",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 0.0,
+   "ttd_ticks_median": 61.0,
+   "ttd_ticks_p90": 61.0,
+   "ttd_s_median": 3600.0,
+   "ttd_s_p90": 3600.0,
+   "ttd_s_ci95": [
+    3600.0,
+    3600.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "medium",
+   "deadline_s": 2700.0
+  },
+  {
+   "pack": "E",
+   "scenario_id": "T5'",
+   "base": "T5",
+   "dt": 60.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 0.0,
+   "ttd_ticks_median": 113.0,
+   "ttd_ticks_p90": 115.4,
+   "ttd_s_median": 6720.0,
+   "ttd_s_p90": 6864.0,
+   "ttd_s_ci95": [
+    6540.0,
+    6900.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "medium",
+   "deadline_s": 3600.0
+  },
+  {
+   "pack": "mini",
+   "scenario_id": "T1",
+   "base": "T1",
+   "dt": 900.0,
+   "loudness": "loud",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 900.0,
+   "ttd_s_p90": 900.0,
+   "ttd_s_ci95": [
+    900.0,
+    900.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "high",
+   "deadline_s": 1800.0
+  },
+  {
+   "pack": "mini",
+   "scenario_id": "T17",
+   "base": "T17",
+   "dt": 900.0,
+   "loudness": "subtle",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 1.0,
+   "ttd_ticks_median": 2.0,
+   "ttd_ticks_p90": 2.0,
+   "ttd_s_median": 900.0,
+   "ttd_s_p90": 900.0,
+   "ttd_s_ci95": [
+    900.0,
+    900.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "medium",
+   "deadline_s": 43200.0
+  },
+  {
+   "pack": "mini",
+   "scenario_id": "T6",
+   "base": "T6",
+   "dt": 900.0,
+   "loudness": "loud",
+   "n_runs": 2,
+   "n_detected": 2,
+   "recall": 1.0,
+   "within_deadline": 0.5,
+   "ttd_ticks_median": 2.5,
+   "ttd_ticks_p90": 2.9,
+   "ttd_s_median": 1350.0,
+   "ttd_s_p90": 1710.0,
+   "ttd_s_ci95": [
+    900.0,
+    1800.0
+   ],
+   "max_severity": "critical",
+   "required_severity": "high",
+   "deadline_s": 1800.0
+  }
+ ],
+ "far": [
+  {
+   "pack": "A",
+   "seed": 0,
+   "entity_days": 76.0,
+   "n_low": 19,
+   "n_medium": 6,
+   "n_high": 2,
+   "n_critical": 0,
+   "far_low": 0.25,
+   "far_medium": 0.07894736842105263
+  },
+  {
+   "pack": "A",
+   "seed": 1,
+   "entity_days": 76.0,
+   "n_low": 18,
+   "n_medium": 3,
+   "n_high": 0,
+   "n_critical": 0,
+   "far_low": 0.23684210526315788,
+   "far_medium": 0.039473684210526314
+  },
+  {
+   "pack": "B",
+   "seed": 0,
+   "entity_days": 276.0,
+   "n_low": 46,
+   "n_medium": 17,
+   "n_high": 1,
+   "n_critical": 0,
+   "far_low": 0.16666666666666666,
+   "far_medium": 0.06159420289855073
+  },
+  {
+   "pack": "B",
+   "seed": 1,
+   "entity_days": 276.0,
+   "n_low": 53,
+   "n_medium": 20,
+   "n_high": 1,
+   "n_critical": 0,
+   "far_low": 0.19202898550724637,
+   "far_medium": 0.07246376811594203
+  },
+  {
+   "pack": "C",
+   "seed": 0,
+   "entity_days": 52.29166666666667,
+   "n_low": 5,
+   "n_medium": 1,
+   "n_high": 0,
+   "n_critical": 0,
+   "far_low": 0.09561752988047807,
+   "far_medium": 0.019123505976095617
+  },
+  {
+   "pack": "C",
+   "seed": 1,
+   "entity_days": 52.29166666666667,
+   "n_low": 10,
+   "n_medium": 1,
+   "n_high": 0,
+   "n_critical": 0,
+   "far_low": 0.19123505976095614,
+   "far_medium": 0.019123505976095617
+  },
+  {
+   "pack": "E",
+   "seed": 1,
+   "entity_days": 28.0,
+   "n_low": 10,
+   "n_medium": 1,
+   "n_high": 1,
+   "n_critical": 1,
+   "far_low": 0.35714285714285715,
+   "far_medium": 0.03571428571428571
+  },
+  {
+   "pack": "E",
+   "seed": 0,
+   "entity_days": 28.0,
+   "n_low": 8,
+   "n_medium": 1,
+   "n_high": 0,
+   "n_critical": 0,
+   "far_low": 0.2857142857142857,
+   "far_medium": 0.03571428571428571
+  },
+  {
+   "pack": "mini",
+   "seed": 0,
+   "entity_days": 4.0,
+   "n_low": 2,
+   "n_medium": 1,
+   "n_high": 0,
+   "n_critical": 0,
+   "far_low": 0.5,
+   "far_medium": 0.25
+  },
+  {
+   "pack": "mini",
+   "seed": 1,
+   "entity_days": 4.0,
+   "n_low": 1,
+   "n_medium": 0,
+   "n_high": 0,
+   "n_critical": 0,
+   "far_low": 0.25,
+   "far_medium": 0.0
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "entity_days": 407.875,
+   "n_low": 48,
+   "n_medium": 10,
+   "n_high": 1,
+   "n_critical": 1,
+   "far_low": 0.11768311369904995,
+   "far_medium": 0.02451731535396874
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "entity_days": 407.875,
+   "n_low": 44,
+   "n_medium": 10,
+   "n_high": 3,
+   "n_critical": 0,
+   "far_low": 0.10787618755746246,
+   "far_medium": 0.02451731535396874
+  }
+ ],
+ "legit": [
+  {
+   "pack": "A",
+   "seed": 0,
+   "scenario_id": "L6",
+   "max_severity": "medium",
+   "allowed": "info",
+   "max_risk": 93.78900146484375,
+   "ok": false
+  },
+  {
+   "pack": "A",
+   "seed": 0,
+   "scenario_id": "L8",
+   "max_severity": "low",
+   "allowed": "info",
+   "max_risk": 78.00707244873047,
+   "ok": false
+  },
+  {
+   "pack": "A",
+   "seed": 0,
+   "scenario_id": "L7",
+   "max_severity": "medium",
+   "allowed": "info",
+   "max_risk": 86.22435760498047,
+   "ok": false
+  },
+  {
+   "pack": "A",
+   "seed": 0,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "A",
+   "seed": 0,
+   "scenario_id": "L15",
+   "max_severity": "medium",
+   "allowed": "info",
+   "max_risk": 67.6300048828125,
+   "ok": false
+  },
+  {
+   "pack": "A",
+   "seed": 1,
+   "scenario_id": "L6",
+   "max_severity": "high",
+   "allowed": "info",
+   "max_risk": 91.07345581054688,
+   "ok": false
+  },
+  {
+   "pack": "A",
+   "seed": 1,
+   "scenario_id": "L8",
+   "max_severity": "critical",
+   "allowed": "info",
+   "max_risk": 91.62433624267578,
+   "ok": false
+  },
+  {
+   "pack": "A",
+   "seed": 1,
+   "scenario_id": "L7",
+   "max_severity": "low",
+   "allowed": "info",
+   "max_risk": 52.47378921508789,
+   "ok": false
+  },
+  {
+   "pack": "A",
+   "seed": 1,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "A",
+   "seed": 1,
+   "scenario_id": "L15",
+   "max_severity": "medium",
+   "allowed": "info",
+   "max_risk": 62.70407485961914,
+   "ok": false
+  },
+  {
+   "pack": "B",
+   "seed": 0,
+   "scenario_id": "L4",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "B",
+   "seed": 0,
+   "scenario_id": "L7",
+   "max_severity": "medium",
+   "allowed": "info",
+   "max_risk": 75.30612182617188,
+   "ok": false
+  },
+  {
+   "pack": "B",
+   "seed": 0,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "B",
+   "seed": 0,
+   "scenario_id": "L15",
+   "max_severity": "critical",
+   "allowed": "info",
+   "max_risk": 99.9933853149414,
+   "ok": false
+  },
+  {
+   "pack": "B",
+   "seed": 1,
+   "scenario_id": "L4",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "B",
+   "seed": 1,
+   "scenario_id": "L7",
+   "max_severity": "low",
+   "allowed": "info",
+   "max_risk": 72.74939727783203,
+   "ok": false
+  },
+  {
+   "pack": "B",
+   "seed": 1,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "B",
+   "seed": 1,
+   "scenario_id": "L15",
+   "max_severity": "high",
+   "allowed": "info",
+   "max_risk": 96.29045104980469,
+   "ok": false
+  },
+  {
+   "pack": "C",
+   "seed": 0,
+   "scenario_id": "L2",
+   "max_severity": "high",
+   "allowed": "info",
+   "max_risk": 74.50901794433594,
+   "ok": false
+  },
+  {
+   "pack": "C",
+   "seed": 0,
+   "scenario_id": "L3",
+   "max_severity": "high",
+   "allowed": "info",
+   "max_risk": 96.70443725585938,
+   "ok": false
+  },
+  {
+   "pack": "C",
+   "seed": 0,
+   "scenario_id": "L10",
+   "max_severity": "critical",
+   "allowed": "low",
+   "max_risk": 99.9826431274414,
+   "ok": false
+  },
+  {
+   "pack": "C",
+   "seed": 0,
+   "scenario_id": "L13",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "C",
+   "seed": 0,
+   "scenario_id": "L7",
+   "max_severity": "low",
+   "allowed": "info",
+   "max_risk": 65.78467559814453,
+   "ok": false
+  },
+  {
+   "pack": "C",
+   "seed": 0,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "C",
+   "seed": 0,
+   "scenario_id": "L15",
+   "max_severity": "high",
+   "allowed": "info",
+   "max_risk": 99.46580505371094,
+   "ok": false
+  },
+  {
+   "pack": "C",
+   "seed": 1,
+   "scenario_id": "L2",
+   "max_severity": "medium",
+   "allowed": "info",
+   "max_risk": 72.80245971679688,
+   "ok": false
+  },
+  {
+   "pack": "C",
+   "seed": 1,
+   "scenario_id": "L3",
+   "max_severity": "high",
+   "allowed": "info",
+   "max_risk": 96.56661987304688,
+   "ok": false
+  },
+  {
+   "pack": "C",
+   "seed": 1,
+   "scenario_id": "L10",
+   "max_severity": "critical",
+   "allowed": "low",
+   "max_risk": 99.93904876708984,
+   "ok": false
+  },
+  {
+   "pack": "C",
+   "seed": 1,
+   "scenario_id": "L13",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "C",
+   "seed": 1,
+   "scenario_id": "L7",
+   "max_severity": "low",
+   "allowed": "info",
+   "max_risk": 81.25466918945312,
+   "ok": false
+  },
+  {
+   "pack": "C",
+   "seed": 1,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "C",
+   "seed": 1,
+   "scenario_id": "L15",
+   "max_severity": "medium",
+   "allowed": "info",
+   "max_risk": 55.05635452270508,
+   "ok": false
+  },
+  {
+   "pack": "E",
+   "seed": 1,
+   "scenario_id": "L7",
+   "max_severity": "low",
+   "allowed": "info",
+   "max_risk": 56.63618850708008,
+   "ok": false
+  },
+  {
+   "pack": "E",
+   "seed": 1,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "E",
+   "seed": 1,
+   "scenario_id": "L15",
+   "max_severity": "critical",
+   "allowed": "info",
+   "max_risk": 96.6528549194336,
+   "ok": false
+  },
+  {
+   "pack": "E",
+   "seed": 0,
+   "scenario_id": "L7",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": 49.81657028198242,
+   "ok": false
+  },
+  {
+   "pack": "E",
+   "seed": 0,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "E",
+   "seed": 0,
+   "scenario_id": "L15",
+   "max_severity": "critical",
+   "allowed": "info",
+   "max_risk": 99.78887176513672,
+   "ok": false
+  },
+  {
+   "pack": "mini",
+   "seed": 0,
+   "scenario_id": "L14",
+   "max_severity": "high",
+   "allowed": "info",
+   "max_risk": 93.1472396850586,
+   "ok": false
+  },
+  {
+   "pack": "mini",
+   "seed": 0,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "mini",
+   "seed": 0,
+   "scenario_id": "L15",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": 13.852682113647461,
+   "ok": true
+  },
+  {
+   "pack": "mini",
+   "seed": 1,
+   "scenario_id": "L14",
+   "max_severity": "high",
+   "allowed": "info",
+   "max_risk": 96.14051818847656,
+   "ok": false
+  },
+  {
+   "pack": "mini",
+   "seed": 1,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "mini",
+   "seed": 1,
+   "scenario_id": "L15",
+   "max_severity": "low",
+   "allowed": "info",
+   "max_risk": 15.927687644958496,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "scenario_id": "L1",
+   "max_severity": "critical",
+   "allowed": "low",
+   "max_risk": 94.2804183959961,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "scenario_id": "L4",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "scenario_id": "L5",
+   "max_severity": "critical",
+   "allowed": "low",
+   "max_risk": 58.1649169921875,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "scenario_id": "L9",
+   "max_severity": "high",
+   "allowed": "low",
+   "max_risk": 98.90611267089844,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "scenario_id": "L12",
+   "max_severity": "low",
+   "allowed": "info",
+   "max_risk": 16.18463706970215,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "scenario_id": "L14",
+   "max_severity": "high",
+   "allowed": "info",
+   "max_risk": 57.95817565917969,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "scenario_id": "L16",
+   "max_severity": "critical",
+   "allowed": "info",
+   "max_risk": 45.24965286254883,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "scenario_id": "L7",
+   "max_severity": "medium",
+   "allowed": "info",
+   "max_risk": 60.22565841674805,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "scenario_id": "L15",
+   "max_severity": "critical",
+   "allowed": "info",
+   "max_risk": 99.80531311035156,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "scenario_id": "L1",
+   "max_severity": "critical",
+   "allowed": "low",
+   "max_risk": 93.92096710205078,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "scenario_id": "L4",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "scenario_id": "L5",
+   "max_severity": "critical",
+   "allowed": "low",
+   "max_risk": 53.620628356933594,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "scenario_id": "L9",
+   "max_severity": "critical",
+   "allowed": "low",
+   "max_risk": 97.84516906738281,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "scenario_id": "L12",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": 21.464969635009766,
+   "ok": true
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "scenario_id": "L14",
+   "max_severity": "high",
+   "allowed": "info",
+   "max_risk": 48.88915252685547,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "scenario_id": "L16",
+   "max_severity": "critical",
+   "allowed": "info",
+   "max_risk": 84.0885009765625,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "scenario_id": "L7",
+   "max_severity": "low",
+   "allowed": "info",
+   "max_risk": 37.7523307800293,
+   "ok": false
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "scenario_id": "L11",
+   "max_severity": null,
+   "allowed": "info",
+   "max_risk": null,
+   "ok": true
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "scenario_id": "L15",
+   "max_severity": "high",
+   "allowed": "info",
+   "max_risk": 52.16667556762695,
+   "ok": false
+  }
+ ],
+ "runs": [
+  {
+   "pack": "A",
+   "seed": 0,
+   "aborted": null,
+   "wall_s": 1048.194913223,
+   "exceptions": 0
+  },
+  {
+   "pack": "A",
+   "seed": 1,
+   "aborted": null,
+   "wall_s": 1056.750251734,
+   "exceptions": 0
+  },
+  {
+   "pack": "B",
+   "seed": 0,
+   "aborted": null,
+   "wall_s": 1803.3631539689998,
+   "exceptions": 0
+  },
+  {
+   "pack": "B",
+   "seed": 1,
+   "aborted": null,
+   "wall_s": 1812.815045977,
+   "exceptions": 0
+  },
+  {
+   "pack": "C",
+   "seed": 0,
+   "aborted": null,
+   "wall_s": 1392.5187429139999,
+   "exceptions": 0
+  },
+  {
+   "pack": "C",
+   "seed": 1,
+   "aborted": null,
+   "wall_s": 1385.8467050680001,
+   "exceptions": 0
+  },
+  {
+   "pack": "E",
+   "seed": 1,
+   "aborted": null,
+   "wall_s": 1257.2719522839998,
+   "exceptions": 0
+  },
+  {
+   "pack": "E",
+   "seed": 0,
+   "aborted": null,
+   "wall_s": 1282.234259069,
+   "exceptions": 0
+  },
+  {
+   "pack": "mini",
+   "seed": 0,
+   "aborted": null,
+   "wall_s": 37.9701788680004,
+   "exceptions": 0
+  },
+  {
+   "pack": "mini",
+   "seed": 1,
+   "aborted": null,
+   "wall_s": 38.47803336800007,
+   "exceptions": 0
+  },
+  {
+   "pack": "D",
+   "seed": 1,
+   "aborted": null,
+   "wall_s": 2006.9950595189998,
+   "exceptions": 0
+  },
+  {
+   "pack": "D",
+   "seed": 0,
+   "aborted": null,
+   "wall_s": 2017.9047925050004,
+   "exceptions": 0
+  }
+ ],
+ "design_table_md": "| # | Gate | Value | Target | Pass |\n|---|---|---|---|---|\n| 1 | Detection | 0.7069 | 0.95 | no |\n| 2 | Time to detect | 2.5 | loud <= 2 ticks @900 s; E <= A + 15 min | no |\n| 3 | False alarms on control entities | 0.1564 | 0.2 | no |\n| 4 | Legitimate changes | 0.3281 | 0.95 | no |\n| 5 | Alert burden | 3.028 | 3 | no |\n| 6 | Poisoning and reversibility | 2 | 0 | no |\n| 7 | Calibration | 0.1929 | 0.05 | no |\n| 8 | Identification | 1 | 0.95 | no |\n| 9 | Classes | 0.7545 | 0.9 | no |\n| 10 | Explanation | 0.7143 | 0.8 | no |\n| 11 | Portrait | 0.9167 | 0.8 | no |\n| 12 | Feedback | – | 0.5 | n/a |\n| 13 | Ablation | – | each P0/P1 engine sole/main detector of >= 1 scenario | n/a |\n| 14 | CPU and memory | 2018 | 360 | no |\n| 15 | Robustness | 0 | 0 | yes |"
+}

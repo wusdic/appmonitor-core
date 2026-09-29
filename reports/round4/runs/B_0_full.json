@@ -1,0 +1,1728 @@
+{
+ "pack": "B",
+ "seed": 0,
+ "dt": 900.0,
+ "scenario_window": [
+  1749657600.0,
+  1750694400.0
+ ],
+ "disabled_engines": [],
+ "labels_added": 0,
+ "aborted": null,
+ "scenarios": [
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000017"
+   ],
+   "t_detect_open": 1749777300.0,
+   "ttd_s_open": 900.0,
+   "ttd_ticks_open": 2,
+   "t_detect": 1749777300.0,
+   "ttd_s": 900.0,
+   "ttd_ticks": 2,
+   "tp_incident": "inc0000017",
+   "matched": [
+    "B08 novelty",
+    "B14 cusum",
+    "exfil",
+    "categorical"
+   ],
+   "detected_by": "open",
+   "notifications": 5,
+   "tp_incidents": [
+    "inc0000017"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T2",
+   "base": "T2",
+   "pack": "B",
+   "seed": 0,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.1.12"
+   ],
+   "t_start": 1749776400.0,
+   "t_end": 1750208400.0,
+   "required_severity": "medium",
+   "deadline_s": 259200.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000007"
+   ],
+   "t_detect_open": 1749841200.0,
+   "ttd_s_open": 97200.0,
+   "ttd_ticks_open": 109,
+   "t_detect": 1749841200.0,
+   "ttd_s": 97200.0,
+   "ttd_ticks": 109,
+   "tp_incident": "inc0000007",
+   "matched": [
+    "B14 cusum",
+    "B14 creep",
+    "B13 budget_vol",
+    "volume"
+   ],
+   "detected_by": "open",
+   "notifications": 2,
+   "tp_incidents": [
+    "inc0000007"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T3",
+   "base": "T3",
+   "pack": "B",
+   "seed": 0,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.4.30"
+   ],
+   "t_start": 1749744000.0,
+   "t_end": 1750608000.0,
+   "required_severity": "low",
+   "deadline_s": 172800.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000039"
+   ],
+   "t_detect_open": 1750010400.0,
+   "ttd_s_open": 7200.0,
+   "ttd_ticks_open": 9,
+   "t_detect": 1750010400.0,
+   "ttd_s": 7200.0,
+   "ttd_ticks": 9,
+   "tp_incident": "inc0000039",
+   "matched": [
+    "B14 cusum",
+    "B13 budget_vol",
+    "B06 t2",
+    "volume"
+   ],
+   "detected_by": "open",
+   "notifications": 3,
+   "tp_incidents": [
+    "inc0000039"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T4",
+   "base": "T4",
+   "pack": "B",
+   "seed": 0,
+   "label": "malicious",
+   "system": "oa-portal",
+   "entities": [
+    "oa-portal|10.30.4.41"
+   ],
+   "t_start": 1750003200.0,
+   "t_end": 1750176000.0,
+   "required_severity": "low",
+   "deadline_s": 10800.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000044"
+   ],
+   "t_detect_open": 1750090500.0,
+   "ttd_s_open": 900.0,
+   "ttd_ticks_open": 2,
+   "t_detect": 1750090500.0,
+   "ttd_s": 900.0,
+   "ttd_ticks": 2,
+   "tp_incident": "inc0000044",
+   "matched": [
+    "B14 cusum",
+    "B13 budget_vol",
+    "volume"
+   ],
+   "detected_by": "open",
+   "notifications": 4,
+   "tp_incidents": [
+    "inc0000044"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T4b",
+   "base": "T4b",
+   "pack": "B",
+   "seed": 0,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.4.33"
+   ],
+   "t_start": 1750089600.0,
+   "t_end": 1750262400.0,
+   "required_severity": "low",
+   "deadline_s": 10800.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000027"
+   ],
+   "t_detect_open": 1749863700.0,
+   "ttd_s_open": 900.0,
+   "ttd_ticks_open": 2,
+   "t_detect": 1749863700.0,
+   "ttd_s": 900.0,
+   "ttd_ticks": 2,
+   "tp_incident": "inc0000027",
+   "matched": [
+    "B13 budget_breadth",
+    "B11 timing"
+   ],
+   "detected_by": "open",
+   "notifications": 3,
+   "tp_incidents": [
+    "inc0000027"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T8",
+   "base": "T8",
+   "pack": "B",
+   "seed": 0,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.1.15"
+   ],
+   "t_start": 1749862800.0,
+   "t_end": 1749891600.0,
+   "required_severity": "low",
+   "deadline_s": 28800.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000034"
+   ],
+   "t_detect_open": 1749917700.0,
+   "ttd_s_open": 900.0,
+   "ttd_ticks_open": 2,
+   "t_detect": 1749917700.0,
+   "ttd_s": 900.0,
+   "ttd_ticks": 2,
+   "tp_incident": "inc0000034",
+   "matched": [
+    "B08 novelty",
+    "timing"
+   ],
+   "detected_by": "open",
+   "notifications": 5,
+   "tp_incidents": [
+    "inc0000034"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T10",
+   "base": "T10",
+   "pack": "B",
+   "seed": 0,
+   "label": "malicious",
+   "system": "api-gateway",
+   "entities": [
+    "api-gateway|10.40.4.51"
+   ],
+   "t_start": 1749916800.0,
+   "t_end": 1750176000.0,
+   "required_severity": "medium",
+   "deadline_s": 14400.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000028"
+   ],
+   "t_detect_open": 1749867300.0,
+   "ttd_s_open": 900.0,
+   "ttd_ticks_open": 2,
+   "t_detect": 1749867300.0,
+   "ttd_s": 900.0,
+   "ttd_ticks": 2,
+   "tp_incident": "inc0000028",
+   "matched": [
+    "B08 novelty",
+    "B13 budget_exfil",
+    "categorical"
+   ],
+   "detected_by": "open",
+   "notifications": 6,
+   "tp_incidents": [
+    "inc0000028"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T14",
+   "base": "T14",
+   "pack": "B",
+   "seed": 0,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.1.13"
+   ],
+   "t_start": 1749866400.0,
+   "t_end": 1750039200.0,
+   "required_severity": "medium",
+   "deadline_s": 3600.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000035"
+   ],
+   "t_detect_open": 1749933900.0,
+   "ttd_s_open": 13500.0,
+   "ttd_ticks_open": 16,
+   "t_detect": 1749933900.0,
+   "ttd_s": 13500.0,
+   "ttd_ticks": 16,
+   "tp_incident": "inc0000035",
+   "matched": [
+    "B14 cusum",
+    "B08 novelty",
+    "B28 regime"
+   ],
+   "detected_by": "open",
+   "notifications": 6,
+   "tp_incidents": [
+    "inc0000035"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T15",
+   "base": "T15",
+   "pack": "B",
+   "seed": 0,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.9.5"
+   ],
+   "t_start": 1749920400.0,
+   "t_end": 1750104000.0,
+   "required_severity": "high",
+   "deadline_s": 180900.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": false,
+   "detected_open": false,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "low",
+   "incident_ids": [
+    "inc0000058"
+   ],
+   "within_deadline_open": false,
+   "scenario_id": "T18",
+   "base": "T18",
+   "pack": "B",
+   "seed": 0,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.1.16"
+   ],
+   "t_start": 1750208400.0,
+   "t_end": 1750251600.0,
+   "required_severity": "low",
+   "deadline_s": 5400.0,
+   "within_deadline": false,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 3,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000064",
+    "inc0000069",
+    "inc0000072"
+   ],
+   "t_detect_open": 1750382100.0,
+   "ttd_s_open": 900.0,
+   "ttd_ticks_open": 2,
+   "t_detect": 1750382100.0,
+   "ttd_s": 900.0,
+   "ttd_ticks": 2,
+   "tp_incident": "inc0000064",
+   "matched": [
+    "B13 budget_exfil",
+    "B08 novelty",
+    "exfil"
+   ],
+   "detected_by": "open",
+   "notifications": 3,
+   "tp_incidents": [
+    "inc0000064"
+   ],
+   "within_deadline_open": true,
+   "scenario_id": "T19",
+   "base": "T19",
+   "pack": "B",
+   "seed": 0,
+   "label": "malicious",
+   "system": "erp-prod",
+   "entities": [
+    "erp-prod|10.20.1.70",
+    "erp-prod|10.20.1.71",
+    "erp-prod|10.20.1.72"
+   ],
+   "t_start": 1750381200.0,
+   "t_end": 1750462200.0,
+   "required_severity": "low",
+   "deadline_s": 54000.0,
+   "within_deadline": true,
+   "dt": 900.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 3.0
+  }
+ ],
+ "legit": [
+  {
+   "scenario_id": "L4",
+   "base": "L4",
+   "pack": "B",
+   "seed": 0,
+   "label": "legit_change",
+   "entities": [],
+   "t_start": 1749830400.0,
+   "t_end": 1750608000.0,
+   "max_severity": null,
+   "allowed": "info",
+   "n_incidents": 0,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": null,
+   "max_risk": null,
+   "sev_ok": true,
+   "risk_ok": true,
+   "member_ok": true,
+   "ok": true
+  },
+  {
+   "scenario_id": "L7",
+   "base": "L7",
+   "pack": "B",
+   "seed": 0,
+   "label": "legit_change",
+   "entities": [
+    "oa-portal|10.30.2.50"
+   ],
+   "t_start": 1749657600.0,
+   "t_end": 1750694400.0,
+   "max_severity": "medium",
+   "allowed": "info",
+   "n_incidents": 4,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": "medium",
+   "max_risk": 75.30612182617188,
+   "sev_ok": false,
+   "risk_ok": false,
+   "member_ok": true,
+   "ok": false
+  },
+  {
+   "scenario_id": "L11",
+   "base": "L11",
+   "pack": "B",
+   "seed": 0,
+   "label": "legit_change",
+   "entities": [],
+   "t_start": 1749657600.0,
+   "t_end": 1750694400.0,
+   "max_severity": null,
+   "allowed": "info",
+   "n_incidents": 0,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": null,
+   "max_risk": null,
+   "sev_ok": true,
+   "risk_ok": true,
+   "member_ok": true,
+   "ok": true
+  },
+  {
+   "scenario_id": "L15",
+   "base": "L15",
+   "pack": "B",
+   "seed": 0,
+   "label": "legit_change",
+   "entities": [
+    "erp-prod|10.20.9.9",
+    "oa-portal|10.30.9.9",
+    "api-gateway|10.40.9.9",
+    "api-gateway|10.40.9.6"
+   ],
+   "t_start": 1749657600.0,
+   "t_end": 1750694400.0,
+   "max_severity": "critical",
+   "allowed": "info",
+   "n_incidents": 9,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": "critical",
+   "max_risk": 99.9933853149414,
+   "sev_ok": false,
+   "risk_ok": false,
+   "member_ok": true,
+   "ok": false
+  }
+ ],
+ "far": {
+  "entity_days": 276.0,
+  "n_control": 23,
+  "dt": 900.0,
+  "n_low": 46,
+  "n_medium": 17,
+  "n_high": 1,
+  "n_reopened": 19,
+  "n_low_notified": 46,
+  "n_critical": 0,
+  "far_low": 0.16666666666666666,
+  "far_medium": 0.06159420289855073,
+  "groups": {
+   "steady": {
+    "n_low": 16,
+    "days": 120.0
+   },
+   "bursty": {
+    "n_low": 30,
+    "days": 156.0
+   }
+  },
+  "false_alarms": [
+   {
+    "id": "inc0000001",
+    "entity": "api-gateway|10.40.4.57",
+    "opened": 1749661200.0,
+    "severity": "low",
+    "axes": [
+     "change",
+     "timing"
+    ]
+   },
+   {
+    "id": "inc0000003",
+    "entity": "oa-portal|10.30.4.40",
+    "opened": 1749677400.0,
+    "severity": "low",
+    "axes": [
+     "exfil",
+     "identity"
+    ]
+   },
+   {
+    "id": "inc0000004",
+    "entity": "oa-portal|10.30.2.22",
+    "opened": 1749686400.0,
+    "severity": "medium",
+    "axes": [
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000005",
+    "entity": "oa-portal|10.30.2.26",
+    "opened": 1749686400.0,
+    "severity": "low",
+    "axes": [
+     "breadth",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000010",
+    "entity": "oa-portal|10.30.2.23",
+    "opened": 1749711600.0,
+    "severity": "low",
+    "axes": [
+     "breadth"
+    ]
+   },
+   {
+    "id": "inc0000011",
+    "entity": "oa-portal|10.30.2.24",
+    "opened": 1749715200.0,
+    "severity": "low",
+    "axes": [
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000012",
+    "entity": "oa-portal|10.30.2.29",
+    "opened": 1749715200.0,
+    "severity": "low",
+    "axes": [
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000015",
+    "entity": "api-gateway|10.40.4.55",
+    "opened": 1749770100.0,
+    "severity": "low",
+    "axes": [
+     "peer"
+    ]
+   },
+   {
+    "id": "inc0000016",
+    "entity": "erp-prod|10.20.1.11",
+    "opened": 1749774600.0,
+    "severity": "low",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000018",
+    "entity": "oa-portal|10.30.2.27",
+    "opened": 1749778200.0,
+    "severity": "medium",
+    "axes": [
+     "exfil",
+     "peer"
+    ]
+   },
+   {
+    "id": "inc0000019",
+    "entity": "oa-portal|10.30.2.28",
+    "opened": 1749788100.0,
+    "severity": "low",
+    "axes": [
+     "categorical",
+     "shape"
+    ]
+   },
+   {
+    "id": "inc0000021",
+    "entity": "oa-portal|10.30.2.26",
+    "opened": 1749808800.0,
+    "severity": "low",
+    "axes": [
+     "shape"
+    ]
+   },
+   {
+    "id": "inc0000022",
+    "entity": "oa-portal|10.30.2.25",
+    "opened": 1749821400.0,
+    "severity": "low",
+    "axes": [
+     "breadth",
+     "categorical",
+     "exfil"
+    ]
+   },
+   {
+    "id": "inc0000025",
+    "entity": "api-gateway|10.40.4.54",
+    "opened": 1749838500.0,
+    "severity": "medium",
+    "axes": [
+     "breadth",
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000026",
+    "entity": "oa-portal|10.30.2.29",
+    "opened": 1749857400.0,
+    "severity": "low",
+    "axes": [
+     "breadth",
+     "temporal",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000030",
+    "entity": "erp-prod|10.20.1.21",
+    "opened": 1749877200.0,
+    "severity": "medium",
+    "axes": [
+     "app_error",
+     "breadth",
+     "exfil",
+     "timing",
+     "transport",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000031",
+    "entity": "oa-portal|10.30.2.22",
+    "opened": 1749880800.0,
+    "severity": "medium",
+    "axes": [
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000032",
+    "entity": "erp-prod|10.20.4.32",
+    "opened": 1749891600.0,
+    "severity": "low",
+    "axes": [
+     "breadth"
+    ]
+   },
+   {
+    "id": "inc0000033",
+    "entity": "oa-portal|10.30.4.42",
+    "opened": 1749902400.0,
+    "severity": "low",
+    "axes": [
+     "app_error",
+     "comp"
+    ]
+   },
+   {
+    "id": "inc0000037",
+    "entity": "erp-prod|10.20.4.31",
+    "opened": 1750000500.0,
+    "severity": "medium",
+    "axes": [
+     "app_error",
+     "breadth",
+     "c2",
+     "categorical",
+     "change",
+     "comp",
+     "sequence",
+     "shape",
+     "timing"
+    ]
+   },
+   {
+    "id": "inc0000041",
+    "entity": "oa-portal|10.30.4.40",
+    "opened": 1750032900.0,
+    "severity": "medium",
+    "axes": [
+     "exfil",
+     "sequence"
+    ]
+   },
+   {
+    "id": "inc0000046",
+    "entity": "erp-prod|10.20.1.21",
+    "opened": 1750118400.0,
+    "severity": "medium",
+    "axes": [
+     "categorical",
+     "temporal",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000047",
+    "entity": "oa-portal|10.30.2.22",
+    "opened": 1750125600.0,
+    "severity": "medium",
+    "axes": [
+     "breadth",
+     "change",
+     "temporal",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000048",
+    "entity": "erp-prod|10.20.4.32",
+    "opened": 1750147200.0,
+    "severity": "low",
+    "axes": [
+     "comp",
+     "dns",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000049",
+    "entity": "oa-portal|10.30.2.25",
+    "opened": 1750161600.0,
+    "severity": "medium",
+    "axes": [
+     "temporal",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000051",
+    "entity": "api-gateway|10.40.4.52",
+    "opened": 1750201200.0,
+    "severity": "medium",
+    "axes": [
+     "app_error",
+     "comp",
+     "identity",
+     "sequence",
+     "transport"
+    ]
+   },
+   {
+    "id": "inc0000052",
+    "entity": "oa-portal|10.30.2.26",
+    "opened": 1750206600.0,
+    "severity": "low",
+    "axes": [
+     "categorical",
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000054",
+    "entity": "api-gateway|10.40.4.53",
+    "opened": 1750219200.0,
+    "severity": "low",
+    "axes": [
+     "app_error",
+     "exfil"
+    ]
+   },
+   {
+    "id": "inc0000055",
+    "entity": "oa-portal|10.30.2.28",
+    "opened": 1750220100.0,
+    "severity": "high",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000056",
+    "entity": "oa-portal|10.30.4.42",
+    "opened": 1750222800.0,
+    "severity": "low",
+    "axes": [
+     "app_error"
+    ]
+   },
+   {
+    "id": "inc0000057",
+    "entity": "oa-portal|10.30.2.24",
+    "opened": 1750236300.0,
+    "severity": "low",
+    "axes": [
+     "sequence"
+    ]
+   },
+   {
+    "id": "inc0000059",
+    "entity": "oa-portal|10.30.2.23",
+    "opened": 1750245300.0,
+    "severity": "medium",
+    "axes": [
+     "breadth"
+    ]
+   },
+   {
+    "id": "inc0000060",
+    "entity": "oa-portal|10.30.2.22",
+    "opened": 1750294800.0,
+    "severity": "low",
+    "axes": [
+     "breadth",
+     "change",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000061",
+    "entity": "oa-portal|10.30.2.21",
+    "opened": 1750314600.0,
+    "severity": "low",
+    "axes": [
+     "exfil"
+    ]
+   },
+   {
+    "id": "inc0000062",
+    "entity": "erp-prod|10.20.1.18",
+    "opened": 1750353300.0,
+    "severity": "medium",
+    "axes": [
+     "breadth",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000065",
+    "entity": "erp-prod|10.20.1.11",
+    "opened": 1750383000.0,
+    "severity": "low",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000067",
+    "entity": "oa-portal|10.30.2.29",
+    "opened": 1750384800.0,
+    "severity": "low",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000068",
+    "entity": "oa-portal|10.30.4.40",
+    "opened": 1750387500.0,
+    "severity": "low",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000075",
+    "entity": "api-gateway|10.40.4.55",
+    "opened": 1750510800.0,
+    "severity": "medium",
+    "axes": [
+     "categorical",
+     "exfil",
+     "shape"
+    ]
+   },
+   {
+    "id": "inc0000078",
+    "entity": "erp-prod|10.20.1.17",
+    "opened": 1750601700.0,
+    "severity": "low",
+    "axes": [
+     "exfil"
+    ]
+   },
+   {
+    "id": "inc0000079",
+    "entity": "erp-prod|10.20.1.11",
+    "opened": 1750643100.0,
+    "severity": "low",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000081",
+    "entity": "erp-prod|10.20.1.18",
+    "opened": 1750649400.0,
+    "severity": "medium",
+    "axes": [
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000082",
+    "entity": "erp-prod|10.20.4.32",
+    "opened": 1750660200.0,
+    "severity": "low",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000083",
+    "entity": "oa-portal|10.30.2.22",
+    "opened": 1750661100.0,
+    "severity": "low",
+    "axes": [
+     "breadth",
+     "change",
+     "exfil",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000085",
+    "entity": "oa-portal|10.30.2.26",
+    "opened": 1750681800.0,
+    "severity": "medium",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000086",
+    "entity": "oa-portal|10.30.4.42",
+    "opened": 1750684500.0,
+    "severity": "low",
+    "axes": [
+     "categorical"
+    ]
+   }
+  ]
+ },
+ "range": {
+  "range": {
+   "precision": 0.0539091626821948,
+   "recall": 0.8057688090214086,
+   "f1": 0.10105719406463975
+  },
+  "point_adjusted": {
+   "precision": 0.26796805678793256,
+   "recall": 1.0,
+   "f1": 0.42267319804058784
+  },
+  "n_real": 10,
+  "n_pred": 158
+ },
+ "calibration": {
+  "ks": {
+   "marg_int": {
+    "D": 0.07895068904165314,
+    "n": 4011
+   },
+   "marg_shape": {
+    "D": 0.06234585249536918,
+    "n": 4011
+   },
+   "peer": {
+    "D": 0.06000228054176926,
+    "n": 4011
+   },
+   "t2": {
+    "D": 0.03483841724450443,
+    "n": 4011
+   },
+   "spe": {
+    "D": 0.030888902876508473,
+    "n": 4011
+   },
+   "offhours": {
+    "D": 0.010085625852939588,
+    "n": 26496
+   },
+   "silence": {
+    "D": 0.007047430674235022,
+    "n": 11520
+   },
+   "novelty": {
+    "D": 0.008026236589311508,
+    "n": 15672
+   },
+   "novelty_rate": {
+    "D": 0.013439630202458419,
+    "n": 15672
+   },
+   "jsd": {
+    "D": 0.037275460651347014,
+    "n": 15669
+   },
+   "client": {
+    "D": 0.06492549034338149,
+    "n": 15120
+   },
+   "seq": {
+    "D": 0.025168079375125385,
+    "n": 15672
+   },
+   "dwell": {
+    "D": 0.014173769477813958,
+    "n": 15120
+   },
+   "timing": {
+    "D": 0.046554959569719334,
+    "n": 17944
+   },
+   "beacon": {
+    "D": 0.008824200478811162,
+    "n": 15120
+   },
+   "budget_vol": {
+    "D": 0.03683157589124597,
+    "n": 26496
+   },
+   "budget_exfil": {
+    "D": 0.006526026460859535,
+    "n": 26496
+   },
+   "budget_breadth": {
+    "D": 0.023407189742378542,
+    "n": 26496
+   },
+   "cusum": {
+    "D": 0.06728677855439091,
+    "n": 4011
+   },
+   "mcusum": {
+    "D": 0.13096709251106603,
+    "n": 4011
+   },
+   "bocpd": {
+    "D": 0.06379964457692278,
+    "n": 4005
+   },
+   "creep": {
+    "D": 0.009758730453768072,
+    "n": 3748
+   },
+   "identity": {
+    "D": 0.07019926578435409,
+    "n": 3933
+   },
+   "cross_system": {
+    "D": 0.010855435894124688,
+    "n": 4011
+   },
+   "marg_int_q": {
+    "D": 0.012256895738934737,
+    "n": 15120
+   },
+   "marg_shape_q": {
+    "D": 0.0209957964205868,
+    "n": 15120
+   },
+   "t2_q": {
+    "D": 0.040271105652763706,
+    "n": 15120
+   },
+   "spe_q": {
+    "D": 0.04834258247304846,
+    "n": 15120
+   }
+  },
+  "exceedance": {
+   "0.03": {
+    "n": 26496,
+    "k": 56,
+    "expected": 8.28
+   },
+   "0.003": {
+    "n": 26496,
+    "k": 43,
+    "expected": 0.828
+   }
+  },
+  "exceedance_tau": {
+   "h": {
+    "0.03": {
+     "n": 6624,
+     "k": 19,
+     "expected": 5.52
+    },
+    "0.003": {
+     "n": 6624,
+     "k": 13,
+     "expected": 0.5519999999999999
+    }
+   },
+   "q": {
+    "0.03": {
+     "n": 19872,
+     "k": 37,
+     "expected": 2.76
+    },
+    "0.003": {
+     "n": 19872,
+     "k": 30,
+     "expected": 0.276
+    }
+   }
+  },
+  "cc": 900,
+  "dt": 900.0,
+  "entity_days": 276.0,
+  "evidence_cusum_alarms": 20,
+  "single_tick_alarms": 13,
+  "acc_path_alarms": {
+   "rhythm": 0,
+   "temporal_categorical": 29,
+   "budget": 0,
+   "change": 2
+  },
+  "acat_ticks": 0,
+  "acat_incident_ticks": 0
+ },
+ "poisoning": {
+  "scenarios": [
+   {
+    "scenario_id": "T2",
+    "base": "T2",
+    "control_bumps": 0,
+    "current_shift": 0.0,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.38460493274969076
+   },
+   {
+    "scenario_id": "T3",
+    "base": "T3",
+    "control_bumps": 2,
+    "current_shift": 0.012828126904365258,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": false,
+    "closed_ok": true,
+    "null_ks": 0.07245871181532493
+   },
+   {
+    "scenario_id": "T4",
+    "base": "T4",
+    "control_bumps": 0,
+    "current_shift": 0.0007402747189303902,
+    "reference_shift": 0.001017610923345101,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.06510744125578348
+   },
+   {
+    "scenario_id": "T4b",
+    "base": "T4b",
+    "control_bumps": 0,
+    "current_shift": 0.0005022581478881671,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.0755883194348983
+   },
+   {
+    "scenario_id": "T8",
+    "base": "T8",
+    "control_bumps": 0,
+    "current_shift": 0.0,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.471125701138718
+   },
+   {
+    "scenario_id": "T10",
+    "base": "T10",
+    "control_bumps": 0,
+    "current_shift": 0.0007589468918727845,
+    "reference_shift": 0.00019549154251908857,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.20006321083345618
+   },
+   {
+    "scenario_id": "T14",
+    "base": "T14",
+    "control_bumps": 0,
+    "current_shift": 0.009541304292029864,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": true,
+    "null_ks": 0.6414857577578521
+   },
+   {
+    "scenario_id": "T15",
+    "base": "T15",
+    "control_bumps": 0,
+    "current_shift": 0.0,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.6915603611801922
+   },
+   {
+    "scenario_id": "T18",
+    "base": "T18",
+    "control_bumps": 0,
+    "current_shift": 9.459498018293736e-08,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "null_ks": 0.032188977889654025
+   },
+   {
+    "scenario_id": "T19",
+    "base": "T19",
+    "control_bumps": 0,
+    "current_shift": null,
+    "reference_shift": null,
+    "current_ok": null,
+    "reference_ok": null,
+    "golden_ok": null,
+    "closed_ok": false,
+    "null_ks": 0.5391561299976375
+   }
+  ],
+  "accepts": [],
+  "long_drift": []
+ },
+ "identification": {
+  "n_individuated": 10,
+  "window_top1": 1.0,
+  "window_top1_mean": 1.0,
+  "tick_top1": null,
+  "eer_frac_ok": 1.0,
+  "spearman": 0.47730532408374166,
+  "twins_ok": false,
+  "t9": [],
+  "t9b": [],
+  "l6": [],
+  "t19": [
+   true
+  ]
+ },
+ "classes": {
+  "n": 40,
+  "ari": 0.6769899724909042,
+  "noise_frac": 0.15,
+  "sub_purity": 0.975,
+  "refit_ari_min": 0.9450659216743598,
+  "refit_ari_median": 1.0,
+  "id_churn": 0,
+  "l8": []
+ },
+ "explanation": {
+  "hit3": [
+   true,
+   false,
+   true,
+   true,
+   true,
+   true,
+   true,
+   false,
+   true
+  ],
+  "cf_valid": [
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "natural_range": [
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "hit3_excluded": 0
+ },
+ "portrait": {
+  "jaccard": [
+   0.6,
+   0.5555555555555556,
+   1.0,
+   0.6,
+   1.0,
+   0.6363636363636364,
+   0.6666666666666666,
+   1.0,
+   1.0,
+   0.5454545454545454,
+   1.0,
+   1.0,
+   0.9166666666666666
+  ],
+  "template_recall": [
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   0.8,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   0.8,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0
+  ],
+  "coverage": 0.960183066361556,
+  "n_coverage": 8740,
+  "coverage_grain": {
+   "h": 0.9283854166666666,
+   "q": 0.9380782918149466
+  },
+  "n_coverage_grain": {
+   "h": 1536,
+   "q": 5620
+  },
+  "class_portraits": [
+   true,
+   true,
+   true,
+   true,
+   true
+  ]
+ },
+ "robustness": {
+  "exceptions": 0,
+  "exception_heads": [],
+  "stale": 0,
+  "stale_heads": [],
+  "pipeline_degraded": 0,
+  "aborted": null,
+  "ablated": false
+ },
+ "cpu_mem": {
+  "wall_s": 1803.3631539689998,
+  "n_ticks": 1824,
+  "n_entities": 40,
+  "pipeline_s": 1759.7563876990077,
+  "lib3_s": 1552.778024376011,
+  "gen_s": 24.641841567996213,
+  "collect_s": 16.38545934299475,
+  "lib3_p95_ms": 1419.5984238002097,
+  "lib3_p95_ms_at35": 1242.1486208251836,
+  "layers_ms_mean": {
+   "raw": 18.03470001919565,
+   "derived": 83.24814487885133,
+   "behavior": 851.3037414342166,
+   "signature": 11.110875359652079
+  },
+  "engine_ms_mean": {
+   "raw.l2l3": 1.2252359419995755,
+   "raw.l4flow": 2.6439940376501334,
+   "raw.http": 2.4765696553676797,
+   "raw.tls": 1.4920072266668605,
+   "raw.dns": 0.9378737141459919,
+   "raw.active_probe": 0.17855044986170374,
+   "raw.action_token": 6.676801782036037,
+   "raw.client_stack": 2.403667215127171,
+   "derived.aggregation": 40.70688907619108,
+   "derived.periodicity": 5.652639427859532,
+   "derived.trend": 24.1630193910055,
+   "derived.ratio": 2.914937435796386,
+   "derived.entropy": 2.1607902419933103,
+   "derived.graph": 1.0516513926875697,
+   "derived.session": 6.5982179283572915,
+   "behavior.feature_vector": 36.934944324326096,
+   "behavior.peer_group": 4.322209237878652,
+   "behavior.baseline": 31.11684068671444,
+   "behavior.likelihood": 52.22397496407492,
+   "behavior.common_mode": 7.220997067789237,
+   "behavior.multivariate": 84.4382409079229,
+   "behavior.rhythm": 26.17583041180644,
+   "behavior.novelty": 22.847839444614294,
+   "behavior.client_identity": 8.049793130473086,
+   "behavior.sequence": 137.2219955570865,
+   "behavior.timing": 29.45706874445865,
+   "behavior.beacon": 1.8601935218300736,
+   "behavior.budget": 75.22349131055046,
+   "behavior.changepoint": 15.400116232656792,
+   "behavior.identity_model": 16.181741141523194,
+   "behavior.attribution": 30.570743993623694,
+   "behavior.entity_link": 5.33916171562139,
+   "behavior.class_monitor": 13.680647428082139,
+   "behavior.cross_system": 3.6082238409864273,
+   "behavior.feedback": 0.9299222341362845,
+   "behavior.calibration": 49.47319105319809,
+   "behavior.fusion": 70.27236788445397,
+   "behavior.risk": 8.818138985518823,
+   "behavior.incident": 2.542020951226158,
+   "behavior.governor": 14.716104001852504,
+   "behavior.explain": 8.568907868409154,
+   "behavior.portrait": 94.10903454924885,
+   "signature.rule_match": 8.748029145755266,
+   "signature.correlation": 2.3628462157947454
+  },
+  "engine_ms_p95": {
+   "raw.l2l3": 2.530929946899413,
+   "raw.l4flow": 5.067319703102111,
+   "raw.http": 5.033937740325926,
+   "raw.tls": 2.977485430240631,
+   "raw.dns": 1.7349691867828367,
+   "raw.active_probe": 0.30306329131126397,
+   "raw.action_token": 14.626731586456279,
+   "raw.client_stack": 4.8596613645553575,
+   "derived.aggregation": 63.542531394958495,
+   "derived.periodicity": 9.243674945831296,
+   "derived.trend": 37.4416202545166,
+   "derived.ratio": 4.680671811103821,
+   "derived.entropy": 3.524430954456329,
+   "derived.graph": 1.7317088544368737,
+   "derived.session": 9.590549898147582,
+   "behavior.feature_vector": 53.117546081542955,
+   "behavior.peer_group": 41.342927742004385,
+   "behavior.baseline": 67.65181770324705,
+   "behavior.likelihood": 129.82239608764647,
+   "behavior.common_mode": 13.491658926010132,
+   "behavior.multivariate": 255.08521041870114,
+   "behavior.rhythm": 44.07261734008789,
+   "behavior.novelty": 35.05372657775879,
+   "behavior.client_identity": 11.955982065200804,
+   "behavior.sequence": 350.129214477539,
+   "behavior.timing": 47.044413185119616,
+   "behavior.beacon": 3.2386862039566036,
+   "behavior.budget": 143.5383651733398,
+   "behavior.changepoint": 52.978647613525354,
+   "behavior.identity_model": 58.64505920410156,
+   "behavior.attribution": 140.0089981079101,
+   "behavior.entity_link": 25.969899940490716,
+   "behavior.class_monitor": 29.01068840026855,
+   "behavior.cross_system": 8.914517116546628,
+   "behavior.feedback": 2.711633014678955,
+   "behavior.calibration": 93.8762481689453,
+   "behavior.fusion": 258.34393310546875,
+   "behavior.risk": 12.597370958328245,
+   "behavior.incident": 5.616707015037536,
+   "behavior.governor": 25.21911211013794,
+   "behavior.explain": 37.83298149108878,
+   "behavior.portrait": 261.7492370605466,
+   "signature.rule_match": 12.831706380844114,
+   "signature.correlation": 3.68318953514099
+  },
+  "bytes_per_entity": 7990821.375,
+  "bytes_per_entity_8d": 7477513.736486486
+ },
+ "variant": "full",
+ "job_s": 1803.864089891
+}

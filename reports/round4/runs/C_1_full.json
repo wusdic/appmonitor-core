@@ -1,0 +1,769 @@
+{
+ "pack": "C",
+ "seed": 1,
+ "dt": 900.0,
+ "scenario_window": [
+  1743116400.0,
+  1743721200.0
+ ],
+ "disabled_engines": [],
+ "labels_added": 0,
+ "aborted": null,
+ "scenarios": [],
+ "legit": [
+  {
+   "scenario_id": "L2",
+   "base": "L2",
+   "pack": "C",
+   "seed": 1,
+   "label": "legit_change",
+   "entities": [
+    "oa-portal|10.30.2.21",
+    "oa-portal|10.30.2.22",
+    "oa-portal|10.30.2.24",
+    "oa-portal|10.30.2.25",
+    "oa-portal|10.30.2.26",
+    "oa-portal|10.30.2.27",
+    "oa-portal|10.30.2.28",
+    "oa-portal|10.30.2.29"
+   ],
+   "t_start": 1743404400.0,
+   "t_end": 1743721200.0,
+   "max_severity": "medium",
+   "allowed": "info",
+   "n_incidents": 9,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": "medium",
+   "max_risk": 72.80245971679688,
+   "sev_ok": false,
+   "risk_ok": false,
+   "member_ok": true,
+   "ok": false
+  },
+  {
+   "scenario_id": "L3",
+   "base": "L3",
+   "pack": "C",
+   "seed": 1,
+   "label": "legit_change",
+   "entities": [
+    "erp-prod|10.20.1.11",
+    "erp-prod|10.20.1.12",
+    "erp-prod|10.20.1.13",
+    "erp-prod|10.20.1.15",
+    "erp-prod|10.20.1.16",
+    "erp-prod|10.20.1.17",
+    "erp-prod|10.20.1.18",
+    "erp-prod|10.20.1.21"
+   ],
+   "t_start": 1743490800.0,
+   "t_end": 1743721200.0,
+   "max_severity": "high",
+   "allowed": "info",
+   "n_incidents": 10,
+   "n_class_incidents": 1,
+   "class_max_severity": "medium",
+   "member_max_severity": "high",
+   "max_risk": 96.56661987304688,
+   "sev_ok": false,
+   "risk_ok": false,
+   "member_ok": true,
+   "ok": false
+  },
+  {
+   "scenario_id": "L10",
+   "base": "L10",
+   "pack": "C",
+   "seed": 1,
+   "label": "system_change",
+   "entities": [
+    "api-gateway|10.40.4.51",
+    "api-gateway|10.40.4.52",
+    "api-gateway|10.40.4.54",
+    "api-gateway|10.40.4.55",
+    "api-gateway|10.40.4.56",
+    "api-gateway|10.40.4.57",
+    "api-gateway|10.40.4.53",
+    "api-gateway|10.40.9.9"
+   ],
+   "t_start": 1743242400.0,
+   "t_end": 1743336000.0,
+   "max_severity": "critical",
+   "allowed": "low",
+   "n_incidents": 8,
+   "n_class_incidents": 1,
+   "class_max_severity": "low",
+   "member_max_severity": "critical",
+   "max_risk": 99.93904876708984,
+   "sev_ok": false,
+   "risk_ok": false,
+   "member_ok": false,
+   "ok": false
+  },
+  {
+   "scenario_id": "L13",
+   "base": "L13",
+   "pack": "C",
+   "seed": 1,
+   "label": "legit_change",
+   "entities": [],
+   "t_start": 1743289200.0,
+   "t_end": 1743372000.0,
+   "max_severity": null,
+   "allowed": "info",
+   "n_incidents": 0,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": null,
+   "max_risk": null,
+   "sev_ok": true,
+   "risk_ok": true,
+   "member_ok": true,
+   "ok": true
+  },
+  {
+   "scenario_id": "L7",
+   "base": "L7",
+   "pack": "C",
+   "seed": 1,
+   "label": "legit_change",
+   "entities": [
+    "oa-portal|10.30.2.50"
+   ],
+   "t_start": 1743116400.0,
+   "t_end": 1743721200.0,
+   "max_severity": "low",
+   "allowed": "info",
+   "n_incidents": 1,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": "low",
+   "max_risk": 81.25466918945312,
+   "sev_ok": false,
+   "risk_ok": false,
+   "member_ok": true,
+   "ok": false
+  },
+  {
+   "scenario_id": "L11",
+   "base": "L11",
+   "pack": "C",
+   "seed": 1,
+   "label": "legit_change",
+   "entities": [],
+   "t_start": 1743116400.0,
+   "t_end": 1743721200.0,
+   "max_severity": null,
+   "allowed": "info",
+   "n_incidents": 0,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": null,
+   "max_risk": null,
+   "sev_ok": true,
+   "risk_ok": true,
+   "member_ok": true,
+   "ok": true
+  },
+  {
+   "scenario_id": "L15",
+   "base": "L15",
+   "pack": "C",
+   "seed": 1,
+   "label": "legit_change",
+   "entities": [
+    "erp-prod|10.20.9.9",
+    "oa-portal|10.30.9.9",
+    "erp-prod|10.20.9.5",
+    "api-gateway|10.40.9.6"
+   ],
+   "t_start": 1743116400.0,
+   "t_end": 1743721200.0,
+   "max_severity": "medium",
+   "allowed": "info",
+   "n_incidents": 4,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": "medium",
+   "max_risk": 55.05635452270508,
+   "sev_ok": false,
+   "risk_ok": false,
+   "member_ok": true,
+   "ok": false
+  }
+ ],
+ "far": {
+  "entity_days": 52.29166666666667,
+  "n_control": 8,
+  "dt": 900.0,
+  "n_low": 10,
+  "n_medium": 1,
+  "n_high": 0,
+  "n_reopened": 1,
+  "n_low_notified": 10,
+  "n_critical": 0,
+  "far_low": 0.19123505976095614,
+  "far_medium": 0.019123505976095617,
+  "groups": {
+   "steady": {
+    "n_low": 10,
+    "days": 49.0
+   },
+   "bursty": {
+    "n_low": 0,
+    "days": 3.2916666666666665
+   }
+  },
+  "false_alarms": [
+   {
+    "id": "inc0000004",
+    "entity": "oa-portal|10.30.4.40",
+    "opened": 1743148800.0,
+    "severity": "low",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000008",
+    "entity": "oa-portal|10.30.4.41",
+    "opened": 1743189300.0,
+    "severity": "low",
+    "axes": [
+     "app_error",
+     "breadth",
+     "transport"
+    ]
+   },
+   {
+    "id": "inc0000009",
+    "entity": "erp-prod|10.20.4.33",
+    "opened": 1743228900.0,
+    "severity": "low",
+    "axes": [
+     "categorical",
+     "identity"
+    ]
+   },
+   {
+    "id": "inc0000021",
+    "entity": "erp-prod|10.20.4.33",
+    "opened": 1743412500.0,
+    "severity": "low",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000031",
+    "entity": "oa-portal|10.30.4.40",
+    "opened": 1743460200.0,
+    "severity": "low",
+    "axes": [
+     "sequence"
+    ]
+   },
+   {
+    "id": "inc0000038",
+    "entity": "erp-prod|10.20.4.32",
+    "opened": 1743501600.0,
+    "severity": "low",
+    "axes": [
+     "exfil"
+    ]
+   },
+   {
+    "id": "inc0000047",
+    "entity": "erp-prod|10.20.4.32",
+    "opened": 1743665400.0,
+    "severity": "low",
+    "axes": [
+     "identity"
+    ]
+   },
+   {
+    "id": "inc0000048",
+    "entity": "oa-portal|10.30.4.42",
+    "opened": 1743665400.0,
+    "severity": "medium",
+    "axes": [
+     "app_error",
+     "breadth",
+     "dns"
+    ]
+   },
+   {
+    "id": "inc0000053",
+    "entity": "erp-prod|10.20.4.30",
+    "opened": 1743706800.0,
+    "severity": "low",
+    "axes": [
+     "categorical"
+    ]
+   },
+   {
+    "id": "inc0000054",
+    "entity": "oa-portal|10.30.4.41",
+    "opened": 1743714000.0,
+    "severity": "low",
+    "axes": [
+     "app_error",
+     "breadth",
+     "transport"
+    ]
+   }
+  ]
+ },
+ "range": {
+  "range": {
+   "precision": 0.0,
+   "recall": null,
+   "f1": null
+  },
+  "point_adjusted": {
+   "precision": 0.0,
+   "recall": null,
+   "f1": null
+  },
+  "n_real": 0,
+  "n_pred": 81
+ },
+ "calibration": {
+  "ks": {
+   "marg_int": {
+    "D": 0.11625852739369424,
+    "n": 1188
+   },
+   "marg_shape": {
+    "D": 0.10581496714140831,
+    "n": 1188
+   },
+   "peer": {
+    "D": 0.04257384333947689,
+    "n": 1188
+   },
+   "t2": {
+    "D": 0.09258064657750753,
+    "n": 1188
+   },
+   "spe": {
+    "D": 0.04674890988603586,
+    "n": 1188
+   },
+   "offhours": {
+    "D": 0.02176106618585566,
+    "n": 5019
+   },
+   "silence": {
+    "D": 0.008955577705182183,
+    "n": 4704
+   },
+   "novelty": {
+    "D": 0.01434662150543442,
+    "n": 4749
+   },
+   "novelty_rate": {
+    "D": 0.04888453389323619,
+    "n": 4749
+   },
+   "jsd": {
+    "D": 0.06293749565775958,
+    "n": 4749
+   },
+   "client": {
+    "D": 0.0774437743304829,
+    "n": 4747
+   },
+   "seq": {
+    "D": 0.03209739140923035,
+    "n": 4749
+   },
+   "dwell": {
+    "D": 0.022536381598846855,
+    "n": 4747
+   },
+   "timing": {
+    "D": 0.037012833732742445,
+    "n": 4773
+   },
+   "beacon": {
+    "D": 0.017532434524022256,
+    "n": 4747
+   },
+   "budget_vol": {
+    "D": 0.0326308467505011,
+    "n": 5019
+   },
+   "budget_exfil": {
+    "D": 0.013136772466717739,
+    "n": 5019
+   },
+   "budget_breadth": {
+    "D": 0.013403746410595704,
+    "n": 5019
+   },
+   "cusum": {
+    "D": 0.0443761839409067,
+    "n": 1188
+   },
+   "mcusum": {
+    "D": 0.189097346480848,
+    "n": 1188
+   },
+   "bocpd": {
+    "D": 0.07542942358989907,
+    "n": 1188
+   },
+   "creep": {
+    "D": 0.025479451975838452,
+    "n": 1188
+   },
+   "identity": {
+    "D": 0.08535353734035683,
+    "n": 1188
+   },
+   "cross_system": {
+    "D": 0.03420134786804918,
+    "n": 1188
+   },
+   "marg_int_q": {
+    "D": 0.04301666593159881,
+    "n": 4747
+   },
+   "marg_shape_q": {
+    "D": 0.030000752936369834,
+    "n": 4747
+   },
+   "t2_q": {
+    "D": 0.04317306113012065,
+    "n": 4747
+   },
+   "spe_q": {
+    "D": 0.07458145027791474,
+    "n": 4747
+   }
+  },
+  "exceedance": {
+   "0.03": {
+    "n": 5019,
+    "k": 5,
+    "expected": 1.5684375
+   },
+   "0.003": {
+    "n": 5019,
+    "k": 1,
+    "expected": 0.15684375
+   }
+  },
+  "exceedance_tau": {
+   "h": {
+    "0.03": {
+     "n": 1254,
+     "k": 3,
+     "expected": 1.045
+    },
+    "0.003": {
+     "n": 1254,
+     "k": 1,
+     "expected": 0.1045
+    }
+   },
+   "q": {
+    "0.03": {
+     "n": 3765,
+     "k": 2,
+     "expected": 0.5229166666666667
+    },
+    "0.003": {
+     "n": 3765,
+     "k": 0,
+     "expected": 0.05229166666666666
+    }
+   }
+  },
+  "cc": 900,
+  "dt": 900.0,
+  "entity_days": 52.29166666666667,
+  "evidence_cusum_alarms": 2,
+  "single_tick_alarms": 5,
+  "acc_path_alarms": {
+   "rhythm": 0,
+   "temporal_categorical": 2,
+   "budget": 0,
+   "change": 0
+  },
+  "acat_ticks": 0,
+  "acat_incident_ticks": 0
+ },
+ "poisoning": {
+  "scenarios": [],
+  "accepts": [],
+  "long_drift": []
+ },
+ "identification": {
+  "n_individuated": 0,
+  "window_top1": null,
+  "window_top1_mean": null,
+  "tick_top1": null,
+  "eer_frac_ok": null,
+  "spearman": null,
+  "twins_ok": false,
+  "t9": [],
+  "t9b": [],
+  "l6": [],
+  "t19": []
+ },
+ "classes": {
+  "n": 37,
+  "ari": 0.7545152967194987,
+  "noise_frac": 0.05405405405405406,
+  "sub_purity": 0.972972972972973,
+  "refit_ari_min": 0.9553349875930521,
+  "refit_ari_median": 1.0,
+  "id_churn": 0,
+  "l8": []
+ },
+ "explanation": {
+  "hit3": [],
+  "cf_valid": [],
+  "natural_range": [
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "hit3_excluded": 0
+ },
+ "portrait": {
+  "jaccard": [
+   0.9166666666666666
+  ],
+  "template_recall": [
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0
+  ],
+  "coverage": 0.9782894736842105,
+  "n_coverage": 3040,
+  "coverage_grain": {
+   "h": 0.9722222222222222,
+   "q": 0.9766949152542372
+  },
+  "n_coverage_grain": {
+   "h": 720,
+   "q": 2832
+  },
+  "class_portraits": [
+   true,
+   true,
+   true,
+   true,
+   true
+  ]
+ },
+ "robustness": {
+  "exceptions": 0,
+  "exception_heads": [],
+  "stale": 0,
+  "stale_heads": [],
+  "pipeline_degraded": 0,
+  "aborted": null,
+  "ablated": false
+ },
+ "cpu_mem": {
+  "wall_s": 1385.8467050680001,
+  "n_ticks": 1416,
+  "n_entities": 37,
+  "pipeline_s": 1354.4103243649918,
+  "lib3_s": 1192.7382219369606,
+  "gen_s": 18.947574061002342,
+  "collect_s": 11.45348563900825,
+  "lib3_p95_ms": 1438.9881173001854,
+  "lib3_p95_ms_at35": 1361.2049758244998,
+  "layers_ms_mean": {
+   "raw": 18.452912110180094,
+   "derived": 83.33329300070722,
+   "behavior": 842.3292527803395,
+   "signature": 11.304171283182065
+  },
+  "engine_ms_mean": {
+   "raw.l2l3": 1.2595289750287761,
+   "raw.l4flow": 2.7175266665253934,
+   "raw.http": 2.5557200838785388,
+   "raw.tls": 1.509492183093634,
+   "raw.dns": 0.9833949238987966,
+   "raw.active_probe": 0.18523705867513762,
+   "raw.action_token": 6.854661782750975,
+   "raw.client_stack": 2.387350436068524,
+   "derived.aggregation": 40.728543079505535,
+   "derived.periodicity": 5.676958104816534,
+   "derived.trend": 24.01322470714817,
+   "derived.ratio": 3.0359586114432178,
+   "derived.entropy": 2.210427820514151,
+   "derived.graph": 1.09684324260317,
+   "derived.session": 6.571337481844897,
+   "behavior.feature_vector": 36.21886612870599,
+   "behavior.peer_group": 4.23477345867093,
+   "behavior.baseline": 32.06642060882628,
+   "behavior.likelihood": 50.672380460857674,
+   "behavior.common_mode": 7.092873165836442,
+   "behavior.multivariate": 91.78668920737876,
+   "behavior.rhythm": 25.895482510496667,
+   "behavior.novelty": 22.266080950613077,
+   "behavior.client_identity": 7.453311215854634,
+   "behavior.sequence": 131.75115900389892,
+   "behavior.timing": 29.310158213989883,
+   "behavior.beacon": 1.3525917370945721,
+   "behavior.budget": 69.22772362474667,
+   "behavior.changepoint": 15.722261382035365,
+   "behavior.identity_model": 17.042798482011847,
+   "behavior.attribution": 29.99933474838581,
+   "behavior.entity_link": 5.515775677345504,
+   "behavior.class_monitor": 13.305941993870515,
+   "behavior.cross_system": 3.4719788161038005,
+   "behavior.feedback": 0.24109756135471208,
+   "behavior.calibration": 48.88380977999692,
+   "behavior.fusion": 74.55877131190003,
+   "behavior.risk": 7.872621870983792,
+   "behavior.incident": 1.5788523136548656,
+   "behavior.governor": 11.885633314396703,
+   "behavior.explain": 6.780028026491814,
+   "behavior.portrait": 96.14183693450723,
+   "signature.rule_match": 9.019235880698188,
+   "signature.correlation": 2.2849353937653163
+  },
+  "engine_ms_p95": {
+   "raw.l2l3": 2.59528648853302,
+   "raw.l4flow": 5.000906705856323,
+   "raw.http": 4.819209456443787,
+   "raw.tls": 2.7977319955825806,
+   "raw.dns": 1.6560777127742767,
+   "raw.active_probe": 0.2890915125608444,
+   "raw.action_token": 15.584592580795288,
+   "raw.client_stack": 4.90731954574585,
+   "derived.aggregation": 60.7999267578125,
+   "derived.periodicity": 8.623400211334229,
+   "derived.trend": 37.169708251953125,
+   "derived.ratio": 4.641171336174011,
+   "derived.entropy": 3.487790286540985,
+   "derived.graph": 1.657578021287918,
+   "derived.session": 9.41898775100708,
+   "behavior.feature_vector": 51.217360496520996,
+   "behavior.peer_group": 43.184797286987305,
+   "behavior.baseline": 70.51880264282227,
+   "behavior.likelihood": 125.76625061035156,
+   "behavior.common_mode": 13.47653865814209,
+   "behavior.multivariate": 273.76214599609375,
+   "behavior.rhythm": 43.839534759521484,
+   "behavior.novelty": 34.08376884460449,
+   "behavior.client_identity": 11.297478914260864,
+   "behavior.sequence": 330.00528717041016,
+   "behavior.timing": 47.05242347717285,
+   "behavior.beacon": 1.9432779848575592,
+   "behavior.budget": 134.0391082763672,
+   "behavior.changepoint": 52.59237003326416,
+   "behavior.identity_model": 53.21552848815918,
+   "behavior.attribution": 133.02043533325195,
+   "behavior.entity_link": 25.391748905181885,
+   "behavior.class_monitor": 28.26322317123413,
+   "behavior.cross_system": 8.55189299583435,
+   "behavior.feedback": 0.9251017421483994,
+   "behavior.calibration": 91.4281063079834,
+   "behavior.fusion": 311.75123596191406,
+   "behavior.risk": 11.042380332946777,
+   "behavior.incident": 4.177011489868164,
+   "behavior.governor": 17.534039974212646,
+   "behavior.explain": 8.690295219421387,
+   "behavior.portrait": 268.7117385864258,
+   "signature.rule_match": 12.88565969467163,
+   "signature.correlation": 3.5738185048103333
+  },
+  "bytes_per_entity": 8027477.594594595,
+  "bytes_per_entity_8d": 8190310.922779923
+ },
+ "variant": "full",
+ "job_s": 1386.0379017579999
+}
