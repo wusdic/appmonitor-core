@@ -25,6 +25,11 @@ thresholds keep the meaning they had at the packs' 900-s cadence (canonical
 grain mode; tick mode keeps v2's per-tick reading as the golden reference). Distinct
 counts (distinct peers / ports / paths / qnames) are not additive and stay
 per tick (at a fine cadence they can only shrink, i.e. never create a match).
+Ratios and averages of additive counters (post / write / error ratios,
+upload dominance, bytes per request, ...) are read over the same grain, as
+the counter-weighted mean of the per-tick values (GRAIN_WEIGHTED, round 4),
+and entropies / concentrations / distinct counts of the raw count maps from
+the maps merged over the grain (GRAIN_MAPS, round 4).
 """
 from __future__ import annotations
 
@@ -46,6 +51,32 @@ ADDITIVE_COUNTERS = frozenset({
     "http.status_4xx", "http.status_5xx", "http.get_count", "http.write_count",
     "tls.handshakes", "dns.queries", "dns.txt_count", "dns.nxdomain",
 })
+
+
+# ratios / averages of additive counters: read as their value over the same
+# 15-min grain, i.e. the mean of the per-tick values weighted by the counter
+# they are taken over (round 4, evaluator; see RuleMatchEngine.per_grain_ratio)
+GRAIN_WEIGHTED: Dict[str, str] = {
+    "http.post_ratio": "http.requests", "http.get_ratio": "http.requests",
+    "http.write_ratio": "http.requests", "http.resp_bytes_avg": "http.requests",
+    "http.req_bytes_avg": "http.requests", "derived.http_error_rate": "http.requests",
+    "derived.http_5xx_rate": "http.requests", "derived.http_success_rate": "http.requests",
+    "derived.upload_dominance": "l4.bytes_down", "dns.nxdomain_ratio": "dns.queries",
+    "dns.txt_ratio": "dns.queries", "l4.flow_duration_ms_avg": "l4.flows",
+    "l4.rtt_ms_avg": "l4.flows", "tls.weak_version_ratio": "tls.handshakes",
+}
+
+
+# per-tick set / map statistics read over the grain from the merged raw count
+# maps (round 4, evaluator; RuleMatchEngine.per_grain_map)
+GRAIN_MAPS: Dict[str, Tuple[str, ...]] = {
+    "derived.path_entropy": ("http.top_paths",),
+    "derived.dest_concentration": ("tls.sni_set", "dns.qname_set"),
+    "http.distinct_paths": ("http.top_paths",),
+    "l4.distinct_peers": ("l4.peer_set",),
+    "l4.distinct_dports": ("l4.dport_set",),
+}
+_OTHER = "__other__"
 
 
 class RuleMatchEngine(Engine):
@@ -108,6 +139,120 @@ class RuleMatchEngine(Engine):
                 total *= GRAIN_S / covered
         return total
 
+    def _tail(self, store: Any, system: str, entity: str, name: str, n: int) -> Dict[float, float]:
+        rows = store.raw_tail(system, entity, name, n) or store.derived_tail(system, entity, name, n)
+        out: Dict[float, float] = {}
+        for m in rows or ():
+            v = m.value
+            if isinstance(v, (int, float)) and math.isfinite(float(v)):
+                out[float(m.ts)] = float(v)
+        return out
+
+    def per_grain_ratio(self, store: Any, system: str, entity: str, name: str, value: float,
+                        weight: str, now: float, dt: float) -> float:
+        """A ratio / average over the 900 s ending at now: the mean of the
+        per-tick values weighted by their counter `weight` (pro rata for the
+        tick straddling the window start), e.g. sum bytes_up / sum bytes_down
+        for upload dominance.
+
+        Why (round 4, evaluator): the counter clauses of a rule are read per
+        grain (module docstring) but its ratio clauses were read per tick,
+        so at 60 s one rule mixed a 15-min total with a 1-minute proportion:
+        auth_bruteforce (HIGH: requests > 30 per grain AND post ratio >= 0.5
+        AND error rate >= 0.4) matched a human's ordinary login minute, and
+        bulk_upload's upload dominance > 3 matched single upload minutes;
+        pack E seed 0: 11 of 16 control incidents were risk openings of
+        humans at risk 90-99 from auth_bruteforce / admin_then_bulk /
+        staging_then_exfil / bulk_upload, none of which their 900-s warm-up
+        matched. Unweighted (no counter at a tick): the tick's own value."""
+        if dt >= GRAIN_S:
+            return value
+        k = int(GRAIN_S // max(dt, 1.0)) + 2
+        vals = self._tail(store, system, entity, name, k)
+        wts = self._tail(store, system, entity, weight, k)
+        lo = now - GRAIN_S
+        num = den = 0.0
+        for ts, v in vals.items():
+            if not (lo - GRAIN_S < ts <= now):
+                continue
+            w = wts.get(ts)
+            if w is None or not w > 0.0:
+                continue
+            if ts < now:
+                d = self._tick_dt(ts, dt)
+                ov = ts - max(ts - d, lo)
+                if not (ov > 0.0 and d > 0.0):
+                    continue
+                w *= min(1.0, ov / d)
+            num += v * w
+            den += w
+        return num / den if den > 0.0 else value
+
+    def _merged(self, store: Any, system: str, entity: str, name: str, now: float,
+                dt: float) -> Dict[str, float]:
+        """The raw count map `name` summed over the 900 s ending at now (the
+        straddling tick pro rata)."""
+        lo = now - GRAIN_S
+        out: Dict[str, float] = {}
+        for m in store.raw_tail(system, entity, name, int(GRAIN_S // max(dt, 1.0)) + 2) or ():
+            ts = float(m.ts)
+            if not (lo - GRAIN_S < ts <= now) or not isinstance(m.value, dict):
+                continue
+            w = 1.0
+            if ts < now:
+                d = self._tick_dt(ts, dt)
+                ov = ts - max(ts - d, lo)
+                if not (ov > 0.0 and d > 0.0):
+                    continue
+                w = min(1.0, ov / d)
+            for k, v in m.value.items():
+                if isinstance(v, (int, float)) and v > 0 and math.isfinite(float(v)):
+                    out[str(k)] = out.get(str(k), 0.0) + w * float(v)
+        return out
+
+    def per_grain_map(self, store: Any, system: str, entity: str, name: str, value: float,
+                      now: float, dt: float) -> float:
+        """A set / map statistic over the 900 s ending at now, recomputed
+        from the merged raw count maps with the derived engines' own
+        definitions: path entropy = normalised entropy of the named paths
+        (derived/entropy), destination concentration = top named share of
+        the true total, TLS names first (derived/graph), distinct paths /
+        peers / ports = named entries of the merged map (a lower bound, as
+        the per-tick top-64 sets are).
+
+        Why (round 4, evaluator): read per tick, these describe one minute at
+        60 s - one or two destinations, a single path - so a machine's
+        ordinary polling matched api_client / health_check / system_
+        integration / c2_beacon (HIGH) at 60 s that its 900-s warm-up never
+        matched. B08 learnt the categories as drift of its 'cat' dimension
+        (pack E seed 0: JSD of 'cat' 0.11 - 0.35 live against 0.004 - 0.04
+        in the warm-up on four machine personas, every other dimension
+        ~0; 520 jsd accumulator onsets) and B26 carried c2_beacon HIGH on
+        the api clients. The per-tick value is kept when no map is found."""
+        if dt >= GRAIN_S:
+            return value
+        srcs = GRAIN_MAPS[name]
+        merged: Dict[str, float] = {}
+        for src in srcs:
+            merged = self._merged(store, system, entity, src, now, dt)
+            if merged:
+                break
+        if not merged:
+            return value
+        named = {k: v for k, v in merged.items() if k != _OTHER}
+        total = sum(merged.values())
+        if name == "derived.path_entropy":
+            vals = [v for v in named.values() if v > 0]
+            if len(vals) <= 1:
+                return 0.0
+            tot = sum(vals)
+            h = -sum((v / tot) * math.log2(v / tot) for v in vals)
+            return h / math.log2(len(vals))
+        if name == "derived.dest_concentration":
+            top = max(named.values(), default=0.0)
+            return top / total if total > 0 and top > 0 else value
+        return float(len(named)) if named else value
+
     def run(self, ctx: Context, observations=None) -> int:
         n = 0
         now, dt = float(ctx.now), float(ctx.window_s)
@@ -121,6 +266,8 @@ class RuleMatchEngine(Engine):
             # spec v2.1 canonical grain mode only: tick mode keeps v2's per-tick
             # reading (the golden reference, cadence.md M8)
             counters = [m for m in names if m in ADDITIVE_COUNTERS] if canon else []
+            ratios = [m for m in names if m in GRAIN_WEIGHTED] if canon else []
+            maps = [m for m in names if m in GRAIN_MAPS] if canon else []
             for entity in ctx.store.entities(system):
                 # fresh-only (written at this tick): a match answers "what is
                 # the entity doing right now". Without `now` the latest value
@@ -132,6 +279,16 @@ class RuleMatchEngine(Engine):
                 snap = ctx.store.snapshot(system, entity, now=ctx.now, names=names)
                 if not snap:
                     continue
+                for name in maps:
+                    v = snap.get(name)
+                    if isinstance(v, (int, float)):
+                        snap[name] = self.per_grain_map(ctx.store, system, entity, name,
+                                                        float(v), now, dt)
+                for name in ratios:                  # before the counters are rescaled
+                    v = snap.get(name)
+                    if isinstance(v, (int, float)):
+                        snap[name] = self.per_grain_ratio(ctx.store, system, entity, name,
+                                                          float(v), GRAIN_WEIGHTED[name], now, dt)
                 for name in counters:
                     v = snap.get(name)
                     if isinstance(v, (int, float)):

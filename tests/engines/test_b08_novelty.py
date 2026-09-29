@@ -18,6 +18,7 @@ import math
 from typing import Dict, Iterable, List, Optional
 
 import numpy as np
+import pytest
 
 from helpers import DT, T0, add_obs_tick, make_store, run_engine, set_trust
 
@@ -293,3 +294,83 @@ def test_e_external_upload_adoption_record():
     assert rec["flags"]["external"] is True and rec["flags"]["upload"] is True
     assert rec["adopted"] is True and set(rec["members"]) == set(adopters)
     assert len(events(st, "class:api", kinds=("class_adopted",))) == 1
+
+
+# ------------------------------------------------ round 4 (evaluator): small class
+def test_rare_access_in_a_class_of_eight():
+    """Pack A's ERP users are a class of 8 in which only the HR persona uses
+    /hr/salary/export (T7). The smoothed class IDF (1 + 1)/(8 + 1) = 22 %
+    never calls that value rare, so T7 produced only an entity-tier INFO
+    first_seen; the Jeffreys median of the peers' share (1 of 7) does."""
+    from app.engines.behavior.novelty import peer_rare
+    st = make_store()
+    eng = NoveltyEngine()
+    ips = [f"10.1.0.{k}" for k in range(8)]
+    put_class(st, {ip: "clerk" for ip in ips})
+    base = {tok("/orders"): 10.0, tok("/dashboard"): 6.0, tok("/orders/view/{num}"): 4.0}
+    for i in range(40):
+        now = T0 + i * DT
+        for ip in ips:
+            t = dict(base)
+            if ip == ips[0]:
+                t[tok("/hr/salary/export")] = 1.0
+            write_tick(st, ip, now, tokens=t)
+        run_engine(eng, st, now, training=True)
+    now = T0 + 40 * DT
+    cfg = {"sensitive_patterns": ["/hr/", "salary"]}
+    cm = V.get(st, S, "class:clerk")
+    assert cm["members"] == 8
+    assert V.idf(cm, "tmpl", f"GET {HOST} /hr/salary/export") < math.log(5.0) + 1.0
+    assert peer_rare(cm, "tmpl", f"GET {HOST} /hr/salary/export")
+    e = ips[3]
+    for ip in ips:
+        t = dict(base)
+        if ip in (ips[0], e):
+            t[tok("/hr/salary/export")] = 1.0
+        write_tick(st, ip, now, tokens=t)
+    run_engine(eng, st, now, config=cfg)
+    ra = [x for x in events(st, e, kinds=("rare_access",)) if x.ts == now]
+    assert len(ra) == 1 and ra[0].severity.value == "medium"
+    assert "privilege" in ra[0].axes
+    assert not [x for x in events(st, ips[0], kinds=("rare_access",)) if x.ts == now]
+
+
+def test_peer_rare_is_the_jeffreys_median_of_the_peer_share():
+    from app.engines.behavior.novelty import peer_rare
+
+    def cls(n, df):
+        return {"kind": "class", "n_ent": float(n), "dims": {"tmpl": {"v": [1.0, float(df)]}}}
+    assert peer_rare(cls(8, 1), "tmpl", "v")          # 1 of 7 peers
+    assert peer_rare(cls(4, 0), "tmpl", "v")          # nobody of 3
+    assert not peer_rare(cls(4, 1), "tmpl", "v")      # 1 of 3
+    assert not peer_rare(cls(9, 2), "tmpl", "v")      # 2 of 8
+    assert not peer_rare(cls(2, 0), "tmpl", "v")      # 1 peer: undecidable
+    assert not peer_rare(None, "tmpl", "v")
+
+
+def test_lib4_category_counts_its_grain_coverage_in_canonical_mode():
+    """Round 4 (evaluator): a lib-4 match describes a 15-min grain; at 60 s
+    the same sustained activity matched on 15 ticks per grain and weighed
+    15x its 900-s count in the 'cat' dimension (pack E: JSD drift on the
+    machine personas). The category now counts dt / 900 per match."""
+    from app.models.schema import Severity, SignatureMatch
+    cfg = {"grain_mode": "canonical", "strict": True}
+    masses = {}
+    for dt in (60.0, 900.0):
+        st = make_store()
+        eng = NoveltyEngine()
+        e = "10.0.0.9"
+        t = T0 - (T0 % 3600.0)
+        for i in range(int(3600 // dt)):
+            t += dt
+            write_tick(st, e, t, tokens={tok("/api/v1/sync", "POST"): 20.0 * dt / 900.0})
+            st.add_match(SignatureMatch(system=S, entity=e, ts=t - 1.0, signature_id="health",
+                                        label="h", category="health", confidence=1.0,
+                                        matched_terms=[], severity=Severity.INFO, evidence={}))
+            run_engine(eng, st, t, dt=dt, config=cfg, training=True)
+        run = V.get(st, S, e)["run"]
+        win = run["win"][1]                       # the 24-h window (slow decay)
+        f = 2.0 ** (-(t - win["t0"]) / 86400.0)
+        masses[dt] = win["tot"]["cat"] * f
+    # one hour of a sustained category: ~4 grain-units at both cadences
+    assert masses[60.0] == pytest.approx(masses[900.0], rel=0.1)

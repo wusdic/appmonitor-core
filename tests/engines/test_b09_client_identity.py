@@ -235,3 +235,49 @@ def _token(stack: tuple) -> str:
     from app.engines.behavior.lib.stack import stack_token
     ja3, ua, ttl, win = stack
     return stack_token(ja3, ua, ttl, win)
+
+
+# ============================================ round 4 (evaluator): cadence
+def _surprise_after_brief_second_client(dt: float) -> float:
+    """A mature Chrome user runs a python script for 5 minutes (interleaved
+    with Chrome); canonical grain mode at tick length dt. Returns the
+    largest surprise S (bits per request of the recent client mix) seen."""
+    cfg = {"grain_mode": "canonical"}
+    store, eng = make_store(), ClientIdentityEngine()
+    feed = Feed(store)
+    peers = {f"10.0.0.{i}": CHROME126 for i in range(2, 6)}
+    ents = {E: CHROME126, **peers}
+    now = T0
+    for i in range(100):                                  # warm-up at 900 s
+        now = T0 + i * DT
+        feed.tick(now, {e: [(st, times(now, DT, offset=(j % 7) * 3.0))]
+                        for j, (e, st) in enumerate(sorted(ents.items()))}, dt=DT)
+        run_engine(eng, store, now, training=True, dt=DT, config=cfg)
+    t = now
+    burst = (t + 1200.0, t + 1500.0)                      # 5 min, 20 min into the live hour
+    s_max = 0.0
+    while t < now + 3600.0:
+        t += dt
+        traffic = {e: [(st, times(t, dt, offset=(j % 7) * 3.0))]
+                   for j, (e, st) in enumerate(sorted(ents.items()))}
+        py = [x for x in times(t, dt, step=20.0) if burst[0] < x <= burst[1]]
+        if py:
+            traffic[E] = traffic[E] + [(PYTHON, py)]
+        feed.tick(t, traffic, dt=dt)
+        run_engine(eng, store, t, dt=dt, config=cfg)
+        sv = (MC.recent(MC.get(store, S, E)) or {}).get("S")
+        if sv is not None and sv == sv:
+            s_max = max(s_max, float(sv))
+    return s_max
+
+
+def test_share_window_is_wall_clock_in_canonical_mode():
+    """Ten 60-s ticks are ten minutes: a 5-minute second client held most of
+    the requests there (S at its 20-bit cap), and a stackless 'none' client
+    of a human was reported as client_impersonation (HIGH) at 60 s only
+    (pack E seeds 0 / 1: oa-portal 10.30.2.29, risk 0.80). The window is now
+    10 x max(dt, 900 s) of wall clock, as at 900 s."""
+    s900 = _surprise_after_brief_second_client(DT)
+    s60 = _surprise_after_brief_second_client(60.0)
+    assert s60 < 1.5 * s900 + 1.0, (s60, s900)
+    assert s60 < 10.0

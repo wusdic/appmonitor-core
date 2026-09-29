@@ -827,6 +827,7 @@ def descriptors(model: Any, e: str) -> Dict[str, Any]:
         return {}
     return {
         "recall1": st.get("recall1"), "recallK": st.get("recallK"),
+        "margin": st.get("margin"),
         "eer_hard": st.get("eer_hard"), "t99": st.get("t99"),
         "separability": st.get("separability"),
         "confusable_with": list(st.get("confusable_with") or []),

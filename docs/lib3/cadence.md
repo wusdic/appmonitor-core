@@ -1375,3 +1375,25 @@ Measured (final round-3 tree, integration.md §10.4): FAR(E @ 60 s) /
 FAR(A @ 900 s) = 3.10 (gate 3 band [0.5, 2]); single-tick exceedance at
 e_day ≤ 0.03 is 64× nominal at cc 900 and 2 818× at cc 60 (gate 7 band
 [0.5, 2]).
+
+### 17.2 Round 4 (evaluator, integration.md §12)
+
+- **lib-4 `signature.rule_match` (open item 3 closed):** in canonical mode at
+  Δt < 900 every clause reads the 15-min grain. Ratios and averages of
+  additive counters (`GRAIN_WEIGHTED`: post / get / write ratios, error / 5xx
+  / success rates, upload dominance, bytes per request, flow duration, RTT,
+  NXDOMAIN / TXT and weak-TLS ratios) are the counter-weighted means of the
+  per-tick values over the trailing 900 s (Σ bytes_up / Σ bytes_down for
+  upload dominance); path entropy, destination concentration and the distinct
+  path / peer / port counts (`GRAIN_MAPS`) are recomputed from the raw count
+  maps merged over the grain with the derived engines' definitions. Mixed
+  per-tick ratios and per-grain counters made `auth_bruteforce` (HIGH) match
+  a human's login minute and single-destination minutes match `c2_beacon` /
+  `health_check` / `api_client` on machine personas (pack E seed 0).
+- **B08:** a lib-4 category counts dt / 900 per match (a match describes a
+  grain); the category dimension drove every live JSD alarm at 60 s.
+- Together (pack E seed 0, same seed, before → after): the temporal_categorical
+  accumulator path 33.6 → 0 per control entity-day, control FAR ≥ LOW
+  0.571 → 0.321, ≥ MEDIUM 0.214 → 0.071.
+- Item 5 (memory): count-and-age retention of the per-tick dict series (B21
+  agent, `core/store.py`); the measured projection is in integration.md §12.

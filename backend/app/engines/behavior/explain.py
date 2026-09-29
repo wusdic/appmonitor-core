@@ -182,8 +182,10 @@ DISCRETE_KINDS = frozenset({
     "new_entity_matched", "new_entity_unmatched", "class_transition", "class_split",
     "class_merge", "peer_outlier", "system_shift", "coherent_shift", "class_shift",
     "class_adoption_risky", "schedule_shift", "beacon", "budget_exceeded", "baseline_creep",
+    "first_access_system",       # B21 cross_system (P2, round 4)
 })
 NOVELTY_KINDS = ("first_seen", "rare_access")
+XSYS_DIM = "xsys"               # B21 first_access_system token dimension (cross_system.XSYS_DIM)
 # round 4: the detector a discrete finding comes from (neutralising the
 # detector removes its findings of the decision tick as well)
 FINDING_DETECTORS: Dict[str, Tuple[str, ...]] = {
@@ -192,6 +194,7 @@ FINDING_DETECTORS: Dict[str, Tuple[str, ...]] = {
     "identity_mismatch": ("identity",), "unknown_identity": ("identity",),
     "beacon": ("beacon",), "budget_exceeded": ("budget_vol", "budget_exfil", "budget_breadth"),
     "baseline_creep": ("creep",), "schedule_shift": ("offhours",),
+    "first_access_system": ("cross_system",),
 }
 # the numeric feature that carries a discrete finding (round 4, opening
 # evidence): a decisive finding (>= MEDIUM, it opens an incident alone) ranks
@@ -1224,6 +1227,15 @@ class Counterfactual:
             if i is not None and math.isfinite(float(p[i])):
                 p[i] = max(float(p[i]), NEUTRAL_P)     # only ever raises p (monotone)
                 self.neutralised.add(d)
+        if nz.tokens and m_feedback.token_str(XSYS_DIM, self.s) in nz.tokens:
+            # B21 scores one (system, IP) pair: removing the new system of a
+            # first access ('token:xsys=<system>', its finding's token)
+            # removes the pair's novelty, i.e. cross_system reads its null
+            # median at this key (round 4, evaluator)
+            i = DETECTOR_INDEX["cross_system"]
+            if math.isfinite(float(p[i])):
+                p[i] = max(float(p[i]), NEUTRAL_P)
+                self.recomputed.add("cross_system")
 
     def _finding_removed(self, ev: Any, nz: _Neutral) -> bool:
         """A discrete finding does not hold when every new token it carries is
@@ -1420,7 +1432,7 @@ class Counterfactual:
                     p = self._p_row(t, nz, False)
                     q_h = self._q_canon(t, p, wm)[3]
                 if q_h == q_h:
-                    S = seq.evidence_cusum_step(S, q_h)
+                    S = seq.evidence_cusum_step(S, q_h, seq.EVIDENCE_CAP_MULT * hh)
             out["S_h"] = S
             if S >= hh:
                 paths.append("evidence_cusum")
@@ -1447,7 +1459,7 @@ class Counterfactual:
                     q_inst = (self._q_canon(t, p, wm)[1] if self.canon
                               else self._q(t, p, wm)[1])
                 if q_inst == q_inst:
-                    S = seq.evidence_cusum_step(S, q_inst)
+                    S = seq.evidence_cusum_step(S, q_inst, seq.EVIDENCE_CAP_MULT * h)
             out["S"] = S
             if S >= h:
                 paths.append("evidence_cusum")

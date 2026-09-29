@@ -201,6 +201,7 @@ DISCRETE_KINDS = frozenset({
     "new_entity_matched", "new_entity_unmatched", "class_transition", "class_split",
     "class_merge", "peer_outlier", "system_shift", "coherent_shift", "class_shift",
     "class_adoption_risky", "schedule_shift", "beacon", "budget_exceeded", "baseline_creep",
+    "first_access_system",       # B21 cross_system (P2, round 4)
 })
 _REGIME_CLOSE = {"returned": "returned", "accepted": "accepted"}
 _ACC_IDX = [(d, DETECTOR_INDEX[d]) for d in ACC_DETECTORS]

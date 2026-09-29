@@ -165,7 +165,11 @@ def test_b26_fewer_than_five_days_and_critical_never_habituate():
     rig = Rig()
     rig.nights(4, training=True)
     rig.tick()
-    assert rig.one(1) == pytest.approx(30.0, rel=1e-3)
+    # round 4 (evaluator): not habituated, but graded by the entity's own
+    # trusted match frequency (4 matched nights of 4: pi = 4.5 / 19)
+    g = HB.grade(HB.get(rig.store, S, E), "bulk_upload", 10 ** 6)
+    assert g == pytest.approx(math.log10(19 / 4.5) / math.log10(30.0), rel=1e-9)
+    assert rig.one(1) == pytest.approx(30.0 * g, rel=1e-3)
     assert verdicts(rig.store)[-1] == HB.LEARNING
     rig = Rig()
     rig.nights(8, training=True, sev=Severity.CRITICAL)
@@ -238,3 +242,66 @@ def test_b28_habitual_high_helper_reads_the_verdict():
     assert GV._habitual_high(store, S, E, m)
     m.severity = Severity.CRITICAL
     assert not GV._habitual_high(store, S, E, m)
+
+
+
+# ------------------------------------------- round 4 (evaluator): graded weight
+def test_grade_is_the_surprise_of_the_entitys_own_match_frequency():
+    """k trusted days matched out of n trusted active days: pi = (k + 1/2) /
+    (n + 15); factor log10(1/pi) / log10(30) capped at 1. A first match or
+    an entity without history weighs in full; a user uploading on 4 of 18
+    days weighs 0.58, on 10 of 18 days 0.34."""
+    def model(k, n):
+        return {"obs": list(range(n)), "sigs": {"r": {"days": {str(d): {} for d in range(k)}}}}
+    assert HB.grade({}, "r", 100) == pytest.approx(1.0)
+    assert HB.grade(model(0, 18), "r", 100) == pytest.approx(1.0)
+    assert HB.grade(model(4, 18), "r", 100) == pytest.approx(math.log10(33 / 4.5) / math.log10(30))
+    assert HB.grade(model(10, 18), "r", 100) == pytest.approx(math.log10(33 / 10.5) / math.log10(30))
+    # today's own match is not history
+    assert HB.grade(model(4, 18), "r", 3) == pytest.approx(math.log10(18 / 3.5) / math.log10(30))
+
+
+def test_graded_applies_to_learning_and_to_unscheduled_activities_only():
+    sched = {"sigs": {"r": {"days": {"1": {"h": [1]}, "2": {"h": [1]}, "3": {"h": [2]}}}}}
+    irreg = {"sigs": {"r": {"days": {"1": {"h": [9]}, "2": {"h": [14]}, "3": {"h": [17]}}}}}
+    # a user with a partial rhythm (14 h on two days) but most days elsewhere
+    part = {"sigs": {"r": {"days": {"1": {"h": [14]}, "2": {"h": [14, 9]}, "3": {"h": [11]},
+                                    "4": {"h": [17]}, "5": {"h": [20]}}}}}
+    assert HB.irregular(part["sigs"]["r"]["days"]) and not HB.irregular(sched["sigs"]["r"]["days"])
+    assert HB.graded(part, "r", HB.OUT, ["hour 10 outside the learnt schedule"])
+    why = ["hour 12 outside the learnt schedule"]
+    assert HB.graded(sched, "r", HB.LEARNING, [])
+    assert not HB.graded(sched, "r", HB.OUT, why)          # a backup at a new hour: full
+    assert HB.graded(irreg, "r", HB.OUT, why)               # no schedule to be off
+    assert not HB.graded(irreg, "r", HB.OUT, why + ["new peer 6.6.6.6"])
+    assert not HB.graded(irreg, "r", HB.IN, [])
+
+
+def test_b26_records_trusted_active_days_once_a_day():
+    st = {}
+    assert HB.note_day(st, 10) and not HB.note_day(st, 10) and HB.note_day(st, 11)
+    for d in range(12, 60):
+        HB.note_day(st, d)
+    assert min(st["obs"]) >= 59 - HB.FORGET_DAYS and 59 in st["obs"]
+
+
+def test_b26_counts_one_activity_once_per_stage():
+    """Round 4 (evaluator): an upload after a login matched bulk_upload and
+    the composites staging_then_exfil / admin_then_bulk at the same tick,
+    all 'exfiltration': B26 counted 3 x 30 (risk 78 from one upload). Now
+    the strongest match of the stage counts."""
+    rig = Rig()
+    rig.tick(training=True)
+    rig.tick()
+
+    def three(st, t):
+        put_match(st, t)
+        for sig in ("composite:staging_then_exfil", "composite:admin_then_bulk"):
+            st.add_match(SignatureMatch(system=S, entity=E, ts=t, signature_id=sig, label=sig,
+                                        category="exfil", confidence=1.0,
+                                        severity=Severity.HIGH, evidence={}))
+    rig.tick(three)
+    rig.tick()
+    st = rig.risk._states[rig.store][(S, E)]
+    tot = sum(v for k, v in st.L.items() if k.startswith("lib4:"))
+    assert tot == pytest.approx(30.0, rel=0.02)

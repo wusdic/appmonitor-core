@@ -157,7 +157,7 @@ EVENT_FAMILY: Dict[str, str] = {
     "class_split": "peer", "class_merge": "peer", "peer_outlier": "peer",
     "system_shift": "peer", "coherent_shift": "peer", "class_shift": "peer",
     "schedule_shift": "temporal", "beacon": "c2", "budget_exceeded": "exfil",
-    "baseline_creep": "change", "regime": "change",
+    "baseline_creep": "change", "regime": "change", "first_access_system": "xsys",
 }
 DISCRETE_KINDS: Tuple[str, ...] = tuple(sorted(set(EVENT_FAMILY) | set(NEW_TOKEN_KINDS)
                                                | {"incident"}))

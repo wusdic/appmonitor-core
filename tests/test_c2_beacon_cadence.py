@@ -136,3 +136,103 @@ def test_tick_mode_keeps_the_per_tick_reading():
     run_engine(eng, st, T_START + 60.0, dt=60.0)
     m = st.matches(S, E, limit=10)[0]
     assert m.evidence["http.requests ge 0.0"] == 2.0
+
+
+# ------------------------------------------ round 4 (evaluator): ratio clauses
+def _auth_engine() -> RuleMatchEngine:
+    sigs = SignatureStore()
+    sigs.signatures.append(Signature(
+        id="auth_bruteforce", label="bf", category="auth", severity="high",
+        all=[{"metric": "http.post_ratio", "op": "ge", "value": 0.5, "soft": 0.2},
+             {"metric": "http.requests", "op": "gt", "value": 30, "soft": 20},
+             {"metric": "derived.http_error_rate", "op": "ge", "value": 0.4, "soft": 0.2}]))
+    return RuleMatchEngine(sigs)
+
+
+def _human_quarter(dt: float, quarters: int, t0: float = T_START):
+    """A human's 15-min pattern: 60 GETs spread evenly (4 a minute) plus
+    one login minute with 3 POSTs of which 2 fail. Per quarter: 63
+    requests, post ratio 0.05, error rate 0.03 - never a brute force."""
+    out = []
+    n = int(900 // dt)
+    for q in range(quarters):
+        for i in range(n):
+            end = t0 + q * 900.0 + (i + 1) * dt
+            get = 60.0 / n
+            post, fail = (3.0, 2.0) if i == n // 2 else (0.0, 0.0)
+            if dt >= 900.0:
+                post, fail = 3.0, 2.0
+            req = get + post
+            out.append((end, {"http.requests": req, "http.post_ratio": post / req,
+                              "http.status_4xx": fail, "derived.http_error_rate": fail / req}))
+    return out
+
+
+@pytest.mark.parametrize("dt", [60.0, 900.0])
+def test_ratio_clauses_are_read_over_the_grain(dt):
+    st, eng = make_store(), _auth_engine()
+    for end, m in _human_quarter(dt, 4):
+        add_obs_tick(st, S, E, end, m)
+        run_engine(eng, st, end, dt=dt, config=CANON)
+    assert not st.matches(S, E, limit=10 ** 6)
+    # a real brute force (every minute half POSTs, most of them failing) still matches
+    st, eng = make_store(), _auth_engine()
+    t = T_START
+    for _ in range(int(1800 // dt)):
+        t += dt
+        req = 8.0 * dt / 60.0
+        add_obs_tick(st, S, E, t, {"http.requests": req, "http.post_ratio": 0.75,
+                                   "http.status_4xx": 0.6 * req, "derived.http_error_rate": 0.6})
+        run_engine(eng, st, t, dt=dt, config=CANON)
+    assert st.matches(S, E, limit=10 ** 6)
+
+
+def test_grain_ratio_weights_by_the_counter():
+    st, eng = make_store(), _auth_engine()
+    t = T_START
+    for i in range(15):
+        t += 60.0
+        up, down = (9e6, 1e6) if i == 7 else (1e4, 5e5)
+        add_obs_tick(st, S, E, t, {"l4.bytes_down": down, "derived.upload_dominance": up / down})
+        eng._log_tick(t, 60.0)
+    v = eng.per_grain_ratio(st, S, E, "derived.upload_dominance", 1e4 / 5e5, "l4.bytes_down",
+                            t, 60.0)
+    exp = (9e6 + 14 * 1e4) / (1e6 + 14 * 5e5)
+    assert v == pytest.approx(exp, rel=1e-9)
+
+
+def _low_entropy_engine() -> RuleMatchEngine:
+    sigs = SignatureStore()
+    sigs.signatures.append(Signature(
+        id="health_like", label="h", category="maintenance", severity="info",
+        all=[{"metric": "derived.path_entropy", "op": "le", "value": 0.2},
+             {"metric": "derived.dest_concentration", "op": "ge", "value": 0.9}]))
+    return RuleMatchEngine(sigs)
+
+
+@pytest.mark.parametrize("dt", [60.0, 900.0])
+def test_map_statistics_are_read_over_the_grain(dt):
+    """A client polling 4 paths on 4 hosts round-robin, one request a minute:
+    a 60-s tick sees one path / one host (entropy 0, concentration 1) and
+    matched 'maintenance'; over the 15-min grain entropy is 1 and the top
+    host holds 1/4 - as the 900-s warm-up sees it."""
+    from app.engines.derived.graph import concentration
+    from app.engines.derived.util import normalized_entropy
+    st, eng = make_store(), _low_entropy_engine()
+    t = T_START
+    paths = [f"/api/p{i}" for i in range(4)]
+    hosts = [f"h{i}.corp.local" for i in range(4)]
+    for i in range(int(3600 // dt)):
+        t += dt
+        n = int(dt // 60)
+        tp, sni = {}, {}
+        for j in range(n):
+            k = (i * n + j) % 4
+            tp[paths[k]] = tp.get(paths[k], 0) + 1
+            sni[hosts[k]] = sni.get(hosts[k], 0) + 1
+        add_obs_tick(st, S, E, t, {"http.top_paths": tp, "tls.sni_set": sni,
+                                   "derived.path_entropy": normalized_entropy(tp.values()),
+                                   "derived.dest_concentration": concentration(sni)})
+        run_engine(eng, st, t, dt=dt, config=CANON)
+    # (the entity's first minutes have no grain of history yet)
+    assert not [m for m in st.matches(S, E, limit=10 ** 6) if m.ts > T_START + 900.0]

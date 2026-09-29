@@ -282,3 +282,41 @@ def test_pickle_and_process_pool():
     assert _pool_job(0) is True
     with ProcessPoolExecutor(max_workers=2) as ex:
         assert list(ex.map(_pool_job, [0, 1])) == [True, True]
+
+
+def test_simulated_analyst_works_a_severity_queue_not_the_newest_incident():
+    """Round 4: the analyst draws from the queue with weight by severity
+    (not newest first), skips policy-suppressed incidents and reviews an
+    entity at most once a day. The old newest-first rule labelled the threat
+    that was updated last on every pick (all tp here)."""
+    from app.core.store import MetricStore
+    from app.models.schema import Severity
+    now = 1_750_000_000.0
+    truth = [{"system": "s", "entities": ["10.0.0.1"], "t_start": now - 7200,
+              "t_end": now + 7200, "label": "malicious"}]
+    counts = {"tp": 0, "fp": 0}
+    for seed in range(40):
+        st = MetricStore()
+        st.put_incident(Incident(id="tp1", system="s", entity="10.0.0.1", opened=now - 3600,
+                                 last_seen=now, severity=Severity.CRITICAL))
+        for j in range(8):
+            st.put_incident(Incident(id=f"fp{j}", system="s", entity=f"10.0.1.{j}",
+                                     opened=now - 20000 + j, last_seen=now - 600 - j,
+                                     severity=Severity.LOW))
+        st.put_incident(Incident(id="sup", system="s", entity="10.0.2.1", opened=now - 100,
+                                 last_seen=now, severity=Severity.HIGH, status="suppressed"))
+        an = SimulatedAnalyst(seed=seed, noise=0.0, per_day=96.0)
+        an(st, now, 900.0, truth)
+        (lb,) = st.labels()
+        assert lb.target_id != "sup"
+        counts[lb.verdict] += 1
+    # P(tp) = 8 / (8 + 8) = 0.5 per first pick; newest-first gave 40 / 40
+    assert 8 <= counts["tp"] <= 32 and counts["fp"] >= 8, counts
+    # an entity is reviewed once a day: its second incident waits
+    st = MetricStore()
+    for j in range(2):
+        st.put_incident(Incident(id=f"x{j}", system="s", entity="10.0.3.3", opened=now - j,
+                                 last_seen=now, severity=Severity.LOW))
+    an = SimulatedAnalyst(seed=0, noise=0.0, per_day=2 * 96.0)
+    assert an(st, now, 900.0, []) == 1
+    assert an(st, now + 86400.0, 900.0, []) == 1

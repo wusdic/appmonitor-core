@@ -585,3 +585,26 @@ def test_feedback_cut_counts_notified_control_incidents():
     fb.events = [ev("n1", "10.20.1.12", ts, "incident", incident_id="i1",
                     extra={"state": "open"})]
     assert M.score_run(fb)["far"]["n_low_notified"] == 2
+
+
+def test_spearman_uses_the_graded_cv_recall_and_the_twins():
+    """Round 4, gate 8: recall@1 saturates at 1.0 for individuated personas
+    (A / B) and left Spearman undefined; the graded CV recall (B15's median
+    held-out margin) over the individuated personas plus the twins defines it."""
+    tw = ["10.30.2.27", "10.30.2.28"]
+    ind = ("10.20.1.11", "10.20.1.12", "10.20.1.13", "10.20.1.15")
+    pers = personas(*ind)
+    pers.update({f"oa-portal|{e}": {"archetype": "interactive"} for e in tw})
+    prof = {key: {"separability": 1.0,
+                  "extra": {"identity": {"recall1": 1.0, "eer_hard": 0.0, "margin": 20.0 + i}}}
+            for i, key in enumerate(sorted(personas(*ind)))}
+    for j, e in enumerate(tw):
+        prof[f"oa-portal|{e}"] = {"separability": 0.4 + 0.1 * j, "extra": {"identity": {
+            "recall1": 0.8, "eer_hard": 0.3 - 0.05 * j, "margin": 1.0 + j}}}
+    idn = M.score_run(make_run(personas=pers, profiles=prof))["identification"]
+    assert idn["spearman"] is not None and idn["spearman"] > 0.8
+    # without margins (old B15 profiles) recall@1 is the fallback grade
+    for v in prof.values():
+        v["extra"]["identity"].pop("margin")
+    idn = M.score_run(make_run(personas=pers, profiles=prof))["identification"]
+    assert idn["spearman"] is not None and idn["spearman"] > 0.5

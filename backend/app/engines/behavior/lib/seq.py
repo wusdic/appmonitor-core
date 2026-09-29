@@ -267,9 +267,17 @@ def cusum_stationary_p(S: np.ndarray, k: float, n_charts: int = 1) -> np.ndarray
     return np.clip(np.exp(np.minimum(log_p, 0.0)), P_FLOOR, 1.0)
 
 
-def evidence_cusum_step(S: float, q_inst: float) -> float:
-    """B25: S' = max(0, S - ln q_inst - 3). NaN q -> S unchanged.
-    q is clipped to [1e-300, 1] before the log. A NaN S restarts at 0."""
+EVIDENCE_CAP_MULT = 2.0     # B25 evidence CUSUMs are bounded at 2 h (round 4)
+
+
+def evidence_cusum_step(S: float, q_inst: float, cap: float = math.inf) -> float:
+    """B25: S' = min(cap, max(0, S - ln q_inst - 3)). NaN q -> S unchanged.
+    q is clipped to [1e-300, 1] before the log. A NaN S restarts at 0.
+    cap (round 4, B25 passes EVIDENCE_CAP_MULT x h): the first passage of h,
+    hence every alarm onset under the null, is unchanged by any cap >= h;
+    it bounds what an excursion keeps after the evidence stops (pack B:
+    S = 415 / 2146 against h ~ 6 - 12 after T14 / T15 drained at the null
+    drift -2 per tick for days, re-emitting an evidence alarm every tick)."""
     S = float(S)
     if math.isnan(S):               # corrupt stored state: restart, keep this tick
         S = 0.0
@@ -277,7 +285,7 @@ def evidence_cusum_step(S: float, q_inst: float) -> float:
     if math.isnan(q):
         return S
     q = min(1.0, max(P_FLOOR, q))
-    return max(0.0, S - math.log(q) - EVIDENCE_DRIFT)
+    return min(cap, max(0.0, S - math.log(q) - EVIDENCE_DRIFT))
 
 
 def rhythm_p1(p0: float) -> float:

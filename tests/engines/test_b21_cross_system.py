@@ -390,3 +390,55 @@ def test_class_tier_is_the_role_in_the_home_system():
     ev = _events(st, ERP, user)
     assert len(ev) == 1 and ev[0].extra["tier"] in ("class", "org")
     assert ev[0].extra["class"] == f"{OA}|class:human"
+
+
+# ------------------------------------------------ round 4 integration (evaluator)
+def test_first_access_is_a_discrete_finding_downstream():
+    """first_access_system reaches B25 / B26 / B27 / B29 / B23 and the eval
+    harness: a discrete kind everywhere, tier-weighted in B26 like first_seen,
+    axis lateral, family xsys, and it carries its token 'xsys=<system>'."""
+    from types import SimpleNamespace
+    from app.engines.behavior import explain as EX
+    from app.engines.behavior import fusion as FU
+    from app.engines.behavior import incident as INC
+    from app.engines.behavior import risk as RK
+    from app.engines.behavior.lib import m_feedback as FB
+    from app.eval import metrics as MET
+    k = "first_access_system"
+    assert k in FU.DISCRETE_KINDS and k in INC.DISCRETE_KINDS and k in EX.DISCRETE_KINDS
+    assert k in FB.DISCRETE_KINDS and FB.EVENT_FAMILY[k] == "xsys"
+    assert k in MET.EVENT_KINDS and k in RK.EVENT_KINDS
+    assert DET.FAMILY_DEFAULT_AXES["xsys"] == ["lateral"]
+    assert RK.EVENT_AXES[k] == ["lateral"]
+    for tier, w in (("org", RK.FIRST_SEEN_W["system"]), ("class", RK.FIRST_SEEN_W["class"])):
+        ev = SimpleNamespace(kind=k, extra={"tier": tier}, axes=["lateral"])
+        assert RK.event_weight(ev) == w
+        assert RK.event_stages(ev) == {"lateral"}
+    st, fp = _erp_world(False)
+    eng = X.CrossSystemEngine()
+    now, known = _history(st, eng, 30, (9, 18), fp)
+    t = now + 10 * H
+    _tick(st, eng, t, {(ERP, IP), (OA, IP)}, training=False, known=known)
+    ev = _events(st, OA, IP)[0]
+    assert EX.finding_tokens(ev) == [f"xsys={OA}"]
+    assert EX.FINDING_DETECTORS[k] == ("cross_system",)
+
+
+def test_counterfactual_token_neutralises_the_pair_novelty():
+    """B29: the candidate 'token:xsys=<system>' removes the finding and
+    raises this key's cross_system p to its null median (never lowers it);
+    the token of another system does nothing."""
+    from types import SimpleNamespace
+    from app.engines.behavior import explain as EX
+    cf = EX.Counterfactual.__new__(EX.Counterfactual)
+    cf.neutralised, cf.recomputed, cf.s = set(), set(), OA
+    i = DET.DETECTOR_INDEX["cross_system"]
+    p = np.full(DET.N_DETECTORS, 0.9)
+    p[i] = 1e-6
+    cf._neutralise(p, EX._Neutral([f"token:xsys={ERP}"]))
+    assert p[i] == 1e-6
+    cf._neutralise(p, EX._Neutral([f"token:xsys={OA}"]))
+    assert p[i] == EX.NEUTRAL_P and "cross_system" in cf.recomputed
+    ev = SimpleNamespace(kind="first_access_system", extra={"dim": "xsys", "value": OA})
+    assert cf._finding_removed(ev, EX._Neutral([f"token:xsys={OA}"]))
+    assert cf._finding_removed(ev, EX._Neutral(["detector:cross_system"]))

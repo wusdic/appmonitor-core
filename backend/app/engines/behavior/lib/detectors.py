@@ -48,7 +48,7 @@ FAMILY_DEFAULT_AXES: Dict[str, List[str]] = {
     "identity": ["identity"],
     "change": ["change"],        # engines refine to the contributing feature groups
     "c2": ["c2"],
-    "xsys": ["discovery"],
+    "xsys": ["lateral"],          # contract K / lib/stages: xsys -> lateral (round 4)
 }
 
 # Null alarm budget per entity-day by decision path (architecture section 4).

@@ -73,6 +73,12 @@ SLACK_MIN = 1.5
 SLACK_SD = 2.0
 MAX_PEERS = 64
 VERDICT_KEEP_S = 2 * 86400.0
+# graded weight of a HIGH match that is not habituated (round 4, evaluator;
+# grade()): the prior of a rule's per-day match probability has mean PI_REF
+# (a once-a-month activity weighs in full) and PRIOR_DAYS pseudo-days
+PI_REF = 1.0 / 30.0
+PRIOR_DAYS = 0.5 / PI_REF                   # Beta(1/2, PRIOR_DAYS - 1/2): 15 pseudo-days
+SCHEDULE_WHY = "outside the learnt schedule"
 PEER_SET = "l4.peer_set"
 OTHER = "__other__"
 IN, OUT, LEARNING = "in", "out", "learning"
@@ -114,7 +120,7 @@ def judge(rec: Mapping[str, Any], day: int, hour: int, peak: Optional[float],
         return LEARNING, []
     why: List[str] = []
     if hour not in rhythm_hours(days):
-        why.append(f"hour {hour:02d} outside the learnt schedule")
+        why.append(f"hour {hour:02d} {SCHEDULE_WHY}")
     if peak is not None:
         peaks = [float(d.get("peak") or 0.0) for d in days.values()]
         mx = max(peaks, default=0.0)
@@ -135,6 +141,85 @@ def judge(rec: Mapping[str, Any], day: int, hour: int, peak: Optional[float],
         if new:
             why.append("new peer " + ",".join(new[:3]))
     return (OUT, why) if why else (IN, [])
+
+
+def note_day(model: Dict[str, Any], day: int) -> bool:
+    """Record a local day on which the key had TRUSTED activity (the
+    denominator of grade()); keeps FORGET_DAYS days. True when added."""
+    obs = model.setdefault("obs", [])
+    if day in obs:
+        return False
+    obs.append(int(day))
+    obs.sort()
+    del obs[:max(0, len(obs) - FORGET_DAYS - 1)]
+    model["obs"] = [d for d in obs if d >= day - FORGET_DAYS]
+    return True
+
+
+def grade(model: Mapping[str, Any], signature_id: Any, day: int) -> float:
+    """Weight factor in (0, 1] of a HIGH match that is not habituated
+    (verdict 'learning', or 'out' for the schedule alone), from how often
+    the entity itself matched the rule on its trusted days before `day`
+    (round 4, evaluator).
+
+    B26 turns every other evidence into EXCESS SURPRISE, log10(1 / e_day);
+    a lib-4 match counted its full severity weight whatever the entity's own
+    history, so a user who uploads a document batch on a third of her
+    trusted days (pack A seed 1: oa-portal 10.30.2.23, bulk_upload on 4 of
+    ~18 trusted days, at 11, 14 and 16 h) sat at risk 60-80 from lib-4 alone
+    and every null family hit opened a risk incident (control risk openings:
+    A1 10 of 21, E0 8-11 of 13-16, B0 21 of 57). The binary envelope of the
+    lead's HIGH habituation needs 5 days AND a schedule, which an irregular
+    human activity never has. Here: k trusted days matched out of n trusted
+    active days, per-day match probability pi = (k + 1/2) / (n + PRIOR_DAYS)
+    (Beta prior with mean PI_REF = 1/30 and 15 pseudo-days, so no history or
+    a first match gives pi = 1/30 and the full weight), and the factor is
+    the surprise of a match today relative to a once-a-month one,
+    log10(1 / pi) / log10(1 / PI_REF), capped at 1. A rule matched on 4 of
+    18 days weighs 0.58, on 10 of 18 0.34; an entity that never matched it
+    in 30 days weighs 1. Only the entity's own TRUSTED days count, so an
+    attacker cannot lower it by being noisy under quarantine, and volume or
+    peers outside the trusted envelope still count in full (B26)."""
+    rec = (model.get("sigs") or {}).get(str(signature_id)) or {}
+    k = sum(1 for d in (rec.get("days") or {}) if int(d) < day)
+    n = sum(1 for d in (model.get("obs") or ()) if int(d) < day)
+    n = max(n, k)
+    pi = (k + 0.5) / (n + PRIOR_DAYS)
+    return min(1.0, math.log10(1.0 / pi) / math.log10(1.0 / PI_REF)) if pi < 1.0 else 0.0
+
+
+def schedule_only(why: Iterable[str]) -> bool:
+    """True when every reason of an 'out' verdict is the schedule."""
+    w = list(why)
+    return bool(w) and all(SCHEDULE_WHY in x for x in w)
+
+
+def irregular(days: Mapping[str, Mapping[str, Any]]) -> bool:
+    """A rule's trusted history has no schedule to be off: at least half of
+    its matched days had a match outside the rhythm hours (hours matched on
+    HOUR_MIN_DAYS days, +- HOUR_TOL). A nightly backup (every day at 01 h)
+    is regular; a user uploading at 9, 14, 16, 11, 17 h is not."""
+    if not days:
+        return True
+    rh = rhythm_hours(days)
+    off = sum(1 for d in days.values() if any(int(h) not in rh for h in (d.get("h") or ())))
+    return off >= 0.5 * len(days)
+
+
+def graded(model: Mapping[str, Any], signature_id: Any, verdict: str,
+           why: Iterable[str]) -> bool:
+    """Does grade() apply to this verdict (round 4, evaluator)? 'learning'
+    always; 'out' only when the schedule is its sole reason AND the rule's
+    trusted history is irregular (irregular()): an activity without a
+    schedule cannot be off it. A scheduled activity (a nightly backup) at a
+    new hour keeps the full weight (lead decision), as does more volume
+    than trusted or a new peer."""
+    if verdict == LEARNING:
+        return True
+    if verdict != OUT or not schedule_only(why):
+        return False
+    rec = (model.get("sigs") or {}).get(str(signature_id)) or {}
+    return irregular(rec.get("days") or {})
 
 
 def learn(rec: Dict[str, Any], day: int, hour: int, peak: Optional[float],

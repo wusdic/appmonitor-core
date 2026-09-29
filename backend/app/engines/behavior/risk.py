@@ -156,17 +156,21 @@ EVENT_W: Dict[str, float] = {
     "possible_impersonation": 20.0, "new_entity_unmatched": 20.0, "beacon": 20.0,
     "budget_exceeded": 20.0, "class_adoption_risky": 20.0,
 }
-EVENT_KINDS: Tuple[str, ...] = tuple(sorted({"first_seen", *EVENT_W}))
+# B21 first_access_system (P2, round 4): tier-weighted like first_seen - an
+# org-tier first access (no IP of the home class reaches that system) weighs
+# as a system-tier new value, a class-tier one as a class-tier value
+TIERED_KINDS = ("first_seen", "first_access_system")
+EVENT_KINDS: Tuple[str, ...] = tuple(sorted({*TIERED_KINDS, *EVENT_W}))
 EVENT_DECAY: Dict[str, str] = {
     "first_seen": "novelty", "rare_access": "novelty", "class_adoption_risky": "novelty",
     "client_impersonation": "identity", "identity_mismatch": "identity",
     "possible_impersonation": "identity", "new_entity_unmatched": "identity",
-    "beacon": "c2", "budget_exceeded": "exfil",
+    "beacon": "c2", "budget_exceeded": "exfil", "first_access_system": "novelty",
 }
 EVENT_AXES: Dict[str, List[str]] = {
     "first_seen": ["categorical"], "rare_access": ["categorical"],
     "class_adoption_risky": ["categorical"], "budget_exceeded": ["exfil"],
-    "new_entity_unmatched": ["peer"],
+    "new_entity_unmatched": ["peer"], "first_access_system": ["lateral"],
 }
 _TIER_ALIASES = {"system": "system", "org": "system", "class": "class", "role": "class",
                  "static": "class", "pool": "class", "sub": "class", "entity": "entity",
@@ -252,7 +256,7 @@ def event_weight(ev: Any) -> float:
     """Base weight of a discrete finding (before repeat damping / suppression)."""
     kind = ev.kind
     extra = ev.extra or {}
-    if kind == "first_seen":
+    if kind in TIERED_KINDS:
         w = FIRST_SEEN_W[_event_tier(extra)]
     else:
         w = EVENT_W.get(kind, 0.0)
@@ -501,6 +505,9 @@ class RiskEngine(Engine):
         # (s, e, signature_id) -> [first_ts, n_ticks, last_ts] of lib-4 matches (habits)
         self._habits: "weakref.WeakKeyDictionary[Any, Dict[Tuple[str, str, str], List[float]]]" \
             = weakref.WeakKeyDictionary()
+        # (s, e) -> the last local day recorded as trusted-active (m_habit.note_day)
+        self._obs_days: "weakref.WeakKeyDictionary[Any, Dict[Tuple[str, str], int]]" = \
+            weakref.WeakKeyDictionary()
 
     # ------------------------------------------------------------------ run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
@@ -616,6 +623,8 @@ class RiskEngine(Engine):
             st.add_families(now, per_f, pf, episode=episode, volume_common=vol, mult=mult,
                             critical=crit, stages_of=stages_of)
         # (no p_family: silent / unscored key -> only decay; streaks are kept)
+        if pf:
+            self._note_day(ctx, store, s, e, now)
 
         # --- discrete findings, (prev, now]
         evs = store.events(s, e, since=win0, kinds=EVENT_KINDS, limit=1000)
@@ -630,7 +639,7 @@ class RiskEngine(Engine):
             m = SUPPRESSED_MULT if (suppressed or ev.status == "suppressed") else 1.0
             sev = _sev(ev.severity)
             decay = "critical" if sev == "critical" else EVENT_DECAY.get(ev.kind, "behaviour")
-            tier = f"@{_event_tier(ev.extra or {})}" if ev.kind == "first_seen" else ""
+            tier = f"@{_event_tier(ev.extra or {})}" if ev.kind in TIERED_KINDS else ""
             st.add_repeated(f"event:{ev.kind}{tier}", event_key(ev), w * m, decay, now, ev.ts,
                             event_stages(ev), family=m_feedback.EVENT_FAMILY.get(ev.kind),
                             detail=_event_detail(ev))
@@ -640,6 +649,7 @@ class RiskEngine(Engine):
         if habits is None:
             habits = self._habits[store] = {}
         hmodel: Optional[Dict[str, Any]] = None
+        best: Dict[Tuple[float, Any], Tuple[float, Any, str, Optional[str], str]] = {}
         for mt in reversed(store.matches(s, e, since=win0, limit=1000)):
             if mt.ts >= now:
                 continue
@@ -654,16 +664,35 @@ class RiskEngine(Engine):
                 if hmodel is None:
                     hmodel = self._habit_model(store, s, e)
                 trusted = not MG.is_quarantined(store, s, e, at=float(mt.ts))
-                v, why = HB.observe(hmodel, mt, trusted,
-                                    (ctx.config or {}).get("tz") or TB.DEFAULT_TZ,
+                tz = (ctx.config or {}).get("tz") or TB.DEFAULT_TZ
+                v, why = HB.observe(hmodel, mt, trusted, tz,
                                     HB.match_inputs(store, mt, ADDITIVE_COUNTERS))
                 if v == HB.IN:
                     w *= HIGH_HABIT_MULT
-                elif why:
-                    note = "; outside habit: " + "; ".join(why)
+                else:
+                    if HB.graded(hmodel, mt.signature_id, v, why):
+                        # round 4 (evaluator): graded by the entity's own
+                        # trusted match frequency (lib/m_habit.grade)
+                        g = HB.grade(hmodel, mt.signature_id,
+                                     HB.local_day_hour(float(mt.ts), tz)[0])
+                        w *= g
+                        note = f"; graded x{g:.2f}"
+                    if why:
+                        note += "; outside habit: " + "; ".join(why)
             if w <= 0.0:
                 continue
             stage = stage_for_category(mt.category)
+            # one activity, one piece of evidence (round 4, evaluator): the
+            # matches of a tick that share a kill-chain stage describe the
+            # same activity - an upload after a login matched bulk_upload,
+            # composite:staging_then_exfil and composite:admin_then_bulk
+            # (all 'exfiltration') and counted 3 x 30; only the strongest of
+            # the stage counts (rules without a stage count on their own)
+            gk = (float(mt.ts), stage) if stage else (float(mt.ts), f"sig|{mt.signature_id}")
+            cur = best.get(gk)
+            if cur is None or w > cur[0]:
+                best[gk] = (w, mt, sev, stage, note)
+        for w, mt, sev, stage, note in best.values():
             st.add_repeated(f"lib4:{mt.signature_id}", f"sig|{mt.signature_id}", w * mult,
                             match_decay(sev, stage), now, mt.ts, (stage,) if stage else (),
                             detail=f"{mt.label or mt.signature_id} ({sev}, "
@@ -672,6 +701,22 @@ class RiskEngine(Engine):
             store.put_model(s, e, HB.MODEL, hmodel, ts=now)
         st.prune(now)
         return st.score(now, pi, self._criticality(ctx.config, s, e))
+
+    def _note_day(self, ctx: Context, store, s: str, e: str, now: float) -> None:
+        """Record the local day of a trusted active tick of the key in
+        model.lib4_habit['obs'] (lib/m_habit.grade's denominator; round 4).
+        One model write per key and day; retried while quarantined."""
+        seen = self._obs_days.get(store)
+        if seen is None:
+            seen = self._obs_days[store] = {}
+        tz = (ctx.config or {}).get("tz") or TB.DEFAULT_TZ
+        day = HB.local_day_hour(now, tz)[0]
+        if seen.get((s, e)) == day or MG.is_quarantined(store, s, e, at=now):
+            return
+        m = self._habit_model(store, s, e)
+        if HB.note_day(m, day):
+            store.put_model(s, e, HB.MODEL, m, ts=now)
+        seen[(s, e)] = day
 
     @staticmethod
     def _habit_model(store, s: str, e: str) -> Dict[str, Any]:
@@ -808,7 +853,7 @@ def _family_axes(axes_by_det: Mapping[str, Any]) -> Dict[str, List[str]]:
 def _event_detail(ev: Any) -> str:
     x = ev.extra or {}
     parts = [ev.kind]
-    if ev.kind == "first_seen":
+    if ev.kind in TIERED_KINDS:
         parts.append(f"tier={_event_tier(x)}")
     tok = x.get("token")
     if tok is None and ("dim" in x or "value" in x):

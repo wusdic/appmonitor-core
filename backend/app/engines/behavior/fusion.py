@@ -285,6 +285,7 @@ DISCRETE_KINDS = frozenset({
     "new_entity_matched", "new_entity_unmatched", "class_transition", "class_split",
     "class_merge", "peer_outlier", "system_shift", "coherent_shift", "class_shift",
     "class_adoption_risky", "schedule_shift", "beacon", "budget_exceeded", "baseline_creep",
+    "first_access_system",       # B21 cross_system (P2, round 4)
 })
 
 # axes the common-mode flag may discount, and the class-level system-wide set
@@ -457,8 +458,16 @@ def evidence_update(S: float, q_inst: float, h: float) -> Tuple[float, bool, boo
     q = _f(q_inst)
     if not q == q:
         return (S if S == S else 0.0), False, False
-    S2 = seq.evidence_cusum_step(S, q)
+    S2 = seq.evidence_cusum_step(S, q, evidence_cap(h))
     return S2, True, S2 >= h
+
+
+def evidence_cap(h: float) -> float:
+    """Bound of an evidence CUSUM with threshold h (seq.EVIDENCE_CAP_MULT x h,
+    round 4): after the evidence stops the statistic is below h within
+    ~h / 2 ticks at the null drift -2, instead of S / 2 for an unbounded S;
+    the MEDIUM level (S >= 2 h) is still reached."""
+    return seq.EVIDENCE_CAP_MULT * h if h == h and h > 0 else math.inf
 
 
 def evidence_path(q: np.ndarray, h: float, S0: float = 0.0,
@@ -474,10 +483,19 @@ def evidence_path(q: np.ndarray, h: float, S0: float = 0.0,
     x[upd] = -np.log(qq) - seq.EVIDENCE_DRIFT
     out = np.empty(q.size)
     s_last = float(S0) if math.isfinite(S0) else 0.0
+    cap = evidence_cap(h)
     for a in range(0, q.size, chunk):
         X = np.cumsum(x[a:a + chunk])
         m = np.minimum(np.minimum.accumulate(X), -s_last)
         S = X - m
+        if math.isfinite(cap) and S.size and float(S.max()) > cap:
+            # the bounded recursion has no closed form: fall back to the loop
+            # (only chunks whose free path exceeds the cap, i.e. after an alarm)
+            s = s_last
+            xs = x[a:a + chunk]
+            for j in range(xs.size):
+                s = min(cap, max(0.0, s + xs[j]))
+                S[j] = s
         out[a:a + chunk] = S
         s_last = float(S[-1])
     prev = np.concatenate(([float(S0) if math.isfinite(S0) else 0.0], out[:-1]))

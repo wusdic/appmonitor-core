@@ -366,6 +366,16 @@ def label_stats(LL: np.ndarray, D2: np.ndarray, lab: np.ndarray, n_lab: int,
         pred = np.argmax(Lf, axis=1)
         rank = np.sum(Lf > Lf[:, c:c + 1], axis=1)
         st["recall1"] = float(np.mean(pred == c))
+        # graded CV recall (round 4, eval gate 8): the median held-out margin
+        # log L(own) - max log L(other) in nats per window; recall1 is the
+        # share of windows with margin > 0 and saturates at 1 for every
+        # individuated persona, which left Spearman(separability, recall)
+        # undefined on packs A and B
+        oth = Lf.copy()
+        oth[:, c] = -np.inf
+        mg = Lf[:, c] - np.max(oth, axis=1) if Lf.shape[1] > 1 else np.full(rows.size, np.inf)
+        mg = mg[np.isfinite(mg)]
+        st["margin"] = float(np.median(mg)) if mg.size else _NAN
         st["recallK"] = float(np.mean(rank < RECALL_K))
         st["confusion"] = {int(j): float(np.mean(pred == j)) for j in np.unique(pred) if j != c}
         st["t99"] = float(np.percentile(D2[rows, c], 99))
@@ -759,6 +769,7 @@ class IdentityModelEngine(Engine):
             cw_l = sorted(cw, key=lambda j: (-row.get(j, 0.0), -pe.get(j, 0.0), j))
             stats[e] = {
                 "recall1": _r(sc.get("recall1")), "recallK": _r(sc.get("recallK")),
+                "margin": _r(sc.get("margin")),
                 "K": RECALL_K, "eer_hard": _r(eh), "eer_pair": {j: _r(v) for j, v in pe.items()},
                 "t99": _r(sc.get("t99")),
                 "separability": _r(min(1.0, max(0.0, 1.0 - 2.0 * eh))) if math.isfinite(eh) else None,

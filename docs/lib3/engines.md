@@ -347,6 +347,8 @@ Runs when 16 ticks or 6 h have passed, whichever comes first. A light cold-start
 - The Q predictive is the Q native current anchor plus κ_T = 16 conjugate pseudo-rows of the H predictive transferred with v_f = 1 + ((m−1)/m)·ω_f (NB r/v, BB c through v, t scale √v and a location δ_f). ω_f and δ_f are learnt on paired hours and EB-shrunk entity → class → system → org (default ω = m). The Q reference is the transferred H reference (golden once it exists). A Q score is provisional while the native share π_nat < 0.5.
 - σ15 of the rate caps comes from the Q transfer of the bucket's H posterior, so the caps keep their architecture meaning. Accessors: `m_baseline.predictive_set(..., grain=g)`, `transfer_pred`, `pseudo_stats`, `omega_chain`.
 
+- Round 4 (evaluator, integration.md §12): the Q REFERENCE predictive (`m_baseline._reference_q`) has no predictive for `none` (set / map) features — distinct_templates and path_entropy were scored at Q against the HOUR's reference predictive (pack A seed 0 clean control rows: zr location +1.9 / +2.2 sd, p_ref < 1e-3 on 26–297× nominal, marg_shape_q pm 191×), so p_f = p_cur there — and a t feature's Q reference variance adds the entity's absolute within-hour term, σ²_H,ref + (v − 1)·σ²_H,cur (the §6.3 decomposition is additive; multiplying the reference's own variance by the current anchor's ratio mis-scaled it), with the Jensen shift from the same term. Tests: test_b03_grains.py.
+
 ## B04 — LikelihoodEngine [new]
 
 - **File:** `backend/app/engines/behavior/likelihood.py`
@@ -558,6 +560,8 @@ Feedback allowlists apply. Values inherited through a link (model.link) are not 
 (d) 6 of 8 members adopt /v2/orders (internal GET) in one day: class_adopted, and each entity's score is ≤ 10% of the undiscounted score.
 (e) 4 of 6 members adopt an external upload destination: the per-entity score is discounted, but the adoption record has external = upload = True.
 
+**Round 4 (evaluator, integration.md §12).** (1) rare_access: a sensitive / admin value that the tier rule does not call rare is rare among the PEERS when the Jeffreys posterior median of the peers' usage share, Beta(df + ½, n − df + ½) with n = members − 1, is ≤ 20 % (`novelty.peer_rare`): the smoothed IDF (df + 1)/(N + 1) ≤ 1/5 cannot call a value used by one peer rare in a class of fewer than 9 (pack A's ERP users are 8, one of them HR: T7's /hr/salary/export produced only an entity-tier INFO first_seen and was caught only while q_inst was anti-conservative). (2) Canonical mode: a lib-4 category ('cat' dimension) counts dt / 900 per match — a match describes a 15-min grain, and at 60 s a sustained activity matched on 15 ticks per grain (pack E: jsd p < 0.01 on 15 % of clean control ticks, 941 accumulator onsets on four machine personas). Tests: test_b08_novelty.py (small class, category weight).
+
 ## B09 — ClientIdentityEngine [new]
 
 - **File:** `backend/app/engines/behavior/client_identity.py`
@@ -592,6 +596,8 @@ Events:
 
 **Integration notes (as built, docs/lib3/integration.md).**
 - Concurrency C requires the two stacks to interleave; replacement is measured on the entity's active clock; p(ja3n | UA) is keyed 'family/major'; the per-token surprise is capped at 20 bits; counts are slot-equivalents (share · dt/900 · trust).
+
+**Round 4 (evaluator, integration.md §12).** Canonical mode: the recent-share window of the surprise S is 10 × max(dt, 900 s) of wall clock (2.5 h at every cadence; tick mode keeps the last 10 ticks). Ten 60-s ticks are ten minutes, in which a brief second client held most of the requests (S at its 20-bit cap): a human's stackless 'none' client was reported as client_impersonation (HIGH) at 60 s only (pack E seeds 0 / 1). Test: test_b09_client_identity.py.
 
 ## B10 — SequenceEngine [upgrade]
 
@@ -783,6 +789,7 @@ All four are accumulators.
 - The CUSUM / MCUSUM statistics restart at 0 on the first live tick after warm-up (they ran against a model that was being learnt from those very rows).
 
 - Round 4 (evaluator, integration.md §12): bocpd has a model p, pm = min(1, 1/BF) with BF = (cp/(1 − cp)) / (π/(1 − π)), π = 1 − (1 − 1/168)^4 the hazard prior of a run ≤ 3 h (a Bayes factor has expectation 1 under the no-change model, so 1/BF is a valid p by Markov's inequality), and score.bocpd = −log10 pm (monotone in cp: ranking and the cp ≥ 0.8 alarm unchanged). Without a pm B24 extrapolated −log10(1 − cp) from near-degenerate warm-up rings (cp = 0.54 → p 2e-21; pack D: 8 of 14 HIGH+ control incidents). The first 3 hourly steps after a (re)start (a new IP, an ACCEPT rebase) are unscored: every run is ≤ 3 h long, cp = 1 by construction (a new IP was issued p = 1e-38 and a CRITICAL alarm on its first H tick: pack A L6 / L8). Tests: test_b14_bocpd_pm.py.
+- Round 4 (evaluator, second pass, integration.md §12): (1) every chart is bounded, S ≤ 4h (Crosier ‖S‖ ≤ 4h) — the first passage of h, i.e. every null alarm, is unchanged, but an unbounded chart kept the evidence of a 24-h attack for days (k = 0.25 drains at −0.25 per hourly row); (2) a latched episode also ends by an end-of-shift test per alarmed chart, a reverse CUSUM R = max(0, R + (δ̂ − μ0)((δ̂ + μ0)/2 − y)) of "input back at its null mean μ0" against "input at the shift's estimated mean δ̂ = k + S/rows since the chart's last zero", y = S − S_old + k the chart's input along its direction, ending when every alarmed chart reached R ≥ ln 1000 (a chart at its cap counts as rising); the 2(t − τ̂) clean-time rule stays as the other way out. Simulated (δ = 2, 24 rows): latch released after 8 / 3 rows (bank / MCUSUM, median) instead of 50 / 23; a persisting shift is falsely released on ≤ 12 % of 300-row runs (then re-alarms). (3) bocpd: hourly inputs clipped at ±3 like ψ, and the alarm level is the Ville bound of its own budget, bocpd_pm(cp) ≤ budget / 24 ⇔ cp ≥ 0.9915 (heavy-tailed t3 inputs: 0.23 alarms/day at cp 0.8, ≤ 0.01 now; pack A seed 0: bocpd opened 5 of 23 control incidents). Tests: test_b14_latch_end.py.
 - Canonical grain mode, end of warm-up (eval round 3, integration.md §10.3): the charts restart on the first live tick whatever its type. The restart used to run on the first live H decision tick only, and `_hold_latches` re-emitted a warm-up latch as a live accumulator alarm on the live ticks before it. Test: test_b14_changepoint.py::test_canonical_first_live_tick_between_h_ticks_restarts_the_charts.
 
 **Canonical grain mode (cadence.md §7.2, §17).** The charts step on H decision rows only (decimated, non-overlapping sampling) and their ARLs are counted in hours, so the thresholds do not depend on Δt: cusum h = 16.60 (k = 0.25, ARL 2400 d) and mcusum h = 22.72 (d = 12, ARL 100 d) at every cadence. φ is learnt on H lag-1 pairs; BOCPD takes the hourly zr intensity mean and `wh` directly; creep uses daily means of H rows. Between H ticks B14 re-emits a latched cusum / mcusum / bocpd / creep alarm on every Q / T tick until the next H tick decides (otherwise B25, B27 and the eval saw an on-off train: 71 spurious "change"-path onsets on pack A). The CUSUM state ring keeps 96 H states for B29's replay.
@@ -981,7 +988,8 @@ Members are those with membership probability ≥ 0.5.
 
 - **File:** `backend/app/engines/behavior/mixture.py`
 - **Layer / order / interval:** behavior / 19 / 32
-- **Status:** not built (P2). The module does not exist and the engine is not registered; its detector keeps its slot in `lib/detectors.py` (`P2_DETECTORS`) and is never scored (B25 treats it as not scored, not as degraded). Enable only after the ablation gate (eval.md gate 13); integration.md §10.6 lists the evidence so far.
+- **Status:** built (round 4), registered after B18 (`build.py`; `build_registry(p2=False)` leaves it out); ablation gate 13 in integration.md §12.
+- **As built (round 4).** Unit of observation: one (system, IP) pair per epoch-aligned H window (tick mode: per tick), interval 1 (the per-window rule gives one score per pair-hour). Class tier = the role or static class in the IP's HOME system (fallback: the home system's IPs), not an org-wide role (pack D: a role pooled over systems said "the class uses erp-prod half of the time"). p = the upper p-value of the system under the IP's predictive (entity → class → org tiers), combined with the 24-h spread NB by Bonferroni; score = −log10 p on a 0.25-decade grid (pm unrounded). Learning through lib/gating with B21's own clock `behavior.xsys`. The event carries the token `xsys=<system>` (extra dim / value): B23 policies and B29's counterfactual candidate `token:xsys=<system>` (neutralises the pair's cross_system p). first_access_system is a discrete kind in B25 / B26 / B27 / B29 / B23 and the eval harness; B26 weighs it by tier like first_seen (org → system 15, class 8), axis lateral; `FAMILY_DEFAULT_AXES['xsys'] = ['lateral']`.
 
 **Purpose.** (Previously B18; P2.) A density model for entities whose residual behaviour stays multimodal after hour conditioning (burst/idle jobs), so that values between the modes score as unlikely.
 
@@ -1004,7 +1012,8 @@ Honours model.control. Runs every 32 ticks or 8 h.
 
 - **File:** `backend/app/engines/behavior/session_profile.py`
 - **Layer / order / interval:** behavior / 20 / 1
-- **Status:** not built (P2). The module does not exist and the engine is not registered; its detector keeps its slot in `lib/detectors.py` (`P2_DETECTORS`) and is never scored (B25 treats it as not scored, not as degraded). Enable only after the ablation gate (eval.md gate 13); integration.md §10.6 lists the evidence so far.
+- **Status:** built (round 4), registered after B18 (`build.py`; `build_registry(p2=False)` leaves it out); ablation gate 13 in integration.md §12.
+- **As built (round 4).** Unit of observation: one (system, IP) pair per epoch-aligned H window (tick mode: per tick), interval 1 (the per-window rule gives one score per pair-hour). Class tier = the role or static class in the IP's HOME system (fallback: the home system's IPs), not an org-wide role (pack D: a role pooled over systems said "the class uses erp-prod half of the time"). p = the upper p-value of the system under the IP's predictive (entity → class → org tiers), combined with the 24-h spread NB by Bonferroni; score = −log10 p on a 0.25-decade grid (pm unrounded). Learning through lib/gating with B21's own clock `behavior.xsys`. The event carries the token `xsys=<system>` (extra dim / value): B23 policies and B29's counterfactual candidate `token:xsys=<system>` (neutralises the pair's cross_system p). first_access_system is a discrete kind in B25 / B26 / B27 / B29 / B23 and the eval harness; B26 weighs it by tier like first_seen (org → system 15, class 8), axis lateral; `FAMILY_DEFAULT_AXES['xsys'] = ['lateral']`.
 
 **Purpose.** (Previously B19; P2.) A session-level shape profile, to catch scripted scraping, marathon sessions, and atypical depth or write mix.
 
@@ -1030,7 +1039,8 @@ score.session = −log10 p of the robust d². Instantaneous, axis sequence.
 
 - **File:** `backend/app/engines/behavior/cross_system.py`
 - **Layer / order / interval:** behavior / 21 / 4
-- **Status:** not built (P2). The module does not exist and the engine is not registered; its detector keeps its slot in `lib/detectors.py` (`P2_DETECTORS`) and is never scored (B25 treats it as not scored, not as degraded). Enable only after the ablation gate (eval.md gate 13); integration.md §10.6 lists the evidence so far.
+- **Status:** built (round 4), registered after B18 (`build.py`; `build_registry(p2=False)` leaves it out); ablation gate 13 in integration.md §12.
+- **As built (round 4).** Unit of observation: one (system, IP) pair per epoch-aligned H window (tick mode: per tick), interval 1 (the per-window rule gives one score per pair-hour). Class tier = the role or static class in the IP's HOME system (fallback: the home system's IPs), not an org-wide role (pack D: a role pooled over systems said "the class uses erp-prod half of the time"). p = the upper p-value of the system under the IP's predictive (entity → class → org tiers), combined with the 24-h spread NB by Bonferroni; score = −log10 p on a 0.25-decade grid (pm unrounded). Learning through lib/gating with B21's own clock `behavior.xsys`. The event carries the token `xsys=<system>` (extra dim / value): B23 policies and B29's counterfactual candidate `token:xsys=<system>` (neutralises the pair's cross_system p). first_access_system is a discrete kind in B25 / B26 / B27 / B29 / B23 and the eval harness; B26 weighs it by tier like first_seen (org → system 15, class 8), axis lateral; `FAMILY_DEFAULT_AXES['xsys'] = ['lateral']`.
 
 **Purpose.** (Previously B20; P2.) An IP-centric view across business systems: first access to a system, and lateral spread.
 
@@ -1040,7 +1050,7 @@ Keyed by IP across store.systems(), with decayed counts of (IP, system) pairs.
 - Novelty: three-tier Dirichlet (IP → static class or role → org) with Good–Turing maturity.
 - Lateral spread: distinct systems per 24 h under an NB predictive with a class prior.
 - Support for a new bipartite edge: Adamic–Adar from peers.
-score.cross_system = −log10 p. Instantaneous, axis discovery (stage lateral).
+score.cross_system = −log10 p. Instantaneous, axis lateral (stage lateral).
 Emit first_access_system when the tier ≥ class and p ≤ 0.005.
 
 **Reads.** feature.active across systems, model.class, ctx.config.ip_classes
@@ -1055,7 +1065,8 @@ Emit first_access_system when the tier ≥ class and p ≤ 0.005.
 
 - **File:** `backend/app/engines/behavior/action_embedding.py`
 - **Layer / order / interval:** behavior / 22 / 256
-- **Status:** not built (P2). The module does not exist and the engine is not registered; its detector keeps its slot in `lib/detectors.py` (`P2_DETECTORS`) and is never scored (B25 treats it as not scored, not as degraded). Enable only after the ablation gate (eval.md gate 13); integration.md §10.6 lists the evidence so far.
+- **Status:** built (round 4), registered after B18 (`build.py`; `build_registry(p2=False)` leaves it out); ablation gate 13 in integration.md §12.
+- **As built (round 4).** Unit of observation: one (system, IP) pair per epoch-aligned H window (tick mode: per tick), interval 1 (the per-window rule gives one score per pair-hour). Class tier = the role or static class in the IP's HOME system (fallback: the home system's IPs), not an org-wide role (pack D: a role pooled over systems said "the class uses erp-prod half of the time"). p = the upper p-value of the system under the IP's predictive (entity → class → org tiers), combined with the 24-h spread NB by Bonferroni; score = −log10 p on a 0.25-decade grid (pm unrounded). Learning through lib/gating with B21's own clock `behavior.xsys`. The event carries the token `xsys=<system>` (extra dim / value): B23 policies and B29's counterfactual candidate `token:xsys=<system>` (neutralises the pair's cross_system p). first_access_system is a discrete kind in B25 / B26 / B27 / B29 / B23 and the eval harness; B26 weighs it by tier like first_seen (org → system 15, class 8), axis lateral; `FAMILY_DEFAULT_AXES['xsys'] = ['lateral']`.
 
 **Purpose.** NEW (P2, optional learned modality). Learn dense semantic embeddings of templated actions and entities from co-occurrence, with no GPU. Enabled only if the ablation gate shows a gain for attribution, role clustering or semantic novelty.
 
@@ -1216,6 +1227,8 @@ Degraded inputs (NaN score) give NaN p, never 1.
 - Corroboration windows are wall-clock per stream (max(4Δt, 1 h) for H evidence, max(4Δt, 15 min) for Q); provisional Q evidence is weighted × 0.5, can raise at most MEDIUM and never counts toward HIGH / CRITICAL corroboration. The pending entry records (stratum, τ, Δt) for B29.
 - Measured (integration.md §10.5): replaying other β shares on the recorded per-tick e_day moves the null single-tick rate by ±15–25 % only; the realised evidence-CUSUM rate is ~25× its budget whatever the split.
 
+- Round 4 (evaluator, integration.md §12): both evidence CUSUMs are bounded at 2h (`seq.evidence_cusum_step(..., cap)`, `fusion.evidence_cap`; the audit's `evidence_path` and B29's replay use the same bound). Any cap ≥ h leaves every onset under the null unchanged and MEDIUM (S ≥ 2h) reachable; unbounded, pack B's T14 / T15 kept S = 415 / 2146 against h ≈ 6–12 and drained at −2 per tick for days. Tests: test_b14_latch_end.py.
+
 ## B26 — RiskEngine [new]
 
 - **File:** `backend/app/engines/behavior/risk.py`
@@ -1257,6 +1270,8 @@ Class risk = max(the class pseudo-entity's own risk from its own detectors, mean
 **Canonical grain mode.** Continuous evidence uses `excess_surprise(p, period_s)` with the family's stream period (cadence.md §9.3), so an hourly family earns the same per-day evidence at every cadence.
 
 **Round 4 (lead decision).** Recurring HIGH lib-4 matches habituate per (entity, rule) (`lib/m_habit.py`, written by B26 to `model.lib4_habit`, read by B27 / B28): after ≥ 5 distinct days of TRUSTED history (warm-up, or live and not quarantined), a match inside the learnt envelope — local hour within ±1 h of an hour matched on ≥ 2 days, peak per-grain volume and daily amount ≤ trusted max × exp(max(ln 1.5, 2·sd_log)), no peer outside the trusted set — weighs 0; outside it the match counts in full and never widens the envelope; a governor ACCEPT (model.control version bump) restarts the history; CRITICAL never habituates. Evidence: the sanctioned nightly backups (L15) sat at risk 80–100 (lib4:bulk_upload 41–66 % of it), CRITICAL in every run. Feedback multiplier π = clip(E[prec]/0.5, 0.2, **1**): labels may lower a family's weight, never raise every entity's evidence above the calibrated null (pack A seed 0: tp labels on the attacks an analyst reviews first raised mean control risk 30.9 → 36.3 and control risk reopenings 12 → 15; gate 12).
+
+**Round 4 (evaluator, second pass; integration.md §12).** A HIGH lib-4 match that is not habituated is weighted by the entity's own TRUSTED match frequency when the verdict is 'learning' (< 5 trusted days) or 'out' for the schedule alone on an irregular rule (at least half of its trusted matched days had a match outside the rhythm hours: a user uploading at 9, 14, 16 h has no schedule to be off; a nightly backup does): with k trusted days matched out of n trusted active days (`model.lib4_habit['obs']`, recorded once a day by B26), π = (k + ½)/(n + 15) — a Beta prior with mean 1/30 — and the weight is × min(1, log10(1/π)/log10 30), the match's excess surprise relative to a once-a-month activity, the unit B26 uses for every other evidence. A first match, or an entity without trusted history, weighs in full; 4 of 18 days → 0.58; 10 of 18 → 0.34. A scheduled activity at a new hour, more volume than trusted, or a new peer still counts in full (the lead's envelope rule). The lib-4 matches of one tick that share a kill-chain stage count once (the strongest): an upload after a login matched bulk_upload and the composites staging_then_exfil / admin_then_bulk, all 'exfiltration', and counted 3 × 30. Why: users with irregular recurring uploads (pack A seed 1: oa-portal 10.30.2.23, bulk_upload on 4 trusted days) sat at risk 60–95 from lib-4 alone (bulk_upload, admin_then_bulk, staging_then_exfil, c2_beacon on machines) and every ordinary null family hit then opened a risk incident: risk openings were 10 of 21 control incidents on A1, 21 of 57 on B0, 8–11 of 13–16 on E0. Tests: test_lib4_high_habit.py.
 
 ## B27 — IncidentEngine [new]
 

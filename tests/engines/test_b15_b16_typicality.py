@@ -234,3 +234,21 @@ def test_partial_window_after_a_long_gap_has_no_calibrated_p():
         got.append(_pm(w, T16.B))
     assert all(math.isnan(x) for x in got[:AT.K - 1]), got
     assert math.isfinite(got[-1])
+
+
+def test_label_stats_publish_a_graded_margin():
+    """Round 4 (eval gate 8): recall@1 is the share of held-out windows with
+    margin > 0; the median margin itself is graded and orders a well
+    separated label above a barely separated one."""
+    import numpy as np
+    from app.engines.behavior import identity_model as IM
+    rng = np.random.default_rng(0)
+    lab = np.repeat([0, 1, 2], 30)
+    LL = rng.normal(0.0, 1.0, (90, 3))
+    LL[lab == 0, 0] += 30.0            # far from everyone
+    LL[lab == 1, 1] += 5.0             # separable, but close
+    LL[lab == 2, 2] += 5.0
+    D2 = np.ones((90, 3))
+    st = IM.label_stats(LL, D2, lab, 3, [[1, 2], [0, 2], [0, 1]])
+    assert st[0]["recall1"] == st[1]["recall1"] == 1.0
+    assert st[0]["margin"] > 20.0 > 2.0 < st[1]["margin"] < 8.0

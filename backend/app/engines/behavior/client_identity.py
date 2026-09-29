@@ -71,6 +71,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import combine, emit
 from .lib import gating as G
+from .lib import grains as GR
 from .lib import m_class
 from .lib import m_client as MC
 from .lib.classkeys import SYSTEM_KEY, role_key
@@ -85,6 +86,7 @@ STACK_EVENTS = "client.stack_events"
 PAIRS = "client.os_ua_ttl_pairs"
 
 RECENT_TICKS = 10                  # share window for S
+RECENT_GRAIN_S = 900.0             # canonical: the window is 10 x max(dt, 900 s) (round 4)
 CONC_GAP_S = 300.0                 # concurrency: episodes within 5 min
 REPLACE_MIN_S = 1800.0             # replacement floor on the active clock
 COOC_P_MIN = 0.01                  # p(ja3n | UA) below this -> inconsistent
@@ -373,6 +375,7 @@ class ClientIdentityEngine(Engine):
 
     def __init__(self, **params: Any) -> None:
         super().__init__(**params)
+        self._canon = False
         self._rows_cur: Optional[_Rows] = None
         self._learner = G.GatedLearner(
             name=LEARNER, init=new_state, update=_update, fetch=self._fetch,
@@ -383,6 +386,7 @@ class ClientIdentityEngine(Engine):
         store = ctx.store
         now, dt = float(ctx.now), float(ctx.window_s)
         self._learner.d_min_s = float(ctx.config.get("D_min_s") or G.D_MIN_S)
+        self._canon = GR.canonical(ctx.config)
         r3_failed = store.engine_failed(R3_ENGINE, now)
         return sum(self._system(ctx, s, now, dt, r3_failed) for s in store.systems())
 
@@ -477,9 +481,20 @@ class ClientIdentityEngine(Engine):
         _snapshot(live, now)
         counts = tick.counts
 
-        # recent 10-tick request shares (the current cadence's last 10 ticks)
-        rec = [r for r in live["recent"] if now - RECENT_TICKS * dt + _TS_EPS < r[0] < now]
-        rec = rec[-(RECENT_TICKS - 1):] + [[now, dict(counts)]]
+        # recent request shares: the last 10 ticks (tick mode); canonical
+        # mode (round 4, evaluator): the last 10 x max(dt, 900 s) of wall
+        # clock, i.e. 2.5 h at 60 s as at 900 s. Ten 60-s ticks are ten
+        # minutes, in which a second browser used briefly held most of the
+        # requests: S and the risk sigmoid jumped and a human's ordinary
+        # second client was reported as client_impersonation (HIGH) at 60 s
+        # only (pack E seeds 0 / 1: oa-portal 10.30.2.29, pm 0.19).
+        if self._canon:
+            win = RECENT_TICKS * max(dt, RECENT_GRAIN_S)
+            rec = [r for r in live["recent"] if now - win + _TS_EPS < r[0] < now]
+        else:
+            rec = [r for r in live["recent"] if now - RECENT_TICKS * dt + _TS_EPS < r[0] < now]
+            rec = rec[-(RECENT_TICKS - 1):]
+        rec = rec + [[now, dict(counts)]]
         live["recent"] = rec
         agg: Dict[str, float] = {}
         for _, c in rec:

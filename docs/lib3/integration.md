@@ -17,7 +17,7 @@ a layer the engines run in registration order.
 |---|---|
 | raw | l2l3, l4flow, http, tls, dns, active_probe, action_token (R2), client_stack (R3) |
 | derived | aggregation, periodicity, trend (D0); ratio, entropy, graph (D1); session (D2) |
-| behavior | B01 feature_vector, B02 peer_group, B03 baseline, B04 likelihood, B05 common_mode, B06 multivariate, B07 rhythm, B08 novelty, B09 client_identity, B10 sequence, B11 timing, B12 beacon, B13 budget, B14 changepoint, B15 identity_model, B16 attribution, B17 entity_link, B18 class_monitor, B23 feedback, B24 calibration, B25 fusion, B26 risk, B27 incident, B28 governor, [B29 explain slot: `_explain_engines()`], B30 portrait |
+| behavior | B01 feature_vector, B02 peer_group, B03 baseline, B04 likelihood, B05 common_mode, B06 multivariate, B07 rhythm, B08 novelty, B09 client_identity, B10 sequence, B11 timing, B12 beacon, B13 budget, B14 changepoint, B15 identity_model, B16 attribution, B17 entity_link, B18 class_monitor, B21 cross_system (P2, round 4; `build_registry(p2=False)` leaves it out), B23 feedback, B24 calibration, B25 fusion, B26 risk, B27 incident, B28 governor, [B29 explain slot: `_explain_engines()`], B30 portrait |
 | signature | rule_match, correlation |
 
 Same-tick dependencies that this order satisfies (producer before consumer):
@@ -32,7 +32,7 @@ One-tick lags that the spec allows and the engines are written for:
 - Every learner reads B28's trust and quarantine of t−1. Learners commit row t−D.
 - B26, B27 and B28 read lib-4 matches with a one-tick lag, since signature runs last.
 
-P2 engines B19–B22 are not registered. They stay behind the ablation gate.
+P2 engines B19, B20 and B22 are not registered; B21 cross_system is (round 4, §12). They stay behind the ablation gate.
 
 Runtime (`Runtime`): `ctx.config` carries tz, the calendar (holidays and
 make-up workdays from the generator clock) and `strict`. Warm-up runs with
@@ -1051,3 +1051,61 @@ Docs sync note: `scripts/evaluate.py`'s docstring example
 unablated); the example and the `--ablate` help now use full names
 (`behavior.likelihood`). The round-3 ablation runs used full names, so their
 results are unaffected.
+
+## 12. Evaluation round 4 (evaluator)
+
+### 12.1 Runs and method
+
+- **b20c4da**: the fix agents' tree as committed by the lead (it already
+  contains the interrupted first evaluator's fixes: B24's p-score tail floor,
+  bocpd's model p, B02's canonical refit stride, the xsys stale-series rule,
+  the regenerated golden). Its runs A0, A1, B0, B1, D0, E0 were finished by
+  that evaluator's queue on an exact snapshot of the tree; they are the
+  "b20c4da" column below (re-scored with the round-4 metrics).
+- **round 4 final**: b20c4da + the fixes of §12.2. Every run strict,
+  canonical, `scripts/evaluate._job`-equivalent driver (score + pickled
+  RunResult for the chain diagnosis) on a snapshot of the final tree, two
+  processes at a time on 4 cores.
+- The engine chain of every control incident, missed / late threat and legit
+  scenario was read from the collected per-tick series and the incidents'
+  evidence; three instrumented runs recorded what the series do not carry
+  (B08's per-dimension JSD on pack E, lib-4 HIGH match histories on pack A
+  seed 1, B28's trust factors on pack A seed 0).
+
+### 12.2 Fixes (each with a regression test that fails without it)
+
+| # | Where | Symptom (evidence) | Root cause | Fix | Test |
+|---|---|---|---|---|---|
+| 1 | B21 integration (item v) | first_access_system invisible to B25 / B26 / B27 / B29 / B23; xsys default axis 'discovery'; T20's counterfactual held | the kind was in no DISCRETE_KINDS; no token | DISCRETE_KINDS of B25 / B27 / B29, B26 tier weight (org 15, class 8) / axis lateral / decay novelty, B23 family xsys, `FAMILY_DEFAULT_AXES['xsys'] = ['lateral']`, event token `xsys=<system>` and B29 candidate `token:xsys=<system>` (raises the key's cross_system p to its null median) | `test_b21_cross_system.py` (2) |
+| 2 | eval gate 8 (item vi) | Spearman(separability, CV recall) undefined on A / B | recall@1 is 1.0 for every individuated persona | graded CV recall: B15 publishes the median held-out margin log L(own) − max log L(other) (`margin`), over individuated personas + twins; recall@1 fallback | `test_metrics.py`, `test_b15_b16_typicality.py` |
+| 3 | eval gate 10 (item vi) | L6 / L8 rows counted as hit@3 misses | 'entity' marker | already excluded in b20c4da; now also reported apart | `test_metrics.py` |
+| 4 | eval gate 12 (item vi) | 13 of 20 labels tp on A0 | the simulated analyst took the NEWEST incident (a threat is updated every tick) | severity-weighted queue draw (LOW 1 … CRITICAL 8) over unlabelled, unsuppressed incidents active in 24 h, one label per entity per day (eval.md gate 12) | `test_runner.py` |
+| 5 | B14 (item iv) | cusum / mcusum latched 28–58 h after 24-h attacks (T9b, T12, T16) | unbounded S drains at −k per hourly row; the clean clock advanced only on rows where NO alarmed chart rose | S ≤ 4h (Crosier ‖S‖ ≤ 4h; the first passage of h, i.e. every null alarm, unchanged) and an end-of-shift test per alarmed chart (reverse CUSUM of "back at the null mean" against "at the shift's estimated mean", ln 1000); a capped chart counts as rising | `test_b14_latch_end.py` (5) |
+| 6 | B25 (item iv) | S = 415 / 2146 against h ≈ 6–12 after B/T14, T15 | unbounded evidence CUSUM | S ≤ 2h in B25, the audit's `evidence_path` and B29's replay (MEDIUM, S ≥ 2h, still reachable) | `test_b14_latch_end.py` (2) |
+| 7 | B03 / m_baseline (item iii) | Q reference zr variance 2–6, location +1.9 / +2.2 sd (path_entropy, distinct_templates); marg_shape_q pm 191× | `none` (set / map) features were scored at Q against the HOUR's reference predictive; the reference's variance was scaled by the current anchor's ratio | no Q reference for `none` features (p_f = p_cur); t features: Var = σ²_H,ref + (v − 1) σ²_H,cur and the Jensen shift from the same term | `test_b03_grains.py` (2) |
+| 8 | B08 (item viii) | T7 missed on A0 / A1 (caught at HEAD only via anti-conservative q_inst) | the smoothed class IDF cannot call a value used by one peer rare in a class < 9 members (A's ERP users are 8, one of them HR) | rare among peers = Jeffreys posterior median of the peers' share ≤ 20 % (`novelty.peer_rare`) → rare_access MEDIUM | `test_b08_novelty.py` (2) |
+| 9 | B14 bocpd | 5 of 23 control incidents on A0, ~12 of 57 on B0 | cp ≥ 0.8 was set on N(0, 1) inputs; heavy-tailed hourly inputs read as changepoints (t3: 0.23 alarms/day) | inputs clipped at ±3 (as ψ); alarm level = the Ville bound of bocpd's own budget, pm ≤ 0.005 / 24 ⇔ cp ≥ 0.9915 | `test_b14_latch_end.py` (2) |
+| 10 | lib-4 rule_match | auth_bruteforce (HIGH) on humans' login minutes at 60 s | ratio clauses read per tick next to per-grain counters | ratios / averages as counter-weighted means over the grain (`GRAIN_WEIGHTED`) | `test_c2_beacon_cadence.py` (3) |
+| 11 | lib-4 rule_match + B08 | E0: 941 jsd accumulator onsets on 4 machine personas; JSD of B08's 'cat' dimension 0.11–0.35 live vs 0.004–0.04 warm-up, all other dimensions ~0 | per-tick entropy / concentration / distinct counts at 60 s describe a minute; a category matched on every 60-s tick of a grain | map statistics from the raw maps merged over the grain (`GRAIN_MAPS`); B08 counts a category dt / 900 | `test_c2_beacon_cadence.py` (2), `test_b08_novelty.py` |
+| 12 | B26 | control humans at risk 60–95 from lib-4 alone; risk openings 10 / 21 (A1), 21 / 57 (B0), 8–11 of 13–16 (E0) | HIGH matches of an entity's own irregular recurring activity counted in full until 5 trusted days AND a schedule; one upload counted 3 × 30 (bulk_upload + two composites) | graded weight log10(1/π)/log10 30 with π the entity's trusted per-day match frequency (Beta prior, mean 1/30, 15 pseudo-days) for 'learning' matches and for 'out'-by-schedule matches of an irregular rule; the strongest match per (tick, kill-chain stage) | `test_lib4_high_habit.py` (4) |
+| 14 | B09 | pack E seeds 0 / 1: client_impersonation (HIGH) on a control human at 60 s (a stackless 'none' client, risk 0.80) | the surprise S takes its shares over the last 10 TICKS: ten minutes at 60 s | canonical mode: 10 × max(dt, 900 s) of wall clock | `test_b09_client_identity.py` |
+| 13 | tests | tick-mode golden | deliberate tick-mode changes (#5, #6, #9, #12) | regenerated (item vii): same 8 incidents, one MEDIUM → LOW; 108 of 291 alarm ticks change (evidence severity after the cap, bocpd) | `test_tick_mode_golden.py` |
+
+Item (i) — B24 against calibrated pm: b20c4da already holds the first
+evaluator's p-score tail floor (beyond u B24's p never decays faster than
+the detector's pm: a calibrated pm passes through, an uncalibrated score is
+still conformalised, and the go-live step is left to the live power
+correction). Measured on b20c4da A0, clean control ticks, × nominal at
+p < 1e-3: t2 3.4, spe 2.1, timing 4.0, budget_vol 1.2, identity 1.4 (round 3:
+identity 21, timing 19, spe 17). No further change.
+
+Item (ii) — detector learners' admission: measured on pack A seed 0 (clean
+live control ticks): trust 1 on 71 %, 0 because the key was quarantined on
+18 %, 0 by an accumulator ≥ h/2 or the regime on 7 %, reduced by the row's
+own evidence on 2.7 % (partial) and 0.8 % (zero). Period admission keeps
+the quarantine and would remove only the last 3.5 % — a truncation of the
+extreme upper ~1 % of fused q, which changes a Gaussian scale estimate by
+< 5 % — while admitting sub-alarm attack rows (and accumulators ≥ h/2) that
+the row trust now withholds. The self-selection that mattered is the null
+calibration rings', fixed for B24 / B25 in b20c4da; the detector learners
+keep row trust (a poisoning defence, not a calibration estimate).

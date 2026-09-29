@@ -809,11 +809,24 @@ def _row_keys(row: Dict[str, Any]) -> List[str]:
 # Simulated analyst (feedback gate 12)
 # --------------------------------------------------------------------------- #
 class SimulatedAnalyst:
-    """Labels `per_day` incidents per day (newest unlabelled first) with a
-    verdict derived from truth and flipped with probability `noise`; fp
-    verdicts use `fp_scope` (default 'pattern'), the others 'this'. This is
-    the eval harness playing the analyst; the label goes through the public
-    store API exactly as the UI would put it."""
+    """Labels `per_day` incidents per day with a verdict derived from truth
+    and flipped with probability `noise`; fp verdicts use `fp_scope` (default
+    'pattern'), the others 'this'. This is the eval harness playing the
+    analyst; the label goes through the public store API exactly as the UI
+    would put it.
+
+    The queue (round 4, evaluator): an analyst works the unlabelled incidents
+    active in the last 24 h that reached the queue (not 'suppressed' by a
+    policy), severity first without starving the rest: each pick draws one
+    with probability proportional to QUEUE_W of its severity (LOW 1, MEDIUM 2,
+    HIGH 4, CRITICAL 8), and an entity is reviewed at most once a day (its
+    other incidents wait). Before, the analyst took the NEWEST incident
+    (store order by last_seen): a threat under way is updated every tick, so
+    on pack A seed 0 13 of 20 labels were tp and only 2 - 5 fp, and gate 12
+    measured the feedback loop on almost no fp labels."""
+
+    QUEUE_W = {"info": 0.5, "low": 1.0, "medium": 2.0, "high": 4.0, "critical": 8.0}
+    ENTITY_GAP_S = 86400.0
 
     def __init__(self, seed: int = 0, noise: float = 0.05, per_day: float = 5.0,
                  fp_scope: str = "pattern") -> None:
@@ -823,7 +836,14 @@ class SimulatedAnalyst:
         self.per_day = float(per_day)
         self.credit = 0.0
         self.labelled: set = set()
+        self.reviewed: Dict[str, float] = {}      # 'system|entity' -> last label ts
         self.n = 0
+
+    def _pick(self, cands: Sequence[Incident]) -> Incident:
+        cands = sorted(cands, key=lambda i: (float(i.opened), str(i.id)))    # deterministic
+        w = np.array([self.QUEUE_W.get(str(getattr(i.severity, "value", i.severity)).lower(),
+                                       1.0) for i in cands], dtype=np.float64)
+        return cands[int(self.rng.choice(len(cands), p=w / w.sum()))]
 
     def _verdict(self, inc: Incident, truth: Sequence[Dict[str, Any]]) -> str:
         keys = {f"{inc.system}|{inc.entity}"} | {f"{inc.system}|{x}" for x in inc.entities}
@@ -839,10 +859,13 @@ class SimulatedAnalyst:
         added = 0
         while self.credit >= 1.0:
             cands = [i for i in store.incidents(since=now - 86400.0)
-                     if i.id not in self.labelled and not is_pseudo_entity(i.entity)]
+                     if i.id not in self.labelled and not is_pseudo_entity(i.entity)
+                     and i.status != "suppressed"
+                     and now - self.reviewed.get(f"{i.system}|{i.entity}", -math.inf)
+                     >= self.ENTITY_GAP_S]
             if not cands:
                 break
-            inc = cands[0]
+            inc = self._pick(cands)
             verdict = self._verdict(inc, truth)
             if self.rng.random() < self.noise:
                 verdict = "fp" if verdict != "fp" else "tp"
@@ -856,6 +879,7 @@ class SimulatedAnalyst:
                                   target_id=inc.id, verdict=verdict, scope=scope,
                                   analyst="sim", ts=now))
             self.labelled.add(inc.id)
+            self.reviewed[f"{inc.system}|{inc.entity}"] = now
             self.credit -= 1.0
             self.n += 1
             added += 1

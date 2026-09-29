@@ -27,7 +27,13 @@ Statistics (docs/lib3/engines.md B14):
     ring). The statistics
     reset after 2 (t_alarm - tau-hat) of clean time, a clean tick being one at
     which no alarmed chart increased; any alarmed chart reaching a new peak
-    restarts the clean clock, so a persisting shift never resets.
+    restarts the clean clock, so a persisting shift never resets. Round 4
+    (evaluator): or earlier, when the end-of-shift test (a reverse CUSUM of
+    'input back at its null mean' against 'input at the shift's estimated
+    mean', _latch_tick) crosses END_H on every alarmed chart; and every
+    chart is bounded at S_CAP_MULT x h (cap_S / cap_mc; the first passage of
+    h, i.e. every null alarm, is unchanged), so an alarmed chart keeps a
+    bounded amount of evidence after the shift ends.
   * State values are rounded to float32 after every tick, so the
     behavior.cusum_state ring (float32) replays bit-identically.
 
@@ -103,6 +109,9 @@ STATE_DIM = N_CHARTS + 3 * N_KEY           # 84
 AUDIT_BLOCK = 30
 AUDIT_ARL = 300.0                          # audit level: many alarms per bootstrap sample
 ONSET_HIST = 128                           # ticks of inputs kept for the onset MLE
+# round 4 (evaluator): bounded statistics and the end-of-shift test
+S_CAP_MULT = 4.0                           # every chart's S <= 4 h (Crosier: ||S|| <= 4 h)
+END_H = math.log(1000.0)                   # end test threshold (nats): false release per excursion <= 1e-3
 
 _H_CACHE: Dict[Tuple[str, float], Any] = {}
 
@@ -173,15 +182,64 @@ def _new_latch(batch: Tuple[int, ...], C: int) -> Dict[str, np.ndarray]:
         "alarmed": np.zeros(batch + (C,), dtype=bool),
         "peak": np.zeros(batch + (C,)),
         "clean": np.zeros(batch),
+        "R": np.zeros(batch + (C,)),         # end-of-shift CUSUM per alarmed chart (nats)
+        "delta": np.zeros(batch + (C,)),     # estimated mean input under the shift
     }
 
 
+def cap_S(S: np.ndarray, h: np.ndarray) -> np.ndarray:
+    """Bank charts bounded at S_CAP_MULT x h (float32, as stored). The first
+    passage of h, hence the ARL and every null alarm, is unchanged by any cap
+    >= h; what the cap bounds is the evidence a chart keeps after an alarm:
+    an unbounded chart that took S = 400 in a 24-h attack drained at -k per
+    hourly row (k = 0.25: 1600 active hours) and held its calibrated p
+    extreme for days after the attack (round 4, evaluator)."""
+    c = _f32(S_CAP_MULT * np.asarray(h, dtype=np.float64))
+    return np.minimum(S, c)
+
+
+def cap_mc(S_vec: np.ndarray, h: Any) -> np.ndarray:
+    """Crosier state bounded at ||S|| <= S_CAP_MULT x h (direction kept)."""
+    S_vec = np.asarray(S_vec, dtype=np.float64)
+    nrm = np.sqrt(np.sum(S_vec * S_vec, axis=-1, keepdims=True))
+    c = S_CAP_MULT * np.asarray(h, dtype=np.float64)
+    c = np.reshape(c, np.shape(c) + (1,)) if np.ndim(c) == np.ndim(nrm) - 1 else c
+    scale = np.where(nrm > c, c / np.where(nrm > 0, nrm, 1.0), 1.0)
+    return _f32(S_vec * scale) if (nrm > c).any() else S_vec
+
+
 def _latch_tick(L: Dict[str, np.ndarray], S: np.ndarray, S_old: np.ndarray, h: np.ndarray,
-                zts: np.ndarray, now: float, dt: float
-                ) -> Tuple[np.ndarray, np.ndarray]:
+                zts: np.ndarray, now: float, dt: float, k: Any = None, mu0: Any = 0.0,
+                zero: float = 0.0) -> Tuple[np.ndarray, np.ndarray]:
     """Advance the alarm latch in place. S, S_old, h, zts: (..., C).
     Returns (rise, reset): an alarm opened this tick / the episode ended
-    (the caller zeroes its statistics where reset)."""
+    (the caller zeroes its statistics where reset).
+
+    End of an episode (round 4, evaluator), whichever comes first:
+      * 2 (t_alarm - tau-hat) of clean time (no alarmed chart increased);
+      * the end-of-shift test, when `k` (the charts' reference values) is
+        given: per alarmed chart a reverse CUSUM of H_end 'the input is back
+        at its null mean mu0' against H_1 'it stays at the shift's mean
+        delta', R = max(0, R + (delta - mu0) ((delta + mu0) / 2 - y)) in
+        nats, with y = S - S_old + k the chart's input along its own
+        direction (exact for a one-sided CUSUM while S > 0; Crosier's radial
+        statistic moves by the projection of the input on its direction
+        minus k) and delta = k + (S - zero) / rows since the chart's last
+        zero, re-estimated at new peaks of the growth phase (R = 0). A chart
+        whose R reached END_H keeps that decision; R restarts while S is
+        held at its cap (the input is then only known to exceed k), and the
+        episode ends when every alarmed chart has decided.
+    Why: 'clean' counted only ticks on which NO alarmed chart rose, which
+    under the null happens on ~0.6^m of the rows for m alarmed k = 0.25
+    charts, so a 24-h attack detected at its end held the latch 2-10 days
+    (pack A seed 0: T9b's cusum / mcusum latched 58 h after the attack,
+    T12 36 h, T16 > 28 h; B25 re-emitted an accumulator alarm every tick).
+    The test is the sequential probability ratio of the two hypotheses on
+    the chart's own inputs: under a persisting shift of the estimated size
+    its drift is -(delta - mu0)^2 / 2 (false release <= e^-END_H per
+    excursion), after the shift ends +(delta - mu0)^2 / 2, i.e. a loud
+    shift (delta ~ 3) ends in 1 - 2 rows and a subtle one (delta ~ 0.5) in
+    ~50 rows, as its detection took."""
     over = S >= h
     on = L["on"]
     if not on.any() and not over.any():            # the null steady state: nothing to do
@@ -189,15 +247,47 @@ def _latch_tick(L: Dict[str, np.ndarray], S: np.ndarray, S_old: np.ndarray, h: n
         return z, z
     new = ~on & over.any(-1)
     reset = np.zeros_like(on)
+    endt = k is not None
+    # a chart held at its cap is still being pushed up: it counts as a new
+    # peak for the clean clock (else a persisting shift would 'go clean')
+    capped = S >= (S_CAP_MULT * np.broadcast_to(np.asarray(h, dtype=np.float64),
+                                                S.shape)) * (1.0 - 1e-5)
+    if endt and "R" not in L:                      # a latch restored from before round 4
+        L["R"] = np.zeros_like(L["peak"])
+        L["delta"] = np.zeros_like(L["peak"])
+    if endt:
+        kk = np.broadcast_to(np.asarray(k, dtype=np.float64), S.shape)
+        m0 = np.broadcast_to(np.asarray(mu0, dtype=np.float64), S.shape)
+        n_rows = np.where(np.isfinite(zts), np.maximum((now - zts) / max(dt, 1e-9), 1.0), 1.0)
+        d_now = kk + np.maximum(S - zero, 0.0) / n_rows
     if on.any():
         old = on.copy()
         alarmed = L["alarmed"] | (over & old[..., None])
-        grew = (alarmed & (S > L["peak"])).any(-1)
+        grew_c = alarmed & (S > L["peak"])
+        grew = (grew_c | (alarmed & capped)).any(-1)
         incr = (alarmed & (S > S_old)).any(-1)
         L["alarmed"] = alarmed
         L["peak"] = np.where(alarmed, np.maximum(L["peak"], S), L["peak"])
         L["clean"] = np.where(old & grew, 0.0, np.where(old & ~incr, L["clean"] + dt, L["clean"]))
         reset = old & (L["clean"] >= 2.0 * L["span"])
+        if endt:
+            R0 = L["R"]
+            first = alarmed & (L["delta"] <= 0.0)
+            # delta is (re)estimated in the growth phase only (a new peak with
+            # no evidence of an end yet): after the shift ends, noise peaks of
+            # a slowly draining k = 0.25 chart would dilute it
+            L["delta"] = np.where(first | (grew_c & (R0 <= 0.0)), np.maximum(d_now, kk),
+                                  L["delta"])
+            dl = L["delta"]
+            y = S - S_old + kk
+            inc = (dl - m0) * ((dl + m0) / 2.0 - y)
+            done = R0 >= END_H                   # a chart's end decision is kept
+            R = np.where(done, R0, np.maximum(0.0, R0 + np.where(np.isfinite(inc), inc, 0.0)))
+            # at the cap the input is only known to exceed k: the shift holds
+            R = np.where(capped | ~alarmed | (dl <= m0), 0.0, R)
+            L["R"] = R
+            ended = np.where(alarmed, R >= END_H, True).all(-1) & alarmed.any(-1)
+            reset = reset | (old & ended)
     if new.any():
         ratio = np.where(over, S / np.where(h > 0, h, 1.0), -np.inf)
         j = np.argmax(ratio, axis=-1)
@@ -209,6 +299,9 @@ def _latch_tick(L: Dict[str, np.ndarray], S: np.ndarray, S_old: np.ndarray, h: n
         L["alarmed"] = np.where(new[..., None], over, L["alarmed"])
         L["peak"] = np.where(new[..., None], S, L["peak"])
         L["clean"] = np.where(new, 0.0, L["clean"])
+        if endt:
+            L["delta"] = np.where(new[..., None] & over, np.maximum(d_now, kk), L["delta"])
+            L["R"] = np.where(new[..., None], 0.0, L["R"])
         L["on"] = on | new
     if reset.any():
         L["on"] = L["on"] & ~reset
@@ -218,6 +311,9 @@ def _latch_tick(L: Dict[str, np.ndarray], S: np.ndarray, S_old: np.ndarray, h: n
         L["t_alarm"] = np.where(reset, np.nan, L["t_alarm"])
         L["onset"] = np.where(reset, np.nan, L["onset"])
         L["span"] = np.where(reset, 0.0, L["span"])
+        if "R" in L:
+            L["R"] = np.where(reset[..., None], 0.0, L["R"])
+            L["delta"] = np.where(reset[..., None], 0.0, L["delta"])
     return new, reset
 
 
@@ -343,13 +439,13 @@ def bank_tick(st: Dict[str, Any], x: np.ndarray, now: float, dt: float, phi: np.
         prev = np.where(np.asarray(adjacent)[..., None], prev, np.nan)
     psi = prewhiten(x, prev, phi)
     S_old = st["S"]
-    S = _f32(seq.cusum_step(S_old, psi[..., CHART_FEAT] * CHART_SIDE, CHART_K))
+    S = cap_S(_f32(seq.cusum_step(S_old, psi[..., CHART_FEAT] * CHART_SIDE, CHART_K)), h)
     zts = np.where(S <= 0.0, now, st["zts"])
     H = st.get("hist")
     if H is None:
         H = st["hist"] = _new_hist(np.shape(S)[:-1])
     _hist_push(H, psi, now)
-    rise, reset = _latch_tick(st["latch"], S, S_old, h, zts, now, dt)
+    rise, reset = _latch_tick(st["latch"], S, S_old, h, zts, now, dt, k=CHART_K)
     if rise.any():                           # tau-hat: MLE on the alarmed chart's own inputs
         hb = np.broadcast_to(h, S.shape)
         c = np.argmax(np.where(S >= hb, S / np.where(hb > 0, hb, 1.0), -np.inf), axis=-1)
@@ -410,7 +506,7 @@ def mc_tick(st: Dict[str, Any], w: np.ndarray, now: float, dt: float, h: float
     the shared latch (zero level = MC_ZERO). In place; returns (st, out)."""
     S_old = st["stat"]
     S_vec, stat = seq.mcusum_step(st["S"], w, MC_K)
-    S_vec = _f32(S_vec)
+    S_vec = cap_mc(_f32(S_vec), h)
     stat = np.sqrt(np.sum(S_vec * S_vec, axis=-1))
     zts = np.where(stat <= MC_ZERO, now, st["zts"])
     H = st.get("hist")
@@ -418,9 +514,14 @@ def mc_tick(st: Dict[str, Any], w: np.ndarray, now: float, dt: float, h: float
         H = st["hist"] = _new_hist(np.shape(stat))
     _hist_push(H, np.where(np.isfinite(w), w, 0.0), now)
     hh = np.asarray(h, dtype=np.float64)
+    # end test: Crosier's radial statistic drifts by (d - 1) / (2 s) - k
+    # under the null at level s (its equilibrium MC_ZERO), so the input
+    # along the direction has null mean mu0 = (d - 1) / (2 s)
+    mu0 = (MC_D - 1) / (2.0 * np.maximum(np.asarray(S_old, dtype=np.float64), MC_ZERO))
     rise, reset = _latch_tick(st["latch"], stat[..., None], np.asarray(S_old)[..., None],
                               np.broadcast_to(hh, np.shape(stat) + (1,)),
-                              np.asarray(zts)[..., None], now, dt)
+                              np.asarray(zts)[..., None], now, dt, k=MC_K,
+                              mu0=np.asarray(mu0)[..., None], zero=MC_ZERO)
     if rise.any():                           # tau-hat: multivariate step MLE on the buffer
         _refine_onsets(st["latch"], rise, H, lambda i, o: H["y"][i][o],
                        np.full(np.shape(stat), -np.inf), now, dt)
@@ -656,7 +757,7 @@ def _replay_tick(state: Mapping[str, np.ndarray], inp: Mapping[str, Any], h: np.
     phi = np.asarray(inp.get("phi", state["phi"]), dtype=np.float64)
     prev = state["prev"] if inp.get("adjacent", True) else np.full(N_KEY, np.nan)
     psi = prewhiten(x, prev, phi)
-    S = _f32(seq.cusum_step(state["S"], psi[CHART_FEAT] * CHART_SIDE, CHART_K))
+    S = cap_S(_f32(seq.cusum_step(state["S"], psi[CHART_FEAT] * CHART_SIDE, CHART_K)), h)
     mc = state["mc"]
     if "w" in inp:
         # the recorded whitened input of this tick (mark_resets recovers it
@@ -672,12 +773,12 @@ def _replay_tick(state: Mapping[str, np.ndarray], inp: Mapping[str, Any], h: np.
                      - np.nan_to_num(mc_whiten(psi_f, W, Sig)))
                 w = w + d
             mc, _ = seq.mcusum_step(mc, w, MC_K)
-            mc = _f32(mc)
+            mc = cap_mc(_f32(mc), h_mc)
     else:
         w = mc_whiten(psi, W, Sig)
         if np.isfinite(w).any():
             mc, _ = seq.mcusum_step(mc, w, MC_K)
-            mc = _f32(mc)
+            mc = cap_mc(_f32(mc), h_mc)
     if "zero_S" in mode:                      # the bank latch reset zeroed its charts
         S = np.zeros(N_CHARTS)
     if "zero_mc" in mode:                     # the MCUSUM latch reset (independent)

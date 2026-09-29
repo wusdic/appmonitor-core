@@ -139,3 +139,47 @@ def test_canonical_learners_commit_decision_rows_and_q_share_grows():
     # pi_nat rises as native Q rows accumulate, within [0, 1)
     assert all(0.0 <= x < 1.0 for x in prov_hist)
     assert prov_hist[-1] > prov_hist[0]
+
+
+# ------------------------------------------ round 4 (evaluator): Q reference
+def test_q_reference_has_no_predictive_for_set_and_map_features():
+    """A set / map feature (distinct_templates, path_entropy) has no H -> Q
+    transfer; its Q reference was the HOUR's predictive (pack A: zr location
+    +1.9 / +2.2 sd, marg_shape_q pm 191x nominal). Now NaN (p_f = p_cur)."""
+    cur, ref = _pred(1), _pred(2)
+    v = np.full(NF, 2.5)
+    t = MB._reference_q(ref, cur, v, np.zeros(NF), np.ones(NF))
+    tr = np.array([F.TRANSFER[n] or "-" for n in F.FEATURE_NAMES_V2])
+    none = np.flatnonzero(tr == "none")
+    assert none.size and {IDX["distinct_templates"], IDX["path_entropy"]} <= set(none.tolist())
+    for f in none:
+        assert np.isnan(t.mean[f])
+    from app.engines.behavior.lib import bayes
+    p_cur = np.full(NF, 0.3)
+    p_ref = np.where(tr == "none", np.nan, 1e-4)
+    pf = bayes.combine_anchors(p_cur, p_ref)
+    assert np.all(pf[none] == 0.3)
+
+
+def test_q_reference_adds_the_within_hour_variance_in_absolute_units():
+    """Var_Q(ref) = Var_H(ref) + (v - 1) Var_H(cur): the within-hour term is
+    the entity's; multiplying the reference's H variance by the current
+    anchor's ratio v mis-scaled it whenever the anchors' variances differ."""
+    cur, ref = _pred(1), _pred(1)
+    ref.scale[MB.NIG] = cur.scale[MB.NIG] * 0.5          # a narrower reference
+    v = np.full(NF, 3.0)
+    t = MB._reference_q(ref, cur, v, np.zeros(NF), np.ones(NF))
+    tr = np.array([F.TRANSFER[n] or "-" for n in F.FEATURE_NAMES_V2])
+    nig = MB.NIG[(tr[MB.NIG] != "none") & (tr[MB.NIG] != "-")]
+    var_c = GR.t_variance(cur.scale[nig], cur.df[nig])
+    var_r = GR.t_variance(ref.scale[nig], ref.df[nig])
+    var_t = GR.t_variance(t.scale[nig], t.df[nig])
+    np.testing.assert_allclose(var_t, var_r + 2.0 * var_c, rtol=1e-9)
+    # the old multiplicative rule would give 3 var_r, i.e. 1/2 of this
+    assert np.all(var_t > 1.9 * (3.0 * var_r))
+    # Jensen shift from the entity's within-hour variance
+    jen = nig[np.array([F.TRANSFER[F.FEATURE_NAMES_V2[f]] == "jensen" for f in nig])]
+    d = t.loc[jen] - ref.loc[jen]
+    sc_t = t.scale[jen]
+    np.testing.assert_allclose(d, np.clip(-(2.0 * GR.t_variance(cur.scale[jen], cur.df[jen])) / 2.0,
+                                          -sc_t, sc_t), rtol=1e-9)

@@ -68,7 +68,7 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
 8. Identification (B15 blocked CV and the B16 replay; absolute representation)
    - Individuated personas: window top-1 (K = 4) ≥ 0.95, per-tick top-1 ≥ 0.85 at 900 s, and EER_hard ≤ 0.05 for ≥ 90% of personas.
    - Twins: EER_hard > 0.2, each listed as confusable_with the other.
-   - Spearman correlation of separability against CV recall ≥ 0.8.
+   - Spearman correlation of separability against CV recall ≥ 0.8. CV recall is graded (round 4): B15's median held-out margin log L(own) − max log L(other) per window (`profile.extra.identity.margin`; recall@1 is the share of windows with margin > 0 and is 1.0 for every individuated persona of packs A and B, which left the correlation undefined), over the individuated personas and the twins (the designed low-separability pair); recall@1 is the fallback grade when no margin is published.
    - T9 looks_like correct in 100% of seeds; T9b unknown_identity in ≥ 90%.
    - L6 link precision 1.0 (the negative control is never linked) and recall ≥ 0.95.
    - T19 actor chain recovered in ≥ 90% of seeds.
@@ -82,7 +82,7 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
    - T21 class detection in ≥ 90% of seeds; L1, L2 and L3 class incidents ≤ LOW.
 
 10. Explanation
-    - hit@3 ≥ 0.8 against perturbed_features. The whole-entity marker 'entity' (L6 renumbering, L8 new employee) is not a feature an attribution can rank: such rows have no hit@3 (round 4).
+    - hit@3 ≥ 0.8 against perturbed_features. The whole-entity marker 'entity' (L6 renumbering, L8 new employee) is not a feature an attribution can rank: such rows have no hit@3 (round 4); their TP incidents are counted apart ("TP incidents without a rankable feature").
     - Counterfactual validity ≥ 0.9, measured on the full recomputed decision via replay; the scope includes stateful detectors.
     - A natural-unit range is present in 100% of incidents.
 
@@ -92,7 +92,7 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
     - p5–p95 coverage of held-out ticks within [0.85, 0.95].
     - Class portraits exist for 100% of role, static and pool classes.
 
-12. Feedback: a simulated analyst with 5% label noise and 5 labels per day cuts control incidents ≥ LOW by ≥ 50% after 20 labels, with recall dropping by ≤ 0.02. Suppression escape behaves as in unit test B23. The analyst dismisses fp verdicts with scope = pattern (B23 builds suppression policies only from widened scopes) and labels the rest with scope = this; the cut compares each feedback run with the full run of the same (pack, seed). The cut counts control incidents ≥ LOW that were ever NOTIFYING (an open / escalate notification, else a history point with status open / acked): an incident a pattern policy suppresses from its first tick is the suppression working and never reaches the analyst (round 4); the cut over all incidents, suppressed ones included, is reported as a secondary check. Ablation deltas (gate 13) are likewise taken against the full runs of the same (pack, seed).
+12. Feedback: a simulated analyst with 5% label noise and 5 labels per day (the queue, round 4: each pick draws one unlabelled incident active in the last 24 h and not suppressed by a policy, with probability proportional to 2^rank of its severity — LOW 1, MEDIUM 2, HIGH 4, CRITICAL 8 — and an entity is reviewed at most once a day; the former newest-first pick labelled the threat updated last almost every time) cuts control incidents ≥ LOW by ≥ 50% after 20 labels, with recall dropping by ≤ 0.02. Suppression escape behaves as in unit test B23. The analyst dismisses fp verdicts with scope = pattern (B23 builds suppression policies only from widened scopes) and labels the rest with scope = this; the cut compares each feedback run with the full run of the same (pack, seed). The cut counts control incidents ≥ LOW that were ever NOTIFYING (an open / escalate notification, else a history point with status open / acked): an incident a pattern policy suppresses from its first tick is the suppression working and never reaches the analyst (round 4); the cut over all incidents, suppressed ones included, is reported as a secondary check. Ablation deltas (gate 13) are likewise taken against the full runs of the same (pack, seed).
 
 13. Ablation
     - Δrecall and ΔFAR are reported per scenario with each engine disabled.

@@ -92,6 +92,7 @@ CLOCK = "behavior.xsys"             # own gating clock: one row per scored pair-
 ALARM = "behavior.alarm"
 B01 = "behavior.feature_vector"
 LEARNER = "xsys"
+XSYS_DIM = "xsys"                  # token dimension of a first access (event extra)
 AXES = ["lateral"]
 
 DAY = 86400.0
@@ -457,7 +458,11 @@ class CrossSystemEngine(Engine):
                    "p_nov": p_nov, "p_spread": ipc.p_spread, "k_24h": int(ipc.k24),
                    "spread_mean": ipc.spread_mean, "support_aa": aa,
                    "footprint": {k: round(v, 2) for k, v in sorted(ipc.fp.items())},
-                   "precursor": pre, "adopted": bool(adopted), "stage": "lateral"},
+                   "precursor": pre, "adopted": bool(adopted), "stage": "lateral",
+                   # the new categorical value the finding rests on (m_feedback
+                   # token 'xsys=<system>'): B23 policies / B29's counterfactual
+                   # candidate 'token:xsys=<system>' (round 4, evaluator)
+                   "dim": XSYS_DIM, "value": s},
             p_value=float(p), e_day=float(combine.e_day(p, dt)), axes=list(AXES),
             p_by_detector={DETECTOR: float(p)}, dedupe_key=f"first_access_system|{pk}",
             window=(now - dt, now)))

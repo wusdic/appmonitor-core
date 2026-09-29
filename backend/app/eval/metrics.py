@@ -1446,23 +1446,34 @@ def identification_stats(view: RunView) -> Dict[str, Any]:
              if str(p.get("archetype", "")).lower() == "interactive" and k not in twins
              and k not in view.scenario_keys]
     win, tick, eer, sep, rec1 = [], [], [], [], []
-    for k in indiv:
+    for k in indiv + [t for t in twins if t in view.personas]:
+        twin = k in twins
         idn = _identity(view, k)
         if not idn:
             continue
         w = _f(idn.get("recall1", idn.get("top1_window")), None)  # type: ignore[arg-type]
         t = _f(idn.get("recall1_tick", idn.get("top1_tick")), None)  # type: ignore[arg-type]
         e = _f(idn.get("eer_hard"), None)  # type: ignore[arg-type]
-        if w is not None:
-            win.append(w)
-        if t is not None:
-            tick.append(t)
-        if e is not None:
-            eer.append(e)
+        if not twin:
+            if w is not None:
+                win.append(w)
+            if t is not None:
+                tick.append(t)
+            if e is not None:
+                eer.append(e)
+        # Spearman (round 4): separability against the GRADED CV recall, the
+        # median held-out margin log L(own) - max log L(other) (B15 'margin';
+        # recall@1 is the share of windows with margin > 0 and is 1.0 for
+        # every individuated persona on A / B), over the individuated
+        # personas AND the twins - the designed low-separability pair, without
+        # which the separability of A's persona set has no spread either
         s = _f((view.profiles.get(k) or {}).get("separability"), None)  # type: ignore[arg-type]
-        if s is not None and w is not None:
+        g = _f(idn.get("margin"), None)  # type: ignore[arg-type]
+        if g is None or not math.isfinite(g):
+            g = w
+        if s is not None and g is not None:
             sep.append(s)
-            rec1.append(w)
+            rec1.append(g)
     spearman = None
     if len(sep) >= 4 and len(set(sep)) > 1 and len(set(rec1)) > 1:
         from scipy.stats import spearmanr
@@ -1630,6 +1641,7 @@ def has_natural_range(inc: Mapping[str, Any]) -> bool:
 def explanation_stats(view: RunView, outcomes: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     by_id = {str(i.get("id")): i for i in view.incidents}
     hits, cf = [], []
+    excluded = 0            # TP incidents of rows with no rankable feature (reported apart)
     for o in outcomes:
         row = next((r for r in view.truth if str(r.get("scenario_id")) == o["scenario_id"]), {})
         # 'entity' (L6 renumbering, L8 new employee) is a whole-entity marker,
@@ -1642,12 +1654,14 @@ def explanation_stats(view: RunView, outcomes: Sequence[Dict[str, Any]]) -> Dict
             expl = inc.get("explanation") or {}
             if pf:
                 hits.append(bool(set(top_features(expl, 3)) & pf))
+            elif row.get("perturbed_features"):
+                excluded += 1
             v = expl.get("counterfactual_valid")
             if v is not None:
                 cf.append(bool(v))
     scen = [i for i in view.incidents if view.t0 <= float(i.get("opened", 0.0)) <= view.t1]
     nat = [has_natural_range(i) for i in scen]
-    return {"hit3": hits, "cf_valid": cf, "natural_range": nat}
+    return {"hit3": hits, "cf_valid": cf, "natural_range": nat, "hit3_excluded": excluded}
 
 
 def _hours_from(v: Any) -> Optional[Set[int]]:
@@ -2300,7 +2314,10 @@ def gate_explanation(scores: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     hit = _frac(v for e in ex for v in e["hit3"])
     cf = _frac(v for e in ex for v in e["cf_valid"])
     nat = _frac(v for e in ex for v in e["natural_range"])
+    n_ex = sum(int(e.get("hit3_excluded") or 0) for e in ex)
     checks = [check("hit@3 vs perturbed_features", hit, TARGETS["hit3"], _ge(hit, TARGETS["hit3"])),
+              check("TP incidents without a rankable feature ('entity' marker; not in hit@3)",
+                    n_ex, None, None),
               check("counterfactual validity", cf, TARGETS["cf_valid"], _ge(cf, TARGETS["cf_valid"])),
               check("natural-unit range present", nat, TARGETS["nat_range"],
                     _ge(nat, TARGETS["nat_range"]))]

@@ -1758,10 +1758,8 @@ def predictive_q_many(store: Any, items: Sequence[Tuple[str, str, Mapping[str, A
         v, da, db = omega_chain(store, s, e, ms[i])
         var_c = GR.t_variance(cur_h.scale, cur_h.df)
         delta_c = da + db * np.where(_JENSEN, -(v - 1.0) * var_c / 2.0, 0.0)
-        var_r = GR.t_variance(ref_h.scale, ref_h.df)
-        delta_r = da + db * np.where(_JENSEN, -(v - 1.0) * var_r / 2.0, 0.0)
         t_cur = transfer_pred(cur_h, v, np.where(np.isfinite(delta_c), delta_c, 0.0))
-        t_refs.append(transfer_pred(ref_h, v, np.where(np.isfinite(delta_r), delta_r, 0.0)))
+        t_refs.append(_reference_q(ref_h, cur_h, v, da, db))
         S_Q = _anchor_E(q_anchor(ms[i]), bs[i])
         W_nats.append(np.maximum(S_Q[0, FULL.W], 0.0))
         EQ.append(S_Q + pseudo_stats(t_cur, _KT))
@@ -2301,10 +2299,19 @@ def omega_chain(store: Any, s: str, e: str, model: Any = None
     return GR.v_from_omega(omega), da, db
 
 
-def transfer_pred(pred: Pred, v: np.ndarray, delta: np.ndarray) -> Pred:
+def transfer_pred(pred: Pred, v: np.ndarray, delta: np.ndarray,
+                  within: Optional[np.ndarray] = None) -> Pred:
     """The H predictive transferred to the Q grain (cadence.md §6.2): NB
     r / v, BB (1 + c) / v - 1 (>= C_T_MIN), t loc + delta, scale sqrt(v);
-    same means. `none` / span features are left as they are."""
+    same means. `none` / span features are left as they are.
+
+    `within` (round 4, evaluator; t features): the absolute within-hour
+    variance term ((M - 1)/M) E[s^2] = (v - 1) sigma^2_H,current. Given, a
+    t feature's Q variance is sigma^2_H + within (the decomposition
+    Var(q) = Var(h) + ((M - 1)/M) E[s^2] of §6.3 is additive) instead of
+    v sigma^2_H - the same for the current anchor, but the REFERENCE
+    anchor's H variance differs from the current one's and multiplying it
+    by the current anchor's ratio mis-scaled its Q predictive."""
     mu, r, p, c = pred.mu.copy(), pred.r.copy(), pred.p.copy(), pred.c.copy()
     df, loc, scale = pred.df.copy(), pred.loc.copy(), pred.scale.copy()
     v = np.asarray(v, dtype=np.float64)
@@ -2313,11 +2320,47 @@ def transfer_pred(pred: Pred, v: np.ndarray, delta: np.ndarray) -> Pred:
     i = RAT[_TRANSFERABLE[RAT]]
     _, c[i] = GR.transfer_bb(p[i], c[i], v[i])
     i = NIG[_TRANSFERABLE[NIG]]
-    loc[i], scale[i], _ = GR.transfer_t(loc[i], scale[i], df[i], v[i], np.asarray(delta)[i])
+    vt = v[i]
+    if within is not None:
+        var_h = GR.t_variance(scale[i], df[i])
+        wv = np.asarray(within, dtype=np.float64)[i]
+        with np.errstate(all="ignore"):
+            va = 1.0 + np.maximum(wv, 0.0) / var_h
+        vt = np.where(np.isfinite(va) & (var_h > 0.0) & np.isfinite(wv), va, vt)
+    loc[i], scale[i], _ = GR.transfer_t(loc[i], scale[i], df[i], vt, np.asarray(delta)[i])
     mean = np.array(pred.mean, dtype=np.float64, copy=True)
     mean[NIG] = loc[NIG]
     return Pred(mu, r, p, c, df, loc, scale, mean, ebar=15.0, tier=pred.tier,
                 anchor=pred.anchor, bucket=pred.bucket, mode=pred.mode, grain="q")
+
+
+def _reference_q(ref_h: Pred, cur_h: Pred, v: np.ndarray, da: np.ndarray,
+                 db: np.ndarray) -> Pred:
+    """The Q reference predictive (round 4, evaluator): the transfer of the
+    H reference with the absolute within-hour variance and Jensen shift of
+    the entity's CURRENT anchor (the within-hour dynamics are the entity's,
+    not the anchor's), and NO predictive for `none` (set / map) features.
+
+    Why: transfer_pred leaves `none` features as they are, so a Q row's
+    distinct_templates / path_entropy (a 15-min set size, an entropy of a
+    quarter's paths) was scored against the HOUR's predictive: pack A seed
+    0 clean control rows, zr variance 2 - 6 and location +1.9 / +2.2 sd for
+    those features, p_ref < 1e-3 on 26 - 297x nominal, and B04's
+    2 min(p_cur, p_ref) put marg_shape_q at 191x (p_cur alone: 16x). A set
+    or map value has no H -> Q transfer (it does not add over quarters);
+    its reference is simply unavailable at Q (p_f = p_cur, the H reference
+    keeps the creep protection on the H rows)."""
+    var_c = GR.t_variance(cur_h.scale, cur_h.df)
+    within = (np.asarray(v, dtype=np.float64) - 1.0) * var_c
+    delta = da + db * np.where(_JENSEN, -within / 2.0, 0.0)
+    t = transfer_pred(ref_h, v, np.where(np.isfinite(delta), delta, 0.0),
+                      within=np.where(np.isfinite(within), within, np.nan))
+    nC, nR, nN = CNT[_NONE[CNT]], RAT[_NONE[RAT]], NIG[_NONE[NIG]]
+    t.mu[nC] = t.r[nC] = np.nan
+    t.p[nR] = t.c[nR] = np.nan
+    t.loc[nN] = t.scale[nN] = t.df[nN] = np.nan
+    t.mean[_NONE] = np.nan
+    return t
 
 
 def pseudo_stats(pred: Pred, kappa: float = _KT) -> np.ndarray:
@@ -2376,10 +2419,8 @@ def predictive_q(store: Any, s: str, e: str, tctx: Mapping[str, Any],
     v, da, db = omega_chain(store, s, e, m)
     var_c = GR.t_variance(cur_h.scale, cur_h.df)
     delta_c = da + db * np.where(_JENSEN, -(v - 1.0) * var_c / 2.0, 0.0)
-    var_r = GR.t_variance(ref_h.scale, ref_h.df)
-    delta_r = da + db * np.where(_JENSEN, -(v - 1.0) * var_r / 2.0, 0.0)
     t_cur = transfer_pred(cur_h, v, np.where(np.isfinite(delta_c), delta_c, 0.0))
-    t_ref = transfer_pred(ref_h, v, np.where(np.isfinite(delta_r), delta_r, 0.0))
+    t_ref = _reference_q(ref_h, cur_h, v, da, db)
     qa = q_anchor(m)
     S_Q = _anchor_E(qa, b)
     W_nat = np.maximum(S_Q[0, FULL.W], 0.0)

@@ -65,6 +65,7 @@ from .lib import grains as GR
 from .lib.features import (FEATURE_DIM, FEATURE_GROUP, FEATURE_INDEX, FEATURE_KIND,
                            FEATURE_NAMES_V2, GROUP_ORDER, KEY_FEATURES, VEC_TX)
 from .lib.gating import GatedLearner, GateState
+from .lib.detectors import DETECTOR_INFO as _DET_INFO
 
 ZR = m_cp.ZR
 WH = "behavior.wh"
@@ -94,15 +95,22 @@ R_MAX = 336                    # hours; longer runs are merged at R_MAX
 PRUNE = 1e-4
 BOC_A0, BOC_K0 = 1.0, 1.0      # Normal-Gamma prior on standardised hourly sums
 BOC_WINDOW_H = 3               # cp.prob = P(r <= 3 h)
-# Alarm level for cp.prob: measured null rate 0.001-0.004 per entity-day for
-# hourly N(0,1) inputs with per-tick AR(1) phi in [0, 0.6] (8 x 200 d each),
-# within the 0.005/day change-path share of one detector.
-BOC_ALARM = 0.8
 BOC_MAX_GAP_H = 48             # silent hours stepped with hazard only (beyond: no-op)
 # bocpd's model p (round 4, evaluator): the prior probability of a run of
 # <= BOC_WINDOW_H hours under the hazard, and its odds (bocpd_pm)
 BOC_PRIOR = 1.0 - (1.0 - HAZARD) ** (BOC_WINDOW_H + 1)
 BOC_PRIOR_ODDS = BOC_PRIOR / (1.0 - BOC_PRIOR)
+# Alarm level (round 4, evaluator): the cp at which the Ville bound on the
+# Bayes factor, P(1/BF <= x) <= x per hourly row, guarantees bocpd's own
+# change-path share (budget_per_day, 0.005) whatever the inputs' law:
+# bocpd_pm(cp) <= budget / 24  <=>  cp >= 0.9915. The former 0.8 (BF >= 165)
+# was set on exact N(0, 1) inputs (0.001 - 0.004 per entity-day there); on
+# the real hourly inputs (the reference-anchor intensity residual and B06's
+# WH score: zero-inflated, heavy-tailed, variance steps) bocpd opened 5 of
+# 23 control incidents of pack A seed 0 and ~12 of 57 on B seed 0 (0.04 -
+# 0.07 per entity-day, 10x its share).
+BOC_PM_ALARM = float(_DET_INFO["bocpd"]["budget_per_day"]) / 24.0
+BOC_ALARM = 1.0 / (1.0 + BOC_PM_ALARM / BOC_PRIOR_ODDS)
 _LOGPI = math.log(math.pi)
 
 # ---- creep ----------------------------------------------------------------
@@ -712,6 +720,12 @@ class ChangepointEngine(Engine):
         hr = run["hour"]
         x = np.array([hr["s_int"] / math.sqrt(hr["n_int"]) if hr["n_int"] else math.nan,
                       hr["s_wh"] / math.sqrt(hr["n_wh"]) if hr["n_wh"] else math.nan])
+        # bounded influence (round 4, evaluator), as the CUSUM bank's psi: the
+        # Normal-Gamma model reads one heavy-tailed hour as a changepoint
+        # (t3 inputs: 0.23 alarms per day at cp 0.8, 0.035 at the Ville
+        # level; clipped at +-3: 0.015 / 0), and a real shift is a run of
+        # hours, which the clip does not hide
+        x = np.clip(x, -seq.PSI_CLIP, seq.PSI_CLIP)
         st = bocpd_step(run["bocpd"], x)
         run["bocpd"] = st
         # the first BOC_WINDOW_H steps after a (re)start carry no evidence:

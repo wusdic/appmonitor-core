@@ -96,6 +96,7 @@ from .lib import m_class
 from .lib import m_feedback
 from .lib import m_template as MT
 from .lib import m_vocab as V
+from .lib import grains as GR
 from .lib.classkeys import SYSTEM_KEY, role_key
 from .lib.detectors import DETECTOR_INFO
 from .lib.names import etld1, is_external
@@ -124,6 +125,7 @@ MATURE_N = 100.0
 MATURE_OMEGA = 0.5
 SYS_MIN_N = 50.0                           # system tier "mature" (total accesses)
 MAX_EVENTS = 5
+CAT_GRAIN_S = 900.0                        # lib-4 matches are per 15-min grain (rule_match)
 LOW_PREV = 0.2
 UPLOAD_MIN = 1024.0
 WIN_H = (3600.0, DAY)                      # JSD window half-lives
@@ -155,6 +157,36 @@ DEFAULT_SENSITIVE = (r"salary", r"payroll", r"passw", r"secret", r"credential")
 _ADMIN_RE = re.compile(r"(^|[/ .])(admin|administrator|root|sudo|superuser|sysadmin|"
                        r"manage|management|console|phpmyadmin|wp-admin)([/ .?|{]|$)", re.I)
 ADMIN_PORTS = frozenset({"22", "23", "135", "445", "3389", "5900", "5985", "5986"})
+
+
+def peer_rare(model: Optional[Dict[str, Any]], dim: str, value: Any,
+              extra_df: float = 0.0) -> bool:
+    """Is `value` rare among the scored entity's PEERS (round 4, evaluator)?
+
+    The posterior median of the peers' usage share under a Jeffreys prior,
+    Beta(df + 1/2, n - df + 1/2) with df the (decayed) peers that used the
+    value and n = n_ent - 1 the peers (the scored entity, a class member,
+    has not used it: a new value, or rare_access's own bits test), is at
+    most LOW_PREV (20 %). Why: the tier rule's smoothed IDF,
+    ln((N + 1)/(df + 1)) + 1 >= ln 5 + 1, cannot call a value used by ONE
+    peer rare in a class of fewer than 9 members - (1 + 1)/(8 + 1) = 22 %
+    > 20 % - although its share among the peers is 1/7. Pack A's ERP users
+    form a class of 8 in which only the HR persona uses /hr/salary/export,
+    so T7 (another user exporting salaries once per tick for a day, the
+    spec's 'B08 rare_access' case) never produced rare_access and was
+    detected only while q_inst was anti-conservative (fix agent, round 4).
+    The Jeffreys median is ~ (df + 1/6) / (n + 1/3): one of 7 peers gives
+    0.16 (rare), one of 3 gives 0.35, two of 8 gives 0.27 (not rare).
+    Fewer than 2 peers: undecidable, False."""
+    if not isinstance(model, dict) or model.get("kind") not in ("class", "system"):
+        return False
+    n = float(model.get("n_ent", 0.0)) - 1.0
+    if not n >= 2.0:
+        return False
+    x = ((model.get("dims") or {}).get(dim) or {}).get(value)
+    df = (float(x[1]) if x is not None else 0.0) + max(0.0, float(extra_df))
+    df = min(max(df, 0.0), n)
+    return float(special.betaincinv(df + 0.5, n - df + 0.5, 0.5)) <= LOW_PREV
 
 
 class _Row(NamedTuple):
@@ -489,6 +521,9 @@ class _Sys:
         self.sens_re = engine._patterns(cfg.get("sensitive_patterns"))
         n_sys = sum(float(x) for x in (self.sys or {}).get("N", {}).values()) if self.sys else 0.0
         self.sys_ok = bool(self.sys) and int(self.sys.get("members", 0)) >= 1 and n_sys >= SYS_MIN_N
+        # canonical grain mode (round 4, evaluator): a lib-4 category counts
+        # as the grains its match covers, dt / 900 (CAT_GRAIN_S)
+        self.cat_w = self.dt / CAT_GRAIN_S if GR.canonical(cfg) else 1.0
 
     def class_key(self, e: str) -> Optional[str]:
         rid = m_class.role_id(self.store, self.s, e)
@@ -665,7 +700,7 @@ class NoveltyEngine(Engine):
         if model is not None and model.get("kind") != "entity":
             model = None
         run = model["run"] if model is not None else _new_run()
-        obs = self._observe(store, sc.s, e, now, sc.dt, run)
+        obs = self._observe(store, sc.s, e, now, sc.dt, run, sc.cat_w)
         active = bool(obs) or _fresh_pos(store, sc.s, e, "act.events", now)
         if model is None and not active:
             return None
@@ -687,7 +722,16 @@ class NoveltyEngine(Engine):
         return it
 
     def _observe(self, store, s: str, e: str, now: float, dt: float,
-                 run: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+                 run: Dict[str, Any], cat_w: float = 1.0) -> Dict[str, Dict[str, float]]:
+        """The tick's categorical observations per dimension. Every dimension
+        is an additive count except the lib-4 categories ('cat'), one per
+        match: a match states what the entity does over a 15-min grain (its
+        counter and ratio clauses are read per grain, signature/rule_match),
+        so at 60 s a sustained activity matched on each of the grain's 15
+        ticks and weighed 15x its 900-s count against the profile and the
+        JSD rings learnt at 900 s. cat_w = dt / 900 in canonical mode (round
+        4, evaluator: pack E seed 0, jsd p < 0.01 on 15 % of clean control
+        ticks at 60 s, 941 accumulator alarms on four machine personas)."""
         out: Dict[str, Dict[str, float]] = {}
 
         def put(dim: str, v: Any, n: Any) -> None:
@@ -734,7 +778,7 @@ class NoveltyEngine(Engine):
         for m in store.matches(s, e, since=since, limit=1000):
             if m.ts >= now or (math.isfinite(last) and m.ts <= last) or not m.category:
                 continue
-            put("cat", str(m.category).lower(), 1.0)
+            put("cat", str(m.category).lower(), cat_w)
             newest = m.ts if not math.isfinite(newest) else max(newest, m.ts)
         run["cat_ts"] = newest
         return out
@@ -863,6 +907,12 @@ class NoveltyEngine(Engine):
                 val.tier = "class"
         rare = val.tier != "entity" or (val.idf == val.idf and val.idf >= IDF_RARE) or \
             (cls is None and val.idf_s == val.idf_s and val.idf_s >= IDF_RARE)
+        if (val.sens or val.admin) and not rare:
+            # round 4 (evaluator): a sensitive value is rare among the peers
+            # when their estimated usage share is below LOW_PREV (peer_rare);
+            # the smoothed IDF cannot certify it in a small class
+            ref = cls if (cls is not None and cls.get("members")) else sc.sys
+            rare = peer_rare(ref, dim, v, extra if ref is cls else 0.0)
         if (val.sens or val.admin) and rare and (val.new or val.bits >= BITS_EVENT):
             val.rare_sens = True
             if not val.new:
