@@ -338,3 +338,22 @@ M. Engine core
   - **(spec v2.1)** For a grain input the test is last_write_ts < grains.last_decision(now, Δt, g).
   - A grain detector that is not scored because this is not its decision tick writes nothing (NaN = unscored). That is not degradation.
 - If more than 30% of an entity's families are degraded, a pipeline_degraded system event is emitted.
+N. Progressive core additions (docs/lib3/progressive.md §5; W-P0 / W-P1, implemented; inert unless `config['progressive']['enabled']`)
+
+Capture extension (library 1 input). All of it travels in `Observation.extra`, so `models/schema.py` is unchanged and every existing raw engine ignores it.
+- `extra['l7'] = {body, body_len, body_trunc, body_type, query, headers, resp_len, sess}`: request body prefix (≤ 4096 bytes), full body length, truncation flag, adapter format hint (form | json | multipart | xml | text), raw query string, lower-case request headers, response length, session-cookie value. Parsed by `lib/pparse.parse_l7`.
+- `extra['meta'] = {name: scalar | nested}`: any adapter / WAF / proxy field; every scalar leaf becomes an attribute `meta.<path>`.
+- `extra['ev_sample'] = [{o, up, down, st, l7}]`: up to 64 per-event rows drawn uniformly from an aggregated record (offset from obs.ts, sizes, status, optional per-event l7). Each row becomes one event with mass count / len(rows); without them one event with the record means, flagged approx.
+- `extra['sample_rate'] = k`: sensor sampling 1:k; multiplies mass only, never evidence.
+- Value retention (`progressive.value_policy`): secrets (key globs, `hdr.authorization`, `hdr.cookie`) and secret-like single tokens (template masks {hex}/{tok}/{uuid}/{id}, or identifier-fragmented high-entropy strings) are stored as their shape; values longer than 64 characters as shape plus `<name>.len`; other payload values in clear; `hmac` per glob on request. Applied in P00 before anything is stored. Only payload namespaces (body, q, hdr, meta) are rewritten.
+- Who resolution: for a transport source inside `progressive.trusted_proxies`, `net.src` is the right-most untrusted address of `x-forwarded-for` / `forwarded` / `x-real-ip`; the transport source is kept as `net.peer_src`. `sess.key` = HMAC-SHA256(deployment key, session cookie)[:12], never the clear value.
+
+Batch series (MetricStore; not per-entity metrics: no pseudo-entity guard, no first_seen / last_seen, no entity registration).
+- `add_batch(system, name, ts, obj)` (replaces the batch at an equal ts), `batch_at(system, name, ts)`, `batches_since(system, name, since) -> [(ts, obj)]` (ts > since, oldest first), `batch_times`, `batch_systems(name)`, `compact_batch(system, name, ts, fn=None, keep_cols=None)` (default: an EventBatch's learned rows restricted to keep_cols; row ids are kept), `drop_batches`.
+- Retention by age relative to the newest batch of the series through the retention table: `evt.` and `pat.` default 4500 s (D + 1 tick at 900-s ticks); P00 raises `evt.` to D + 2Δt for slower cadences with `ensure_retention`. `memory_report()` adds batch_series, batches, batch_bytes.
+- Names: `evt.batch` (P00, EventBatch kind txn), `evt.ctx` (P01, row-aligned context), `evt.win` (P01, EventBatch kind win), `pat.assign` and `pat.rate` (P03).
+- `EventBatch` (lib/pevent): columnar and sparse; ts, ip -> ips, w (mass before HT), pi, learn, flags (bit0 approx, bit1 body_trunc), rid (stable row ids), cols {name: Col(rows, vals)}, meta. A learned row stands for mass w / pi. Absence is the value ⊥ (`pevent.ABSENT`).
+
+Tick clock: `put_tick(system, ts)` / `tick_times(system, since=None)` (`ops.tick`, 25 h). The orchestrator writes one point per system and tick when the progressive core or `lib3.resource_mode = 'bounded'` is on.
+
+Templater (lib/template): `Templater.apply_path(host, method, path) -> '{METHOD} {host} {template}'` is read-only (the same walk as template_path with weight 0; no count, node or vocabulary change). P00 uses it for `http.route` after R2 updated the templater.

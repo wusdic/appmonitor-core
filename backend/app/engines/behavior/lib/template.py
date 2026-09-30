@@ -930,6 +930,15 @@ class Templater:
             walk[wk] = (tuple(path_nodes), tpl)
         return tpl, masked
 
+    def apply_path(self, host: str, method: str, path: str) -> str:
+        """Read-only route template '{METHOD} {host} {template}' (no status
+        class) for the progressive core's http.route (docs/lib3/progressive.md
+        §2): the same walk as template_path with weight 0, so no count,
+        node or vocabulary changes; unknown segments render as {var}."""
+        key = _norm_key(host, method)
+        tpl, _ = self._template(key, path, 0.0)
+        return f"{key[1]} {key[0]} {tpl}"
+
     def http_token(self, method: str, host: str, path: str, status: Optional[int],
                    w: float = 1.0) -> Tuple[str, List[Tuple[str, str]]]:
         """(token in the HTTP format, masked values)."""

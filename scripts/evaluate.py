@@ -10,6 +10,14 @@ Examples:
   .venv/bin/python scripts/evaluate.py --packs A,B,C,D,E --seeds 0,1,2,3,4 --workers 4 --out eval_out
   .venv/bin/python scripts/evaluate.py --packs A --seeds 0 --ablate behavior.likelihood,behavior.class_monitor
   .venv/bin/python scripts/evaluate.py --packs A --seeds 0,1 --feedback
+  .venv/bin/python scripts/evaluate.py --org O,O-red --real --seeds 0,1 --out peval_out
+  .venv/bin/python scripts/evaluate.py --scale --servers --seeds 0 --out pscale_out
+
+Progressive-core options (docs/lib3/progressive.md §11.6, §12): --org runs the
+named org packs and scores them with eval/pmetrics (gates PG1-PG11), --real
+adds pack O-real and its one-at-a-time R-item ablations, --scale / --servers
+run the PG4 scaling grid (eval/pscale). They write peval_report.json; without
+--packs they do not run packs A-E.
 """
 from __future__ import annotations
 
@@ -32,6 +40,82 @@ from app.eval.report import _clean, write_report  # noqa: E402
 from app.eval.runner import SimulatedAnalyst, run_pack  # noqa: E402
 
 DEFAULT_PACKS = ["A", "B", "C", "D", "E"]
+
+
+def _pjob(pack: str, seed: int, opts: Dict[str, Any]) -> Dict[str, Any]:
+    """Worker: run + score one progressive-core pack (pmetrics.score_prun)."""
+    from app.eval.pmetrics import score_prun
+    t0 = time.perf_counter()
+    try:
+        res = run_pack(pack, seed, strict=True, time_budget_s=opts.get("time_budget_s"),
+                       record_series=True)
+        sc = score_prun(res)
+        sc["exceptions"] = len(res.exceptions)
+    except Exception as exc:
+        return {"pack": pack, "seed": seed, "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc()[-4000:], "kind": "org"}
+    sc["kind"] = "org"
+    sc["job_s"] = time.perf_counter() - t0
+    return _clean(sc)
+
+
+def _sjob(pack: str, seed: int, opts: Dict[str, Any]) -> Dict[str, Any]:
+    """Worker: one PG4 scaling point (pscale.run_point)."""
+    from app.eval.pscale import run_point
+    t0 = time.perf_counter()
+    try:
+        pt = run_point(pack, seed, time_budget_s=opts.get("time_budget_s"))
+    except Exception as exc:
+        return {"pack": pack, "seed": seed, "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc()[-4000:], "kind": "scale"}
+    pt["kind"] = "scale"
+    pt["job_s"] = time.perf_counter() - t0
+    return _clean(pt)
+
+
+def _progressive(args: Any, seeds: List[int]) -> Optional[Dict[str, Any]]:
+    """--org / --real / --scale / --servers: run, score, write peval_report.json."""
+    from app.eval import packs as P
+    from app.eval.pmetrics import compute_pgates
+    from app.eval.pscale import pg4_summary
+    org = [p.strip() for p in (args.org or "").split(",") if p.strip()]
+    if args.real:
+        org += ["O-real"] + [f"O-real-{r}" for r in P.R_ITEMS] + ["O-real-R1p"]
+    scale: List[str] = []
+    if args.scale:
+        scale += [f"O-scale-{k}-{a}" for k in P.SCALE_IPS for a in P.SCALE_ATTRS]
+    if args.servers:
+        scale += ["O-servers-20", "O-servers-100", "O-servers"]
+    if not org and not scale:
+        return None
+    jobs = [("org", p, s) for p in org for s in seeds] + [("scale", p, s) for p in scale for s in seeds]
+    opts = {"time_budget_s": args.time_budget}
+    os.makedirs(os.path.join(args.out, "pruns"), exist_ok=True)
+    out: List[Dict[str, Any]] = []
+    t0 = time.perf_counter()
+    with ProcessPoolExecutor(max_workers=max(1, args.workers)) as ex:
+        futs = {ex.submit(_pjob if k == "org" else _sjob, p, s, opts): (k, p, s) for k, p, s in jobs}
+        for fut in as_completed(futs):
+            k, p, s = futs[fut]
+            r = fut.result()
+            out.append(r)
+            with open(os.path.join(args.out, "pruns", f"{k}_{p}_{s}.json"), "w", encoding="utf-8") as f:
+                json.dump(r, f, indent=1, ensure_ascii=False)
+            print(f"[{time.perf_counter() - t0:7.1f}s] {k} {p}/{s}: "
+                  f"{r.get('error') or ('%.1fs' % r.get('job_s', 0))}", flush=True)
+    ok = [r for r in out if "error" not in r]
+    pts = [r for r in ok if r.get("kind") == "scale"]
+    gates = compute_pgates([r for r in ok if r.get("kind") == "org"],
+                           scale=pg4_summary(pts) if pts else None)
+    rep = _clean({"gates": gates, "scores": [r for r in ok if r.get("kind") == "org"],
+                  "scale_points": pts,
+                  "errors": [{k: r.get(k) for k in ("pack", "seed", "error")} for r in out
+                             if "error" in r]})
+    with open(os.path.join(args.out, "peval_report.json"), "w", encoding="utf-8") as f:
+        json.dump(rep, f, indent=1, ensure_ascii=False)
+    for name, g in gates.items():
+        print(f"{name}: pass={g.get('pass')} value={g.get('value')}")
+    return rep
 
 
 def _job(pack: str, seed: int, opts: Dict[str, Any]) -> Dict[str, Any]:
@@ -87,7 +171,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="also run each pack-seed with the simulated analyst (gate 12)")
     ap.add_argument("--smoke", action="store_true",
                     help="also run the 'smoke' pack (gate 14 smoke budget)")
+    ap.add_argument("--org", default="", help="progressive-core packs to run and score (PG gates), "
+                                              "e.g. O,O-red,O60")
+    ap.add_argument("--real", action="store_true",
+                    help="progressive core: O-real and its one-at-a-time R-item ablations (PG11)")
+    ap.add_argument("--scale", action="store_true", help="progressive core: PG4 IP/attribute grid")
+    ap.add_argument("--servers", action="store_true", help="progressive core: PG4 server curve")
     args = ap.parse_args(argv)
+
+    if args.org or args.real or args.scale or args.servers:
+        prep = _progressive(args, _seeds(args.seeds))
+        if args.packs is None:
+            return 0 if prep is not None else 1
 
     packs, seeds = _pack_names(args.packs), _seeds(args.seeds)
     jobs: List[Tuple[str, int, Dict[str, Any]]] = [(p, s, {"variant": "full",

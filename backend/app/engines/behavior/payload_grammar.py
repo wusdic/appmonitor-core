@@ -1,0 +1,155 @@
+"""P07 PayloadGrammar (`behavior.payload_grammar`) — key sets, value grammars
+and closed value sets per pattern node (docs/lib3/progressive.md §6.11, card P07).
+
+Reads   model.ptree (node text / set / categorical target summaries), model.attr
+        (system shape distributions for the gain), model.sysprof (arm 'p07' on/off),
+        config progressive.content_pins / model.cpins (operator length pins).
+Writes  model.pgrammar@(tree key, '__system__'):
+          {'fmt': 1, 'version', 'updated', 'applicable': bool,
+           'nodes': {kind: {nid: {'status': 'fitted'|'none'|'off', 'attrs': {attr: record},
+                                  'cver', 'n_c', 'fit_t'}}},
+           'fit': {kind: {nid: fit mark}}, 'gain': {...}}
+        record (lib/pgrammar): text -> grammar (regex), charset, len, len_cover, c_g, U_s,
+        closed / U (closed value set), top, confidence; set -> required, optional,
+        presence, p_new_key, p_missing; categorical -> closed / U.
+Cadence 1 h per tree, dirty nodes only (§6.20).
+Nothing is pre-set: "后边内容不超过 10 个字符" is an output only when observed
+lengths reach 10 (or an operator pins it; pins only widen).
+Inert unless config['progressive']['enabled'].
+"""
+from __future__ import annotations
+
+import time
+from typing import Any, Dict, List, Mapping, Optional
+
+from ...core.engine import Context, Engine
+from ...models.schema import SYSTEM_ENTITY
+from .lib import m_ptree as MP
+from .lib import pbounds as PB
+from .lib import pevent as EV
+from .lib import pgrammar as PG
+from .lib import pnode as PN
+
+ARM = ("p07", "P07", "grammar", "payload_grammar")
+
+
+class PayloadGrammarEngine(Engine):
+    name = "behavior.payload_grammar"
+    layer = "behavior"
+    consumes = [MP.PTREE, MP.ATTR, MP.SYSPROF, PB.CPINS]
+    produces = [MP.PGRAMMAR]
+    description = "P07: required keys, value grammars and closed value sets per pattern node"
+    period_s = 3600.0
+    interval = 1
+
+    def __init__(self, **params: Any) -> None:
+        super().__init__(**params)
+        self.last_stats: Dict[str, Any] = {}
+
+    def run(self, ctx: Context, observations: Optional[List] = None) -> int:
+        if not EV.enabled(ctx.config):
+            return 0
+        store = ctx.store
+        now = float(ctx.now)
+        keys = sorted({MP.tree_key(store, s) for s in store.systems()} |
+                      {MP.tree_key(store, s) for s in store.batch_systems(EV.EVT_BATCH)})
+        fitted = 0
+        stats: Dict[str, Any] = {}
+        for key in keys:
+            ptm = MP.get_ptree(store, key)
+            if ptm is None or not self.entity_due(("p07", key), now):
+                continue
+            n, st = self.fit_tree(ctx, key, ptm, now)
+            fitted += n
+            stats[key] = st
+        self.last_stats = stats
+        return fitted
+
+    def fit_tree(self, ctx: Context, key: str, ptm: Any, now: float) -> tuple:
+        store = ctx.store
+        t0 = time.perf_counter()
+        model = MP.get_model(store, key, MP.PGRAMMAR)
+        if not isinstance(model, dict):
+            model = PB.empty_model()
+        on = PB.chosen_arm(store, key, ARM) != "off"
+        switched = model.get("applicable", True) != bool(on)
+        model["applicable"] = bool(on)
+        reg = MP.get_registry(store, key)
+        pc = EV.pconfig(ctx.config)
+        dflt = pc.get("defaults") or {}
+        closed_n = float(dflt.get("closed_n", PG.CLOSED_N))
+        n_fit, gain_num, gain_den, new_ev, skipped = 0, 0.0, 0.0, 0.0, 0
+        for kind, tree in ptm.kinds.items():
+            root = tree.nodes.get(tree.root)
+            fits = model["fit"].setdefault(kind, {})
+            outn = model["nodes"].setdefault(kind, {})
+            for nid in [n for n in list(outn) if n not in tree.nodes]:
+                outn.pop(nid, None)
+                fits.pop(nid, None)
+            marks = model.setdefault("tree_mark", {})
+            if root is None or (not PB.tree_changed(marks, kind, root, now) and outn
+                                and not switched):
+                skipped += 1
+                continue
+            if tree.root in fits:
+                new_ev += max(0.0, PB.new_evidence(fits[tree.root], root, now))
+            for nid, node in tree.nodes.items():
+                if node.last_seen is None:
+                    continue
+                prev = outn.get(nid)
+                was_off = prev is not None and prev.get("status") == "off"
+                if on and not was_off and not PB.is_dirty(fits.get(nid), node, now):
+                    continue
+                if not on:
+                    if not was_off:
+                        outn[nid] = {"status": "off", "attrs": {}, "fit_t": now, "cver": 0}
+                    continue
+                entry = self.fit_node(store, key, node, now, reg, ctx.config, closed_n, prev)
+                outn[nid] = entry
+                fits[nid] = PB.fit_mark(node, now)
+                n_fit += 1
+                m = node.mass_at(now)
+                for rec in entry["attrs"].values():
+                    g = rec.get("gain")
+                    if g is not None:
+                        gain_num += m * g
+                        gain_den += m
+        ms = (time.perf_counter() - t0) * 1000.0
+        model["last_run"] = now
+        model["updated"] = now
+        model["version"] = int(model.get("version", 0)) + (1 if n_fit else 0)
+        model["gain"] = {"bits_per_event": gain_num / gain_den if gain_den > 0 else 0.0,
+                         "us_per_event": ms * 1000.0 / new_ev if new_ev > 0 else None,
+                         "nodes_fitted": n_fit, "ms": ms}
+        store.put_model(key, SYSTEM_ENTITY, MP.PGRAMMAR, model, version=model["version"], ts=now)
+        return n_fit, {"fitted": n_fit, "skipped_kinds": skipped, "ms": ms, "on": on}
+
+    def fit_node(self, store: Any, key: str, node: Any, now: float, reg: Any,
+                 config: Mapping[str, Any], closed_n: float,
+                 old: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+        attrs: Dict[str, Any] = {}
+        old_attrs = (old or {}).get("attrs") or {}
+        for a, summ in node.targets.items():
+            rr = reg.get(a) if reg is not None else None
+            if isinstance(summ, PN.TextSummary):
+                rec = PG.fit_text(summ, now, closed_n=closed_n,
+                                  pin=PB.pins_for(config, store, key, a))
+                if rec is not None:
+                    rec["gain"] = PG.shape_gain(summ.shapes, getattr(rr, "top", None), now)
+            elif isinstance(summ, PN.SetSummary):
+                rec = PG.fit_set(summ, now)
+            elif isinstance(summ, PN.CatSummary):
+                rec = PG.fit_cat(summ, now, closed_n=closed_n)
+                if rec is not None and "closed" not in rec:
+                    rec = None                    # nothing to constrain beyond P03's predictive
+            else:
+                rec = None
+            if rec is None:
+                continue
+            prev = old_attrs.get(a)
+            cv = int((prev or {}).get("cver", 0))
+            rec["cver"] = cv + 1 if prev and PG.material_change(prev, rec) else cv
+            attrs[a] = rec
+        return {"status": "fitted" if attrs else "none", "attrs": attrs,
+                "n_c": float(node.n_c(now)), "fit_t": float(now), "state": node.state,
+                "cver": max([r.get("cver", 0) for r in attrs.values()] or [0])}

@@ -122,6 +122,12 @@ class RunResult:
     labels_added: int = 0
     aborted: Optional[str] = None
     wall_s: float = 0.0
+    # progressive core (progressive.md §11.5, §12): the generator's pattern /
+    # group / strategy / system / attribute truth and bookkeeping (gen.ptruth),
+    # and end-of-day snapshots of the P models {day: snapshot}
+    ptruth: Dict[str, Any] = field(default_factory=dict)
+    psnaps: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    gen_stats: Dict[str, Any] = field(default_factory=dict)
     store: Optional[MetricStore] = None          # only when keep_store=True
 
     def __getstate__(self) -> Dict[str, Any]:
@@ -932,6 +938,92 @@ def _truth_of(gen: Any) -> List[Dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- #
+# Progressive-core snapshots (progressive.md §12: the runner snapshots
+# model.ptree, the fitted models, model.who_groups, model.sysprof and
+# model.pviews at the end of the snapshot days)
+# --------------------------------------------------------------------------- #
+P_SYS_LIGHT = ("model.pviews", "model.pbind", "model.pwin", "model.sysprof", "model.attr",
+               "model.attrsel")
+P_SYS_FULL = P_SYS_LIGHT + ("model.ptree", "model.pbounds", "model.pgrammar", "model.pflow")
+P_ORG = ("model.who_groups", "model.sysfam", "model.budget", "model.facets")
+GROUP_VIEW_PREFIX = "class:grp:"
+
+
+def _fam_keys(obj: Any, depth: int = 0) -> List[str]:
+    """Every 'fam:<id>' tree key mentioned in model.sysfam (format-agnostic)."""
+    if depth > 6:
+        return []
+    if isinstance(obj, str):
+        return [obj] if obj.startswith("fam:") else []
+    if isinstance(obj, dict):
+        out = []
+        for k, v in obj.items():
+            out += _fam_keys(k, depth + 1) + _fam_keys(v, depth + 1)
+        return out
+    if isinstance(obj, (list, tuple, set)):
+        return [x for v in obj for x in _fam_keys(v, depth + 1)]
+    return []
+
+
+def progressive_snapshot(store: MetricStore, full: bool = True) -> Dict[str, Any]:
+    """Plain-data copy of the P models: {systems: {key: {name: model}}, org:
+    {name: model}, group_views: {class:grp:<g>: pviews}}. Empty when no P
+    engine has written anything."""
+    names = P_SYS_FULL if full else P_SYS_LIGHT
+    org: Dict[str, Any] = {}
+    for n in P_ORG:
+        m = store.get_model(ORG, ORG, n)
+        if m is not None:
+            org[n] = _jsonable(m, max_depth=16)
+    keys = set(store.systems()) | set(_fam_keys(org.get("model.sysfam")))
+    systems: Dict[str, Dict[str, Any]] = {}
+    for s in sorted(keys):
+        rec = {}
+        for n in names:
+            m = store.get_model(s, SYSTEM_ENTITY, n)
+            if m is not None:
+                rec[n] = _jsonable(m, max_depth=16)
+        if rec:
+            systems[s] = rec
+    gviews = {}
+    for e in store.pseudo_entities(ORG):
+        if e.startswith(GROUP_VIEW_PREFIX):
+            m = store.get_model(ORG, e, "model.pviews")
+            if m is not None:
+                gviews[e] = _jsonable(m, max_depth=16)
+    return {"full": bool(full), "systems": systems, "org": org, "group_views": gviews}
+
+
+class _DaySnapper:
+    """Takes a progressive snapshot at the end of each local day in the pack's
+    snapshot schedule (day 1 = the local date of pack.scenario_start)."""
+
+    def __init__(self, pack: Any) -> None:
+        self.days = set(int(d) for d in (getattr(pack, "snapshot_days", None) or []))
+        self.full = set(int(d) for d in (getattr(pack, "full_snapshot_days", None) or []))
+        self.snaps: Dict[int, Dict[str, Any]] = {}
+        self.clock = None
+        if self.days:
+            from ..pipeline.generator import Clock
+            self.clock = Clock(getattr(pack, "tz", None) or "Asia/Shanghai",
+                               getattr(pack, "calendar", None))
+            t0 = float(getattr(pack, "scenario_start", None) or getattr(pack, "start_epoch", 0.0))
+            self.d0 = self.clock.local(t0).date()
+
+    def day(self, t: float) -> int:
+        return (self.clock.local(t).date() - self.d0).days + 1
+
+    def after_tick(self, store: MetricStore, now: float, final: bool = False) -> None:
+        if self.clock is None:
+            return
+        cur = self.day(now - 1e-6)
+        if (final or self.day(now) != cur) and cur in self.days and cur not in self.snaps:
+            snap = progressive_snapshot(store, full=cur in self.full)
+            snap.update({"day": cur, "ts": float(now)})
+            self.snaps[cur] = snap
+
+
+# --------------------------------------------------------------------------- #
 # run_pack
 # --------------------------------------------------------------------------- #
 def run_pack(pack_name: Any, seed: int, registry_factory: Optional[Callable] = None,
@@ -976,6 +1068,7 @@ def run_pack(pack_name: Any, seed: int, registry_factory: Optional[Callable] = N
     rec = _Recorder(registry, on_error)
     stale = _StaleChecker()
     col = _Collector(store)
+    snapper = _DaySnapper(pack)
 
     result = RunResult(pack=name, seed=int(seed), strict=bool(strict), config=_jsonable(config),
                        phases=[vars(p).copy() for p in plan], disabled_engines=disabled)
@@ -1012,6 +1105,7 @@ def run_pack(pack_name: Any, seed: int, registry_factory: Optional[Callable] = N
                         holdout_portraits = _portraits(store)
                 if stale_every and tick_i % max(1, int(stale_every)) == 0:
                     stale.check(store, now, ph.dt)
+                snapper.after_tick(store, now)
                 t3 = time.perf_counter()
                 rec.end_tick(now, ph.dt, ph.index, ph.training, t1 - t0, t2 - t1, t3 - t2)
                 tick_i += 1
@@ -1027,6 +1121,7 @@ def run_pack(pack_name: Any, seed: int, registry_factory: Optional[Callable] = N
     truth = _truth_of(gen)
     if scen_ticks:
         col.snapshot_baselines(truth, scen_ticks[-1], scen_dt, final=True)
+        snapper.after_tick(store, scen_ticks[-1], final=True)
     col.finish()
 
     memory["final"] = _jsonable(store.memory_report())
@@ -1064,6 +1159,10 @@ def run_pack(pack_name: Any, seed: int, registry_factory: Optional[Callable] = N
     result.memory = memory
     result.health = _jsonable(store.health(), max_depth=4)
     result.labels_added = labels
+    result.ptruth = _jsonable(getattr(gen, "ptruth", None) or {}, max_depth=12)
+    result.psnaps = snapper.snaps
+    org = getattr(gen, "org", None)
+    result.gen_stats = dict(getattr(org, "stats", None) or {})
     result.wall_s = time.perf_counter() - t_wall0
     if keep_store:
         result.store = store

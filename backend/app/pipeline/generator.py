@@ -825,6 +825,26 @@ class TrafficGenerator:
                                             for sc in scenarios if sc.live_tick is None]
         self._rngs: Dict[str, np.random.Generator] = {}
         self._state: Dict[str, Any] = {}          # renewal clocks, scenario state
+        # progressive-core extensions (progressive.md §11.1): per-event rows in
+        # aggregated records (own RNG stream 'evs', so every other stream and
+        # the packs without the flag stay bit-identical) and the organisation
+        # generator (pack.org), whose traffic and truth are appended
+        self.ev_sample = bool(getattr(pack, "ev_sample", False)) if pack is not None else False
+        self._evs_rngs: Dict[str, np.random.Generator] = {}
+        self.org = None
+        org = getattr(pack, "org", None) if pack is not None else None
+        if org is not None:
+            from .orggen import OrgGenerator
+            self.org = OrgGenerator(org, seed=self.seed, pack_name=self.pack_name,
+                                    clock=Clock(org.tz, org.calendar),
+                                    ev_sample=bool(getattr(pack, "ev_sample", True)))
+            self.truth.extend(self.org.truth_rows())
+
+    @property
+    def ptruth(self) -> Dict[str, Any]:
+        """Progressive-core truth (pattern / group / strategy / system / attr
+        truth, opportunities, who log); {} without an organisation."""
+        return self.org.ptruth() if self.org is not None else {}
 
     # ------------------------------------------------------------ population
     @property
@@ -902,6 +922,8 @@ class TrafficGenerator:
                 obs.extend(self._aggregate(key, evs, m))
             else:
                 obs.extend(self._observations(key, evs, m))
+        if self.org is not None:
+            obs.extend(self.org.step(t0, t1, bool(aggregated)))
         self.tick += 1
         if live:
             self.live_ticks += 1
@@ -1228,14 +1250,18 @@ class TrafficGenerator:
             g = groups.get(k)
             if g is None:
                 groups[k] = [e, [e[EV_TS]], e[EV_UP], e[EV_DOWN], e[EV_DUR]]
+                if self.ev_sample:
+                    groups[k].append([e])
             else:
                 g[1].append(e[EV_TS])
                 g[2] += e[EV_UP]
                 g[3] += e[EV_DOWN]
                 g[4] += e[EV_DUR]
+                if self.ev_sample:
+                    g[5].append(e)
         out = []
         for g in groups.values():
-            e, ts, up, down, dur = g
+            e, ts, up, down, dur = g[:5]
             w = len(ts)
             t0 = ts[0]
             if w > TS_SAMPLE_MAX:
@@ -1257,9 +1283,31 @@ class TrafficGenerator:
                      "bytes_down_total": int(round(down)), "ts_sample": sample}
             if e[EV_CH] == "h":               # _make_obs carries retransmits on TCP/HTTP only
                 extra["retransmits_total"] = retr
+            if self.ev_sample:
+                extra["ev_sample"] = self._ev_sample(key, g[5], t0)
             out.append(_make_obs(system, entity, rep, t0, rtt0 * float(r.lognormal(0, 0.1)),
                                  int(round(retr / w)), extra))
         return out
+
+    def _ev_sample(self, key: str, evs: List[list], t0: float) -> List[Dict[str, Any]]:
+        """Up to 64 per-event rows drawn uniformly without replacement from the
+        record's events (progressive.md §5.1.2), from the RNG stream
+        rng_for(seed, pack, 'evs', key)."""
+        r = self._evs_rngs.get(key)
+        if r is None:
+            r = self._evs_rngs[key] = rng_for(self.seed, self.pack_name, "evs", key)
+        w = len(evs)
+        idx = (range(w) if w <= TS_SAMPLE_MAX else
+               np.sort(r.choice(w, size=TS_SAMPLE_MAX, replace=False)).tolist())
+        rows = []
+        for i in idx:
+            e = evs[i]
+            row: Dict[str, Any] = {"o": round(e[EV_TS] - t0, 3), "up": int(e[EV_UP]),
+                                   "down": int(e[EV_DOWN])}
+            if e[EV_CH] == "h":
+                row["st"] = int(e[EV_ST])
+            rows.append(row)
+        return rows
 
     # --------------------------------------------------- scenario effects
     # Each _fx_<kind>(sc, tk, mods, extra) adds modifiers for the scenario's

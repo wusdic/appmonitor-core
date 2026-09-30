@@ -66,6 +66,7 @@ class Pipeline:
                       config=self.config)
         for obs in observations:
             self.store.add_observation(obs)
+        self._write_tick_clock(now, observations)
         stats: Dict[str, int] = {}
         for engine in self.registry.ordered():
             obs_arg = observations if engine.layer == "raw" else None
@@ -74,6 +75,21 @@ class Pipeline:
         self.tick_count += 1
         self.last_tick_stats = stats
         return stats
+
+    def _write_tick_clock(self, now: float, observations: List[Observation]) -> None:
+        """ops.tick (docs/lib3/progressive.md §10.1): one float per system and
+        tick, written when the progressive core or lib-3 bounded mode is on
+        (readers treat a missing point as an idle tick)."""
+        cfg = self.config
+        on = bool((cfg.get("progressive") or {}).get("enabled")) or \
+            (cfg.get("lib3") or {}).get("resource_mode") == "bounded"
+        put = getattr(self.store, "put_tick", None)
+        if not on or put is None:
+            return
+        systems = set(self.store.systems())
+        systems.update(o.system for o in observations if o.system)
+        for s in systems:
+            put(s, now)
 
     def _write_engine_health(self, ctx: Context) -> None:
         """One small dict per system per tick: which engines failed at this

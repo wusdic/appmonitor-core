@@ -77,6 +77,15 @@ class Pack:
     seeds: List[int] = field(default_factory=lambda: list(DEFAULT_SEEDS))
     config: Dict[str, Any] = field(default_factory=dict)
     description: str = ""
+    # progressive-core packs (progressive.md §11.6); defaults leave packs A-E,
+    # smoke and mini unchanged
+    org: Any = None                                  # orggen.OrgSpec
+    ev_sample: bool = False                          # extra['ev_sample'] in aggregated records
+    snapshot_days: List[int] = field(default_factory=list)       # light P-model snapshots
+    full_snapshot_days: List[int] = field(default_factory=list)  # + model.ptree & fitted models
+    registry_mode: str = "full"                      # 'full' | 'full+progressive' | 'progressive_only'
+    n_warmup_phases: Optional[int] = None
+    variant: str = ""
 
     @property
     def n_ticks(self) -> int:
@@ -799,6 +808,108 @@ def pack_mini() -> Pack:
     return _pack("mini", tl, MINI_KEYS, scs, "mini CI pack (8 entities, 200 ticks)")
 
 
+# --------------------------------------------------------------------------- #
+# Progressive-core packs (progressive.md §11.6): the organisation of §11.3
+# --------------------------------------------------------------------------- #
+PG_SNAPSHOT_DAYS = [1, 2, 3, 5, 7, 10, 14, 21]
+R_ITEMS = ["R1", "R2", "R3", "R4", "R5", "R7", "R8", "R9", "R10", "R11", "R12", "R13"]
+SCALE_IPS = {"500": 500, "5k": 5000, "20k": 20000}
+SCALE_ATTRS = (0, 60, 300)
+
+
+def _org_pack(name: str, spec: Any, description: str, phases: Optional[List] = None,
+              registry_mode: str = "full+progressive",
+              full_days: Optional[Sequence[int]] = None) -> Pack:
+    """A pack whose whole timeline is the scenario phase (no warm-up: the
+    progressive core learns from day 1 and PG2 measures exactly that)."""
+    clock = Clock(spec.tz, spec.calendar)
+    start = clock.epoch(spec.start_date, 0.0)
+    ph = phases or _phases((int(spec.n_days) * 96, 900.0))
+    end = start + sum(float(n) * float(dt) for n, dt, *_ in ph)
+    n_days = int(math.ceil((end - start) / 86400.0 - 1e-9))
+    full = sorted({d for d in (full_days or PG_SNAPSHOT_DAYS) if d <= n_days} | {n_days})
+    cfg = {"tz": spec.tz, "calendar": copy.deepcopy(spec.calendar)}
+    cfg.update(copy.deepcopy(spec.config))
+    return Pack(name=name, tz=spec.tz, calendar=copy.deepcopy(spec.calendar),
+                phases=[tuple(p) for p in ph], start_epoch=start, scenario_start=start,
+                end_epoch=end, population=[], scenarios=[], fixtures={}, config=cfg,
+                description=description, org=spec, ev_sample=True,
+                snapshot_days=list(range(1, n_days + 1)), full_snapshot_days=full,
+                registry_mode=registry_mode, n_warmup_phases=0, variant=spec.variant)
+
+
+def pack_o() -> Pack:
+    """Pack O: the requirement's organisation, 21 d at 900 s, aggregated with
+    ev_sample, portal_n = 500 (PG1-PG3, PG5-PG8, PG10)."""
+    from ..pipeline.orggen import build_org
+    return _org_pack("O", build_org("O"), "org O (综合部/财务部/销售部/研发/门户), 21 d at 900 s")
+
+
+def pack_o60() -> Pack:
+    """Days 1-7 at 900 s aggregated, day 8 at 60 s event mode (PG1 agreement)."""
+    from ..pipeline.orggen import build_org
+    spec = build_org("O60", n_days=8)
+    return _org_pack("O60", spec, "org O: 7 d at 900 s then 1 d at 60 s event mode",
+                     phases=[(7 * 96, 900.0, True), (1440, 60.0, False)],
+                     full_days=[1, 2, 3, 5, 7, 8])
+
+
+def pack_o_real(items: Optional[Sequence[str]] = None, r1_trusted: bool = True,
+                name: str = "O-real") -> Pack:
+    """Pack O with the real-world perturbations R1-R13 (35 d when R8 is on)."""
+    from ..pipeline.orggen import build_org
+    items = list(R_ITEMS if items is None else items)
+    spec = build_org(name, real=items, r1_trusted=r1_trusted)
+    full = PG_SNAPSHOT_DAYS + ([29, 35] if spec.n_days >= 35 else [])
+    return _org_pack(name, spec, f"org O + real-world perturbations {','.join(items)}"
+                     + ("" if r1_trusted else " (R1' without trusted_proxies)"), full_days=full)
+
+
+def pack_o_red() -> Pack:
+    """Red-team organisation (never used for tuning), no ip_classes, plus 20
+    attributes independent of every truth constraint (false-split probe)."""
+    from ..pipeline.orggen import build_org
+    return _org_pack("O-red", build_org("O-red", red=True, independent_attrs=20),
+                     "red-team org (different sizes, windows, names; no ip_classes)")
+
+
+def pack_o_servers(n_systems: int = 300, name: str = "O-servers") -> Pack:
+    """300 systems: 12 families x 20 + 30 singletons + 30 idle, 7 d (PG4
+    servers); n_systems 20 / 100 give the smaller points of the curve."""
+    from ..pipeline.orggen import build_servers_org
+    return _org_pack(name, build_servers_org(n_systems=n_systems),
+                     f"{n_systems} systems, 12 families, 7 d",
+                     registry_mode="progressive_only", full_days=[1, 7])
+
+
+def pack_o_scale(n_ips: int, n_attrs: int, name: Optional[str] = None, n_days: int = 7) -> Pack:
+    """Pack O with portal_n IPs and n_attrs synthetic attributes, 7 d (PG4)."""
+    from ..pipeline.orggen import build_org
+    nm = name or f"O-scale-{n_ips}-{n_attrs}"
+    return _org_pack(nm, build_org(nm, portal_n=n_ips, n_meta=n_attrs, n_days=n_days),
+                     f"scale: portal_n={n_ips}, synthetic attrs={n_attrs}, {n_days} d",
+                     registry_mode="progressive_only", full_days=[1, 7])
+
+
+ORG_PACKS: Dict[str, Callable[[], Pack]] = {
+    "O": pack_o, "O60": pack_o60, "O-real": pack_o_real, "O-red": pack_o_red,
+    "O-servers": pack_o_servers,
+    "O-real-R1p": lambda: pack_o_real(["R1"], r1_trusted=False, name="O-real-R1p"),
+    "O-servers-20": lambda: pack_o_servers(20, "O-servers-20"),
+    "O-servers-100": lambda: pack_o_servers(100, "O-servers-100"),
+}
+for _r in R_ITEMS:
+    ORG_PACKS[f"O-real-{_r}"] = (lambda r=_r: pack_o_real([r], name=f"O-real-{r}"))
+for _k, _n in SCALE_IPS.items():
+    for _a in SCALE_ATTRS:
+        ORG_PACKS[f"O-scale-{_k}-{_a}"] = (lambda n=_n, a=_a, k=_k:
+                                           pack_o_scale(n, a, f"O-scale-{k}-{a}"))
+
+
+def org_pack_names() -> List[str]:
+    return list(ORG_PACKS)
+
+
 PACKS: Dict[str, Callable[[], Pack]] = {"A": pack_a, "B": pack_b, "C": pack_c, "D": pack_d,
                                         "E": pack_e, "smoke": pack_smoke}
 EXTRA_PACKS: Dict[str, Callable[[], Pack]] = {"mini": pack_mini}
@@ -819,7 +930,9 @@ def _norm(name: str) -> str:
 
 
 def get_pack(name: Any) -> Pack:
-    """A fresh Pack by name: 'A'..'E' (also 'pack_a', 'Pack A'), 'smoke', 'mini'."""
+    """A fresh Pack by name: 'A'..'E' (also 'pack_a', 'Pack A'), 'smoke', 'mini',
+    and the progressive-core packs of ORG_PACKS ('O', 'O60', 'O-real',
+    'O-real-R<k>', 'O-red', 'O-servers', 'O-scale-<500|5k|20k>-<0|60|300>')."""
     if isinstance(name, Pack):
         return name
     n = _norm(str(name))
@@ -827,4 +940,7 @@ def get_pack(name: Any) -> Pack:
         for k, fn in table.items():
             if k.upper() == n:
                 return fn()
-    raise KeyError(f"unknown pack {name!r}; known: {pack_names(True)}")
+    for k, fn in ORG_PACKS.items():
+        if _norm(k) == n:
+            return fn()
+    raise KeyError(f"unknown pack {name!r}; known: {pack_names(True) + org_pack_names()}")

@@ -49,6 +49,7 @@ from ..models.schema import (
 
 HOUR = 3600.0
 DAY = 86400.0
+SYSTEM_BATCH_ENTITY = "__batch__"          # last_write key space of batch series
 
 # Default retention (contract B). Longest matching name prefix wins; a rule is
 # (max_points, max_age_s), None meaning "no limit on that axis". Pruning is
@@ -189,6 +190,15 @@ DICT_POINT_CAPS: Dict[str, Optional[int]] = {
 }
 # behavior.degraded had no rule (20000 points = 208 d at 900 s)
 DEFAULT_RETENTION["behavior.degraded"] = (None, 8 * DAY)
+# progressive core batch series (docs/lib3/progressive.md §5.6): event batches
+# are retained D + 1 ticks (D = max(4 ticks, 600 s)); writers raise the age
+# with ensure_retention for their cadence, the default covers 900-s ticks
+# (D = 3600 s) plus one tick. Batches are compacted to their learned rows once
+# learned (compact_batch), so the retained cost is O(e_rate x (dt + D)).
+DEFAULT_RETENTION["evt."] = (None, 4500.0)
+DEFAULT_RETENTION["pat."] = (None, 4500.0)
+# per-system tick clock (ops.tick): D0 / D2 read idle ticks from it in bounded mode
+TICK_CLOCK_MAX_AGE = 25 * HOUR
 RAW_SCALAR_MAX_AGE = 6 * HOUR
 # timeline(): a vec-ring risk point is listed when it enters a new 10-point band
 RISK_TIMELINE_BAND = 10.0
@@ -497,6 +507,9 @@ class MetricStore:
         self._is_pseudo: Dict[str, bool] = {}
         self._first_seen: Dict[Tuple[str, str], float] = {}
         self._last_seen: Dict[Tuple[str, str], float] = {}
+        # batch series (progressive core): (system, name) -> ts-sorted [(ts, obj)]
+        self._batches: Dict[Tuple[str, str], List[Tuple[float, Any]]] = {}
+        self._ticks: Dict[str, Deque[float]] = {}
         # retention
         self._retention: Dict[str, Tuple[Optional[int], Optional[float]]] = dict(DEFAULT_RETENTION)
         self._dict_caps: Dict[str, Optional[int]] = dict(DICT_POINT_CAPS)
@@ -1136,6 +1149,124 @@ class MetricStore:
                 ts = self._last_write.get(_k(system, entity, self._virtual[name][0]))
             return ts
 
+    # ============================================================ batch series
+    # Contract addition "batch series" (docs/lib3/progressive.md §5.6): one
+    # object per (system, name, tick), e.g. an EventBatch. Batches are not
+    # per-entity metrics: they bypass the raw pseudo-entity guard and do not
+    # touch first_seen / last_seen or the entity registry. Retention by age
+    # (and max_points) through the retention table, relative to the newest ts
+    # of the series.
+    def add_batch(self, system: str, name: str, ts: float, obj: Any) -> None:
+        """Store (or replace) the batch of (system, name) at tick ts."""
+        key = (system, name)
+        ts = float(ts)
+        with self._lock:
+            lst = self._batches.setdefault(key, [])
+            i = bisect.bisect_left(lst, ts, key=lambda x: x[0])
+            if i < len(lst) and lst[i][0] == ts:
+                lst[i] = (ts, obj)
+            else:
+                lst.insert(i, (ts, obj))
+            mp, age = self._rule("batch", name)
+            newest = lst[-1][0]
+            if age is not None:
+                cut = bisect.bisect_left(lst, newest - age, key=lambda x: x[0])
+                if cut:
+                    del lst[:cut]
+            if mp and len(lst) > mp:
+                del lst[:len(lst) - mp]
+            self._bump_write(_k(system, SYSTEM_BATCH_ENTITY, name), ts)
+
+    def batch_at(self, system: str, name: str, ts: float) -> Any:
+        """The batch written at exactly tick ts, else None."""
+        with self._lock:
+            lst = self._batches.get((system, name))
+            if not lst:
+                return None
+            i = bisect.bisect_left(lst, float(ts), key=lambda x: x[0])
+            if i < len(lst) and lst[i][0] == float(ts):
+                return lst[i][1]
+            return None
+
+    def batches_since(self, system: str, name: str, since: float) -> List[Tuple[float, Any]]:
+        """[(ts, batch)] with ts > since, oldest first."""
+        with self._lock:
+            lst = self._batches.get((system, name))
+            if not lst:
+                return []
+            i = bisect.bisect_right(lst, float(since), key=lambda x: x[0])
+            return list(lst[i:])
+
+    def batch_times(self, system: str, name: str) -> List[float]:
+        with self._lock:
+            return [ts for ts, _ in self._batches.get((system, name), ())]
+
+    def batch_systems(self, name: str) -> List[str]:
+        with self._lock:
+            return sorted(s for (s, n) in self._batches if n == name)
+
+    def compact_batch(self, system: str, name: str, ts: float, fn: Any = None,
+                      keep_cols: Optional[Iterable[str]] = None) -> bool:
+        """Replace the batch at ts by its compacted form (§5.2.3): fn(obj) ->
+        new obj when given; else, for an object with `learn` / `select`
+        (lib/pevent.EventBatch), its learned rows restricted to keep_cols.
+        Returns True when a batch was compacted."""
+        with self._lock:
+            lst = self._batches.get((system, name))
+            if not lst:
+                return False
+            i = bisect.bisect_left(lst, float(ts), key=lambda x: x[0])
+            if i >= len(lst) or lst[i][0] != float(ts):
+                return False
+            obj = lst[i][1]
+            if fn is not None:
+                new = fn(obj)
+            elif hasattr(obj, "learn") and hasattr(obj, "select"):
+                rows = np.flatnonzero(np.asarray(obj.learn))
+                new = obj.select(rows, keep_cols)
+            else:
+                return False
+            lst[i] = (float(ts), new)
+            return True
+
+    def drop_batches(self, system: str, name: str, before: Optional[float] = None) -> int:
+        """Remove batches with ts < before (all when None); returns the count."""
+        with self._lock:
+            lst = self._batches.get((system, name))
+            if not lst:
+                return 0
+            if before is None:
+                n = len(lst)
+                del self._batches[(system, name)]
+                return n
+            cut = bisect.bisect_left(lst, float(before), key=lambda x: x[0])
+            del lst[:cut]
+            return cut
+
+    # ================================================================ ops.tick
+    def put_tick(self, system: str, ts: float) -> None:
+        """Per-system tick clock (ops.tick, docs/lib3/progressive.md §10.1):
+        one float per tick; readers treat a missing point as an idle tick."""
+        with self._lock:
+            dq = self._ticks.get(system)
+            if dq is None:
+                dq = self._ticks[system] = deque()
+            ts = float(ts)
+            if not dq or ts > dq[-1]:
+                dq.append(ts)
+            cutoff = ts - TICK_CLOCK_MAX_AGE
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+
+    def tick_times(self, system: str, since: Optional[float] = None) -> List[float]:
+        with self._lock:
+            dq = self._ticks.get(system)
+            if not dq:
+                return []
+            if since is None:
+                return list(dq)
+            return [t for t in dq if t > since]
+
     # ================================================================= queries
     def systems(self) -> List[str]:
         with self._lock:
@@ -1422,7 +1553,13 @@ class MetricStore:
                 for _, blob in v:
                     ck_b += blob.nbytes if isinstance(blob, np.ndarray) else sys.getsizeof(blob)
             n_ent = sum(len(v) for v in self._entities.values())
-            total = raw_b + der_b + vec_b + ev_b + ck_b
+            bt_n = sum(len(v) for v in self._batches.values())
+            bt_b = 0
+            for v in self._batches.values():
+                for _, obj in v:
+                    fn = getattr(obj, "nbytes", None)
+                    bt_b += int(fn()) if callable(fn) else sys.getsizeof(obj)
+            total = raw_b + der_b + vec_b + ev_b + ck_b + bt_b
             return {
                 "raw_series": len(self._raw), "raw_points": raw_pts, "raw_bytes": raw_b,
                 "derived_series": len(self._derived), "derived_points": der_pts,
@@ -1431,6 +1568,7 @@ class MetricStore:
                 "events": ev_n, "matches": m_n, "event_match_bytes": ev_b,
                 "incidents": len(self._incidents), "labels": len(self._labels),
                 "models": len(self._models), "checkpoints": ck_n, "checkpoint_bytes": ck_b,
+                "batch_series": len(self._batches), "batches": bt_n, "batch_bytes": bt_b,
                 "observations": len(self._observations),
                 "entities": n_ent,
                 "approx_bytes": total,
