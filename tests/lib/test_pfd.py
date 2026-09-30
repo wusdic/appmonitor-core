@@ -194,8 +194,66 @@ def test_probe_keeps_rare_stratum():
                      rnd.random())
     rows, w = pr.rows(T0 + 20000)
     assert sum(1 for r in rows if r.get("body.kv.username")) == 20
-    assert pr.n_rows() <= 8 * 32
+    assert pr.n_rows() <= pr.r_total and len(pr.res["portal"]) <= pr.r_max
     # HT weights restore the stratum masses
     dec = sum(2.0 ** (-(20000 - i) / (7 * DAY)) for i in range(20000)) + \
         sum(2.0 ** (-(20000 - i) / (7 * DAY)) for i in range(0, 20000, 1000))
     assert w.sum() == pytest.approx(dec, rel=1e-6)
+
+
+def test_screen_rejects_mode_restatements_and_structural_set_bindings():
+    """Screening keeps bindings that explain Y, per context: 'status -> IP' when
+    one monitor IP dominates (the mode already errs by ~g3; lambda ~ 0) and
+    'json is sent only by these two IPs' (a low-cardinality structural
+    attribute) are not bindings; the three GA usernames are, inside the login
+    stratum, even when a portal of random users is pooled with it."""
+    rnd = random.Random(4)
+    rows, strata = [], []
+    for d in range(6):
+        for ip, u in (("192.168.1.21", "jack"), ("192.168.1.23", "rose"), ("10.168.7.121", "mike")):
+            rows.append({"net.src": ip, "body.kv.username": u, "http.status": 302, "body.fmt": "form"})
+            strata.append("login")
+        for _ in range(40):
+            rows.append({"net.src": f"10.70.{rnd.randint(0, 1)}.{rnd.randint(1, 20)}",
+                         "body.kv.username": "u%05d" % rnd.randint(0, 99999), "http.status": 200,
+                         "body.fmt": "form"})
+            strata.append("portal")
+        for _ in range(30):
+            rows.append({"net.src": "192.168.9.9", "http.status": 200})
+            strata.append("health")
+        rows.append({"net.src": "192.168.1.23", "http.status": 404, "body.fmt": "json"})
+        strata.append("report")
+    w = np.ones(len(rows))
+    gen = lambda a, l, v: v                                         # noqa: E731
+    card = {"body.kv.username": 500.0, "http.status": 4.0, "body.fmt": 2.0}.get
+    specs = FD.screen(rows, w, [("net.src", 0)], ["body.kv.username", "http.status", "body.fmt"], gen,
+                      strata=strata, card=card)
+    got = {(d["x"], d["y"], d["dir"]) for d in specs}
+    assert ("net.src", "body.kv.username", "fwd") in got
+    assert not any("http.status" in k or "body.fmt" in k for k in got), got
+    pooled = FD.screen(rows, w, [("net.src", 0)], ["body.kv.username"], gen, card=card)
+    assert ("net.src", "body.kv.username", "fwd") not in {(d["x"], d["y"], d["dir"]) for d in pooled}
+
+
+def test_fd_is_judged_on_sources_with_enough_evidence():
+    """A DHCP pool of personas that log in once from a new address each day
+    must not veto 综合部's bindings at a shared login node; a portal where
+    recurring IPs use random names still has no FD."""
+    from app.engines.behavior.lib import pnode as PN
+    ps = PN.PairSketch()
+    rnd = random.Random(9)
+    t = T0
+    for d in range(8):
+        t = T0 + d * DAY
+        for ip, u in (("192.168.1.21", "jack"), ("192.168.1.23", "rose"), ("10.168.7.121", "mike")):
+            ps.update(ip, u, t, 1.0, 1.0)
+        for k in range(6):                                          # pool: one login per address
+            ps.update(f"10.50.{d}.{k}", "p%03d" % rnd.randint(0, 59), t + 60 * k, 1.0, 1.0)
+    rec = FD.fit_pair(ps, t + 3600)
+    assert rec["fd"]["holds"] and rec["fd"]["judged"] == 3
+    assert all(rec["table"][ip]["bound"] for ip in ("192.168.1.21", "192.168.1.23", "10.168.7.121"))
+    portal = PN.PairSketch()
+    for d in range(8):
+        for k in range(10):
+            portal.update(f"10.60.0.{k}", "u%05d" % rnd.randint(0, 99999), T0 + d * DAY + k, 1.0, 1.0)
+    assert not FD.fit_pair(portal, T0 + 9 * DAY)["fd"]["holds"]

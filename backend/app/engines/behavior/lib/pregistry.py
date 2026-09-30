@@ -52,6 +52,9 @@ DAY = PS.DAY
 UNSEEN_EVICT_S = 30 * DAY
 LOCK_N = 500.0
 GONE_RATIO = 0.05
+GONE_MIN_DAYS = 2          # normal days of the same day type before an attribute can be declared gone
+GONE_REF_DAYS = 14.0       # running-mean horizon of the per-day-type reference coverage
+GONE_REF_MIN = 0.05        # a day type where the attribute covers < 5 % of events carries no schema signal
 BIN_JSD = 0.05
 N_BINS = 8
 SET_RARE = 0.01
@@ -97,7 +100,7 @@ class AttrRecord:
                  "locked", "parse_as", "policy", "pres", "approx", "card", "top", "elem", "num",
                  "mom", "entropy", "stability", "approx_share", "hier", "role_sys", "cost_us",
                  "state", "low_since", "code_hint", "code_override", "gone_at", "day_pres",
-                 "prev_day_pres")
+                 "prev_day_pres", "cov_dt")
 
     def __init__(self, name: str, t: float, kind: int = KIND_TXN) -> None:
         self.name = name
@@ -131,6 +134,9 @@ class AttrRecord:
         self.gone_at: Optional[float] = None
         self.day_pres = 0.0                                  # mass present in the current day
         self.prev_day_pres = 0.0                             # ... in the previous full day
+        # reference coverage per day type (0 workday / makeup, 1 weekend and other):
+        # [running mean of the daily coverage over normal days, days counted]
+        self.cov_dt: List[List[float]] = [[0.0, 0.0], [0.0, 0.0]]
 
     # ------------------------------------------------------------------ keys
     def key(self, v: Any) -> Any:
@@ -535,12 +541,21 @@ class AttrRegistry:
             rec.role_sys = role
 
     # ------------------------------------------------------- schema change
-    def check_gone(self, t: float, normal_day: bool = True) -> List[str]:
+    def check_gone(self, t: float, normal_day: bool = True, daytype: Optional[int] = None) -> List[str]:
         """Declare `gone` an attribute whose coverage over the previous full
-        local day fell below 5 % of its H_l coverage, when that day was a
+        local day fell below 5 % of its reference coverage, when that day was a
         normal day (the caller passes normal_day for the PREVIOUS day, from
         P01's calendar / volume flag; holidays never count) and the system had
-        events that day. Evaluated once per day. Returns names newly gone."""
+        events that day. Evaluated once per day. Returns names newly gone.
+
+        With `daytype` (0 workday / makeup workday, 1 weekend / other) the
+        reference is the attribute's mean daily coverage over past normal days
+        of the SAME day type (>= GONE_MIN_DAYS of them): an attribute that only
+        workday actions carry (request bodies of logins and approvals) has no
+        coverage on a normal weekend, which is not a schema change (measured on
+        pack O: every body.* attribute was declared gone each weekend against the
+        all-day H_l coverage, collapsing the tree's splits on them). Without
+        `daytype` the H_l coverage is the reference (the original rule)."""
         self._roll(t)
         if self.cur_day is None or self.gone_checked_day == self.cur_day:
             return []
@@ -556,12 +571,26 @@ class AttrRegistry:
             if den <= 0 or sm[PS.CH_L] <= 0:
                 continue
             cov_day = rec.prev_day_pres / den
-            cov_l = rec.pres.read(t)[PS.CH_L] / sm[PS.CH_L]
-            if cov_l > 0 and cov_day < GONE_RATIO * cov_l:
+            if daytype is None:
+                ref = rec.pres.read(t)[PS.CH_L] / sm[PS.CH_L]
+                ref_ok = True
+            else:
+                cd = getattr(rec, "cov_dt", None)
+                if cd is None:
+                    cd = rec.cov_dt = [[0.0, 0.0], [0.0, 0.0]]
+                ref, n_ref = cd[int(daytype)]
+                # (late rows of the previous day type spill over midnight through the
+                # learning delay: a residual coverage of a few % is not a signal)
+                ref_ok = n_ref >= GONE_MIN_DAYS and ref >= GONE_REF_MIN
+            if ref_ok and ref > 0 and cov_day < GONE_RATIO * ref:
                 rec.state = "gone"
                 rec.gone_at = float(t)
                 rec.low_since = float(t)
                 out.append(nm)
+            elif daytype is not None:
+                c = rec.cov_dt[int(daytype)]
+                c[1] += 1.0
+                c[0] += (cov_day - c[0]) / min(c[1], GONE_REF_DAYS)
         if out:
             self.version += 1
         return out

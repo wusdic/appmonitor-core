@@ -51,6 +51,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # cadence-invariant grain mode. Engine unit tests default to 'tick'
     # (tests/engines|lib|core/conftest.py), whose maths is cadence-agnostic
     "grain_mode": "canonical",
+    # progressive profile core (docs/lib3/progressive.md §13.2). Readers go
+    # through lib/pevent.pconfig, which deep-merges this dict over
+    # PROGRESSIVE_DEFAULTS, so only 'enabled' needs a default here; build.py
+    # registers the P engines only when it is on (or a pack asks for them).
+    "progressive": {"enabled": False},
+    # operator- or import-fed names of learned who groups [{name, ips | cidrs}]
+    "who_group_names": [],
+    # 'bounded' makes B01-B30 process only active / earned IPs (progressive.md §10)
+    "lib3": {"resource_mode": "full", "linger_s": 86400.0},
 }
 
 

@@ -254,7 +254,8 @@ def measure_workflow(store: Any, truth: List[Dict[str, Any]], day: int) -> Dict[
 
 
 def run(days: Sequence[int] = (2, 5, 10, 15), dt: float = 3600.0, seed: int = 0, tree: str = "oracle",
-        timings: Optional[Dict[str, float]] = None) -> Dict[int, Dict[str, Any]]:
+        timings: Optional[Dict[str, float]] = None, session_mode: Optional[str] = None
+        ) -> Dict[int, Dict[str, Any]]:
     spec = build_org("O")
     gen = OrgGenerator(spec, seed=seed, pack_name="O")
     truth = _truth(gen)
@@ -269,7 +270,8 @@ def run(days: Sequence[int] = (2, 5, 10, 15), dt: float = 3600.0, seed: int = 0,
         from app.engines.behavior.attr_select import AttributeSelectionEngine
         from app.engines.behavior.pattern_tree import PatternTreeEngine
         lattice = [AttributeRegistryEngine(), AttributeSelectionEngine(), PatternTreeEngine()]
-    p09, p10 = TimeWindowEngine(), WorkflowEngine()
+    p09 = TimeWindowEngine()
+    p10 = WorkflowEngine(session_mode=session_mode) if session_mode else WorkflowEngine()
     t0 = gen.day_start(1)
     off = PW.tz_offset(cfg, t0)
     groups_by_route: Dict[str, List[str]] = {}

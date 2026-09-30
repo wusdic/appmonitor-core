@@ -175,6 +175,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import DerivedMetric, EntityProfile, MetricKind
 from .lib import calib, combine, emit, gating, m_calib, m_class, timebins
+from .lib import pactive as PA
 from .lib import grains as GR
 from .lib.classkeys import CLASS_PREFIX, SYSTEM_KEY
 from .lib.detectors import DETECTOR_INDEX, DETECTOR_INFO, DETECTORS, N_DETECTORS, Q_DETECTORS
@@ -761,8 +762,8 @@ class CalibrationEngine(Engine):
         learner = self._learner(self._config.get("D_min_s", gating.D_MIN_S))
         n_out = 0
         for s in store.systems():
-            keys = store.entities(s) + [k for k in store.pseudo_entities(s)
-                                        if k.startswith(CLASS_PREFIX)]
+            keys = PA.entities(store, s, now, ctx.config) + [k for k in store.pseudo_entities(s)
+                                                             if k.startswith(CLASS_PREFIX)]
             sysm = store.get_model(s, SYSTEM_KEY, MODEL)
             hs = sysm.get(m_calib.HEALTH) if isinstance(sysm, dict) else None
             if hs is not None:

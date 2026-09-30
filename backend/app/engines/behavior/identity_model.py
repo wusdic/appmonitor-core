@@ -74,6 +74,7 @@ from scipy import linalg as sla
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import gating as G
+from .lib import pactive as PA
 from .lib import m_class
 from .lib import grains as GR
 from .lib import m_identity as MI
@@ -84,6 +85,7 @@ from .lib.classkeys import SYSTEM_KEY, role_key
 from .lib.features import FEATURE_NAMES_V2
 from .lib.robustcov import eigen_floor, oas
 
+B15_MAX = 32                     # bounded mode: identity models per system (§10.3)
 LEARNER = "identity.win"
 ACTIVE = "feature.active"
 TCTX = "feature.tctx"
@@ -519,12 +521,21 @@ class IdentityModelEngine(Engine):
         idw = store.get_model(s, SYSTEM_KEY, MI.IDWIN)
         if not (isinstance(idw, dict) and idw.get("fmt") == MI.FMT):
             idw = new_idwin()
-        ents = store.entities(s)
-        if not ents and not idw["ents"]:
-            return 0
-        live = set(ents)
-        for e in [e for e in idw["ents"] if e not in live]:
-            del idw["ents"][e]                     # entity gone from the store
+        if PA.bounded(ctx.config) and PA.system_sets(store, s) is not None:
+            # bounded mode (progressive.md §10.3): identity windows only for the
+            # earned IPs (<= B15_MAX per system); entities never leave the store,
+            # so nothing is dropped here
+            ents = [e for e in PA.entities(store, s, now, ctx.config)
+                    if PA.is_earned(store, s, e, ctx.config)][:B15_MAX]
+            if not ents and not idw["ents"]:
+                return 0
+        else:
+            ents = store.entities(s)
+            if not ents and not idw["ents"]:
+                return 0
+            live = set(ents)
+            for e in [e for e in idw["ents"] if e not in live]:
+                del idw["ents"][e]                     # entity gone from the store
         added = 0
         for e in ents:
             added += self._collect(ctx, s, e, idw)

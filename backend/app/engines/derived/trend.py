@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from ...core.engine import Context, Engine
+from ..behavior.lib import pactive as PA
 from .aggregation import (ACTIVE_HORIZON_S, HOUR, TREND_SPAN_S, active_mask, emit_window,
                           ensure_retention, grid_many, metric_kind, recently_active, tick_durations,
                           window_dims)
@@ -127,7 +128,7 @@ class TrendEngine(Engine):
         ensure_retention(store, self.targets, self.span_s + HOUR)
         n = 0
         for system in store.systems():
-            for entity in store.entities(system):
+            for entity in PA.entities(store, system, now, ctx.config):     # bounded: A_t ⊇ recently active
                 if not recently_active(store, system, entity, now, ACTIVE_HORIZON_S):
                     continue
                 n += self._entity(ctx, system, entity)

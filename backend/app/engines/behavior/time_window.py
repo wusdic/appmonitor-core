@@ -81,7 +81,7 @@ def _arm_off(store: Any, key: str) -> bool:
     sp = store.get_model(key, SYSTEM_ENTITY, MP.SYSPROF)
     ch = (sp or {}).get("chosen") if isinstance(sp, Mapping) else None
     if isinstance(ch, Mapping):
-        for n in ("p09", "time_window", "when"):
+        for n in ("P09", "p09", "time_window", "when"):
             if str(ch.get(n, "on")).lower() == "off":
                 return True
     return False

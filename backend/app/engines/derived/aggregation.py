@@ -27,6 +27,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from ...core.engine import Context, Engine
+from ..behavior.lib import pactive as PA
 from ...models.schema import DerivedMetric, MetricKind
 from . import fresh
 
@@ -252,7 +253,9 @@ class AggregationEngine(Engine):
         ensure_retention(store)
         n = 0
         for system in store.systems():
-            for entity in store.entities(system):
+            # bounded mode: P15's active set (linger 24 h >= the 6-h span) holds
+            # every recently active entity, so the result is unchanged
+            for entity in PA.entities(store, system, now, ctx.config):
                 if not recently_active(store, system, entity, now, min(self.span_s, ACTIVE_HORIZON_S)):
                     continue
                 n += self._entity(ctx, system, entity, dt)

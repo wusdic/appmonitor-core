@@ -302,12 +302,21 @@ class NumSummary:
             return math.log(x) if x > 0 else -math.inf
         return x
 
-    def update(self, v: Any, t: float, mass: float, evidence: float, day: Optional[int] = None) -> None:
+    def update(self, v: Any, t: float, mass: float, evidence: float, day: Optional[int] = None,
+               extreme: bool = True) -> None:
+        """`extreme=False` (a row learned with outlier damping < 1 or from a
+        low-trust source) updates the distribution (digest, moments) but not
+        the hard-range ring or the exceedance reservoirs: one damped 12 KB
+        login must not become the pattern's stated maximum."""
         try:
             y = self.y(v)
         except (TypeError, ValueError):
             return
         if not math.isfinite(y):
+            return
+        if not extreme:
+            self.td.add(y, t, max(mass, 1e-12))
+            self.mom.add(t, np.tile([mass, mass * y, mass * y * y], 3))
             return
         if self._thr_n % self.THR_EVERY == 0 and self.td.total() > 0:
             self._thr = (self.td.quantile(0.1), self.td.quantile(0.9)) \
@@ -621,6 +630,26 @@ class Node:
         self.since_check = 0.0
         self.meta: Dict[str, Any] = {}
 
+    # ------------------------------------------------------- plain data
+    def to_plain(self) -> Dict[str, Any]:
+        """A light JSON-able view for snapshots and reports (eval runner
+        _jsonable uses it: Node has __slots__, so it has no __dict__). Working
+        state (split statistics, exception trackers, pair sketches, drift
+        detectors) is left out on purpose."""
+        sp = self.split
+        split = None
+        if sp is not None:
+            split = {"attr": sp.attr, "level": int(sp.level),
+                     "groups": [sorted(map(str, g)) for g in sp.groups],
+                     "children": [int(c) for c in sp.children], "other": sp.other}
+        return {"id": self.id, "parent": self.parent, "depth": self.depth, "kind": self.kind,
+                "ctx": [[a, int(l), sorted(map(str, vs)), bool(neg)] for a, l, vs, neg in self.ctx],
+                "split": split, "exc": dict(self.exc), "is_exc": self.is_exc, "state": self.state,
+                "created": self.created, "first_seen": self.first_seen, "last_seen": self.last_seen,
+                "days_total": self.days_total, "version": self.version, "cver": self.cver,
+                "targets": sorted(self.targets), "inv": {k: [int(v[0]), str(v[1])] for k, v in self.inv.items()},
+                "alt": self.alt}
+
     # ----------------------------------------------------------- updates
     def touch_day(self, day: int) -> None:
         """Record activity on local date ordinal `day` (64-day bitmap)."""
@@ -671,10 +700,10 @@ class Node:
 
     def update_target(self, attr: str, v: Any, t: float, mass: float, evidence: float,
                       kind: str = "cat", policy: str = "clear", log: bool = False,
-                      day: Optional[int] = None, template: Any = None) -> None:
+                      day: Optional[int] = None, template: Any = None, extreme: bool = True) -> None:
         s = self.target(attr, kind, policy, log)
         if isinstance(s, NumSummary):
-            s.update(v, t, mass, evidence, day)
+            s.update(v, t, mass, evidence, day, extreme)
         elif isinstance(s, SetSummary):
             s.update(v, t, mass, evidence, template)
         else:

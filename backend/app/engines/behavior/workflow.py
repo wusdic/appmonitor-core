@@ -16,8 +16,15 @@ Per tick (all of it O(events of the tick); nothing iterates over IPs):
             in time order, updates its session (ip, sess.key) in a bounded LRU:
             previous action, delay, earlier actions, Bloom set of actions seen.
             A LEARNED row leaves a pending annotation (b, a, delay, start, earlier).
-            A session boundary is P01's ctx.sid change (its gap rule), else the
-            configured gap.
+            A session boundary is the configured gap (defaults.session_gap_s,
+            30 min) by default; session_mode='ctx' follows P01's ctx.sid.
+            Deviation from §6.14, measured (tests/eval/temporal_convergence.py,
+            pack O OA, seed 0): P01's Otsu valley of the log gap histogram drops
+            to its 60-s clamp on OA from day 3, below the 30-300 s think times of
+            the approval and report steps, so ctx sessions cut real workflows:
+            truth-edge recall 0.4 / 0.4 / 0.8 at days 2 / 5 / 10 with ctx.sid
+            against 0.4 / 0.8 / 1.0 with the 30-min gap (program precision 1.0
+            and 0.89 at day 10). Switch the default once P01's gap is fixed.
   counting  annotations of tick t' <= t - D are counted with trust (B28) and
             outlier damping (P03's pat.assign `damp` when present), so an
             attacker's session is never learned before it could be judged
@@ -25,12 +32,16 @@ Per tick (all of it O(events of the tick); nothing iterates over IPs):
             group (model.who_groups ip2g) with >= 2 IPs active here (<= 32).
   mining    every 6 h per tree (entity_due), when new evidence arrived: kept
             edges, workflows (with P09 time anchors of each action), required
-            predecessors (lib/pdfg.mine_scope).
+            predecessors (lib/pdfg.mine_scope). An edge that stopped is stale
+            after missed NORMAL days of its own day type (P01 model.pcal; 2
+            workdays for a daily edge, ~3 weeks for a weekly one; weekends and
+            holidays never count), so a renamed step (D3) leaves the view
+            within 2 workdays instead of the 7 calendar days of the time rule.
 
 Reads   evt.batch (+ evt.ctx for ctx.sid), pat.assign (damp), model.ptree
         (action variants: the node reached through the deepest content split;
         act_node for rendering and P09 anchors), model.who_groups (ip2g),
-        model.pwin (anchors), model.sysprof (arm 'p10' / 'workflow' off -> skip),
+        model.pwin (anchors), model.pcal (P01 normal days, edge staleness), model.sysprof (arm 'p10' / 'workflow' off -> skip),
         model.budget (session cap), behavior.trust / behavior.quarantine (B28).
 Writes  model.pflow@(tree key, '__system__') = lib/pdfg.PFlowModel:
           {'fmt': 1, 'version', 'updated', 'last_mine',
@@ -69,8 +80,10 @@ from .lib import psketch as PS
 from .lib import pwindows as PW
 
 MINE_PERIOD_S = 6 * 3600.0
-SESSION_MODE = "gap"             # 'gap': own gap rule; 'ctx': P01's ctx.sid (see the module notes)
+PCAL = "model.pcal"              # P01's per-system calendar (day classes, normal-day flags)
+SESSION_MODE = "gap"             # 'gap': configured gap; 'ctx': P01's ctx.sid (see "sessions" above)
 TOP_REFRESH_S = 3600.0
+GAIN_ROWS = 64                   # prequential-gain evaluations per tick and tree (systematic subsample)
 NON_CONTENT_KINDS = frozenset({"ip", "dst", "route", "path", "tod", "when"})
 NON_CONTENT_PREFIX = ("ctx.", "ev.", "sess.", "net.src", "net.peer", "net.dst", "client.",
                       "http.method", "http.host", "http.route", "http.path", "tls.sni", "dns.qname")
@@ -80,7 +93,7 @@ def _arm_off(store: Any, key: str) -> bool:
     sp = store.get_model(key, SYSTEM_ENTITY, MP.SYSPROF)
     ch = (sp or {}).get("chosen") if isinstance(sp, Mapping) else None
     if isinstance(ch, Mapping):
-        for n in ("p10", "workflow"):
+        for n in ("P10", "p10", "workflow"):
             if str(ch.get(n, "on")).lower() == "off":
                 return True
     return False
@@ -99,7 +112,7 @@ class WorkflowEngine(Engine):
     name = "behavior.workflow"
     layer = "behavior"
     consumes = [EV.EVT_BATCH, EV.EVT_CTX, EV.PAT_ASSIGN, MP.PTREE, MP.WHO_GROUPS, MP.PWIN,
-                MP.SYSPROF, MP.BUDGET]
+                MP.SYSPROF, MP.BUDGET, PCAL]
     produces = [MP.PFLOW]
     description = "P10: directly-follows graphs, workflows and required predecessors per system and group"
     interval = 1
@@ -139,6 +152,7 @@ class WorkflowEngine(Engine):
             st = model.state
             bud = MP.budget_for(store, key)
             st.sess_cap(bud.get("s_sess") or bud.get("sessions"))
+            off = self._calendar(st, store, systems, now, ctx.config)
             router = self._router(store, key, ctx.config)
             rows = 0
             ta = time.perf_counter()
@@ -149,7 +163,7 @@ class WorkflowEngine(Engine):
                     rows += self._sessions(st, store, s, ts_b, b, router, gap, shared)
                     st.last_batch[s] = ts_b
             tb = time.perf_counter()
-            counted = self._count(st, store, now, D, ip2g)
+            counted = self._count(st, store, now, D, ip2g, off)
             t1 = time.perf_counter()
             st.cost[0] += tb - ta
             st.cost[1] += rows
@@ -173,6 +187,30 @@ class WorkflowEngine(Engine):
                           "ms": (time.perf_counter() - t0) * 1000.0}
         self.last_stats = stats
         return n
+
+    # ------------------------------------------------------------- calendar
+    @staticmethod
+    def _calendar(st: DF.FlowState, store: Any, systems: List[str], now: float,
+                  config: Mapping[str, Any]) -> float:
+        """Day classes and normal-day flags of the tree's systems from P01's
+        model.pcal (a day is normal when any member system had a normal day),
+        so edge staleness counts normal days of the edge's day type (§6.8.1).
+        Returns the local UTC offset used for day ordinals."""
+        off = PW.tz_offset(config, now)
+        cls: Dict[int, int] = {}
+        norm: Dict[int, bool] = {}
+        for s in systems:
+            pc = store.get_model(s, SYSTEM_ENTITY, PCAL)
+            if not isinstance(pc, Mapping):
+                continue
+            for d, rec in (pc.get("days") or {}).items():
+                c = rec.get("class") if isinstance(rec, Mapping) else None
+                if c is not None:
+                    cls[int(d)] = 0 if c in ("workday", "makeup") else 1
+            for d, ok in (pc.get("normal") or {}).items():
+                norm[int(d)] = bool(ok) or norm.get(int(d), False)
+        st.set_calendar(cls, norm, DF.EPOCH_ORD + int((now + off) // 86400.0))
+        return off
 
     # ------------------------------------------------------------- variants
     def _router(self, store: Any, key: str, config: Mapping[str, Any]) -> Optional[Callable[[Callable], int]]:
@@ -292,7 +330,7 @@ class WorkflowEngine(Engine):
         return r
 
     def _count(self, st: DF.FlowState, store: Any, now: float, D: float,
-               ip2g: Mapping[str, Any]) -> int:
+               ip2g: Mapping[str, Any], off: float = 8 * 3600.0) -> int:
         due = sorted(k for k in st.pending if k[1] <= now - D)
         if not due:
             return 0
@@ -300,6 +338,13 @@ class WorkflowEngine(Engine):
         if st.top_t is None or now - st.top_t >= TOP_REFRESH_S:
             st.refresh_top(now)
         admitted = set(DF.active_scopes(st, now))
+        # the prequential gain (P12's utility of the arm) is estimated on a
+        # systematic 1-in-k subsample of at most GAIN_ROWS rows per tick, weighted
+        # by k: its cost is O(successors of a) per scored row, the rest of the
+        # counting is O(1) per row
+        n_due = sum(1 for k in due for a in st.pending[k] if a[0] == "row")
+        k_gain = max(1, -(-n_due // GAIN_ROWS))
+        j_gain = 0
         n = 0
         for s, ts_b in due:
             anns = st.pending.pop((s, ts_b))
@@ -338,7 +383,9 @@ class WorkflowEngine(Engine):
                 a_id = st.acts.id_of(ak) if ak else None
                 b_id0 = st.acts.id_of(bk)
                 if a_id is not None and b_id0 is not None:
-                    self._gain(st, a_id, b_id0, ts, omega)
+                    if j_gain % k_gain == 0:
+                        self._gain(st, a_id, b_id0, ts, omega * k_gain)
+                    j_gain += 1
                 b_id, gone = st.acts.add(bk, ts, mass, omega)
                 if gone is not None:
                     st.retire(gone)
@@ -347,13 +394,14 @@ class WorkflowEngine(Engine):
                     if gone is not None:
                         st.retire(gone)
                 dbin = DF.delay_bin(delay)
+                day = DF.EPOCH_ORD + int((ts + off) // 86400.0)
                 for g in self._scopes(st, ip, ip2g, admitted):
                     st.scopes_seen.add(g)
                     st.cnt.add((g, b_id), ts, mass, omega)
                     if start:
                         st.starts.add((g, b_id), ts, mass, omega)
                     if ak and a_id is not None:
-                        st.add_edge(g, a_id, b_id, ts, mass, omega, dbin)
+                        st.add_edge(g, a_id, b_id, ts, mass, omega, dbin, day)
                         if aba:                         # pattern b a b: a length-two loop
                             st.add_loop(g, b_id, a_id, ts, mass, omega)
                     if b_id not in st.top_b and len(st.top_b) < DF.TOP_B:
@@ -382,9 +430,8 @@ class WorkflowEngine(Engine):
         """Decayed (H_m) mean of log2 p_trans(b | a) - log2 p_marg(b): the
         bits per transition the DFG saves over the action marginal, scored
         before the row is learned (prequential; P12's utility of the arm)."""
-        dist, w0 = DF.trans_dist(st, DF.STAR, a, t)
         pm = DF.p_marginal(st, b, t)
-        pt = dist.get(b, w0 * pm)
+        pt = DF.p_next(st, a, b, t)
         bits = math.log2(max(pt, 1e-12)) - math.log2(max(pm, 1e-12))
         if st.gain_t is not None:
             f = 2.0 ** (-(t - st.gain_t) / PS.H_M) if t > st.gain_t else 1.0

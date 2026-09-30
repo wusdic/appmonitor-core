@@ -132,6 +132,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, EntityProfile, MetricKind, Severity
 from .lib import combine, emit, evt
+from .lib import pactive as PA
 from .lib import features as F
 from .lib import gating as G
 from .lib import m_calib, m_class
@@ -1005,7 +1006,8 @@ class BudgetEngine(Engine):
         n = 0
         fit_budget = [self.fit_max_per_tick]
         for s in store.systems():
-            recs = [r for r in (self._entity(ctx, s, e, tick) for e in store.entities(s))
+            recs = [r for r in (self._entity(ctx, s, e, tick)
+                                for e in PA.entities(store, s, now, ctx.config))
                     if r is not None]
             if not recs:
                 continue

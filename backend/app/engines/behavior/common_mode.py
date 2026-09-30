@@ -78,6 +78,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, MetricKind, Severity
 from .lib import emit
+from .lib import pactive as PA
 from .lib import gating as G
 from .lib import grains as GR
 from .lib import m_class
@@ -410,7 +411,7 @@ class CommonModeEngine(Engine):
         store = ctx.store
         ents: List[str] = []
         rows: List[np.ndarray] = []
-        for e in store.entities(s):
+        for e in PA.entities(store, s, now, ctx.config):   # population counts stay store.entities
             z = store.vec_at(s, e, self._Z, now)
             if z is not None:
                 ents.append(e)

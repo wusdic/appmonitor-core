@@ -183,6 +183,7 @@ DISCRETE_KINDS = frozenset({
     "class_merge", "peer_outlier", "system_shift", "coherent_shift", "class_shift",
     "class_adoption_risky", "schedule_shift", "beacon", "budget_exceeded", "baseline_creep",
     "first_access_system",       # B21 cross_system (P2, round 4)
+    "pattern_violation",         # P03 conformity (progressive.md §9.2)
 })
 NOVELTY_KINDS = ("first_seen", "rare_access")
 XSYS_DIM = "xsys"               # B21 first_access_system token dimension (cross_system.XSYS_DIM)
@@ -195,6 +196,7 @@ FINDING_DETECTORS: Dict[str, Tuple[str, ...]] = {
     "beacon": ("beacon",), "budget_exceeded": ("budget_vol", "budget_exfil", "budget_breadth"),
     "baseline_creep": ("creep",), "schedule_shift": ("offhours",),
     "first_access_system": ("cross_system",),
+    "pattern_violation": ("conf_who", "conf_when", "conf_content", "conf_seq", "conf_novel"),
 }
 # the numeric feature that carries a discrete finding (round 4, opening
 # evidence): a decisive finding (>= MEDIUM, it opens an incident alone) ranks

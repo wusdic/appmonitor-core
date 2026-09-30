@@ -88,6 +88,7 @@ from scipy import special
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import bayes
+from .lib import pactive as PA
 from .lib import calib
 from .lib import combine
 from .lib import emit
@@ -608,6 +609,7 @@ class NoveltyEngine(Engine):
 
     # ----------------------------------------------------------------- run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
+        self._pa_cfg = ctx.config
         store = ctx.store
         now = float(ctx.now)
         d_min = ctx.config.get("D_min_s", G.D_MIN_S)
@@ -681,7 +683,7 @@ class NoveltyEngine(Engine):
         self._refit_tiers(store, s, now)
         sc = _Sys(self, ctx, s)
         items: List[_Ent] = []
-        for e in store.entities(s):
+        for e in PA.entities(store, s, now, ctx.config):
             it = self._gather(ctx, sc, e, failed)
             if it is not None:
                 items.append(it)
@@ -1310,7 +1312,8 @@ class NoveltyEngine(Engine):
         entity models (hourly per key, deterministic phase; first call at once)."""
         n = 0
         if self.entity_due(("vocab-tier", s, SYSTEM_KEY), now, self.tier_refit_s):
-            n += self._build_tier(store, s, SYSTEM_KEY, store.entities(s), now, "system")
+            n += self._build_tier(store, s, SYSTEM_KEY,
+                                  PA.entities(store, s, now, getattr(self, "_pa_cfg", None)), now, "system")
         for ck in m_class.all_class_keys(store, s, min_members=m_class.MIN_MEMBERS):
             if not ck.startswith("class:") or ck.startswith(("class:static:", "class:pool:")):
                 continue

@@ -46,9 +46,14 @@ directions; the published `dep` is then max(dep, loop measure) and
 workflows = maximal simple paths (<= 8 actions) along kept edges from start
 actions (start share >= 0.1; also any action with kept out-edges and no kept
 in-edge, so that every kept edge is in a workflow — an addition to the text);
-delay band per edge = [q10, q90] of its histogram; an edge silent for >= max(7 d,
-3 / its rate) is stale and not kept (an addition: the H_l evidence of a renamed
-step would keep it for weeks); requires(b, a) <=> c(b) >= 15
+delay band per edge = [q10, q90] of its histogram; an edge that stopped is
+stale and not kept (an addition: the H_l evidence of a renamed step would keep it
+for weeks). Staleness counts NORMAL days of the edge's own day type (P01's
+model.pcal, the §6.8.1 rule): with p = (occurrence dates + 1/2) / (normal dates of
+that type spanned + 1), the edge is stale after k >= 2 missed normal dates with
+(1 - p)^k < 0.05 (a daily edge after 2 workdays, a weekly one after ~3 weeks;
+weekends, holidays and abnormal days never count). Without a calendar the edge
+is stale when silent for >= max(7 d, 3 / its rate); requires(b, a) <=> c(b) >= 15
 and the 5 % quantile of Beta(1/2 + c(b with a earlier), 1/2 + c(b without a))
 >= 0.85.
 
@@ -74,6 +79,7 @@ import numpy as np
 
 from . import pmdl
 from . import psketch as PS
+from .pevent import ABSENT as _ABSENT
 
 K_ACT = 4096
 K_EDGE = 4096
@@ -83,7 +89,11 @@ E_MAX = 8                        # distinct earlier actions enumerated per sessi
 N_BINS = 13                      # 12 log2 bins (1 s ... 1 h) + long
 LONG_S = 3600.0
 DEP_MIN = 0.8
-STALE_MIN_S = 7 * 86400.0        # an edge silent for a week and 3 expected occurrences is stale
+STALE_MIN_S = 7 * 86400.0        # (no calendar) an edge silent for a week and 3 expected occurrences is stale
+STALE_P = 0.05                   # (calendar) P(no occurrence on k normal days) below which an edge is stale
+STALE_K_MIN = 2                  # ... and at least 2 missed normal days of its day type
+CAL_DAYS = 70                    # calendar days kept per tree
+EPOCH_ORD = 719163               # date(1970, 1, 1).toordinal(): local day ordinal = this + (ts + off) // 86400
 L2_MIN = 0.8                     # length-two loop measure (the same threshold as dep)
 EDGE_MIN = 10.0                  # evidence units (confidence channel)
 SHARE_MIN = 0.05
@@ -134,7 +144,13 @@ def etld1(host: Any) -> Optional[str]:
 
 
 def route_key(get: Any) -> Optional[str]:
-    """The route part r of an action from an attribute getter (None -> skip)."""
+    """The route part r of an action from an attribute getter (None -> skip).
+    Absent attributes (pevent.ABSENT, the string '⊥') read as None."""
+    raw = get
+
+    def get(a: str) -> Any:
+        v = raw(a)
+        return None if v is _ABSENT or v == _ABSENT else v
     r = get("http.route")
     if isinstance(r, str) and r:
         return r
@@ -362,6 +378,11 @@ class FlowState:
         self.edges = TrackedSS(K_EDGE)
         self.hist: Dict[Tuple[str, int, int], List[float]] = {}
         self.edge_last: Dict[Tuple[str, int, int], float] = {}
+        # per tracked edge [first local day, last local day, dates on workdays, dates on non-workdays]
+        self.edge_days: Dict[Tuple[str, int, int], List[int]] = {}
+        self.cal_cls: Dict[int, int] = {}       # local day ordinal -> 0 workday / 1 non-workday
+        self.cal_norm: Dict[int, bool] = {}     # finished local day -> normal (P01 model.pcal)
+        self.today: Optional[int] = None
         self.hL: Optional[float] = None
         self.out = _ss(K_EDGE)
         self.cnt = _ss(K_ACT)
@@ -423,9 +444,35 @@ class FlowState:
         h[b] += m * 2.0 ** ((t - self.hL) / PS.H_M)
 
     # ------------------------------------------------------- retirement
+    def set_calendar(self, cls: Mapping[int, int], norm: Mapping[int, bool], today: int) -> None:
+        """Day classes and normal-day flags (P01's model.pcal), bounded to CAL_DAYS."""
+        self.cal_cls.update({int(d): int(c) for d, c in cls.items()})
+        self.cal_norm.update({int(d): bool(v) for d, v in norm.items()})
+        self.today = int(today)
+        lo = int(today) - CAL_DAYS
+        for dct in (self.cal_cls, self.cal_norm):
+            for d in [d for d in dct if d < lo]:
+                del dct[d]
+
+    def _edge_day(self, key: Tuple[str, int, int], day: Optional[int]) -> None:
+        if day is None:
+            return
+        ed = getattr(self, "edge_days", None)
+        if ed is None:
+            ed = self.edge_days = {}
+        rec = ed.get(key)
+        dtc = self.cal_cls.get(int(day), 0)
+        if rec is None:
+            rec = ed[key] = [int(day), int(day), 0, 0]
+            rec[2 + dtc] = 1
+        elif int(day) > rec[1]:
+            rec[1] = int(day)
+            rec[2 + dtc] += 1
+
     def _drop_edge(self, key: Tuple[str, int, int]) -> None:
         self.hist.pop(key, None)
         self.edge_last.pop(key, None)
+        getattr(self, "edge_days", {}).pop(key, None)
         g, a, b = key
         s = self.succ.get((g, a))
         if s is not None:
@@ -461,7 +508,8 @@ class FlowState:
             self.by_act.setdefault(x, set()).add(ref)
 
     # ------------------------------------------------------------ counting
-    def add_edge(self, g: str, a: int, b: int, t: float, m: float, ev: float, dbin: Optional[int]) -> None:
+    def add_edge(self, g: str, a: int, b: int, t: float, m: float, ev: float, dbin: Optional[int],
+                 day: Optional[int] = None) -> None:
         key = (g, a, b)
         victim = self.edges.add(key, t, m, ev)
         if victim is not None:
@@ -469,6 +517,7 @@ class FlowState:
         if key in self.edges:
             self._hist_add(key, dbin, t, m)
             self.edge_last[key] = max(t, self.edge_last.get(key, t))
+            self._edge_day(key, day)
             self.succ.setdefault((g, a), set()).add(b)
             self._ref((a, b), ("e",) + key)
         self.out.add((g, a), t, m, ev)
@@ -508,6 +557,7 @@ class FlowState:
         b = self.acts.nbytes() + self.edges.nbytes() + self.prec.nbytes() + self.loop2.nbytes()
         b += sum(ss.nbytes() for ss in (self.out, self.cnt, self.starts, self.ends, self.pcnt, self.grp_ss))
         b += len(self.hist) * (N_BINS * 8 + 120) + len(self.edge_last) * 100
+        b += len(getattr(self, "edge_days", {})) * 150 + (len(self.cal_cls) + len(self.cal_norm)) * 70
         b += sum(56 + 28 * len(v) for v in self.succ.values()) + sum(56 + 72 * len(v) for v in self.by_act.values())
         b += len(self.sessions) * SESSION_BYTES + len(self.burst) * 150
         b += sum(len(v) for v in self.pending.values()) * PENDING_BYTES
@@ -578,6 +628,28 @@ def edge_stale(c_conf: float, last: Optional[float], t: float, c_m: float = 0.0)
     return quiet >= max(STALE_MIN_S, 3.0 / rate)
 
 
+def edge_stale_days(rec: Optional[Sequence[int]], cls: Mapping[int, int], norm: Mapping[int, bool],
+                    today: Optional[int]) -> Optional[bool]:
+    """Normal-day staleness (§6.8.1 applied to a DFG edge): None when there is
+    no calendar for the edge (the caller falls back to `edge_stale`).
+    c = the day type on which the edge occurred most; p = (its occurrence dates
+    + 1/2) / (normal dates of type c spanned by first..last occurrence + 1);
+    k = normal dates of type c after the last occurrence (finished days only);
+    stale <=> k >= STALE_K_MIN and (1 - p)^k < STALE_P."""
+    if rec is None or today is None or not norm:
+        return None
+    first, last, n_wd, n_nwd = (int(x) for x in rec)
+    c = 0 if n_wd >= n_nwd else 1
+    n_c = n_wd if c == 0 else n_nwd
+    span = sum(1 for d in range(first, last + 1) if norm.get(d) and cls.get(d) == c)
+    span = max(span, n_c)
+    p = (n_c + 0.5) / (span + 1.0)
+    k = sum(1 for d in range(last + 1, int(today)) if norm.get(d) and cls.get(d) == c)
+    if not any(first <= d < int(today) for d in norm):
+        return None
+    return bool(k >= STALE_K_MIN and (1.0 - p) ** k < STALE_P)
+
+
 def loop2_measure(c_aba: float, c_bab: float) -> float:
     """Length-two loop measure of the Flexible Heuristics Miner (Weijters &
     Ribeiro 2011): (|a b a| + |b a b|) / (|a b a| + |b a b| + 1)."""
@@ -599,7 +671,11 @@ def mine_scope(st: FlowState, g: str, t: float) -> Dict[str, Any]:
         c_ab = st.edges.ev(key, t)
         if c_ab < EDGE_MIN:
             continue
-        if edge_stale(c_ab, st.edge_last.get(key), t, st.edges.ss.evidence(key, t, PS.EV_M)):
+        sd = edge_stale_days(getattr(st, "edge_days", {}).get(key), st.cal_cls if hasattr(st, "cal_cls") else {},
+                             getattr(st, "cal_norm", {}), getattr(st, "today", None))
+        if sd is None:
+            sd = edge_stale(c_ab, st.edge_last.get(key), t, st.edges.ss.evidence(key, t, PS.EV_M))
+        if sd:
             stale += 1
             continue
         c_ba = st.edges.ev((g, b, a), t)
@@ -740,6 +816,20 @@ def trans_dist(st: FlowState, g: str, a: int, t: float) -> Tuple[Dict[int, float
             new[b] = base + (m / m_g if m_g > 0 else 0.0) * n_g / (n_g + ALPHA)
         dist, w0 = new, w_g * w_s
     return dist, w0
+
+
+def p_next(st: FlowState, a: int, b: int, t: float) -> float:
+    """p_*(b | a) of trans_dist at scope '*' in O(1): the successor totals of a
+    are read from the `out` sketch (equal to the sum over a's tracked edges
+    while none was evicted) instead of iterating a's successors. Used for the
+    prequential gain on every counted row."""
+    key = (STAR, a)
+    n_s = _ev(st.out, key, t)
+    m_s = st.out.count(key, t) if key in st.out else 0.0
+    e = (STAR, a, b)
+    m_ab = st.edges.mass(e, t) if e in st.edges else 0.0
+    share = min(1.0, m_ab / m_s) if m_s > 0 else 0.0
+    return share * n_s / (n_s + ALPHA) + ALPHA / (n_s + ALPHA) * p_marginal(st, b, t)
 
 
 def p_trans(st: FlowState, g: str, a: Optional[int], b: Optional[int], t: float,

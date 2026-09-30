@@ -7,11 +7,16 @@ P04. For every truth pattern of the OA system whose who-set is a list of IPs
 财务部's OA login, ...), the harness keeps the latest real event of that
 pattern and, at each checkpoint day, routes it through the learned tree:
 
-  who precision   = |heavy set (95 % of mass, /32) of the event's leaf  ∩  truth IPs|
+  covering node   = the deepest CONFIDENT node (confirmed / stable / evolving /
+                    stale) on the event's path, else the root: the pattern P03
+                    scores the event against (§6.16.1); candidates are not yet
+                    learned patterns
+  who precision   = |heavy set (95 % of mass, /32) of the covering node  ∩  truth IPs|
                     / |heavy set|          (1.0 = the pattern is isolated to its IPs)
-  route specific  = the leaf's context fixes the pattern's route / path to a named
-                    group of <= 3 routes (1) or not (0), averaged over the patterns
-  specificity     = depth of the leaf
+  route specific  = the covering node's context fixes the pattern's route / path to
+                    a named group of <= 3 routes (1) or not (0)
+  specificity     = depth of the covering node
+Every truth pattern that has a sample is scored at every checkpoint.
 
 Nothing here is read by an engine; the truth is the persona program itself."""
 from __future__ import annotations
@@ -27,6 +32,7 @@ from app.engines.behavior.attr_registry import AttributeRegistryEngine
 from app.engines.behavior.attr_select import AttributeSelectionEngine
 from app.engines.behavior.lib import m_ptree as MP
 from app.engines.behavior.lib import pevent as EV
+from app.engines.behavior.lib import pnode as PN
 from app.engines.behavior.pattern_tree import PatternTreeEngine
 from app.engines.derived.event_context import EventContextEngine
 from app.engines.raw.action_token import ActionTokenEngine
@@ -66,9 +72,13 @@ def measure(tree: Any, hier: Any, samples: Dict[str, Dict[str, Any]], truth: Dic
     for tid, ev in samples.items():
         row = truth[tid]
         path = tree.route(lambda a, ev=ev: ev.get(a, EV.ABSENT), hier)
-        leaf = tree.nodes[path[-1]]
+        conf = [n for n in path if tree.nodes[n].state in PN.CONFIDENT_STATES]
+        leaf = tree.nodes[conf[-1] if conf else path[0]]
         heavy, _ = leaf.who.heavy_set(0, t)
         if not heavy:
+            prec.append(0.0)
+            pur.append(0.0)
+            depth.append(leaf.depth)
             continue
         ips = set(row["who"]["value"])
         prec.append(len([h for h in heavy if h in ips]) / len(heavy))
@@ -88,8 +98,8 @@ def measure(tree: Any, hier: Any, samples: Dict[str, Dict[str, Any]], truth: Dic
 
 
 def run(days: Sequence[int] = (1, 3, 6, 10), dt: float = 3600.0, seed: int = 0,
-        timings: Optional[Dict[str, float]] = None, keep: Optional[Dict[str, Any]] = None
-        ) -> Dict[int, Dict[str, float]]:
+        timings: Optional[Dict[str, float]] = None, keep: Optional[Dict[str, Any]] = None,
+        p05_period_s: float = 3600.0) -> Dict[int, Dict[str, float]]:
     spec = build_org("O")
     gen = OrgGenerator(spec, seed=seed, pack_name="O")
     truth = {r["tid"]: r for r in _truth_rows(gen)}
@@ -97,7 +107,8 @@ def run(days: Sequence[int] = (1, 3, 6, 10), dt: float = 3600.0, seed: int = 0,
            "progressive": {"enabled": True}}
     st = MetricStore()
     engines = [ActionTokenEngine(), ClientStackEngine(), EventBuilderEngine(), EventContextEngine(),
-               AttributeRegistryEngine(), AttributeSelectionEngine(), PatternTreeEngine()]
+               AttributeRegistryEngine(), AttributeSelectionEngine(eval_period_s=p05_period_s),
+               PatternTreeEngine()]
     t0 = gen.day_start(1)
     per_day = int(round(86400.0 / dt))
     samples: Dict[str, Dict[str, Any]] = {}

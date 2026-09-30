@@ -26,6 +26,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from ...core.engine import Context, Engine
+from ..behavior.lib import pactive as PA
 from ..behavior.lib import grains as GR
 from .aggregation import (ACTIVE_HORIZON_S, SPAN_S, active_mask, emit_window, ensure_retention,
                           grid_many, nan_cv, recently_active, tick_durations, window_dims)
@@ -109,7 +110,7 @@ class PeriodicityEngine(Engine):
         ensure_retention(store)
         n = 0
         for system in store.systems():
-            for entity in store.entities(system):
+            for entity in PA.entities(store, system, now, ctx.config):     # bounded: A_t ⊇ recently active
                 if not recently_active(store, system, entity, now, min(self.span_s, ACTIVE_HORIZON_S)):
                     continue
                 n += self._entity(ctx, system, entity)

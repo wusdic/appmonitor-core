@@ -203,12 +203,16 @@ def test_feature_inputs_formulas():
 # ---------------------------------------------------------------- detectors
 def test_detector_registry():
     # spec v2.1 (docs/lib3/cadence.md §7.3, deliberate): the four Q-grain
-    # detectors are appended, so D = 35 and the v2 prefix is unchanged
-    assert det.N_DETECTORS == 35 == len(det.DETECTORS)
+    # detectors are appended, then the five P03 conformity detectors
+    # (progressive.md §9.2), so D = 40 and the v2 prefix is unchanged
+    assert det.N_DETECTORS == 40 == len(det.DETECTORS)
     assert det.DETECTORS[:3] == ["marg_int", "marg_shape", "peer"]
     assert det.DETECTORS[30] == "cross_system" and det.N_V2_DETECTORS == 31
-    assert det.DETECTORS[-4:] == ["marg_int_q", "marg_shape_q", "t2_q", "spe_q"]
-    assert det.DETECTORS[-1] == "spe_q"
+    assert det.DETECTORS[31:35] == ["marg_int_q", "marg_shape_q", "t2_q", "spe_q"]
+    assert det.DETECTORS[-5:] == ["conf_who", "conf_when", "conf_content", "conf_seq", "conf_novel"]
+    assert all(det.DETECTOR_INFO[d]["family"] == "conformity" and det.DETECTOR_INFO[d]["kind"] == "inst"
+               and det.DETECTOR_INFO[d]["stream"] == "t" and det.DETECTOR_INFO[d]["axes"] == ["content"]
+               for d in det.DETECTORS[-5:])
     assert {d for d in det.DETECTORS if det.DETECTOR_INFO[d]["stream"] == "q"} == set(det.Q_DETECTORS)
     assert det.DETECTOR_INFO["identity"]["overlap"] is True
     assert det.DETECTOR_INFO["marg_int"]["stream"] == "h" and det.DETECTOR_INFO["novelty"]["stream"] == "t"
@@ -217,7 +221,7 @@ def test_detector_registry():
         info = det.DETECTOR_INFO[d]
         assert info["family"] in det.FAMILIES
         assert info["kind"] in ("inst", "acc")
-        assert info["owner"].startswith("B") and info["axes"]
+        assert info["owner"].startswith(("B", "P")) and info["axes"]
         if info["kind"] == "acc":
             assert 0 < info["budget_per_day"] <= 0.03
             assert det.arl_days(d) == pytest.approx(1 / info["budget_per_day"])
@@ -225,7 +229,7 @@ def test_detector_registry():
             assert "budget_per_day" not in info
     assert set(det.P2_DETECTORS) == {"mixture", "session", "cross_system"}
     s = det.new_score_vector()
-    assert s.shape == (35,) and np.isnan(s).all()
+    assert s.shape == (40,) and np.isnan(s).all()
 
 
 def test_detector_families_partition():
@@ -240,7 +244,7 @@ def test_detector_families_partition():
     assert det.family_members("change") == ["cusum", "mcusum", "bocpd", "creep"]
     assert det.family_members("temporal", "inst") == []
     assert set(det.INSTANT_FAMILIES) == {"intensity", "shape", "peer", "categorical",
-                                         "sequence", "identity", "xsys"}
+                                         "sequence", "identity", "xsys", "conformity"}
     assert det.DETECTOR_INFO["identity"]["strata"] == "daypart_regime"
     assert det.detectors_of("B14") == ["cusum", "mcusum", "bocpd", "creep"]
     # path budgets are split exactly

@@ -84,7 +84,8 @@ EVENT_KINDS = frozenset({
     "link_retracted", "new_entity_matched", "new_entity_unmatched", "class_transition",
     "class_split", "class_merge", "peer_outlier", "system_shift", "coherent_shift",
     "class_shift", "class_adoption_risky", "schedule_shift", "beacon", "budget_exceeded",
-    "baseline_creep", "first_access_system", "regime", "pipeline_degraded"})
+    "baseline_creep", "first_access_system", "regime", "pipeline_degraded",
+    "pattern_violation"})
 # discrete event kind -> owner engine (engines.md), for 'B16'-style expectations
 EVENT_OWNER = {
     "first_seen": "b08", "rare_access": "b08", "class_adopted": "b08",
@@ -97,6 +98,7 @@ EVENT_OWNER = {
     "system_shift": "b05", "coherent_shift": "b05", "class_shift": "b18",
     "class_adoption_risky": "b18", "schedule_shift": "b07", "beacon": "b12",
     "budget_exceeded": "b13", "baseline_creep": "b14", "first_access_system": "b21",
+    "pattern_violation": "p03",
     "regime": "b28", "incident": "b27"}
 KNOWN_NAMES = frozenset(DETECTORS) | AXES_VOCAB | EVENT_KINDS | frozenset(FAMILIES)
 

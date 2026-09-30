@@ -66,6 +66,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile
 from .lib import emit
+from .lib import pactive as PA
 from .lib import gating as G
 from .lib import m_class
 from .lib import m_seq
@@ -319,6 +320,7 @@ class SequenceEngine(Engine):
 
     # ----------------------------------------------------------------- run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
+        self._pa_cfg = ctx.config
         store = ctx.store
         now, dt = float(ctx.now), float(ctx.window_s)
         d_min = ctx.config.get("D_min_s", G.D_MIN_S)
@@ -329,7 +331,7 @@ class SequenceEngine(Engine):
             smap = m_seq.SymbolMap.from_store(store, s)
             tiers = _Tiers(store, s)
             used: set = set()
-            for e in store.entities(s):
+            for e in PA.entities(store, s, now, ctx.config):
                 n += self._entity(ctx, lrn, s, e, smap, tiers, used, r2_failed)
             self._refit_tiers(store, s, now, used)
         return n
@@ -352,7 +354,11 @@ class SequenceEngine(Engine):
     def _entity(self, ctx: Context, lrn: G.GatedLearner, s: str, e: str,
                 smap: m_seq.SymbolMap, tiers: _Tiers, used: set, r2_failed: bool) -> int:
         store, now, dt = ctx.store, float(ctx.now), float(ctx.window_s)
-        model = m_seq.get(store, s, e)
+        # bounded mode (progressive.md §10.3): a per-IP PPM only for EARNED IPs;
+        # every other IP is scored against its class / system tiers with a
+        # transient empty state and nothing per-IP is learned or kept
+        earned = PA.is_earned(store, s, e, ctx.config)
+        model = m_seq.get(store, s, e) if earned else None
         if model is not None and "_state" not in model:
             model = None                              # not ours / foreign layout
         run = model["_run"] if model is not None else _new_run()
@@ -385,6 +391,8 @@ class SequenceEngine(Engine):
             n = 1
         elif degraded:
             self._write_degraded(store, s, e, now, dt, r2_failed)
+        if not earned:
+            return n
         # learn: commit rows <= now - D (scores above used the pre-commit model)
         self._rows, self._held = model["_rows"], model["_held"]
         try:
@@ -654,7 +662,9 @@ class SequenceEngine(Engine):
         entity models (hourly per key, deterministic phase; first call at once)."""
         n = 0
         if self.entity_due(("seq-tier", s, SYSTEM_KEY), now, self.tier_refit_s):
-            n += self._build_tier(store, s, SYSTEM_KEY, store.entities(s), now, 0, 0, "system")
+            n += self._build_tier(store, s, SYSTEM_KEY,
+                                  PA.entities(store, s, now, getattr(self, "_pa_cfg", None)), now, 0, 0,
+                                  "system")
         for ck in sorted(used):
             if self.entity_due(("seq-tier", s, ck), now, self.tier_refit_s):
                 n += self._build_tier(store, s, ck, m_class.class_members(store, s, ck), now,

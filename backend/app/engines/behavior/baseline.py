@@ -95,6 +95,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile
 from .lib import gating as G
+from .lib import pactive as PA
 from .lib import grains as GR
 from .lib import m_baseline as MB
 from .lib import m_class
@@ -289,7 +290,7 @@ class BaselineEngine(Engine):
         ref_due = self.entity_due(("__reference__",), now, self.ref_period_s)
         recs: List[Tuple[str, str, Dict[str, Any]]] = []
         for s in store.systems():
-            ents = store.entities(s)
+            ents = PA.entities(store, s, now, ctx.config)      # bounded mode: active + earned (§10.3)
             if not ents:
                 continue
             incs = [(i.entity, tuple(i.entities), float(i.opened), float(i.last_seen), i.status)
@@ -584,7 +585,7 @@ class BaselineEngine(Engine):
             ents: Dict[str, np.ndarray] = {}
             neff = 0.0
             om_s: Dict[str, np.ndarray] = {}
-            for e in store.entities(s):
+            for e in PA.entities(store, s, now, self._cfg):
                 m = store.get_model(s, e, MB.MODEL)
                 if _valid(m):
                     St = MB.true_stats(m["current"], now)

@@ -94,6 +94,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, EntityProfile, MetricKind, Severity
 from .lib import emit
+from .lib import pactive as PA
 from .lib import gating as G
 from .lib import m_class
 from .lib import m_rhythm as R
@@ -330,6 +331,7 @@ class RhythmEngine(Engine):
 
     # ------------------------------------------------------------------ run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
+        self._pa_cfg = ctx.config
         store = ctx.store
         now, dt = float(ctx.now), float(ctx.window_s)
         cfg = ctx.config or {}
@@ -344,7 +346,11 @@ class RhythmEngine(Engine):
             clock = _Clock(now, dt, tz, cal, R.healed_days(sysm))
             presence: Dict[int, List[float]] = {}
             used: Set[str] = set()
-            for e in store.entities(s):
+            # bounded mode: per-IP rhythm models for EARNED IPs only; unearned
+            # timing comes from P09 windows and B18 class_rhythm (§10.3)
+            for e in PA.entities(store, s, now, ctx.config):
+                if not PA.is_earned(store, s, e, ctx.config):
+                    continue
                 n += self._entity(ctx, lrn, s, e, clock, presence, used, b01_failed)
             if presence:
                 self._heal(store, s, sysm, clock, presence, now)
@@ -700,7 +706,8 @@ class RhythmEngine(Engine):
         """Hourly: pooled member rhythms -> model.rhythm@(s, class:<rid>) and
         @(s, __system__) (expected active fraction per slot; class prior)."""
         if self.entity_due(("rhythm-tier", s, SYSTEM_KEY), now, self.tier_refit_s):
-            self._build_tier(store, s, SYSTEM_KEY, store.entities(s), now, "system")
+            self._build_tier(store, s, SYSTEM_KEY,
+                             PA.entities(store, s, now, getattr(self, "_pa_cfg", None)), now, "system")
         for ck in sorted(used):
             if self.entity_due(("rhythm-tier", s, ck), now, self.tier_refit_s):
                 self._build_tier(store, s, ck, m_class.class_members(store, s, ck), now, "class")

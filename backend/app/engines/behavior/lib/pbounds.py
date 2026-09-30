@@ -198,7 +198,7 @@ def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float
     y05, y95, y01, y99 = q(BAND_LO), q(BAND_HI), q(BAND98_LO), q(BAND98_HI)
     band90 = [_inv(y05, lg), _inv(y95, lg)]
     band98 = [_inv(y01, lg), _inv(y99, lg)]
-    cov90 = float(td.cdf(y95) - td.cdf(y05)) if _fin(y05) and _fin(y95) else NAN
+    cov90 = closed_coverage(td, y05, y95) if _fin(y05) and _fin(y95) else NAN
     ymin, ymax, n_rng = num.observed_range(int(day_now))
     rng = [_inv(ymin, lg), _inv(ymax, lg)] if n_rng > 0 else None
     approx = float(approx_share) if _fin(approx_share) else 0.0
@@ -268,6 +268,19 @@ def _tail(num: Any, u: float, upper: bool) -> Optional[List[float]]:
     if not (_fin(xi) and _fin(sigma) and sigma > 0):
         return None
     return [float(un), float(xi), float(sigma), int(exc.size)]
+
+
+def closed_coverage(td: Any, lo: float, hi: float) -> float:
+    """Digest mass in the closed band [lo, hi] (the stated claim is "within
+    lo-hi", endpoints included). cdf(hi) - cdf(lo) drops the point mass at lo:
+    a constant attribute (net.pkts_down = 2 on every login) has band [2, 2]
+    and open-interval coverage 0, which made its statement confidence 1e-308
+    and every statement of the node read "置信 0.00" (measured on pack O)."""
+    if not (_fin(lo) and _fin(hi)):
+        return NAN
+    e_lo = 1e-9 * (1.0 + abs(float(lo)))
+    e_hi = 1e-9 * (1.0 + abs(float(hi)))
+    return float(min(1.0, max(0.0, td.cdf(float(hi) + e_hi) - td.cdf(float(lo) - e_lo))))
 
 
 def coverage_lb(c: float, n: float, q: float = 0.05) -> float:
@@ -458,7 +471,7 @@ def fit_digest(td: Any, t: float, unit: str = "", n: float = NAN) -> Optional[Di
            "band90": [q(BAND_LO), q(BAND_HI)], "band98": [q(BAND98_LO), q(BAND98_HI)],
            "p99": q(0.99), "hard": False, "mass": float(td.total(t)),
            "qgrid": [float(q(i / (QGRID - 1))) for i in range(QGRID)],
-           "coverage_emp": float(td.cdf(q(BAND_HI)) - td.cdf(q(BAND_LO)))}
+           "coverage_emp": closed_coverage(td, q(BAND_LO), q(BAND_HI))}
     rec["coverage"] = coverage_lb(rec["coverage_emp"], n)
     rec["disp90"] = round_band(rec["band90"][0], rec["band90"][1], td.cdf, unit)
     rec["confidence"] = confidence(rec)
@@ -514,3 +527,119 @@ def lookup(model: Any, kind: int, nid: int, attr: Optional[str] = None) -> Any:
     if ent is None or attr is None:
         return ent
     return (ent.get("attrs") or {}).get(attr)
+
+
+# ------------------------------------------------- content target requests
+REQ_NODES = 32          # nodes per tree that receive requested content targets
+REQ_PER_NODE = 3        # requested attributes per node and fitter
+REQ_TRY_UNITS = 5.0     # evidence and active days a node must gain before an unmet
+REQ_TRY_DAYS = 2        # request is given up (a login node is busy with page views all day
+REQ_RETRY_DAYS = 7      # but sees the login body only at 9 am); retried after 7 active days
+M_T_P04 = 8             # m_t: P04 models the first m_t system targets without a request
+
+
+def request_targets(store: Any, key: str, ptm: Any, t: float, types: Sequence[str],
+                    book: Dict[str, Any], max_nodes: int = REQ_NODES,
+                    per_node: int = REQ_PER_NODE) -> Dict[int, Dict[int, List[str]]]:
+    """Content targets a fitter asks P04 to keep at its busiest nodes
+    (model.pwant '<fitter>'.'targets', §5.6): the registry attributes of the
+    fitter's types (P06 numeric; P07 set / text) that P05 found informative
+    (role split or target), in P05's own ranking (split candidates, then
+    targets), that the node does not model yet. Without such a request a
+    split-only attribute (pack O's login body size and key set) is never a
+    target, so the requirement's "90 % of submissions 1-2 KB" cannot be fitted.
+    No attribute name is written in code. A request the node never fills (the
+    attribute is absent there) is given up after the node gained REQ_TRY_UNITS
+    evidence units on REQ_TRY_DAYS more active days, so the slot moves to the next
+    candidate (retried after REQ_RETRY_DAYS). book: the caller's persistent
+    bookkeeping {kind: {nid: {attr: [n_c, active days, state]}}}."""
+    reg = None
+    try:
+        from . import m_ptree as MP
+        reg = MP.get_registry(store, key)
+        sel = MP.get_model(store, key, MP.ATTRSEL)
+    except Exception:                          # pragma: no cover
+        sel = None
+    if reg is None:
+        return {}
+    roles = (sel or {}).get("roles") or {} if isinstance(sel, Mapping) else {}
+    out: Dict[int, Dict[int, List[str]]] = {}
+    for kind, tree in ptm.kinds.items():
+        order: List[str] = []
+        sc = ((sel or {}).get("split_cands") or {}) if isinstance(sel, Mapping) else {}
+        for a, *_ in (sc.get(kind) or sc.get(str(kind)) or []):
+            if a not in order:
+                order.append(a)
+        ts_ = ((sel or {}).get("targets_sys") or {}) if isinstance(sel, Mapping) else {}
+        for a in (ts_.get(kind) or ts_.get(str(kind)) or []):
+            if a not in order:
+                order.append(a)
+        if not roles:                          # before P05's first run: registry coverage
+            order += sorted((a for a in reg.names() if a not in order),
+                            key=lambda a: (-float(reg.coverage(a)), a))
+        cands = []
+        for a in order:
+            rec = reg.get(a)
+            if rec is None or getattr(rec, "type", None) not in types:
+                continue
+            if getattr(rec, "state", "active") == "gone":
+                continue
+            if roles and roles.get(a) not in ("split", "target"):
+                continue
+            cands.append(a)
+        if not cands:
+            continue
+        nodes = [nd for nd in tree.nodes.values()
+                 if nd.parent is not None and not getattr(nd, "is_exc", False)
+                 and nd.state not in ("retired", "dormant")]
+        nodes.sort(key=lambda nd: (-nd.mass_at(t), nd.id))
+        kb = book.setdefault(kind, {})
+        live = set()
+        ovs = ((sel or {}).get("node_overrides") or {}) if isinstance(sel, Mapping) else {}
+        ovs = ovs.get(kind) or ovs.get(str(kind)) or {}
+        sys_base = list(ts_.get(kind) or ts_.get(str(kind)) or [])[:M_T_P04]
+        for nd in nodes[:max_nodes]:
+            live.add(nd.id)
+            nb = kb.setdefault(nd.id, {})
+            nc = float(nd.n_c(t))
+            nd_days = int(nd.n_days())
+            # what P04 models at this node on P05's word (nearest override, else
+            # the system targets): those need no request
+            cur, ov = nd, None
+            while cur is not None and ov is None:
+                ov = ovs.get(cur.id, ovs.get(str(cur.id)))
+                cur = tree.nodes.get(cur.parent) if cur.parent is not None else None
+            base = set(ov) if ov else set(sys_base)
+            want: List[str] = []           # new requests: at most per_node
+            keep: List[str] = []           # filled requests kept alive: at most per_node
+            for a in cands:
+                if len(want) >= per_node and len(keep) >= per_node:
+                    break
+                if a in base:
+                    nb.pop(a, None)
+                    continue
+                if a in nd.targets:
+                    if a in nb and len(keep) < per_node:
+                        nb[a] = [nc, nd_days, 1]   # filled by our request: keep it (P04 drops
+                        keep.append(a)             # extras that nobody requests any more)
+                    continue                   # else P04 models it on its own
+                if len(want) >= per_node:
+                    continue
+                st = nb.get(a)
+                if st is None or (st[2] < 0 and nd_days - st[1] >= REQ_RETRY_DAYS):
+                    st = nb[a] = [nc, nd_days, 0]
+                elif st[2] >= 0 and nc - st[0] >= REQ_TRY_UNITS and nd_days - st[1] >= REQ_TRY_DAYS:
+                    st[2] = -1                 # absent at this node: give the slot up
+                    st[1] = nd_days
+                if st[2] < 0:
+                    continue
+                want.append(a)
+            want = keep + want
+            if len(nb) > 64:                   # bounded bookkeeping per node
+                for a in [x for x in nb if x not in want][:len(nb) - 64]:
+                    del nb[a]
+            if want:
+                out.setdefault(kind, {})[nd.id] = want
+        for nid in [n for n in kb if n not in live]:
+            del kb[nid]
+    return out

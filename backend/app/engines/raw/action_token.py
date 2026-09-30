@@ -46,6 +46,7 @@ from ..behavior.lib import grains as GR
 from ..behavior.lib import sketch as SK
 from ..behavior.lib.sketch import HyperLogLog
 from ..behavior.lib.stack import stack_id, stack_token
+from ..behavior.lib import pactive as PA
 
 _ACTIVE = (AcquisitionMethod.ACTIVE_PROBE, AcquisitionMethod.ACTIVE_DNS,
            AcquisitionMethod.ACTIVE_TLS)
@@ -310,7 +311,7 @@ class ActionTokenEngine(Engine):
         active: Set[Tuple[str, str]] = set()
         for s, ents in by_sys.items():
             n += self._run_system(store, s, ents, now, active)
-        n += self._zero_fill(store, now, active)
+        n += self._zero_fill(store, now, active, ctx.config)
         return n
 
     # --------------------------------------------------------------- system
@@ -575,11 +576,15 @@ class ActionTokenEngine(Engine):
 
     # ------------------------------------------------------------ zero-fill
     @staticmethod
-    def _zero_fill(store, now: float, active: Set[Tuple[str, str]]) -> int:
+    def _zero_fill(store, now: float, active: Set[Tuple[str, str]], config: Any = None) -> int:
+        """act.events = 0 for every entity seen within ZERO_FILL_S that has no
+        event this tick. Bounded mode (progressive.md §10.3): only the active
+        (linger window) and earned IPs of P15's sets - an unearned IP idle for
+        longer has implicit zeros (D0 / D2 read idle ticks from ops.tick)."""
         horizon = now - MT.ZERO_FILL_S
         n = 0
         for s in store.systems():
-            for e in store.entities(s):
+            for e in PA.entities(store, s, now, config):
                 if (s, e) in active:
                     continue
                 ls = store.last_seen(s, e)

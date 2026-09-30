@@ -463,6 +463,17 @@ class MetricStore:
     plus age-based retention) so a long-running deployment cannot grow
     without limit."""
 
+    def __getstate__(self) -> Dict[str, Any]:
+        """Picklable (checkpoints, offline diagnosis): the lock is recreated."""
+        with self._lock:
+            st = dict(self.__dict__)
+        st.pop("_lock", None)
+        return st
+
+    def __setstate__(self, st: Dict[str, Any]) -> None:
+        self.__dict__.update(st)
+        self._lock = threading.RLock()
+
     def __init__(self, max_points: int = 20000) -> None:
         self._lock = threading.RLock()
         self._max = max_points

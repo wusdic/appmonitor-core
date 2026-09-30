@@ -14,7 +14,12 @@ Writes  model.pbounds@(tree key, '__system__'):
         tail_hi / tail_lo, qgrid, disp90 / disp_range, n_eff, n_c, approx, confidence,
         cver). A node with no numeric target gets status 'none' (P04's confirmation
         rule needs every applicable fitter to have spoken, §6.8.1).
-        model.pwant['p06'] = {} (nothing requested by default).
+        model.pwant['p06'] = {'targets': {kind: {nid: [attr...]}}}: numeric attributes that
+        P05 found informative (role split / target) but that the node does not model,
+        <= 3 per node at the 32 busiest nodes, in P05's ranking (lib/pbounds.
+        request_targets). Deviation: §8 says "none by default"; pack O's real
+        lattice never made the login body size a target (P05 gives it the split
+        role only), so "90 % of submissions are 1-2 KB" could not be fitted.
 Cadence 1 h per tree (entity_due); a tree that learned nothing since the last
         run is skipped, and inside a tree only dirty nodes are refitted (evidence
         grew >= 10 % or >= 20 units, or version / cver / state changed, §6.20), so
@@ -34,6 +39,7 @@ from .lib import pevent as EV
 from .lib import pnode as PN
 
 RATE_ATTR = "rate.ip_h"
+NUM_TYPES = ("numeric",)
 pins_for, chosen_arm, local_day, empty_model = PB.pins_for, PB.chosen_arm, PB.local_day, PB.empty_model
 CPINS = PB.CPINS
 
@@ -118,14 +124,17 @@ class ContentBoundsEngine(Engine):
         model["gain"] = {"bits_per_event": gain_num / gain_den if gain_den > 0 else 0.0,
                          "us_per_event": ms * 1000.0 / new_ev if new_ev > 0 else None,
                          "nodes_fitted": n_fit, "ms": ms}
-        store.put_model(key, SYSTEM_ENTITY, MP.PBOUNDS, model, version=model["version"], ts=now)
+        req = PB.request_targets(store, key, ptm, now, NUM_TYPES, model.setdefault("req", {}))
         want = MP.get_model(store, key, MP.PWANT)
         if not isinstance(want, dict):
             want = {}
-        if "p06" not in want:
-            want["p06"] = {}
+        sub = {"targets": req} if req else {}
+        if want.get("p06") != sub:
+            want["p06"] = sub
             store.put_model(key, SYSTEM_ENTITY, MP.PWANT, want, ts=now)
-        return n_fit, {"fitted": n_fit, "skipped_kinds": skipped, "ms": ms}
+        store.put_model(key, SYSTEM_ENTITY, MP.PBOUNDS, model, version=model["version"], ts=now)
+        return n_fit, {"fitted": n_fit, "skipped_kinds": skipped, "ms": ms,
+                       "requested": sum(len(v) for kv in req.values() for v in kv.values())}
 
     def fit_node(self, store: Any, key: str, node: Any, now: float, day: int, reg: Any,
                  config: Mapping[str, Any], byte_globs: tuple,

@@ -78,6 +78,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, Severity
 from .lib import combine
+from .lib import pactive as PA
 from .lib import emit
 from .lib import gating as G
 from .lib import grains as GR
@@ -192,7 +193,7 @@ class CrossSystemEngine(Engine):
         # 1) observe: the systems every IP is active in at this tick
         act: Dict[str, List[str]] = {}
         for s in systems:
-            for e in store.entities(s):
+            for e in PA.entities(store, s, now, ctx.config):     # an active row implies A_t
                 row = store.vec_at(s, e, ACTIVE, now)
                 if row is not None and len(row) and float(row[0]) > 0.5:
                     act.setdefault(e, []).append(s)
@@ -224,7 +225,12 @@ class CrossSystemEngine(Engine):
 
         # 4) learning, per pair key (lib/gating)
         frontier = G.commit_frontier(now, dt, self._learner.d_min_s)
+        # bounded mode (§10.3): a pair idle for longer than the linger window has
+        # nothing left to commit; it is not visited until it is active again
+        idle_before = now - PA.linger_s(ctx.config) if PA.bounded(ctx.config) else -math.inf
         for pk in sorted(live):
+            if float(live[pk].get("last", now)) < idle_before:
+                continue
             self._learn(ctx, model, pk, now, dt, frontier)
 
         # 5) profiles of the active keys, hourly

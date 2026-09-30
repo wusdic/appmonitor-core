@@ -88,6 +88,7 @@ from scipy import special
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import combine
+from .lib import pactive as PA
 from .lib import emit
 from .lib import evt
 from .lib import gating as G
@@ -565,7 +566,9 @@ class BeaconEngine(Engine):
         store = ctx.store
         # pass 1: ingest this tick's rare events into every entity's buffers
         ents: List[_Ent] = []
-        for e in store.entities(s):
+        for e in PA.entities(store, s, now, ctx.config):
+            if not PA.periodic_candidate(store, s, e, ctx.config):
+                continue                      # bounded mode: machine-like IPs only (§10.3)
             model = store.get_model(s, e, MODEL)
             if not (isinstance(model, dict) and model.get("fmt") == 1):
                 model = None

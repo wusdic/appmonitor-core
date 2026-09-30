@@ -163,3 +163,40 @@ def test_grammar_confidence_is_calibrated_and_rises_with_evidence():
         assert viol <= 2, (n, viol)
         means.append(sum(confs) / len(confs))
     assert means[0] < means[1] < means[2] and means[2] >= 0.97, means
+
+
+def test_short_mixed_tokens_fold_into_the_alnum_class():
+    """8-character hex tokens are kept in detail by the shape (runs <= 8), 9-16
+    character ones collapse to A<n>: anti-unification over the class hierarchy
+    puts both under one skeleton, [A-Za-z0-9]{8,16}."""
+    assert G._alnum_fold("D1 L2 D1 L1 D3") == "A8" and G._alnum_fold("L4") == "L4"
+    assert G._alnum_fold("L4 . L1") == "L4 . L1"
+    rnd = random.Random(5)
+    ts = PN.TextSummary("shape")
+    for d in range(12):
+        for k in range(3):
+            v = "".join(rnd.choice("0123456789abcdef") for _ in range(8 if k == 0 else 12))
+            v = v if len(set(v) & set("abcdef")) and len(set(v) & set("0123456789")) else "3fa2c9d1"
+            ts.update(Shaped(shape(v)), T0 + d * DAY + k * 600, 1.0, 1.0)
+    r = G.fit_text(ts, T0 + 12 * DAY)
+    rx = re.compile(r["grammar"])
+    assert rx.fullmatch("3fa2c9d1") and rx.fullmatch("0a1b2c3d4e5f") and not rx.fullmatch("3fa2-9d1")
+    # low churn among the tracked shapes: one skeleton, the exact length range
+    ts2 = PN.TextSummary("shape")
+    for d in range(12):
+        for v in ("3fa2c9d1", "0a1b2c3d4e5f", "9e8d7c6b5a4f"):
+            ts2.update(Shaped(shape(v)), T0 + d * DAY, 1.0, 1.0)
+    r2 = G.fit_text(ts2, T0 + 12 * DAY)
+    assert r2["grammar"] == "[A-Za-z0-9]{8,12}" and r2["mode"] == "shape"
+
+
+def test_closed_set_of_mixed_type_values():
+    """A categorical target may hold numbers and the absence value together
+    (found on the real lattice: status codes next to '⊥')."""
+    cs = PN.CatSummary()
+    for d in range(30):
+        for v in (200, 302, "⊥"):
+            cs.update(v, T0 + d * DAY, 1.0, 1.0)
+    r = G.fit_cat(cs, T0 + 30 * DAY)
+    assert set(map(str, r["closed"])) == {"200", "302", "⊥"}
+    assert G.check_cat(r, 404)[1] == ["new_value"] and G.check_cat(r, 302)[0] == 1.0

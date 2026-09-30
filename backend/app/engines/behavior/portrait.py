@@ -104,6 +104,7 @@ from scipy import special as sp
 from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile
 from .lib import features as F
+from .lib import pactive as PA
 from .lib import grains as GR
 from .lib import m_baseline as MB
 from .lib import m_class
@@ -201,7 +202,11 @@ class PortraitEngine(Engine):
         dt = float(ctx.window_s) if ctx.window_s and ctx.window_s > 0 else BAND_EXPOSURE_S
         n = 0
         for s in store.systems():
-            ents = [e for e in store.entities(s)
+            # bounded mode: earned IPs every 2 h; every other IP on read (§10.3)
+            src = (sorted(PA.earned_entities(store, s, ctx.config) or ())
+                   if PA.bounded(ctx.config) and PA.system_sets(store, s) is not None
+                   else store.entities(s))
+            ents = [e for e in src
                     if self.entity_due(("portrait", s, e), now, self.refresh_s)]
             cks = [ck for ck in m_class.all_class_keys(store, s)
                    if self.entity_due(("portrait", s, ck), now, self.refresh_s)]
@@ -951,6 +956,13 @@ def _publish(store: Any, s: str, key: str, js: Dict[str, Any], sig: Dict[str, An
     if not bump:
         diff, sig = list(old.get("diff") or []), prev_sig      # keep the version's reference
     js["version"] = v
+    fac = prof.extra.get("facets")
+    if isinstance(fac, Mapping) and fac:
+        # P13's facet tree (progressive.md §9.3 B30 row): embedded by reference
+        # (version and facet ids) so the portrait signature and text stay as
+        # they were; the tree itself lives in profile.extra['facets']
+        js["facets"] = {"version": fac.get("version"),
+                        "ids": sorted(str(k) for k in (fac.get("facets") or {}))[:64]}
     text_zh, text_en = render_zh(js, diff), render_en(js, diff)
     prof.extra[PORTRAIT] = {"json": js, "text_zh": text_zh, "text_en": text_en, "version": v,
                             "diff": diff, "updated": now, "sig": sig}

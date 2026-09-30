@@ -158,6 +158,7 @@ EVENT_FAMILY: Dict[str, str] = {
     "system_shift": "peer", "coherent_shift": "peer", "class_shift": "peer",
     "schedule_shift": "temporal", "beacon": "c2", "budget_exceeded": "exfil",
     "baseline_creep": "change", "regime": "change", "first_access_system": "xsys",
+    "pattern_violation": "conformity",
 }
 DISCRETE_KINDS: Tuple[str, ...] = tuple(sorted(set(EVENT_FAMILY) | set(NEW_TOKEN_KINDS)
                                                | {"incident"}))
@@ -168,6 +169,7 @@ AXIS_FAMILY: Dict[str, str] = {
     "discovery": "breadth", "collection": "breadth", "exfil": "exfil",
     "sequence": "sequence", "credential": "sequence", "identity": "identity",
     "change": "change", "c2": "c2", "xsys": "xsys", "lateral": "xsys",
+    "content": "conformity",
 }
 
 _FAMILY_SET = frozenset(FAMILIES)

@@ -88,6 +88,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import DerivedMetric, EntityProfile, MetricKind
 from .lib import features as F
 from .lib import grains as GR
+from .lib import pactive as PA
 from .lib import sketch as SK
 from .lib import timebins as TB
 
@@ -194,7 +195,9 @@ class FeatureVectorEngine(Engine):
             }
         n = 0
         for s in store.systems():
-            for e in store.entities(s):
+            # bounded mode (§10.3): rows for the active and earned IPs only; an
+            # unearned idle IP's row is implicit (feature.active = 0)
+            for e in PA.entities(store, s, now, ctx.config):
                 self._entity(store, s, e, now, dt, tctx, grain)
                 n += 1
         return n

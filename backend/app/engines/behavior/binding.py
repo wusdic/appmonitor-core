@@ -75,6 +75,16 @@ def _stratum(get) -> str:
     return "ch=" + (str(v) if v is not EV.ABSENT else "?")
 
 
+def _card(reg: Any, a: str) -> float:
+    rec = reg.get(a) if reg is not None else None
+    if rec is None:
+        return 0.0
+    try:
+        return float(rec.card_estimate())
+    except Exception:
+        return 0.0
+
+
 def pair_key(x: str, y: str) -> str:
     return f"{x}->{y}"
 
@@ -108,8 +118,14 @@ class BindingEngine(Engine):
         sel = MP.get_model(store, key, MP.ATTRSEL)
         names: Iterable[str] = ()
         tsys = (sel or {}).get("targets_sys") if isinstance(sel, Mapping) else None
-        if isinstance(tsys, Mapping) and tsys:
-            names = [a for v in tsys.values() for a in (v or [])]
+        roles = (sel or {}).get("roles") if isinstance(sel, Mapping) else None
+        if (isinstance(tsys, Mapping) and tsys) or (isinstance(roles, Mapping) and roles):
+            # every attribute P05 found informative (target or split role): a
+            # bound username is usually a split candidate (it separates
+            # departments), not a system target; P05's target list alone
+            # rotates and lost it on pack O's real lattice
+            names = [a for v in (tsys or {}).values() for a in (v or [])]
+            names += [a for a, r in (roles or {}).items() if r in ("split", "target")]
         elif reg is not None:
             names = reg.names()
         out = set()
@@ -271,10 +287,11 @@ class BindingEngine(Engine):
                 or (age >= SCREEN_MIN_AGE and fresh >= max(1, SCREEN_FRESH * probe.n_rows())):
             # hourly while nothing is found; afterwards when the probe changed
             # materially and at most every SCREEN_MIN_AGE (at least daily)
-            rows, w = probe.rows(now)
+            rows, w, strata = probe.rows(now, with_strata=True)
             xc = [("net.src", l) for l in self._who_levels(store, key)] + [(a, 0) for a in X_ATTRS]
             specs = FD.screen(rows, w, xc, sorted(self._y_candidates(store, key, reg)),
-                              lambda a, l, v: hier.gen(a, l, v), absent=None)
+                              lambda a, l, v: hier.gen(a, l, v), absent=None, strata=strata,
+                              card=lambda a: _card(reg, a))
             model["screen"] = [{k: v for k, v in d.items()} for d in specs]
             st["screened_at"] = probe.offered
             st["screened_t"] = now

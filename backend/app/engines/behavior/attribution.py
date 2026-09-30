@@ -110,6 +110,7 @@ from scipy.special import chdtrc, chdtri
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, EntityProfile, MetricKind, Severity
 from .lib import emit
+from .lib import pactive as PA
 from .lib import grains as GR
 from .lib import m_class
 from .lib import m_client as MC
@@ -531,7 +532,7 @@ class AttributionEngine(Engine):
         act_name = META_H if self._canon else ACTIVE
         sc = _Sys(store, s, now, model, act_name)
         n = 0
-        for e in store.entities(s):
+        for e in PA.entities(store, s, now, ctx.config):
             key = (s, e)
             if b01_failed:
                 if key in self._state or store.vec_at(s, e, act_name, now - dt) is not None:

@@ -65,6 +65,7 @@ INV_H = 0.05               # invariant: H <= 0.05 bits ...
 INV_COV = 0.99             # ... and coverage >= 0.99
 INV_COV_EXIT = 0.97        # an invariant leaves below this coverage (or above 2 INV_H bits)
 TARGET_COV = 0.05
+LOCAL_TARGET_COV = 0.5     # node-local attributes must cover half of a node's rows
 TARGET_STAB = 0.7
 SHAPE_DISTINCT = 0.5
 SHAPE_CR = 0.05
@@ -1090,16 +1091,29 @@ def summary_entropy(s: Any, t: float, hier: Any = None, attr: Optional[str] = No
 
 def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: Any,
                             targets_sys: Sequence[str], gone: Iterable[str] = (), m_t: int = M_T,
-                            n_min: int = 32) -> Dict[int, List[str]]:
+                            n_min: int = 32, local_pool: Sequence[str] = (),
+                            local_cov: float = LOCAL_TARGET_COV) -> Dict[int, List[str]]:
     """{nid: [a...]}: the probe rows are routed through the tree (the same
     routing P03 / P04 use); at every node holding >= n_min probe rows the system
     targets are re-ranked by node-local H(a) x cov(a) on those rows (mass-
     weighted), constants (H < INV_H: node invariants, detected by P04) and
     absent attributes free their slot, top m_t (§6.4 'per node'). Nodes with
-    fewer rows inherit from their nearest ancestor in P04."""
+    fewer rows inherit from their nearest ancestor in P04.
+
+    `local_pool`: attributes outside the system list (split / target / shape
+    roles) that are node-local: present on a small share of the system's
+    events (a login form's username, a report's key set), so the system list
+    (ranked by system-wide coverage) never holds them. They compete for a
+    node's slots when they cover >= local_cov of the node's rows (§6.5.2
+    item 3: content attributes are split candidates and targets). Measured on
+    pack O: without it the OA login node's targets were client / size
+    attributes only, so no who split could pay for itself by predicting the
+    usernames or the login minute."""
     rows, w, _ = probe.rows(t)
     if not rows or not targets_sys:
         return {}
+    sys_set = set(targets_sys)
+    pool = list(targets_sys) + [a for a in local_pool if a not in sys_set]
     sl = probe._schema_list
     by_node: Dict[int, List[int]] = {}
     gone_s = set(gone)
@@ -1115,7 +1129,7 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
             continue
         for nid in path:
             by_node.setdefault(int(nid), []).append(i)
-    cols: Dict[str, List[Any]] = {a: probe.column(rows, a) for a in targets_sys}
+    cols: Dict[str, List[Any]] = {a: probe.column(rows, a) for a in pool}
     out: Dict[int, List[str]] = {}
     default = list(targets_sys[:m_t])
     for nid, idx in by_node.items():
@@ -1125,7 +1139,7 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
         wn = w[ii]
         tot = float(wn.sum()) or 1.0
         scored = []
-        for a in targets_sys:
+        for a in pool:
             col = cols[a]
             vals = [col[i] for i in idx]
             pres = np.asarray([v is not ABSENT for v in vals])
@@ -1136,6 +1150,8 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
             if h < INV_H:
                 continue
             cov = float(wn[pres].sum()) / tot
+            if a not in sys_set and cov < local_cov:
+                continue
             scored.append((h * cov, a))
         scored.sort(key=lambda x: (-x[0], x[1]))
         keep = [a for _, a in scored[:m_t]]

@@ -114,6 +114,11 @@ def measure(st: MetricStore, tree: Any, hier: Any, samples: Dict[str, Dict[str, 
                 _rel(rg[0], tc["body.len"]["range"][0], 0.25) and _rel(rg[1], tc["body.len"]["range"][1], 0.25))
             res["cover"] = b.get("cover_hi")
             res["band_cov"] = b.get("coverage")
+            res["band"] = [round(float(x)) for x in b["band90"]]
+        k = _node_rec(pgr, path, "body.keys")
+        if k is not None:
+            res["keys_ok"] = sorted(k.get("required") or []) == \
+                sorted((tc.get("body.keys") or {}).get("required_keys") or [])
         g = _node_rec(pgr, path, Y)
         truth_vals = [str(v) for v in (tc.get(Y) or {}).get("closed_values") or []]
         if g is not None and g.get("grammar"):
@@ -138,7 +143,8 @@ def measure(st: MetricStore, tree: Any, hier: Any, samples: Dict[str, Dict[str, 
 
 
 def run(days: Sequence[int] = (3, 7, 11), dt: float = 3600.0, seed: int = 0,
-        timings: Optional[Dict[str, float]] = None) -> Dict[int, Dict[str, Dict[str, Any]]]:
+        timings: Optional[Dict[str, float]] = None, keep: Optional[Dict[str, Any]] = None
+        ) -> Dict[int, Dict[str, Dict[str, Any]]]:
     spec = build_org("O")
     gen = OrgGenerator(spec, seed=seed, pack_name="O")
     truth = _truth_rows(gen)
@@ -184,6 +190,8 @@ def run(days: Sequence[int] = (3, 7, 11), dt: float = 3600.0, seed: int = 0,
             out[d] = measure(st, tree, hier, {t: s for t, s in samples.items()
                                                if int(truth[t]["valid_from_day"]) <= d
                                                < int(truth[t]["valid_to_day"])}, truth)
+    if keep is not None:
+        keep.update(store=st, samples=samples, truth=truth, cfg=cfg, now=b)
     return out
 
 

@@ -25,8 +25,10 @@ Fit (per node, from its PairSketch; n_x, k_x evidence on the confidence channel)
     y*_x = argmax_y c(x, y), k_x = c(x, y*_x)
     prior_x = leave-one-out empirical Bayes over the other heavy x' (pmdl.eb_beta_prior)
     LB_x = 5 % quantile of Beta(a0 + k_x, b0 + n_x - k_x); binding(x) <=> n_x >= 5, LB_x >= 0.8
-    FD holds <=> bindings (set bindings included) cover >= 80 % of heavy-x mass and
-                 g3 = 1 - sum k_x / sum n_x <= 0.05 over the sources without a set binding
+    FD holds <=> bindings (set bindings included) cover >= 80 % of the mass of the
+                 judged sources (n_x >= 5: "heavy x" read as "enough evidence to be
+                 judged", deviation) and g3 = 1 - sum k_x / sum n_x <= 0.05 over the
+                 judged sources without a set binding (g3_all: over every tracked source)
     one-to-one <=> the reverse FD (each y from one x) also holds
     set binding(x) <=> no binding, U_x = (N1_x + E_x + 0.5)/(n_x + 1) <= 0.05, <= 4 values >= 95 %
     shared:<ip> keys never get per-IP bindings.
@@ -45,6 +47,7 @@ Scoring (P03)
 """
 from __future__ import annotations
 
+import heapq
 import math
 from collections import deque
 from typing import Any, Callable, Dict, Hashable, List, Mapping, Optional, Sequence, Tuple
@@ -66,6 +69,8 @@ S_CAP = 20.0
 SCREEN_HY = 0.5
 SCREEN_HY_SET = 1.0
 SCREEN_G3 = 0.2
+SET_MIN_CARD = 8         # payload side of a set binding: distinct values system-wide (deviation)
+SCREEN_LAMBDA = 0.5      # X removes >= half of the mode-prediction error of Y (deviation: not in §6.12)
 SCREEN_MIN_ROWS = 3
 SCREEN_SET_MED = 4
 SCREEN_SET_REP = 2.0
@@ -74,7 +79,9 @@ T_CONC = 3600.0
 REBIND_N = 5
 REBIND_DAYS = 2
 RECENT = 5
-R_K = 64                 # rows per stratum in the probe
+R_K = 32                 # rows a stratum may always hold in the probe (r_min, §6.4)
+R_TOTAL = 4096           # probe rows per tree (R_p, §6.4), allocated ~ sqrt(stratum mass)
+R_MAX = 1024             # rows per stratum at most
 S_MAX = 64               # strata per system
 OTHER_STRATUM = "__other__"
 NAN = float("nan")
@@ -98,17 +105,32 @@ def is_shared(x: Any) -> bool:
 
 # ================================================================= probe
 class ProbeReservoir:
-    """Stratified probe of learned rows for pair screening (bounded:
-    <= S_max strata x R_k rows, each row <= a_row columns)."""
+    """Stratified probe of learned rows for pair screening (§6.4 / §6.12).
 
-    def __init__(self, r_k: int = R_K, s_max: int = S_MAX, a_row: int = 24, seed: int = 0) -> None:
-        self.r_k = int(r_k)
+    One time-decayed (H_m keys) reservoir per stratum, at most S_max strata;
+    the R_total rows are allocated in proportion to sqrt(stratum mass), at
+    least r_min (or the stratum's size) and at most r_max per stratum, the way
+    §6.4 stratifies P05's probe: a mass-proportional sample would leave three
+    daily GA logins out of a probe dominated by health checks, and a fixed
+    per-stratum size (64, the first version) held ~1.5 days of pack O's OA
+    logins, too few rows per source (>= 3) to screen per-IP bindings.
+    Shrinking a reservoir keeps its largest keys, i.e. exactly the smaller
+    reservoir's sample. Memory: <= R_total rows of <= a_row columns."""
+
+    REBALANCE_EVERY = 512
+
+    def __init__(self, r_k: int = R_K, s_max: int = S_MAX, a_row: int = 24, seed: int = 0,
+                 r_total: int = R_TOTAL, r_max: int = R_MAX) -> None:
+        self.r_k = int(r_k)                 # r_min: rows a stratum always may hold
         self.s_max = int(s_max)
         self.a_row = int(a_row)
         self.seed = int(seed)
+        self.r_total = int(r_total)
+        self.r_max = int(r_max)
         self.res: Dict[str, PS.WeightedReservoir] = {}
         self.mass: Dict[str, PS.DecayedVector] = {}
         self.offered = 0
+        self._last_t = 0.0
 
     def offer(self, stratum: str, row: Mapping[str, Any], mass: float, t: float, u: float) -> None:
         self.offered += 1
@@ -120,13 +142,33 @@ class ProbeReservoir:
             r = self.res[k] = PS.WeightedReservoir(self.r_k, PS.H_M, self.seed + len(self.res))
             self.mass[k] = PS.DecayedVector([PS.H_M])
         self.mass[k].add(t, float(mass))
+        self._last_t = max(self._last_t, float(t))
         if len(row) > self.a_row:
             row = dict(list(row.items())[:self.a_row])
         r.offer(dict(row), 1.0, t, u)
+        if self.offered % self.REBALANCE_EVERY == 0:
+            self.rebalance(self._last_t)
 
-    def rows(self, t: float) -> Tuple[List[Dict[str, Any]], np.ndarray]:
-        """(rows, HT weights = stratum mass / rows kept in the stratum)."""
-        out, w = [], []
+    def rebalance(self, t: float) -> None:
+        """Capacities ~ sqrt(mass) within r_total; over-full strata keep their
+        largest keys (a valid smaller reservoir)."""
+        if not self.res:
+            return
+        sq = {k: math.sqrt(max(float(self.mass[k].read(t)[0]), 0.0)) for k in self.res}
+        tot = sum(sq.values())
+        n = len(self.res)
+        for k, r in self.res.items():
+            share = sq[k] / tot if tot > 0 else 1.0 / n
+            cap = int(min(self.r_max, max(self.r_k, round(self.r_total * share))))
+            r.R = cap
+            h = r._heap                      # min-heap of keys (psketch.WeightedReservoir)
+            while len(h) > cap:
+                heapq.heappop(h)
+
+    def rows(self, t: float, with_strata: bool = False) -> Tuple[Any, ...]:
+        """(rows, HT weights = stratum mass / rows kept in the stratum[, strata])."""
+        self.rebalance(t)
+        out, w, sk = [], [], []
         for k, r in self.res.items():
             its = r.items()
             if not its:
@@ -135,6 +177,9 @@ class ProbeReservoir:
             for it, _, _ in its:
                 out.append(it)
                 w.append(m / len(its))
+                sk.append(k)
+        if with_strata:
+            return out, np.asarray(w, dtype=np.float64), sk
         return out, np.asarray(w, dtype=np.float64)
 
     def n_rows(self) -> int:
@@ -178,7 +223,12 @@ def screen_pair(xs: Sequence[Any], ys: Sequence[Any], w: Sequence[float]) -> Opt
     g3 = 1.0 - sum(max(d.values()) for d in joint.values()) / N if N > 0 else 1.0
     med = float(_median([len(joint[x]) for x in heavy])) if heavy else math.inf
     rep = float(_median([rows[x] / len(joint[x]) for x in heavy])) if heavy else 0.0
-    fd = hy >= SCREEN_HY and len(heavy) >= 2 and g3 <= SCREEN_G3
+    # Goodman-Kruskal lambda: the share of the mode-prediction error of Y that X
+    # removes. g3 alone admits "status -> IP" when one IP dominates Y (the mode
+    # already errs by only ~g3); a binding must explain Y, not restate its mode.
+    g3_0 = 1.0 - max(ym.values()) / N if N > 0 else 0.0
+    lam = (g3_0 - g3) / g3_0 if g3_0 > 1e-12 else 0.0
+    fd = hy >= SCREEN_HY and len(heavy) >= 2 and g3 <= SCREEN_G3 and lam >= SCREEN_LAMBDA
     # a small per-x value set only means something when the values repeat
     # (median rows per distinct value >= 2); otherwise 3 rows of 3 random
     # values would look like a set binding
@@ -186,17 +236,26 @@ def screen_pair(xs: Sequence[Any], ys: Sequence[Any], w: Sequence[float]) -> Opt
     # these hosts" is a statement about that one account)
     st = (not fd) and hy >= SCREEN_HY_SET and len(heavy) >= 1 and med <= SCREEN_SET_MED \
         and rep >= SCREEN_SET_REP
-    return {"hy": float(hy), "g3": float(g3), "heavy": len(heavy),
+    return {"hy": float(hy), "g3": float(g3), "lambda": float(lam), "heavy": len(heavy),
             "med_set": med if math.isfinite(med) else None,
             "fd": bool(fd), "set": bool(st), "n": len(xs)}
 
 
 def screen(rows: Sequence[Mapping[str, Any]], w: np.ndarray, x_cands: Sequence[Tuple[str, int]],
            y_cands: Sequence[str], gen: Callable[[str, int, Any], Any],
-           q_pairs: int = Q_PAIRS, absent: Any = None) -> List[Dict[str, Any]]:
+           q_pairs: int = Q_PAIRS, absent: Any = None,
+           strata: Optional[Sequence[str]] = None,
+           card: Optional[Callable[[str], float]] = None) -> List[Dict[str, Any]]:
     """Candidate pairs from the probe rows (§6.12). x_cands: (attr, level);
-    y_cands: attribute names. Returns specs {'x', 'y', 'dir': 'fwd'|'rev', 'stats'}
-    ranked by (1 - g3) * min(H(Y), 4), at most q_pairs."""
+    y_cands: attribute names. Returns specs {'x', 'y', 'dir': 'fwd'|'rev', 'stats',
+    'strata'} ranked by (1 - g3) lambda min(H(Y), 4), at most q_pairs.
+    With `strata` (the stratum of each row: its route), a pair is screened
+    inside each stratum as well as pooled and kept when it passes in any: a
+    binding is a property of a context (综合部's login), and pooling it with a
+    portal's random users dilutes it below the g3 bar. `card(attr)` (the
+    registry's distinct count): a set binding needs its payload side to be an
+    identifier-like attribute (>= SET_MIN_CARD distinct values system-wide);
+    'json is only sent by these two IPs' in an 8-row stratum is not one."""
     out = []
     # generalised X values once per row (not once per (X, Y) pair)
     xcols: Dict[Tuple[str, int], List[Any]] = {}
@@ -241,22 +300,39 @@ def screen(rows: Sequence[Mapping[str, Any]], w: np.ndarray, x_cands: Sequence[T
             if len(xs) < 2 * SCREEN_MIN_ROWS:
                 continue
             xn = x_name(xa, xl)
-            st = screen_pair(xs, ys, ww)
-            if st is not None and (st["fd"] or st["set"]):
-                out.append({"x": xn, "y": yname, "dir": "fwd", "stats": st})
-            rs = screen_pair(ys, xs, ww)
-            if rs is not None and (rs["fd"] or rs["set"]):
-                out.append({"x": yname, "y": xn, "dir": "rev", "stats": rs})
-    out.sort(key=lambda d: (-(1.0 - d["stats"]["g3"]) * min(d["stats"]["hy"], 4.0), d["x"], d["y"]))
-    seen, res = set(), []
+            groups: Dict[Optional[str], List[int]] = {None: list(range(len(xs)))}
+            if strata is not None:
+                for j, i in enumerate(i for i in idx if col[i] is not None):
+                    groups.setdefault(str(strata[i]), []).append(j)
+            for gk, sel in groups.items():
+                if len(sel) < 2 * SCREEN_MIN_ROWS or (gk is not None and len(groups) == 2):
+                    continue                     # one stratum only: the pooled test is the same
+                gx = [xs[j] for j in sel]
+                gy = [ys[j] for j in sel]
+                gw = [ww[j] for j in sel]
+                id_like = card is None or float(card(yname)) >= SET_MIN_CARD
+                st = screen_pair(gx, gy, gw)
+                if st is not None and (st["fd"] or (st["set"] and id_like)):
+                    out.append({"x": xn, "y": yname, "dir": "fwd", "stats": st, "strata": [gk]})
+                rs = screen_pair(gy, gx, gw)
+                if rs is not None and (rs["fd"] or (rs["set"] and id_like)):
+                    out.append({"x": yname, "y": xn, "dir": "rev", "stats": rs, "strata": [gk]})
+    out.sort(key=lambda d: (-(1.0 - d["stats"]["g3"]) * max(d["stats"].get("lambda", 0.0), 0.0)
+                            * min(d["stats"]["hy"], 4.0), d["x"], d["y"]))
+    seen: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    res = []
     for d in out:
         k = (d["x"], d["y"])
         if k in seen:
+            seen[k]["strata"] = sorted(set(seen[k]["strata"]) | set(d["strata"]), key=str)
             continue
-        seen.add(k)
-        res.append(d)
         if len(res) >= q_pairs:
-            break
+            continue
+        d = dict(d, strata=list(d["strata"]))
+        seen[k] = d
+        res.append(d)
+    for d in res:
+        d["strata"] = [x for x in d["strata"] if x is not None]
     return res
 
 
@@ -334,16 +410,26 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
                 sset.append(_jv(yy))
                 acc += e
             if c["U"] <= SET_U and len(sset) <= SET_K and acc >= SET_COVER * n - 1e-9 and len(sset) >= 2:
-                ent["set"] = sorted(sset)
+                ent["set"] = sorted(sset, key=lambda v: (type(v).__name__, str(v)))
                 ent["U"] = float(c["U"])
         table[_jx(x)] = ent
     N = sum(c["n"] for c in heavy.values())
     # set-bound sources (shared terminals) are explained by their sets: they
     # count toward the coverage of the dependency but not toward g3
-    set_mass = sum(heavy[x]["mass"] for x, e in zip(heavy, table.values()) if e.get("set"))
-    fx = [x for x, e in zip(heavy, table.values()) if not e.get("set")]
+    # the dependency is judged on the sources with enough evidence to be judged
+    # (n_x >= n_bind): a DHCP pool whose personas show up on a new address every
+    # day contributes many one-login sources that are neither bound nor
+    # counter-examples, and must not veto 综合部's bindings at a shared login node
+    judged = {x for x in heavy if heavy[x]["n"] >= n_bind}
+    ents = dict(zip(heavy, table.values()))
+    tot_mass = sum(heavy[x]["mass"] for x in judged)
+    set_mass = sum(heavy[x]["mass"] for x in judged if ents[x].get("set"))
+    fx = [x for x in judged if not ents[x].get("set")]
     Nf = sum(heavy[x]["n"] for x in fx)
     g3 = 1.0 - sum(tops[x][1] for x in fx) / Nf if Nf > 0 else 1.0
+    fa = [x for x in heavy if not ents[x].get("set")]
+    Na = sum(heavy[x]["n"] for x in fa)
+    g3_all = 1.0 - sum(tops[x][1] for x in fa) / Na if Na > 0 else 1.0
     holds = bool(tot_mass > 0 and (bound_mass + set_mass) / tot_mass >= FD_COVER
                  and g3 <= FD_G3 and bound_mass > 0)
     # reverse FD (each y from one x)
@@ -360,7 +446,8 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
     hy = pmdl.entropy_plugin(np.asarray([sum(d.values()) for d in rev.values()]))
     hyx = sum(heavy[x]["n"] / N * pmdl.entropy_plugin(np.asarray(list(heavy[x]["y"].values())))
               for x in heavy) if N > 0 else 0.0
-    return {"fd": {"g3": float(g3), "n": float(N), "holds": holds,
+    return {"fd": {"g3": float(g3), "g3_all": float(g3_all), "n": float(N), "holds": holds,
+                   "judged": len(judged),
                    "one_to_one": bool(holds and g3_rev <= FD_G3), "g3_rev": float(g3_rev),
                    "bound_share": float(bound_mass / tot_mass) if tot_mass > 0 else 0.0},
             "table": table, "bound_values": bound_values,

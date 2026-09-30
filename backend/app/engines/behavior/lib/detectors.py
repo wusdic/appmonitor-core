@@ -29,12 +29,15 @@ DETECTORS: List[str] = [
     "mixture", "session", "cross_system",
     # spec v2.1 (docs/lib3/cadence.md §7.3): Q-grain detectors, appended
     "marg_int_q", "marg_shape_q", "t2_q", "spe_q",
+    # progressive core (docs/lib3/progressive.md §9.2): P03 conformity, appended
+    "conf_who", "conf_when", "conf_content", "conf_seq", "conf_novel",
 ]
 N_DETECTORS: int = len(DETECTORS)
 DETECTOR_INDEX: Dict[str, int] = {d: i for i, d in enumerate(DETECTORS)}
 
 FAMILIES: List[str] = ["intensity", "shape", "peer", "temporal", "categorical", "breadth",
-                       "exfil", "sequence", "identity", "change", "c2", "xsys"]
+                       "exfil", "sequence", "identity", "change", "c2", "xsys",
+                       "conformity"]
 
 FAMILY_DEFAULT_AXES: Dict[str, List[str]] = {
     "intensity": ["volume"],
@@ -49,6 +52,7 @@ FAMILY_DEFAULT_AXES: Dict[str, List[str]] = {
     "change": ["change"],        # engines refine to the contributing feature groups
     "c2": ["c2"],
     "xsys": ["lateral"],          # contract K / lib/stages: xsys -> lateral (round 4)
+    "conformity": ["content"],    # P03 refines per violation type (progressive.md §6.16.3)
 }
 
 # Null alarm budget per entity-day by decision path (architecture section 4).
@@ -100,6 +104,11 @@ _TABLE = {
     "marg_shape_q": ("shape", "inst", "B04", None, False),
     "t2_q": ("intensity", "inst", "B06", None, False),
     "spe_q": ("shape", "inst", "B06", None, False),
+    "conf_who": ("conformity", "inst", "P03", None, False),
+    "conf_when": ("conformity", "inst", "P03", None, False),
+    "conf_content": ("conformity", "inst", "P03", None, False),
+    "conf_seq": ("conformity", "inst", "P03", None, False),
+    "conf_novel": ("conformity", "inst", "P03", None, False),
 }
 
 # spec v2.1 streams (cadence.md §7.3): h = scored on H-grain rows at H

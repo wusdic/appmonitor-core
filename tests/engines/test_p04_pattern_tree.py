@@ -478,10 +478,9 @@ def test_d_value_grouping_one_group_of_three_ips_plus_other():
     single /32 level cannot hold them (measured: 12 + 3 sources, no split in
     15 days); the tree then reaches the department through /24 (test a) or the
     learned group level (test f)."""
-    # two targets: naming a /32 group costs 32 bits per group in L_split (rule G),
-    # which one numeric target alone repays only after about a month
-    sel = {"targets_sys": {0: ["net.bytes_up", "body.kv.username"]},
-           "split_cands": {0: [("net.src", 0)]}, "roles": {}}
+    # a size target only: user names differ per IP (a binding, §6.7), which would
+    # keep the three sources apart in the MDL value grouping
+    sel = {"targets_sys": {0: ["net.bytes_up"]}, "split_cands": {0: [("net.src", 0)]}, "roles": {}}
     sim = Sim(sel=sel)
     pop = POP[:4]
 
@@ -531,3 +530,21 @@ def test_published_model_carries_no_working_state():
     m = MP.get_ptree(sim.st, "oa")
     assert "aux" not in vars(m) and all(not k.startswith("aux") for k in vars(m))
     assert sim.p04.aux(m)["last"]
+
+
+def test_stationary_mixed_leaf_raises_no_drift_alarm():
+    """A stationary leaf that mixes a 09:00 department and a 13:00-17:00
+    population (events arrive in time order, so every day the arrival minute
+    and the sizes trend): the daily-mean Page-Hinkley detectors raise no alarm
+    in four weeks; a real change of the schedule is still accepted (test j)."""
+    sim = Sim(sel={"targets_sys": {0: ["net.bytes_up"]}, "split_cands": {0: []}, "roles": {}})
+    sim.add(daily(_org_day, 28, seed=5))
+    evolving_days = 0
+    for d in range(28):
+        sim.run_until(MON + (d + 1) * DAY)
+        root = sim.tree().nodes[0]
+        evolving_days += root.state == "evolving"
+    root = sim.tree().nodes[0]
+    assert root.state in ("confirmed", "stable"), root.state
+    assert evolving_days == 0 and not root.meta.get("evolving")
+    assert not sim.events("pattern_drift")

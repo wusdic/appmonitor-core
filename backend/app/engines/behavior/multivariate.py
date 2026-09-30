@@ -119,6 +119,7 @@ from scipy.stats import rankdata
 from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile
 from .lib import emit, m_class, m_density, robustcov
+from .lib import pactive as PA
 from .lib import gating as G
 from .lib import grains as GR
 from .lib.classkeys import SYSTEM_KEY, class_kind
@@ -702,7 +703,9 @@ class MultivariateEngine(Engine):
                 self._set_pass(g, per)
                 lrn = self._learner(float(d_min))
                 for s in store.systems():
-                    for e in store.entities(s):
+                    for e in PA.entities(store, s, now, ctx.config):
+                        if not PA.is_earned(store, s, e, ctx.config):
+                            continue          # bounded mode: per-IP covariance for earned IPs (§10.3)
                         n += self._entity(ctx, lrn, s, e, now, dt, b05_failed)
                     if g != "q":
                         self._system_models(ctx, s, now, dt)
@@ -957,7 +960,8 @@ class MultivariateEngine(Engine):
         entity centred by its column medians (level differences between
         entities are not dependence)."""
         store = ctx.store
-        states = [st for st in (_other_state(store, s, e) for e in store.entities(s))
+        states = [st for st in (_other_state(store, s, e)
+                                for e in PA.entities(store, s, now, ctx.config))
                   if st is not None and st["ts"]]
         if sum(min(len(st["ts"]), GROUP_ROWS_PER_ENT) for st in states) < GROUP_MIN_ROWS:
             return

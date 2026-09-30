@@ -61,6 +61,7 @@ from scipy.special import gammaln
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import combine, emit, m_class, m_cp, robustcov, seq, timebins
+from .lib import pactive as PA
 from .lib import grains as GR
 from .lib.features import (FEATURE_DIM, FEATURE_GROUP, FEATURE_INDEX, FEATURE_KIND,
                            FEATURE_NAMES_V2, GROUP_ORDER, KEY_FEATURES, VEC_TX)
@@ -466,7 +467,9 @@ class ChangepointEngine(Engine):
         audit_pool: List[Tuple[float, str, str]] = []
         for s in store.systems():
             closed: List[Tuple[str, Dict[str, Any], int]] = []
-            for e in store.entities(s):
+            for e in PA.entities(store, s, now, ctx.config):
+                if not PA.is_earned(store, s, e, ctx.config):
+                    continue                  # bounded mode: earned only; B18 covers classes (§10.3)
                 res = self._entity(ctx, s, e, day_lo, day_hi)
                 if res is None:
                     continue

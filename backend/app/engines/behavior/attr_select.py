@@ -77,12 +77,17 @@ class AttributeSelectionEngine(Engine):
 
     # ----------------------------------------------------------- probe
     def _stratum_fn(self, store: Any, key: str, kind: int, config: Mapping[str, Any]):
+        """(tree, hierarchies) when the tree has split: probe rows are stratified by
+        the leaf they route to. The root split alone (the first version) left a
+        rare action without rows: on pack O's OA the 60-s health monitor filled
+        the staff stratum with /health rows (435 rows, none of them logins), so
+        the login node never got node-local targets (username, body size)."""
         m = MP.get_ptree(store, key)
         tree = m.kinds.get(kind) if m is not None else None
         sp = tree.nodes[tree.root].split if tree is not None else None
         if sp is None:
             return None, None
-        return (sp.attr, sp.level), MP.hierarchies(store, key, config)
+        return tree, MP.hierarchies(store, key, config)
 
     def _offer(self, store: Any, s: str, key: str, kind: int, b: EV.EventBatch,
                cb: Optional[EV.EventBatch], now: float, config: Mapping[str, Any], R: int) -> int:
@@ -117,7 +122,11 @@ class AttributeSelectionEngine(Engine):
                         row[nm] = v
             row.setdefault("net.src", b.ip_of(i))
             if root is not None:
-                st = (row.get("ev.ch", ""), repr(hier.gen(root[0], root[1], row.get(root[0], EV.ABSENT))))
+                try:
+                    leaf = root.route(lambda nm, row=row: row.get(nm, EV.ABSENT), hier, (), float(b.ts[i]))[-1]
+                except Exception:
+                    leaf = root.root
+                st = (row.get("ev.ch", ""), int(leaf))
             else:
                 st = EV.bootstrap_stratum(b, i)
             u = seeded_uniform(s, float(b.t1), "p05", int(b.rid[i]))
@@ -261,8 +270,13 @@ class AttributeSelectionEngine(Engine):
             for kind, tree in pt.kinds.items():
                 prk = self.probes.get((key, kind))
                 if prk is not None and len(prk):
+                    tsys = out["targets_sys"].get(kind, [])
+                    local = [a for a, r in out["roles"].items()
+                             if r in ("split", "target", "shape") and a not in tsys
+                             and SEL.targetable(a) and a in reg.records
+                             and kind in set(reg.records[a].kinds)]
                     overrides[kind] = SEL.node_targets_from_probe(
-                        tree, prk, now, hier, out["targets_sys"].get(kind, []), gone)
+                        tree, prk, now, hier, tsys, gone, local_pool=local)
         # daily: categorical value groups (registry level 1)
         if now - self.last_vg.get(key, -math.inf) >= 86400.0 and pr0 is not None and len(pr0):
             self.last_vg[key] = now

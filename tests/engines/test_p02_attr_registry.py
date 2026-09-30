@@ -99,3 +99,41 @@ def test_dip_on_a_holiday_is_not_a_schema_change():
     sim.hooks.append(holiday_flag)
     sim.run_until(MON + 5 * DAY + 2 * 3600)
     assert not sim.events("attribute_gone")
+
+
+def test_workday_only_attribute_is_not_gone_on_a_weekend():
+    """An attribute that only workday actions carry (login bodies) has no
+    coverage on a normal weekend: against its own day type's reference it is
+    not a schema change; when it disappears on workdays it is declared gone
+    within one normal workday (P01's calendar gives the previous day's class)."""
+    import datetime as _dt
+    from ptree_sim import TZ, is_workday, local
+    sim = Sim(sel={"targets_sys": {0: []}, "split_cands": {0: []}})
+
+    def calendar(s):
+        d = local(s.now - 1.0).date()
+        pc = s.st.get_model("oa", "__system__", "model.pcal") or {"days": {}, "normal": {}}
+        pc["days"][d.toordinal()] = {"mass": 1.0, "class": "workday" if d.weekday() < 5 else "weekend"}
+        s.st.put_model("oa", "__system__", "model.pcal", pc)
+        b = s.st.batch_at("oa", EV.EVT_BATCH, s.now)
+        if b is not None:
+            s.st.add_batch("oa", EV.EVT_CTX, s.now,
+                           b.aligned({}, {"day": d.toordinal(), "normal_prev_day": True}))
+    sim.hooks.append(calendar)
+
+    def day(d, t0, rng, body=True):
+        ev = []
+        for i in range(40):
+            ts = t0 + rng.uniform(0, DAY)
+            a = {"http.route": "GET x /home", "net.bytes_down": float(rng.lognormal(8, 0.5))}
+            if is_workday(t0) and body and i % 2 == 0:
+                a.update({"http.route": "POST x /login", "body.kv.username": f"u{i % 7}"})
+            ev.append((ts, "oa", f"192.168.1.{i % 20}", a))
+        return ev
+    sim.add(daily(day, 14, seed=5))
+    sim.add(daily(lambda d, t0, rng: day(d, t0, rng, body=False), 3, seed=6, t0=MON + 14 * DAY))
+    sim.run_until(MON + 14 * DAY)
+    assert not sim.events("attribute_gone"), [e.extra for e in sim.events("attribute_gone")]
+    sim.run_until(MON + 16 * DAY + 2 * 3600)                    # Mon 14 without bodies
+    gone = [e.extra["attribute"] for e in sim.events("attribute_gone")]
+    assert "body.kv.username" in gone and "net.bytes_down" not in gone

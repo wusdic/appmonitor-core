@@ -150,6 +150,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import (BehaviorEvent, DerivedMetric, EntityProfile, Incident, MetricKind,
                               Severity)
 from .lib import combine, emit, gating, m_class, m_cp, m_feedback, m_link, seq
+from .lib import pactive as PA
 from .lib import grains as GR
 from .lib import m_governor as MG
 from .lib import m_habit as HB
@@ -572,7 +573,7 @@ class GovernorEngine(Engine):
         degraded = bool(store.engine_failed(FUSION_ENGINE, now))
         n = 0
         for s in store.systems():
-            ents = list(store.entities(s))
+            ents = list(PA.entities(store, s, now, cfg))
             classes = sorted({k for k in store.pseudo_entities(s) if k.startswith(CLASS_PREFIX)}
                              | set(m_class.all_class_keys(store, s)))
             if not ents and not classes:

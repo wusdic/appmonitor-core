@@ -21,7 +21,10 @@ Per tick, per system (registry per tree key: a system or its family):
     bins, ordinal medians, set templates; replaced only above the JSD
     threshold) and schema-change detection (`attribute_gone` INFO when an
     attribute's coverage over the previous full NORMAL local day fell below
-    5 % of its H_l coverage; P01's evt.ctx meta carries the normal-day flag).
+    5 % of its reference coverage on past normal days of the SAME day type
+    (workday / other): an attribute that only workday actions carry is not
+    gone on a normal weekend; the previous day's class and normal flag come
+    from P01's calendar model, model.pcal, looked up by date).
 
 Writes model.attr@(key, '__system__') (the AttrRegistry object).
 Inert unless config['progressive']['enabled'].
@@ -44,6 +47,7 @@ A_EV = 32
 REST_MIN = 4               # attributes of the rest updated per event even when A_ev is used up
 ROW_CAP = 48               # rows per (attribute, batch); beyond, a uniform HT subsample
 HOUR = 3600.0
+ORDINAL0 = 719163             # date(1970, 1, 1).toordinal(): epoch local-day index -> date ordinal
 FIRST_REFRESH_S = 3600.0
 
 
@@ -128,7 +132,13 @@ class AttributeRegistryEngine(Engine):
             if first or stale_scale or (reg.last_refresh is not None and now - reg.last_refresh >= 86400.0):
                 reg.update_types(now)
                 reg.refresh_hierarchies(now, force=first or stale_scale)
-            for nm in reg.check_gone(now, bool(meta.get("normal_prev", True))):
+            # the previous local day's class and normal flag, looked up by date in
+            # P01's calendar model (at a day's first tick there may be no evt.ctx
+            # batch yet, so a value cached from the last one would be a day old)
+            prev_ord = int(math.floor((now + reg.day_offset_s) / 86400.0)) + ORDINAL0 - 1
+            prev_dt, prev_normal = _prev_day(store, s, prev_ord)
+            normal = bool(meta.get("normal_prev", True)) if prev_normal is None else prev_normal
+            for nm in reg.check_gone(now, normal, prev_dt):
                 self._event(store, s, now, "attribute_gone", nm,
                             f"属性 {nm} 在一个正常工作日内几乎消失（模式结构变化，而非行为变化）",
                             {"coverage_l": reg.coverage(nm, now, 2)})
@@ -192,3 +202,20 @@ class AttributeRegistryEngine(Engine):
             system=s, entity=SYSTEM_ENTITY, ts=now, kind=kind, score=0.0, severity=Severity.INFO,
             description=desc, extra=dict(extra, attribute=attr),
             dedupe_key=f"{kind}|{s}|{attr}|{int(now // 86400)}"))
+
+
+def _prev_day(store: Any, s: str, day: int) -> "tuple[Optional[int], Optional[bool]]":
+    """(day type, normal flag) of local date `day` (ordinal) from P01's calendar
+    model (model.pcal: {'days': {ordinal: {'class': workday | weekend | holiday |
+    makeup}}, 'normal': {ordinal: bool}}): day type 0 for workdays and make-up
+    workdays, 1 otherwise; (None, None) when unknown."""
+    pc = store.get_model(s, SYSTEM_ENTITY, "model.pcal")
+    if not isinstance(pc, Mapping):
+        return None, None
+    rec = (pc.get("days") or {}).get(int(day))
+    cls = rec.get("class") if isinstance(rec, Mapping) else None
+    nrm = (pc.get("normal") or {}).get(int(day))
+    dt = None if cls is None else (0 if cls in ("workday", "makeup") else 1)
+    if cls == "holiday":
+        nrm = False
+    return dt, (None if nrm is None else bool(nrm))

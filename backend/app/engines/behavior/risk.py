@@ -92,6 +92,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile
 from ..signature.rule_match import ADDITIVE_COUNTERS
 from .lib import emit, m_class, m_feedback
+from .lib import pactive as PA
 from .lib import m_governor as MG
 from .lib import m_habit as HB
 from .lib import timebins as TB
@@ -147,6 +148,7 @@ FAMILY_DECAY: Dict[str, str] = {
     "change": "change", "sequence": "sequence",
     "categorical": "novelty", "identity": "identity",
     "c2": "c2", "exfil": "exfil",
+    "conformity": "novelty",
 }
 
 # Discrete findings (contract F kinds). first_seen is weighted by tier.
@@ -160,12 +162,27 @@ EVENT_W: Dict[str, float] = {
 # org-tier first access (no IP of the home class reaches that system) weighs
 # as a system-tier new value, a class-tier one as a class-tier value
 TIERED_KINDS = ("first_seen", "first_access_system")
-EVENT_KINDS: Tuple[str, ...] = tuple(sorted({*TIERED_KINDS, *EVENT_W}))
+# P03 pattern_violation (progressive.md §9.3): stage weight by violation type
+# and severity, like the first_seen tiers. A binding violation (its flags carry
+# cross_binding / concurrent_use / unbound / bound_elsewhere) weighs as
+# "binding"; a HIGH finding is a who HIGH candidate or a credential-grade
+# binding case.
+PV_W: Dict[str, Dict[str, float]] = {
+    "who": {"low": 3.0, "medium": 8.0, "high": 15.0, "critical": 20.0},
+    "binding": {"low": 3.0, "medium": 10.0, "high": 15.0, "critical": 20.0},
+    "content": {"low": 3.0, "medium": 8.0, "high": 15.0, "critical": 20.0},
+    "novel": {"low": 3.0, "medium": 8.0, "high": 15.0, "critical": 20.0},
+    "when": {"low": 3.0, "medium": 8.0, "high": 15.0, "critical": 20.0},
+    "seq": {"low": 3.0, "medium": 8.0, "high": 15.0, "critical": 20.0},
+}
+PV_BINDING_FLAGS = ("binding", "concurrent_use", "unbound", "bound_elsewhere", "foreign")
+EVENT_KINDS: Tuple[str, ...] = tuple(sorted({*TIERED_KINDS, *EVENT_W, "pattern_violation"}))
 EVENT_DECAY: Dict[str, str] = {
     "first_seen": "novelty", "rare_access": "novelty", "class_adoption_risky": "novelty",
     "client_impersonation": "identity", "identity_mismatch": "identity",
     "possible_impersonation": "identity", "new_entity_unmatched": "identity",
     "beacon": "c2", "budget_exceeded": "exfil", "first_access_system": "novelty",
+    "pattern_violation": "novelty",
 }
 EVENT_AXES: Dict[str, List[str]] = {
     "first_seen": ["categorical"], "rare_access": ["categorical"],
@@ -258,6 +275,8 @@ def event_weight(ev: Any) -> float:
     extra = ev.extra or {}
     if kind in TIERED_KINDS:
         w = FIRST_SEEN_W[_event_tier(extra)]
+    elif kind == "pattern_violation":
+        w = pv_weight(extra, _sev(getattr(ev, "severity", None)))
     else:
         w = EVENT_W.get(kind, 0.0)
     if w <= 0.0:
@@ -268,6 +287,15 @@ def event_weight(ev: Any) -> float:
     elif _finite(disc) and 0.0 < float(disc) <= 1.0:
         w *= float(disc)
     return w
+
+
+def pv_weight(extra: Mapping[str, Any], sev: str) -> float:
+    """Stage weight of a P03 pattern_violation (progressive.md §9.3)."""
+    typ = str(extra.get("type") or "content")
+    flags = " ".join(str(f) for f in (extra.get("flags") or ()))
+    if typ == "content" and any(k in flags for k in PV_BINDING_FLAGS):
+        typ = "binding"
+    return PV_W.get(typ, PV_W["content"]).get(sev, 0.0)
 
 
 def _event_tier(extra: Mapping[str, Any]) -> str:
@@ -534,7 +562,7 @@ class RiskEngine(Engine):
         for s in store.systems():
             inc = self._incident_map(store, s)
             ent_risk: Dict[str, float] = {}
-            for e in store.entities(s):
+            for e in PA.entities(store, s, now, ctx.config):
                 st = self._state(states, s, e, now)
                 r = self._score_key(ctx, store, s, e, st, now, dt, pi, inc, degraded)
                 ent_risk[e] = r

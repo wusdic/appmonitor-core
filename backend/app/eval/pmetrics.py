@@ -688,8 +688,8 @@ def content_matches(row: Mapping[str, Any], s: LStmt, r: np.random.Generator,
             elif ok and "range" in tc:
                 ok = False
         if ok and "required_keys" in tc:
-            ok = set(map(str, lc.get("required") or lc.get("required_keys") or [])) == \
-                set(tc["required_keys"])
+            ok = _keyset(lc.get("required") or lc.get("required_keys") or []) == \
+                _keyset(tc["required_keys"])
         if ok and tc.get("kind") in ("bound", "choice", "const") and "closed_values" in tc:
             ok = set(map(str, lc.get("closed") or lc.get("closed_values") or [])) == \
                 set(map(str, tc["closed_values"]))
@@ -817,8 +817,14 @@ def holdout_events(rows: Sequence[Mapping[str, Any]], r: np.random.Generator, n:
         L = np.asarray([b - a for a, b in iv], dtype=float)
         a, b = iv[int(r.choice(len(iv), p=L / L.sum()))]
         gen = row.get("gen") or {}
-        ev: Dict[str, Any] = {"ip": ip, "daytype": dt, "minute": float(r.uniform(a, b)),
-                              "tid": row["tid"]}
+        if gen.get("arrival") == "normal":
+            # the generator's law (orggen: N(mid, width / 4) clipped to the window);
+            # uniform draws over a 07:00-23:00 portal window made every learned
+            # window that follows the real arrivals look miscalibrated
+            m = float(np.clip(r.normal(0.5 * (a + b), (b - a) / 4.0), a, b))
+        else:
+            m = float(r.uniform(a, b))
+        ev: Dict[str, Any] = {"ip": ip, "daytype": dt, "minute": m, "tid": row["tid"]}
         if gen.get("size"):
             ev["body.len"] = OG.sample_size(gen["size"], r)
         if gen.get("up"):
@@ -845,6 +851,71 @@ def _tol(nominal: float, m: int) -> float:
     return max(0.02, 3.0 * math.sqrt(max(nominal * (1 - nominal), 1e-4) / max(m, 1)))
 
 
+def _keyset(keys: Iterable[Any]) -> Set[str]:
+    """Key names with P00's array marker removed ('lines[]' -> 'lines';
+    progressive.md §5.2.2 flattens JSON arrays to '<key>[]', the truth
+    program names the key itself)."""
+    return {str(k)[:-2] if str(k).endswith("[]") else str(k) for k in keys}
+
+
+def _num(v: Any) -> Optional[float]:
+    """A held-out value as a number (form fields are drawn as strings such
+    as '004217'); None when it is not numeric."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) else None
+
+
+_DT_S = {"workday": "wd", "nonworkday": "nwd"}
+
+
+def _half(m: float) -> str:
+    return "day" if 8 * 60 <= m < 20 * 60 else "night"        # phier day hours (8, 20)
+
+
+def _time_gen(attr: str, level: int, ev: Mapping[str, Any]) -> Optional[str]:
+    """The event's generalised value of a time context attribute, as the
+    snapshot renders it (str of lib/phier.gen); None when the scorer cannot
+    compute it (a learned-window level needs the system's P09 windows)."""
+    m, dt = float(ev["minute"]), str(ev["daytype"])
+    d = _DT_S.get(dt, dt)
+    if attr == "ctx.tod_min":
+        return {0: None, 1: str(int(m // 15)), 3: _half(m)}.get(int(level))
+    if attr == "ctx.when":
+        return {1: str((d, int(m // 15))), 3: f"{d}_{_half(m)}", 4: d}.get(int(level))
+    if attr == "ctx.daytype" and int(level) == 0:
+        return dt
+    return None
+
+
+def _in_time_context(s: LStmt, ev: Mapping[str, Any]) -> bool:
+    """Held-out events of a statement's context: its time constraints (a node
+    split on a 15-min slot or day half) restrict the events it is checked on.
+    Measured on pack O: portal nodes split by time of day were checked against
+    events of the whole day, so their (correct) windows read 0.5-0.8 held-out
+    coverage against a stated 0.9+."""
+    for c in s.context:
+        if not isinstance(c, (list, tuple)) or len(c) < 4:
+            continue
+        lv = c[1]
+        try:
+            lv = int(lv)
+        except (TypeError, ValueError):
+            lv = {"minute": 0, "slot15": 1, "window": 2, "half": 3, "daypart": 3,
+                  "daytype": 4}.get(str(lv), -1)
+        if str(c[0]) == "ctx.daytype" and lv == 4:
+            lv = 0
+        g = _time_gen(str(c[0]), lv, ev)
+        if g is None:
+            continue
+        inside = g in set(map(str, c[2]))
+        if inside == bool(c[3]):
+            return False
+    return True
+
+
 def holdout_check(s: LStmt, rows_valid: Sequence[Mapping[str, Any]], pt: PTruth,
                   r: np.random.Generator, n: int = 400) -> Dict[str, Any]:
     """Every constraint of a statement against held-out events of its context."""
@@ -852,7 +923,7 @@ def holdout_check(s: LStmt, rows_valid: Sequence[Mapping[str, Any]], pt: PTruth,
             and _sys_match(s.system, row, pt)]
     ctx_who = any(str(c[0]).startswith("net.src") for c in s.context if isinstance(c, (list, tuple)) and c)
     restrict = s.who if (ctx_who or s.is_exc) and (s.who.ipset() or s.who.prefixes) else None
-    evs = holdout_events(rows, r, n, restrict)
+    evs = [e for e in holdout_events(rows, r, n, restrict) if _in_time_context(s, e)]
     conf = s.confidence if math.isfinite(s.confidence) else 0.9
     res: List[Tuple[str, float, float, bool]] = []
     if not evs:
@@ -877,13 +948,14 @@ def holdout_check(s: LStmt, rows_valid: Sequence[Mapping[str, Any]], pt: PTruth,
         vals = [e.get(attr) for e in evs if e.get(attr) is not None]
         if not vals:
             continue
+        nums = [x for x in map(_num, vals) if x is not None] if (c.get("band90") or c.get("range")) else []
         if c.get("band90"):
             lo, hi = _f(c["band90"][0]), _f(c["band90"][1])
-            add(f"{attr}.band90", _f(c.get("coverage"), 0.9), [lo <= v <= hi for v in vals])
+            add(f"{attr}.band90", _f(c.get("coverage"), 0.9), [lo <= v <= hi for v in nums])
         if c.get("range"):
             lo, hi = _f(c["range"][0]), _f(c["range"][1])
             nom = 1.0 - _f(c.get("cover")) if math.isfinite(_f(c.get("cover"))) else conf
-            add(f"{attr}.range", nom, [lo <= v <= hi for v in vals])
+            add(f"{attr}.range", nom, [lo <= v <= hi for v in nums])
         rx = _grammar_rx(c.get("grammar"))
         if rx:
             try:
@@ -895,7 +967,7 @@ def holdout_check(s: LStmt, rows_valid: Sequence[Mapping[str, Any]], pt: PTruth,
                 res.append((f"{attr}.grammar", conf, 0.0, False))
         req = c.get("required") or c.get("required_keys")
         if req and attr.endswith(".keys"):
-            add(f"{attr}.required", 0.99, [set(map(str, req)) <= set(v) for v in vals])
+            add(f"{attr}.required", 0.99, [_keyset(req) <= _keyset(v) for v in vals])
         closed = c.get("closed") or c.get("closed_values")
         if closed:
             u = _f(c.get("U"))
@@ -1391,7 +1463,10 @@ def pg6_anomalies(run: Any, pt: PTruth, sbd: Mapping[int, List[LStmt]]) -> Dict[
         exp_flags = set(row.get("expected_flags") or [])
         hits = [e for e in pvs if e.get("system") == row["system"] and e.get("entity") in ents
                 and t_first <= float(e["ts"]) <= tick_end + dt]
-        typed = [e for e in hits if _ev_type(e) in exp_types or (_ev_flags(e) & exp_flags)]
+        # a missing required predecessor is sequence evidence whatever finding
+        # type P03 merged it into (its content finding carries the flag)
+        typed = [e for e in hits if _ev_type(e) in exp_types or (_ev_flags(e) & exp_flags)
+                 or ("seq" in exp_types and "missing_predecessor" in _ev_flags(e))]
         dl = max(4 * dt, 3600.0)
         req = sev_rank(row.get("required_severity", "low"))
         incs = _incidents_on(run, row["system"], ents)

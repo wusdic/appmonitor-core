@@ -65,11 +65,12 @@ from __future__ import annotations
 
 import bisect
 import math
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import combine, emit
+from .lib import pactive as PA
 from .lib import gating as G
 from .lib import grains as GR
 from .lib import m_class
@@ -398,7 +399,7 @@ class ClientIdentityEngine(Engine):
             sysm = new_system_model()
         cls = _Classes(store, s)
         items: List[_Ent] = []
-        for e in store.entities(s):
+        for e in PA.entities(store, s, float(ctx.now), ctx.config):
             model = store.get_model(s, e, MC.MODEL)
             if not (isinstance(model, dict) and model.get("fmt") == MC.FMT
                     and model.get("kind") == "entity"):
@@ -440,7 +441,7 @@ class ClientIdentityEngine(Engine):
             n += self._entity(ctx, s, it, sysm, cls, now, dt)
 
         if self.entity_due((s, SYSTEM_KEY, "rebuild"), now, SYS_REBUILD_S):
-            _rebuild(store, s, sysm, now, cls)
+            _rebuild(store, s, sysm, now, cls, PA.entities(store, s, now, ctx.config))
         store.put_model(s, SYSTEM_KEY, MC.MODEL, sysm, version=sysm["version"], ts=now)
         return n
 
@@ -731,7 +732,8 @@ def _other_state(store: Any, s: str, entity: str) -> Optional[Dict[str, Any]]:
     return _copy_state(m["state"])
 
 
-def _rebuild(store: Any, s: str, sysm: Dict[str, Any], now: float, cls: _Classes) -> None:
+def _rebuild(store: Any, s: str, sysm: Dict[str, Any], now: float, cls: _Classes,
+             ents: Optional[Sequence[str]] = None) -> None:
     """System tier, class tiers and the ja3n | UA co-occurrence table from the
     members' committed entity models, decayed to `now`; prune the live
     acquisition / known tables to the rollout window."""
@@ -741,7 +743,7 @@ def _rebuild(store: Any, s: str, sysm: Dict[str, Any], now: float, cls: _Classes
     ua_n: Dict[str, float] = {}
     N = 0.0
     n_ent = 0
-    for e in store.entities(s):
+    for e in (store.entities(s) if ents is None else ents):     # bounded mode: A_t ∪ E_t
         m = MC.get(store, s, e)
         if MC.kind(m) != "entity":
             continue

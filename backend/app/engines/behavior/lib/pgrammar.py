@@ -34,6 +34,11 @@ histogram, charset-class counts)
         1 - mass in length buckets outside [lo, hi] - share of values carrying a class
         the grammar lacks) (the tracked guaranteed mass shrinks under churn); L/U/D/X/space
         classes present in >= 0.2 % of values join the charset.
+      * when a tracked shape has an A run (mixed alphanumeric > 8), mixed shapes of
+        L / U / D runs only fold into A<n> before grouping (L, U, D are sub-classes of
+        A): hex tokens of 8-16 characters give [A-Za-z0-9]{8,16} instead of A9..A16
+        plus one skeleton per 8-character token (which left 11 % of passwords outside
+        the grammar in pack O's FIN login).
       * closed sets at U <= 0.02 and n_c >= 20 (spec: 0.01 and 50; config
         progressive.defaults.closed_u / closed_n). 0.02 is the MEDIUM who-closed level
         and 20 is n_conf. Claim-level violation rate 3.4 % (spec: 1.4 %), ECE 0.011
@@ -410,12 +415,17 @@ def _closed(vs: Any, t: float, closed_n: float, closed_u: float) -> Dict[str, An
     out: Dict[str, Any] = {"n_values": float(nv), "U": U, "value_cover": float(cov),
                            "top": [[_jv(k), float(g / vtot)] for k, g in its[:8]]}
     if cov >= CLOSED_COVER and U <= closed_u and nv >= closed_n:
-        out["closed"] = sorted(_jv(k) for k, _ in its)
+        out["closed"] = sorted((_jv(k) for k, _ in its), key=_vkey)
     return out
 
 
 def _jv(k: Any) -> Any:
     return k if isinstance(k, (str, int, float, bool)) else str(k)
+
+
+def _vkey(v: Any) -> Tuple[str, str]:
+    """Total order over mixed-type values (a categorical may hold 404 and '⊥')."""
+    return (type(v).__name__, str(v))
 
 
 def fit_cat(cs: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N,

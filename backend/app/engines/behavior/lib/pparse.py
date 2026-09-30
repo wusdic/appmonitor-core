@@ -177,7 +177,11 @@ def sniff_format(body: str, ctype: str = "", hint: str = "") -> str:
             json.loads(body)
             return "json"
         except ValueError:
-            pass
+            try:
+                json_prefix(body)                # a JSON body cut at the capture cap
+                return "json"
+            except ValueError:
+                pass
     if s[:1] == "<":
         return "xml"
     if "=" in s and _FORM_RE.match(s.strip()):
@@ -202,11 +206,49 @@ def _parse_form(s: str, prefix: str, out: Dict[str, Any], k_max: int) -> Tuple[f
     return frozenset(keys), extra
 
 
+def json_prefix(s: str, tries: int = 24) -> Any:
+    """Parse a JSON document cut at the capture cap (BODY_CAP): the longest
+    prefix that ends at a member / element separator, with its open objects and
+    arrays closed, so the keys before the cut are kept (a 20-60 KB report body
+    cut at 4 KB still names its leading fields). Raises ValueError when no
+    such prefix parses. Keys after the cut are never seen."""
+    cuts: List[Tuple[int, str]] = []            # (index of ',', closers for the stack there)
+    stack: List[str] = []
+    in_str = esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+        elif ch == "," and stack:
+            cuts.append((i, "".join(reversed(stack))))
+    for i, closers in reversed(cuts[-tries:]):
+        try:
+            return json.loads(s[:i] + closers)
+        except ValueError:
+            continue
+    raise ValueError("no parseable JSON prefix")
+
+
 def _parse_json(s: str, prefix: str, out: Dict[str, Any], k_max: int) -> Tuple[frozenset, int]:
     try:
         obj = json.loads(s)
     except ValueError:
-        return frozenset(), 0
+        try:
+            obj = json_prefix(s)                # truncated at the cap
+        except ValueError:
+            return frozenset(), 0
     flat: Dict[str, Any] = {}
     root = prefix + ".kv"
     EV.flatten(root, obj, flat, max_leaves=k_max)

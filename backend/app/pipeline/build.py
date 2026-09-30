@@ -20,6 +20,20 @@ the same tick (producer before consumer):
              -> B30 portrait
   signature  rule_match -> correlation
 
+Progressive profile core (docs/lib3/progressive.md §9.1), registered only
+when `progressive` resolves to 'full+progressive' or 'progressive_only':
+
+  raw        ... R3 client_stack -> P00 event_builder
+  derived    ... D2 session -> P01 event_context
+  behavior   P15 resource_governor -> B01 .. B18, B21 -> P02 attr_registry
+             -> P05 attr_select -> P03 conformity -> P04 pattern_tree
+             -> P06 content_bounds -> P07 payload_grammar -> P08 binding
+             -> P09 time_window -> P10 workflow -> P11 who_groups
+             -> P12 system_profile -> B23 .. B28 -> B29 explain -> P13 facets
+             -> P14 views -> B30 portrait
+  ('progressive_only' keeps R2, R3, P00, P01 and the P engines: no R1 metric
+  sets, no B-library, no lib-4; used by the O-scale / O-servers packs.)
+
 One-tick lags the spec allows (and the engines are written for):
   * B05 reads B08 novelty events of t-1 (B08 runs after it);
   * every learner reads trust / quarantine of t-1 from B28 (commit row t-D);
@@ -66,6 +80,23 @@ from ..engines.behavior.rhythm import RhythmEngine
 from ..engines.behavior.risk import RiskEngine
 from ..engines.behavior.sequence import SequenceEngine
 from ..engines.behavior.timing import TimingEngine
+# progressive profile core (lib-3 v3, docs/lib3/progressive.md)
+from ..engines.behavior.attr_registry import AttributeRegistryEngine
+from ..engines.behavior.attr_select import AttributeSelectionEngine
+from ..engines.behavior.binding import BindingEngine
+from ..engines.behavior.conformity import ConformityEngine
+from ..engines.behavior.content_bounds import ContentBoundsEngine
+from ..engines.behavior.facets import FacetsEngine
+from ..engines.behavior.pattern_tree import PatternTreeEngine
+from ..engines.behavior.payload_grammar import PayloadGrammarEngine
+from ..engines.behavior.resource_governor import ResourceGovernorEngine
+from ..engines.behavior.system_profile import SystemProfileEngine
+from ..engines.behavior.time_window import TimeWindowEngine
+from ..engines.behavior.views import ViewsEngine
+from ..engines.behavior.who_groups import WhoGroupsEngine
+from ..engines.behavior.workflow import WorkflowEngine
+from ..engines.derived.event_context import EventContextEngine
+from ..engines.raw.event_builder import EventBuilderEngine
 # derived (lib-2)
 from ..engines.derived.aggregation import AggregationEngine
 from ..engines.derived.entropy import EntropyEngine
@@ -123,36 +154,79 @@ def _explain_engines() -> list:
     return [ExplainEngine()]
 
 
+REGISTRY_MODES = ("full", "full+progressive", "progressive_only")
+
+
+def registry_mode(progressive: Any = None, config: Optional[Dict[str, Any]] = None,
+                  pack: Any = None) -> str:
+    """Which engine set to register (progressive.md §9.1, §11.6).
+
+    An explicit `progressive` wins (True -> 'full+progressive', False ->
+    'full', or one of REGISTRY_MODES); otherwise a pack's non-default
+    `registry_mode`; otherwise config['progressive']['enabled']; else 'full'
+    (the default until M5, which keeps packs A-E and the golden test as they
+    were)."""
+    if isinstance(progressive, str):
+        if progressive not in REGISTRY_MODES:
+            raise ValueError(f"unknown registry mode {progressive!r}; known {REGISTRY_MODES}")
+        return progressive
+    if progressive is not None:
+        return "full+progressive" if progressive else "full"
+    pm = getattr(pack, "registry_mode", None)
+    if isinstance(pm, str) and pm in REGISTRY_MODES and pm != "full":
+        return pm
+    prog = (config or {}).get("progressive") or {}
+    if isinstance(prog, dict) and prog.get("enabled"):
+        return "full+progressive"
+    return "full"
+
+
 def build_registry(sig_store: Optional[SignatureStore] = None, composite_rules=None, *,
                    config: Optional[Dict[str, Any]] = None, pack: Any = None,
-                   seed: int = 0, p2: bool = True) -> Registry:
-    """The production registry, in architecture.md §1 order.
+                   seed: int = 0, p2: bool = True, progressive: Any = None) -> Registry:
+    """The production registry, in architecture.md §1 order (and
+    progressive.md §9.1 when the progressive core is on).
 
     `p2=False` leaves out the P2 engines (today B21 cross_system), e.g. for
     the v2 tick-mode golden fingerprint, which predates them (eval.md gate 13
     decides whether they stay enabled by default).
 
+    `progressive` selects the engine set (see registry_mode): 'full' (default)
+    registers no P engine, so the conf_* detector columns stay NaN;
+    'full+progressive' adds P00-P15 in §9.1 order; 'progressive_only' is the
+    P-core alone.
+
     `sig_store` / `composite_rules` default to the files under DATA_DIR.
     `config`, `pack` and `seed` are accepted for the eval runner's factory
     seam (eval/runner.default_registry_factory); engines read the runtime
-    config from ctx.config, so nothing here depends on them."""
+    config from ctx.config."""
+    mode = registry_mode(progressive, config, pack)
+    limit_blas_threads(1)
+    reg = Registry()
+    if mode == "progressive_only":
+        reg.add(ActionTokenEngine(), ClientStackEngine(), EventBuilderEngine())   # R2, R3, P00
+        reg.add(EventContextEngine())                                             # P01
+        reg.add(ResourceGovernorEngine(), *_pcore_learners(), *_pcore_views())
+        return reg
+    prog = mode == "full+progressive"
     if sig_store is None or composite_rules is None:
         s2, c2 = load_signatures()
         sig_store = s2 if sig_store is None else sig_store
         composite_rules = c2 if composite_rules is None else composite_rules
-    limit_blas_threads(1)
-    reg = Registry()
     # raw (原始指标库): R1 full sets, then R2 action tokens and R3 client stacks
     reg.add(L2L3Engine(), L4FlowEngine(), HTTPEngine(), TLSEngine(), DNSEngine(),
             ActiveProbeEngine(),
             ActionTokenEngine(),            # R2
-            ClientStackEngine())            # R3
+            ClientStackEngine(),            # R3
+            *([EventBuilderEngine()] if prog else []))                         # P00
     # derived (次生指标库): D0 window, D1 instant, D2 session
     reg.add(AggregationEngine(), PeriodicityEngine(), TrendEngine(),   # D0
             RatioEngine(), EntropyEngine(), GraphEngine(),             # D1
-            SessionEngine())                                           # D2
+            SessionEngine(),                                           # D2
+            *([EventContextEngine()] if prog else []))                 # P01
     # behaviour (行为库), B01 .. B30 in contract order
-    reg.add(FeatureVectorEngine(),          # B01
+    reg.add(*([ResourceGovernorEngine()] if prog else []),   # P15 (reads engine costs of t-1)
+            FeatureVectorEngine(),          # B01
             PeerGroupEngine(),              # B02 (own 16-tick / 6 h refit stride)
             BaselineEngine(),               # B03 (interval 1: commits row t-D)
             LikelihoodEngine(),             # B04
@@ -173,18 +247,41 @@ def build_registry(sig_store: Optional[SignatureStore] = None, composite_rules=N
             # P2 B19, B20, B22 are gated by the ablation gate and not registered;
             # B21 cross_system is the only detector of T20 (lateral access)
             *([CrossSystemEngine()] if p2 else []),   # B21 (feature.active of every system)
+            *(_pcore_learners() if prog else []),     # P02 P05 P03 P04 P06-P12
             FeedbackEngine(),               # B23
-            CalibrationEngine(),            # B24
+            CalibrationEngine(),            # B24 (conf_* rings when P03 scores)
             FusionEngine(),                 # B25
             RiskEngine(),                   # B26
             IncidentEngine(),               # B27
             GovernorEngine(),               # B28
             *_explain_engines(),            # B29 explain
+            *(_pcore_views() if prog else []),        # P13 facets, P14 views
             PortraitEngine())               # B30 (every tick; each key refreshes per 2 h at its own phase)
     # signature (行为特征库)
     reg.add(RuleMatchEngine(sig_store, min_confidence=0.6),
             CorrelationEngine(composite_rules))
     return reg
+
+
+def _pcore_learners() -> list:
+    """P02, P05, P03, P04, P06 .. P12 in progressive.md §9.1 order (P03 scores
+    against the tree of t-1 before P04 learns the tick: prequential)."""
+    return [AttributeRegistryEngine(),     # P02
+            AttributeSelectionEngine(),    # P05 (own 1 h cadence)
+            ConformityEngine(),            # P03
+            PatternTreeEngine(),           # P04
+            ContentBoundsEngine(),         # P06
+            PayloadGrammarEngine(),        # P07
+            BindingEngine(),               # P08
+            TimeWindowEngine(),            # P09
+            WorkflowEngine(),              # P10
+            WhoGroupsEngine(),             # P11 (daily)
+            SystemProfileEngine()]         # P12 (daily strategy, families)
+
+
+def _pcore_views() -> list:
+    """P13 facets then P14 views (after B29, before B30 portrait)."""
+    return [FacetsEngine(), ViewsEngine()]
 
 
 def load_signatures():

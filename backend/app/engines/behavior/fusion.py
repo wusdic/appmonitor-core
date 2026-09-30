@@ -188,6 +188,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, MetricKind, Severity
 from .lib import calib, combine, emit, gating, m_calib, m_feedback, seq, timebins
+from .lib import pactive as PA
 from .lib import grains as GR
 from .lib.classkeys import CLASS_PREFIX, SYSTEM_KEY
 from .lib.detectors import (ACC_DETECTORS, DETECTOR_INDEX, DETECTOR_INFO, DETECTORS, FAMILIES,
@@ -286,6 +287,7 @@ DISCRETE_KINDS = frozenset({
     "class_merge", "peer_outlier", "system_shift", "coherent_shift", "class_shift",
     "class_adoption_risky", "schedule_shift", "beacon", "budget_exceeded", "baseline_creep",
     "first_access_system",       # B21 cross_system (P2, round 4)
+    "pattern_violation",         # P03 conformity (progressive.md §9.2)
 })
 
 # axes the common-mode flag may discount, and the class-level system-wide set
@@ -1075,8 +1077,8 @@ class FusionEngine(Engine):
             h_base = gctx["h_t"]
         n_out = 0
         for s in store.systems():
-            keys = store.entities(s) + [k for k in store.pseudo_entities(s)
-                                        if k.startswith(CLASS_PREFIX)]
+            keys = PA.entities(store, s, now, ctx.config) + [k for k in store.pseudo_entities(s)
+                                                             if k.startswith(CLASS_PREFIX)]
             if not keys:
                 continue
             ch = store.latest_derived(s, SYSTEM_KEY, CALIB_HEALTH)

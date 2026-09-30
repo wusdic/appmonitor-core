@@ -71,6 +71,7 @@ import numpy as np
 from ...core.engine import Context, Engine
 from ...models.schema import DerivedMetric, EntityProfile, MetricKind
 from .lib import detectors as DET
+from .lib import pactive as PA
 from .lib import emit
 from .lib import evt
 from .lib import gating as G
@@ -731,7 +732,9 @@ class TimingEngine(Engine):
         r2_failed = store.engine_failed(R2_ENGINE, now)
         recs: List[_Rec] = []
         for s in store.systems():
-            for e in store.entities(s):
+            for e in PA.entities(store, s, now, ctx.config):
+                if not PA.periodic_candidate(store, s, e, ctx.config):
+                    continue                  # bounded mode: machine-like IPs only (§10.3)
                 rec = self._entity(ctx, s, e, now, dt, daypart, alpha, frontier, r2_failed)
                 if rec is not None:
                     recs.append(rec)

@@ -69,12 +69,24 @@ the implementation report):
     (sum_children n_c KL(child || parent) - parameter cost; mass-weighted JSD)
     at the daily check instead of a per-event prequential saving per internal
     node (the per-event form costs one extra predictive per ancestor and event).
-  * EFDT revision compares only non-nested levels of the split attribute (IP /24
+  * EFDT revision runs only at internal nodes whose children are all leaves
+    (its statistics compare two one-level splits and say nothing about the
+    children's own subtrees; a root revision discarded a 20-node subtree on
+    pack O), and compares only non-nested levels of the split attribute (IP /24
     -> grp / reg, value -> value group) and, for identity proxies published by
     P05 (`who_proxies`), the who levels; the replacement is immediate (the old
     subtree is retired, not kept scoring until the new children confirm).
     Unrestricted revision replaced pack O's route split by a client-stack split
     and discarded the route subtree daily.
+  * content drift (Page-Hinkley per numeric target and per arrival minute)
+    runs on leaves and exception nodes only (§6.5.1: an internal node's
+    targets are a mixture of its children) and is fed ONE value per (node,
+    detector, day type) and local day, the day's mean, with sigma = max(spread
+    of past daily means, per-event sd / sqrt(n)); the history is winsorised
+    at mu +- 3 sigma. Per-event PH on a time-ordered stream alarmed on every
+    stationary node that mixes sources active at different hours (measured:
+    5 of 7 confident nodes of pack O's OA tree `evolving` at day 14 without
+    any drift); acceptance (T_persist days, coordinated IPs) is unchanged.
   * structural drift: one ADWIN per day type (weekday / weekend mixes are
     seasonality); a structural change is accepted when the leaf's daily mean
     loss stays >= 0.5 bit above its pre-alarm H_m level on 3 normal days (no
@@ -91,6 +103,12 @@ the implementation report):
   * confirmation waits for a fitter only when its model lists the node under
     `pending`; model.ptree checkpoints (put_checkpoint) are not written.
 
+Trust gating follows the lib-3 learner rule (lib/gating): a row's weight is
+behavior.trust of its own tick, the hold decision is the quarantine gate at
+t-1, so an IP quarantined during the learning delay D is held, not learned.
+P04's working state (batch cursors, burst runs, held rows) lives in a private
+attribute of the model object and is not part of the published pattern model.
+
 Writes model.ptree@(key, '__system__') and the events pattern_confirmed,
 pattern_retired, pattern_replaced, pattern_drift, pattern_absent,
 pattern_revived. Reads evt.*, pat.assign, pat.rate, model.attr (P02),
@@ -104,6 +122,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+import zlib
 from collections import Counter, deque
 from typing import Any, Callable, Deque, Dict, Hashable, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -162,6 +181,7 @@ HELD_COLS = 96
 ADWIN_DELTA = 0.002
 LOSS_CLIP = 20.0
 PH_MIN_N = 30.0
+PH_MIN_DAYS = 5                # daily means a node needs before its Page-Hinkley tests run
 DRIFT_EXPIRE_S = 14 * DAY
 T_PERSIST_DAYS = {"num": 1, "when": 3, "structural": 3}
 SINGLE_IP_DAYS = 5
@@ -212,14 +232,26 @@ def ctx_text(ctx: Sequence[Tuple[str, int, frozenset, bool]], hier: Any = None, 
 
 
 # ================================================================== coder
+def _stable_bucket(v: Hashable, k: int) -> int:
+    """A process-independent hash bucket (Python's str hash is salted)."""
+    return zlib.crc32(repr(v).encode("utf-8", "replace")) % k
+
+
 class Coder:
     """Binning and prequential predictive of a leaf's targets (§6.5.3): per
     target k_b bins (the leaf's top values at learning start, then first come,
     the last bin = other), evidence counts since start and a prior p0 from the
     node's own summaries at start (a predictable backing-off distribution).
-    p(b) = (lc[b] + alpha p0[b]) / (lc[.] + alpha)."""
+    p(b) = (lc[b] + alpha p0[b]) / (lc[.] + alpha).
 
-    __slots__ = ("targets", "bmap", "p0", "lc", "hver", "wdiv")
+    Flat high-cardinality targets are *hashed*: when the seeded top k_b - 1
+    values cover < HASH_COVER of the node's mass, every value goes to one of
+    k_b hash buckets instead (a fixed function, so the code stays prequential).
+    Measured on pack O's OA login node: 29 usernames with no dominant value put
+    ~70 % of the logins into `other`, so the target could not tell 综合部's two
+    names from 销售部's twenty and no who split could pass rule (V)."""
+
+    __slots__ = ("targets", "bmap", "p0", "lc", "hver", "wdiv", "hashed")
 
     def __init__(self, targets: Sequence[str], seeds: Sequence[Sequence[Tuple[Hashable, float]]],
                  hver: Tuple = (), wdiv: int = 15) -> None:
@@ -230,9 +262,20 @@ class Coder:
         self.p0 = np.full((T, K_B), 1.0 / K_B)
         self.lc = np.zeros((T, K_B))
         self.hver = tuple(hver)
+        self.hashed = [False] * T
         for t, sd in enumerate(seeds):
+            sd = list(sd)
+            top = sum(max(0.0, float(s)) for _, s in sd[:K_B - 1])
+            if (len(sd) >= K_B - 1 and top < HASH_COVER and not self.targets[t].startswith("@")):
+                self.hashed[t] = True
+                sh = np.zeros(K_B)
+                for v, s in sd:
+                    sh[_stable_bucket(v, K_B)] += max(0.0, float(s))
+                if sh.sum() > 0:
+                    self.p0[t] = 0.9 * sh / sh.sum() + 0.1 / K_B
+                continue
             sh = np.zeros(K_B)
-            for v, s in list(sd)[:K_B - 1]:
+            for v, s in sd[:K_B - 1]:
                 j = len(self.bmap[t])
                 self.bmap[t][v] = j
                 sh[j] = max(0.0, float(s))
@@ -243,9 +286,13 @@ class Coder:
 
     def bins(self, values: Sequence[Any]) -> List[int]:
         out = []
+        hashed = getattr(self, "hashed", None) or ()
         for t, v in enumerate(values):
             if v is None:
                 out.append(-1)
+                continue
+            if t < len(hashed) and hashed[t]:
+                out.append(_stable_bucket(v, K_B))
                 continue
             bm = self.bmap[t]
             j = bm.get(v)
@@ -267,6 +314,9 @@ class Coder:
                 self.lc[t, b] += w
 
     def value_of(self, t: int, b: int) -> Optional[Hashable]:
+        hashed = getattr(self, "hashed", None) or ()
+        if t < len(hashed) and hashed[t]:
+            return None                            # a bucket names no single value
         for v, j in self.bmap[t].items():
             if j == b:
                 return v
@@ -313,6 +363,7 @@ class _LC:
         self.whokeys: Dict[str, List[Any]] = {}
         self.trust: Dict[Tuple[str, str, float], Tuple[float, bool]] = {}
         self.n_learned = 0
+        self.row_factor = 1.0
         self.m: Any = None
         self.aux: Dict[str, Any] = {}
 
@@ -342,6 +393,10 @@ class _LC:
             if len(self.whokeys) > 65536:
                 self.whokeys.clear()
         return k
+
+
+HASH_COVER = 0.8             # a target whose top k_b - 1 values cover less is hash-binned
+ROUTE_ATTRS = frozenset({"http.route", "http.path", "tls.sni", "dns.qname"})
 
 
 def _read_pwant(store: Any, key: str) -> Tuple[List[Tuple[str, int, str, Optional[Set[int]], Optional[int]]],
@@ -581,6 +636,7 @@ class PatternTreeEngine(Engine):
         omega = lc.aux["burst"].unit(src + (leaf.id,), ts, factor)
         if omega <= 0.0:
             return
+        lc.row_factor = float(factor)       # trust x damp: < 1 keeps the row out of hard ranges
         day = _local_day(ts, lc.off)
         dt_raw = get("ctx.daytype")
         daytype = None if dt_raw is EV.ABSENT else (0 if dt_raw in ("workday", "wd", 0) else 1)
@@ -633,8 +689,12 @@ class PatternTreeEngine(Engine):
     # --------------------------------------------------------- targets
     def _targets_of(self, lc: _LC, tr: PT.Tree, nd: PN.Node, kind: int, sel: Mapping[str, Any]) -> List[str]:
         own = nd.meta.get("targets")
+        extra = lc.extra_targets.get((kind, nd.id)) if lc is not None else None
         if own is not None:
-            return list(own)
+            # a node's frozen target list still takes the fitters' requests
+            # (model.pwant, P06/P07: content attributes P05 gave only the split
+            # role must still be fitted, §6.5.2 item 3)
+            return list(own) + [a for a in (extra or ()) if a not in own]
         ovs = (sel.get("node_overrides") or {}).get(kind) or (sel.get("node_overrides") or {}).get(str(kind)) or {}
         ov = None
         cur: Optional[PN.Node] = nd
@@ -642,7 +702,6 @@ class PatternTreeEngine(Engine):
             ov = ovs.get(cur.id)
             cur = tr.nodes.get(cur.parent) if cur.parent is not None else None
         base = list(ov) if ov else list((sel.get("targets_sys") or {}).get(kind) or [])[:M_T]
-        extra = lc.extra_targets.get((kind, nd.id)) if lc is not None else None
         if extra:
             base = base + [a for a in extra if a not in base]
         return base
@@ -673,12 +732,15 @@ class PatternTreeEngine(Engine):
                 if not isinstance(tpl, frozenset):
                     tpl = None
             try:
-                nd.update_target(a, v, ts, mass, omega, k, pol, lg, day, tpl)
+                nd.update_target(a, v, ts, mass, omega, k, pol, lg, day, tpl,
+                                 lc.row_factor >= 0.999)
             except (TypeError, ValueError):
                 continue
-            ph = nd.ph.get(a) if nd.ph else None
-            if ph is not None and k == "num":
-                self._ph_num(lc, nd, a, v, ts, day, get("net.src"))
+            # content drift detectors run on leaves (and exception nodes) only: an
+            # internal node's targets are a mixture of its children, whose
+            # composition changes are not content drift (§6.5.1)
+            if k == "num" and nd.split is None and nd.state in PN.CONFIDENT_STATES:
+                self._ph_num(lc, nd, a, v, ts, day, get("net.src"), get("ctx.daytype"))
 
     # ------------------------------------------------------ leaf learning
     def _coder_values(self, lc: _LC, coder: Coder, get: Callable[[str], Any], ip: str,
@@ -814,36 +876,55 @@ class PatternTreeEngine(Engine):
         out: List[Tuple[str, int]] = []
         t = lc.now
         sc = [(str(a), int(l)) for a, l in (sel.get("split_cands") or {}).get(kind) or []]
+        const = nd.meta.get("const") or set()
         split_attrs = {a for a, _ in sc}
         # an attribute constrained in the context contributes its next finer levels
         # first (route group -> route prefix -> route template, §6.5.2 rule 2)
         finer: List[Tuple[str, int]] = []
+        # the latest constraint per (attr, level): a value *group* ({3 /24s} or the
+        # negated `other` bucket) can still be divided at its own level. Measured on
+        # pack O: the OA root split put 192.168.1/2/3.0/24 into one group, after
+        # which /24 was never offered again below it, so 综合部's, 财务部's and
+        # 销售部's logins stayed one node for good.
+        multi: Set[Tuple[str, int]] = set()
+        for ca, cl, vals, neg in nd.ctx:
+            if neg or len(vals) >= 2:
+                multi.add((ca, cl))
+            else:
+                multi.discard((ca, cl))
         for ca, cl, vals, neg in nd.ctx:
             if ca in split_attrs and hier.kind(ca) != "ip":
-                finer += [(ca, x) for x in (cl - 1, cl - 2) if x >= 0]
+                finer += [(ca, x) for x in ((cl,) if (ca, cl) in multi else ()) + (cl - 1, cl - 2)
+                          if x >= 0]
         # slots are reserved by facet (§7.1 C = 6: who x2, when x2, route or content
         # x2): P05 ranks by system-wide U_s, where the many near-duplicate client /
         # content attributes would otherwise crowd out the who and when levels
         who = [(a, l) for a, l in sc if a in SEL.WHO_ATTRS][:2]
         when = [(a, l) for a, l in sc if a in SEL.WHEN_ATTRS][:2]
-        rest = [(a, l) for a, l in sc if (a, l) not in set(who) | set(when)]
+        # one slot is the route facet's (§7.1: "route or content x2"): ranked by
+        # system-wide U_s the route family came third behind a size bin and a
+        # user-agent shape on pack O's OA, so no tree ever split on the action
+        # and every pattern mixed login, documents and approvals
+        route = [(a, l) for a, l in sc if a in ROUTE_ATTRS or hier.kind(a) in ("route", "path")][:1]
+        rest = [(a, l) for a, l in sc if (a, l) not in set(who) | set(when) | set(route)]
         seen: Set[Tuple[str, int]] = set()
-        for a, l in finer + who + when + rest:
+        for a, l in finer + who + when + route + rest:
             if (a, l) in seen:
                 continue
             seen.add((a, l))
-            if a in lc.gone or a in nd.inv:
+            if a in lc.gone or a in nd.inv or (a, l) in const:
                 continue
             ok = True
             ipk = hier.kind(a) == "ip"
             for ca, cl, vals, neg in nd.ctx:
                 if ca != a:
                     continue
+                same_ok = l == cl and (a, l) in multi   # a group divided at its own level
                 if ipk:
                     # grp / reg are alternative coarsenings, not nested in the prefixes
-                    if l == cl or (cl <= 2 and l <= 2 and l > cl):
+                    if (l == cl and not same_ok) or (cl <= 2 and l <= 2 and l > cl):
                         ok = False
-                elif l >= cl:
+                elif l > cl or (l == cl and not same_ok):
                     ok = False                  # only levels finer than the constrained one
             if not ok:
                 continue
@@ -865,12 +946,34 @@ class PatternTreeEngine(Engine):
             coder = nd.meta["C"] = self._new_coder(lc, nd, self._coder_targets(lc, tr, nd, kind, sel), lc.now, tr)
         ss = PE.SplitStats(len(coder.targets), k_b=K_B, k_v=K_V, C=C_MAX)
         for i, (a, l) in enumerate(cands):
-            ss.set_candidate(i, (a, l), lc.hier.card_hint(a, l), self._tmask(coder, a))
+            ss.set_candidate(i, (a, l), self._card(lc, a, l), self._tmask(coder, a))
         nd.split_stats = ss
         nd.meta["cands"] = cands
         nd.meta["lstart"] = lc.now
         self.aux_learning(lc, kind).add(nd.id)
         return True
+
+    @staticmethod
+    def _card(lc: _LC, a: str, l: int) -> float:
+        """Number of values a split's value groups are named among (L_split and
+        the value-grouping merge limit of §6.5.3 / §6.5.5). For IP levels the
+        hierarchy's hint is the address space (2^32 at /32, 2^24 at /24), which
+        charges 24-32 bits per named group: measured on pack O's OA login node,
+        the three department /24s were merged into one group for weeks because
+        each separate group had to repay 24 bits. A group only has to be named
+        among the sources that exist, so an IP level's card is bounded by the
+        registry's distinct-source estimate (HLL). The e-value test (V) does not
+        depend on the grouping, so the false-split bound is unchanged."""
+        c = float(lc.hier.card_hint(a, l))
+        if lc.reg is not None and lc.hier.kind(a) == "ip":
+            rec = lc.reg.get(a)
+            try:
+                est = float(rec.card_estimate()) if rec is not None else 0.0
+            except Exception:
+                est = 0.0
+            if est > 0:
+                c = min(c, max(2.0, est))
+        return c
 
     @staticmethod
     def _tmask(coder: Coder, a: str) -> List[bool]:
@@ -936,7 +1039,7 @@ class PatternTreeEngine(Engine):
                     le.add(ts, [loss, 1.0])
                 if ad.add(loss) > 0:
                     self._structural_alarm(lc, tr, leaf, ts)
-            self._ph_when(lc, leaf, minute, ts, day, ip)
+            self._ph_when(lc, leaf, minute, ts, day, ip, daytype)
         coder.add(bins, omega)
         # every n_g units, and at least daily once N_G_MIN units arrived: (V) is
         # anytime-valid, so the cadence only bounds CPU; a daily check lets a
@@ -958,7 +1061,9 @@ class PatternTreeEngine(Engine):
         # (a young episode may adopt the current list once: a restart makes a
         # new young episode, which must not restart again, or it never ages)
         young = ss.total_evidence < 2.0 * N_G and not leaf.meta.get("young_rebuilt")
-        differs = coder0 is not None and coder0.targets != self._coder_targets(lc, tr, leaf, kind, sel)
+        # the target *set* matters, not P05's ranking order: its hourly h x cov order
+        # of near-equal attributes flips, and every flip restarted young episodes
+        differs = coder0 is not None and set(coder0.targets) != set(self._coder_targets(lc, tr, leaf, kind, sel))
         leaf.meta["tdiff"] = leaf.meta.get("tdiff", 0) + 1 if differs else 0
         no_real = coder0 is not None and not any(not a.startswith("@") for a in coder0.targets)
         if coder0 is not None and (coder0.hver != self._hver(lc, coder0.targets)
@@ -979,9 +1084,9 @@ class PatternTreeEngine(Engine):
             a, l = c
             v = self._cver(lc, a)
             if cv.get(a, v) != v and i < ss.C and ss.keys[i] is not None:
-                ss.set_candidate(i, (a, l), lc.hier.card_hint(a, l), self._tmask(coder0, a))
+                ss.set_candidate(i, (a, l), self._card(lc, a, l), self._tmask(coder0, a))
             cv[a] = v
-        dec = ss.check(tau0=lc.tau0, s_mode=lc.s_mode)
+        dec = _check_valid_first(ss, lc.tau0, lc.s_mode)
         aux = lc.aux
         aux["stats"]["checks"] += 1
         if dec.accept and dec.best is not None and ss.keys[dec.best] is not None:
@@ -991,6 +1096,14 @@ class PatternTreeEngine(Engine):
         if ts - float(leaf.meta.get("lstart", ts)) >= R_LEARN_S or ss.total_evidence >= R_LEARN_UNITS:
             self._restart_learning(lc, tr, leaf, kind, sel)
             return False
+        # a candidate that is constant at this leaf (one occupied value slot after
+        # n_g units: e.g. a daypart level when the leaf's events all fall in one
+        # daypart, a size bin that holds every login) can never split it; it
+        # yields its slot to the next ranked candidate until the next restart
+        const = leaf.meta.setdefault("const", set())
+        for i in ss.active():
+            if ss.n[i] >= N_G and sum(1 for v in ss.slot_val[i] if v is not None) <= 1:
+                const.add(tuple(ss.keys[i]))
         # candidate re-ranking with hysteresis: a tracked candidate keeps its
         # statistics while P05 still proposes it (order changes are ignored); one
         # that left the list is replaced by the best new one and starts empty
@@ -1010,7 +1123,7 @@ class PatternTreeEngine(Engine):
                         ss.drop_candidate(i)
                     cur[i] = None
                 else:
-                    ss.set_candidate(i, want, lc.hier.card_hint(*want), self._tmask(coder, want[0]))
+                    ss.set_candidate(i, want, self._card(lc, *want), self._tmask(coder, want[0]))
                     cur[i] = want
             leaf.meta["cands"] = cur
         return False
@@ -1019,11 +1132,15 @@ class PatternTreeEngine(Engine):
         """R_learn restart (§6.5.2): statistics restart from empty, C_ever and the
         candidate ordinals keep counting so repeated attempts pay. A changed
         target set or hierarchy version rebuilds the coder too."""
+        st_ = lc.aux["stats"]
+        st_["restarts"] = st_.get("restarts", 0) + 1
         tg = self._coder_targets(lc, tr, leaf, kind, sel)
         hv = self._hver(lc, tg)
         coder = leaf.meta.get("C")
         old = leaf.split_stats
-        if coder is not None and coder.targets == tg and coder.hver == hv and old is not None:
+        leaf.meta.pop("const", None)
+        if coder is not None and set(coder.targets) == set(tg) and coder.hver == self._hver(lc, coder.targets) \
+                and old is not None:
             old.restart()
             leaf.meta["lstart"] = lc.now
             return
@@ -1149,7 +1266,7 @@ class PatternTreeEngine(Engine):
         ss = PE.SplitStats(len(targets), k_b=K_B, k_v=max(K_V, len(sp.children) + 1), C=C_MAX)
         cands = [(sp.attr, sp.level)] + alts
         for i, (a, l) in enumerate(cands):
-            ss.set_candidate(i, (a, l), lc.hier.card_hint(a, l),
+            ss.set_candidate(i, (a, l), self._card(lc, a, l),
                              self._tmask(coder, a) if i else [True] * len(targets))
         nd.meta["R"] = {"ss": ss, "coder": coder, "cands": cands, "start": lc.now}
         return True
@@ -1295,7 +1412,62 @@ class PatternTreeEngine(Engine):
             nd.state = "evolving"
         nd.meta["last_alarm"] = ts
 
-    def _ph_num(self, lc: _LC, nd: PN.Node, a: str, v: Any, ts: float, day: int, ip: Any) -> None:
+    @staticmethod
+    def _dph(nd: PN.Node, key: str, x: float, day: int, ts: float, sd_ev: float
+             ) -> Tuple[int, int, float, int]:
+        """Daily-mean Page-Hinkley (§6.9.1, per numeric target and per when).
+        Events reach a node in time order, so a per-event test on a node that
+        mixes sources active at different hours sees a trend every day
+        (measured on pack O's OA tree: most confident nodes were `evolving`
+        after two weeks without any drift). Each (node, detector, day type)
+        therefore feeds ONE value per local day, the day's mean, into PH with
+        lambda = 5 sd, allowance 0.5 sd, sd = max(spread of past daily means
+        (H_l), per-event sd / sqrt(n of the day)), reference = the H_l mean
+        of past daily means; the day is tested before it is added
+        (prequential). Returns (+1 / -1 / 0, closed day, its mean, its n)
+        when a new day starts, else (0, -1, nan, 0)."""
+        D = nd.meta.get("dph")
+        if D is None:
+            D = nd.meta["dph"] = {}
+        r = D.get(key)
+        if r is None:
+            r = D[key] = [int(day), 0.0, 0, PS.DecayedVector([PS.H_L] * 3), None]
+        out: Tuple[int, int, float, int] = (0, -1, math.nan, 0)
+        if int(day) != r[0]:
+            if r[2] > 0:
+                xm, n = r[1] / r[2], r[2]
+                m = r[3].read(ts)
+                res = 0
+                xa = xm
+                if m[2] >= PH_MIN_DAYS:
+                    mu = m[0] / m[2]
+                    sd = math.sqrt(max(0.0, m[1] / m[2] - mu * mu))
+                    if sd_ev == sd_ev and sd_ev > 0:
+                        sd = max(sd, sd_ev / math.sqrt(n))
+                    if sd > 0:
+                        ph = r[4]
+                        if ph is None or abs(ph.lam - 5.0 * sd) > 0.5 * ph.lam:
+                            ph = r[4] = PS.PageHinkley(5.0 * sd, 0.5 * sd)
+                        res = ph.update(xm, mu)
+                        # winsorised at mu +- 3 sd: the days of a change must not
+                        # inflate the spread they are tested against
+                        xa = min(max(xm, mu - 3.0 * sd), mu + 3.0 * sd)
+                r[3].add(ts, [xa, xa * xa, 1.0])
+                out = (res, r[0], xm, n)
+            r[0], r[1], r[2] = int(day), 0.0, 0
+        r[1] += float(x)
+        r[2] += 1
+        return out
+
+    @staticmethod
+    def _seed_evolving(st: Dict[str, Any], prev_day: int, dev_mean: float, n: int) -> None:
+        """The day whose mean raised the alarm is the first observed day of the change."""
+        if prev_day >= 0 and n > 0 and dev_mean == dev_mean:
+            st["dsum"][prev_day] = st["dsum"].get(prev_day, 0.0) + dev_mean * st["dir"] * n
+            st["dn"][prev_day] = st["dn"].get(prev_day, 0) + n
+
+    def _ph_num(self, lc: _LC, nd: PN.Node, a: str, v: Any, ts: float, day: int, ip: Any,
+                daytype: Any = None) -> None:
         s = nd.targets.get(a)
         if not isinstance(s, PN.NumSummary):
             return
@@ -1310,17 +1482,23 @@ class PatternTreeEngine(Engine):
         if st is not None:
             self._evolve_obs(st, y - st["mu"], ip, day)
             return
-        ph = nd.ph[a]
         w, mu, var = s.moments(ts, PS.CH_L)
-        r = ph.update(y, mu if mu == mu else None)
-        if r != 0 and var == var and var > 0:
-            self._alarm(nd, a, ts, r, mu, math.sqrt(var), "num")
+        if not (w >= 5.0 and var == var and var > 0):
+            return
+        sd = math.sqrt(var)
+        dt_key = "nwd" if daytype not in (None, EV.ABSENT, "workday", "wd", 0) else "wd"
+        r, pday, xm, n = self._dph(nd, f"{a}|{dt_key}", y, day, ts, sd)
+        if r != 0:
+            self._alarm(nd, a, ts, r, mu, sd, "num")
+            self._seed_evolving(ev[a], pday, xm - mu, n)
             self._evolve_obs(ev[a], y - mu, ip, day)
 
-    def _ph_when(self, lc: _LC, nd: PN.Node, minute: float, ts: float, day: int, ip: str) -> None:
+    def _ph_when(self, lc: _LC, nd: PN.Node, minute: float, ts: float, day: int, ip: str,
+                 daytype: int = 0) -> None:
         """Page-Hinkley on the signed circular difference of the arrival minute
         from the H_l circular mean (sigma from the H_l second moment of those
-        differences, accumulated only once the mean is defined)."""
+        differences, accumulated only once the mean is defined), tested on
+        daily means per day type (see _dph)."""
         wc = nd.meta.get("wc")
         if wc is None:
             wc = nd.meta["wc"] = PS.DecayedVector([PS.H_L] * 5)
@@ -1336,29 +1514,17 @@ class PatternTreeEngine(Engine):
             st = ev.get("@when")
             if st is not None:
                 self._evolve_obs(st, dmin, ip, day)
-            elif n >= PH_MIN_N and x[4] >= PH_MIN_N:
+            elif x[4] >= 2.0:
                 sd = math.sqrt(max(1.0, x[3] / x[4]))
-                ph = nd.meta.get("ph_when")
-                if ph is None or abs(ph.lam - 5.0 * sd) > 0.5 * ph.lam:
-                    ph = nd.meta["ph_when"] = PS.PageHinkley(5.0 * sd, 0.5 * sd)
-                r = ph.update(dmin, 0.0)
+                r, pday, xm, nd_n = self._dph(nd, f"@when|{int(daytype or 0)}", dmin, day, ts, sd)
                 if r != 0:
                     self._alarm(nd, "@when", ts, r, mu, sd, "when")
+                    self._seed_evolving(ev["@when"], pday, xm, nd_n)
                     self._evolve_obs(ev["@when"], dmin, ip, day)
         wc.add(ts, add)
 
     def _drift_daily(self, lc: _LC, tr: PT.Tree, nd: PN.Node, t: float, day: int, s: str,
                      normal_days: Callable[[int, int], int]) -> None:
-        # numeric Page-Hinkley detectors on confident nodes (sigma from H_l moments)
-        if nd.state in PN.CONFIDENT_STATES and nd.n_c(t) >= PH_MIN_N:
-            for a, sm in nd.targets.items():
-                if isinstance(sm, PN.NumSummary):
-                    w, mu, var = sm.moments(t, PS.CH_L)
-                    if w > 0 and var == var and var > 0:
-                        sd = math.sqrt(var)
-                        ph = nd.ph.get(a)
-                        if ph is None or abs(ph.lam - 5 * sd) > 0.5 * ph.lam:
-                            nd.ph[a] = PS.PageHinkley(5.0 * sd, 0.5 * sd)
         who_top = len(nd.who.heavy_set(0, t)[0]) or 1
         need_ips = max(2, math.ceil(0.5 * who_top))
         ev: Dict[str, Any] = nd.meta.get("evolving") or {}
@@ -1376,6 +1542,9 @@ class PatternTreeEngine(Engine):
                     nd.reset_confidence(t, [a], day)
                 nd.cver += 1
                 del ev[a]
+                # the daily-mean detector restarts from the new regime
+                for k in [k for k in (nd.meta.get("dph") or {}) if k.split("|", 1)[0] == a]:
+                    del nd.meta["dph"][k]
                 self._emit(lc, s, "pattern_drift", tr, nd, Severity.INFO,
                            f"模式 {ctx_text(nd.ctx, lc.hier)} 的 {a} 发生了已确认的合法变化"
                            f"（{len(st['ips'])} 个 IP、{len(shifted)} 天），置信度从新状态重新累积",
@@ -1621,7 +1790,13 @@ class PatternTreeEngine(Engine):
             if nd.state in ("confirmed", "stable", "evolving") and nd.split is None and not nd.is_exc:
                 self._exceptions_daily(lc, tr, nd, kind, t)
         # 4. EFDT revision on the R_max busiest internal nodes
-        internal = sorted([nd for nd in tr.nodes.values() if nd.split is not None and nd.n_m(t) >= REV_MIN_EV],
+        # only nodes whose children are all leaves: the revision statistics compare
+        # the current ONE-LEVEL split with an alternative one-level split on the
+        # same events, which says nothing about what the children's own subtrees
+        # learned since (measured on pack O: a root revision replaced a split whose
+        # subtree held 20 nodes, confirmed ones included, and discarded it)
+        internal = sorted([nd for nd in tr.nodes.values() if nd.split is not None and nd.n_m(t) >= REV_MIN_EV
+                           and all(tr.nodes[c].split is None for c in nd.split.all_children() if c in tr.nodes)],
                           key=lambda x: -x.mass_at(t))[:R_MAX]
         keep = {nd.id for nd in internal}
         for nd in tr.nodes.values():
@@ -1980,6 +2155,56 @@ def _rate_rows(obj: Any) -> List[Tuple[int, int, float]]:
         except (KeyError, TypeError, ValueError):
             continue
     return out
+
+
+def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str) -> PE.SplitDecision:
+    """Rules (V), (G), (S), (D), (M) of §6.5.5, with two deviations measured on
+    pack O's OA tree (both keep the false-split bound: every candidate is
+    tested at tau0 + log2 C_ever and its ordinal is charged in C_ever):
+
+    * c1 is chosen AMONG THE CANDIDATES THAT PASS (V). The text takes the best
+      by G overall; a candidate whose significance test has not passed then
+      blocks every valid one (a login node whose route split had log2 e = 126
+      against a threshold of 13.8 waited on a /24 candidate with a larger,
+      target-duplicated G but log2 e = 8.4).
+    * in 'margin' mode, (S) between valid candidates is the tau0-bit MDL margin
+      on their COMMON events (§6.6): c1 = the first valid candidate by G that
+      no other valid candidate beats by >= tau0 bits on the events where both
+      were tracked; (S) holds when it is unbeaten. Two candidates within tau0
+      bits of each other are equivalent at the MDL scale (a route and a
+      response-size bin that separate the same events), where the VFDT tie
+      eps <= tau_tie needs ~1e4 units at a range of ~15 bits; and a candidate
+      tracked since earlier can lead on G while losing on the common events
+      (measured: the size bin led by 5 bits on G, the route won by 34 bits
+      on the common events)."""
+    act = ss.active()
+    thr = float(tau0) + math.log2(max(1, ss.C_ever))
+    valid = [i for i in act if ss.log2_e(i) >= thr]
+    if not valid:
+        return ss.check(tau0=tau0, s_mode=s_mode)
+    keep = set(valid)
+    chosen = None
+    unbeaten = True
+    if s_mode == "margin":
+        valid.sort(key=lambda i: (-float(ss.G[i]), int(ss.ordinal[i])))
+
+        def beaten(c: int) -> bool:
+            return any(ss.W[o, c] > 0 and float(ss.D1[o, c] - ss.D1[c, o]) >= float(tau0)
+                       for o in valid if o != c)
+        chosen = next((c for c in valid if not beaten(c)), None)
+        if chosen is None:
+            chosen, unbeaten = valid[0], False
+        keep = {chosen}
+    masked = [i for i in act if i not in keep]
+    saved = ss.G[masked].copy()
+    ss.G[masked] = -1e300
+    try:
+        dec = ss.check(tau0=tau0, s_mode=s_mode)
+    finally:
+        ss.G[masked] = saved
+    if chosen is not None:
+        dec.pass_s = unbeaten
+    return dec
 
 
 def _stability_ok(ss: PE.SplitStats, c1: int, c2: int) -> bool:

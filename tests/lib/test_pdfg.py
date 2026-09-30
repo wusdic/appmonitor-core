@@ -173,3 +173,40 @@ def test_edges_that_stopped_become_stale():
     sc = DF.mine_scope(st, "*", last + 8 * 86400)
     assert not sc["edges"] and sc["stale_edges"] == 1
     assert DF.edge_stale(10.0, last, last + 6 * 86400) is False
+
+
+def test_edge_staleness_counts_normal_days_of_its_day_type():
+    """With P01's calendar (§6.8.1): a daily workday edge is stale after 2
+    missed normal workdays; a weekend, a holiday week or abnormal days never
+    count; a weekly edge needs ~3 weeks of missed normal workdays."""
+    D0 = 740000                                            # a Monday (ordinal % 7 == 0)
+    cls = {d: (0 if (d - D0) % 7 < 5 else 1) for d in range(D0, D0 + 60)}
+    norm = {d: True for d in range(D0, D0 + 60)}
+    daily = [D0, D0 + 11, 10, 0]                           # every workday of two weeks (Mon..Fri of week 2)
+    assert DF.edge_stale_days(daily, cls, norm, D0 + 14) is False         # Sat, Sun missed: not workdays
+    assert DF.edge_stale_days(daily, cls, norm, D0 + 15) is False         # Mon missed (k = 1)
+    assert DF.edge_stale_days(daily, cls, norm, D0 + 16) is True          # Mon, Tue missed (k = 2)
+    hol = dict(norm)
+    hol.update({d: False for d in range(D0 + 14, D0 + 21)})                # a holiday week
+    assert DF.edge_stale_days(daily, cls, hol, D0 + 21) is False
+    weekly = [D0, D0 + 14, 3, 0]                           # three Mondays in 15 workdays
+    assert DF.edge_stale_days(weekly, cls, norm, D0 + 21) is False
+    assert DF.edge_stale_days(weekly, cls, norm, D0 + 35) is True
+    assert DF.edge_stale_days(daily, cls, {}, D0 + 30) is None            # no calendar: time rule
+
+
+def test_mine_scope_uses_the_calendar_when_present():
+    st = DF.FlowState()
+    D0 = 740000
+    cls = {d: (0 if (d - D0) % 7 < 5 else 1) for d in range(D0, D0 + 30)}
+    st.set_calendar(cls, {}, D0)
+    for k in range(15):                                    # every workday of three weeks
+        d = D0 + k + 2 * (k // 5)
+        ids = _chain(st, "*", ["list", "item"], T + 86400 * k)
+        st._edge_day(("*", ids[0], ids[1]), d)
+    last_day = D0 + 18                                     # Friday of week 3
+    st.set_calendar(cls, {d: True for d in range(D0, last_day + 4)}, last_day + 4)
+    assert DF.mine_scope(st, "*", T + 86400 * 16)["edges"]                # weekend + Mon missed
+    st.set_calendar(cls, {d: True for d in range(D0, last_day + 5)}, last_day + 5)
+    sc = DF.mine_scope(st, "*", T + 86400 * 17)
+    assert not sc["edges"] and sc["stale_edges"] == 1                      # Mon, Tue missed

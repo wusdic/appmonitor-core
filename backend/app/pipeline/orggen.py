@@ -1550,6 +1550,8 @@ class OrgGenerator:
         if any(ValueSpec.from_dict(v).kind == "bound" for v in gen_fields.values()):
             gen["usernames"] = users
         windows = self._step_windows(e.when, e.steps, k)
+        # arrival law inside the windows (eval draws held-out minutes from it)
+        gen["arrival"] = "normal" if any(w.arrival == "normal" for w in e.when) else "uniform"
         daytypes = [t for t in ("workday", "nonworkday") if windows[t]]
         period = ("continuous" if act.period_s else
                   "monthly" if any(w.mend for w in e.when) else

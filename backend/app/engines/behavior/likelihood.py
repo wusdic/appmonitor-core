@@ -106,6 +106,8 @@ from scipy import special as sp
 from ...core.engine import Context, Engine
 from ...models.schema import EntityProfile
 from .lib import bayes
+from .lib import pactive as PA
+from .lib import psketch as PS_EARN
 from .lib import combine
 from .lib import emit
 from .lib import grains as GR
@@ -116,6 +118,9 @@ from .lib.features import (FEATURE_DIM, FEATURE_GROUP, FEATURE_KIND, FEATURE_NAM
                            GROUP_ORDER, VEC_TX)
 
 Z = "behavior.z"
+EARNED_MODEL = PA.EARNED          # model.earned@(s, '__system__'): bounded mode only (§10.2)
+EARN_K = 2048                     # candidate IPs per system (heavy hitters of active IP-rows)
+EARN_HL = 7 * 86400.0             # H_m
 ZR = "behavior.zr"
 PF = "behavior.pf"
 ACTIVE = "feature.active"
@@ -507,6 +512,7 @@ class LikelihoodEngine(Engine):
         super().__init__(**params)
         self.state_period_s = float(state_period_s)
         self._state_seen: set = set()
+        self._bounded = False
         self._layouts: Dict[Tuple[Tuple[int, ...], ...], GroupLayout] = {}
 
     # ---------------------------------------------------------------- run
@@ -515,6 +521,7 @@ class LikelihoodEngine(Engine):
         now, dt = float(ctx.now), float(ctx.window_s)
         if not (math.isfinite(dt) and dt > 0.0):
             raise ValueError(f"LikelihoodEngine: bad ctx.window_s {ctx.window_s!r}")
+        self._bounded = PA.bounded(ctx.config)
         # B01 failed: activity itself is unknown, so every entity is degraded
         # (no z rows: we cannot claim it was present). B03 failed: active
         # entities get NaN rows rather than scores against a stale model.
@@ -526,7 +533,7 @@ class LikelihoodEngine(Engine):
         n = 0
         jobs: List[_Job] = []
         for s in store.systems():
-            ents = store.entities(s)
+            ents = PA.entities(store, s, now, ctx.config)      # bounded mode: active + earned (§10.3)
             if not ents:
                 continue
             lay = self._layout(m_density.groups(store, s, split_by_feature_group=True))
@@ -565,7 +572,7 @@ class LikelihoodEngine(Engine):
         n = 0
         jobs: List[_Job] = []
         for s in store.systems():
-            ents = store.entities(s)
+            ents = PA.entities(store, s, now, ctx.config)      # bounded mode: active + earned (§10.3)
             if not ents:
                 continue
             lay = self._layout(m_density.groups(store, s, split_by_feature_group=True))
@@ -638,6 +645,8 @@ class LikelihoodEngine(Engine):
                 cls.append(preds["class"] if has_tier else None)
                 keys.append((j.s, j.e, now))
         sc = score_features_many(cur, ref, cls, X, np.array([j.dt for j in jobs]), keys)
+        if self._bounded:
+            self._earned_gain(store, now, jobs, sc, cls)
         # model_state refreshes due at this tick: all quantiles in one batch
         due = [i for i, j in enumerate(jobs) if self._state_take(j.s, j.e, now, j.grain)]
         state_q: List[Optional[np.ndarray]] = [None] * len(jobs)
@@ -654,6 +663,51 @@ class LikelihoodEngine(Engine):
                 self._write_h(store, j.s, j.e, now, j.dt, row, cur[i], cls[i] is not None,
                               j.lay, grain=j.grain, state_q=state_q[i])
         return len(jobs)
+
+    def _earned_gain(self, store: Any, now: float, jobs: List["_Job"], sc: Any,
+                     cls: List[Optional[MB.Pred]]) -> None:
+        """Bounded mode (progressive.md §10.2): per system, the heavy hitters
+        of active IP-rows (SpaceSaving, k_sh = EARN_K) keep an earned-gain
+        record: the H_m-decayed sum over their scored rows of
+            g_row = sum_f clip(log2 p_cur,f - log2 p_cls,f, -8, 8)
+        i.e. how many bits of surprisal the IP's own model saves on its rows
+        over its class model (the prequential scores of this tick, computed
+        before either model learns the row), and the decayed number of rows.
+        P15 turns the records into the earned set E_t(s) (g / n >= 2 bits per
+        row after >= 48 rows, top E_max). Memory O(EARN_K) per system."""
+        by_sys: Dict[str, List[int]] = {}
+        for i, j in enumerate(jobs):
+            if j.grain != "q" and cls[i] is not None:
+                by_sys.setdefault(j.s, []).append(i)
+        for s, idx in by_sys.items():
+            rec = store.get_model(s, "__system__", EARNED_MODEL)
+            if not isinstance(rec, dict) or rec.get("fmt") != 1:
+                rec = {"fmt": 1, "ips": {}, "cand": PS_EARN.DecayedSpaceSaving(EARN_K, [EARN_HL], [EARN_HL], 0),
+                       "ts": now}
+            cand, ips = rec["cand"], rec["ips"]
+            f = 2.0 ** (-(now - float(rec.get("ts", now))) / EARN_HL)
+            if f < 1.0:
+                for r in ips.values():
+                    r["g"] *= f
+                    r["n"] *= f
+            for i in idx:
+                e = jobs[i].e
+                pc, pk = sc.p_cur[i], sc.p_cls[i]
+                ok = np.isfinite(pc) & np.isfinite(pk) & (pc > 0) & (pk > 0)
+                if not ok.any():
+                    continue
+                g = float(np.clip(np.log2(pc[ok]) - np.log2(pk[ok]), -8.0, 8.0).sum())
+                cand.add(e, now, 1.0, 1.0)
+                r = ips.get(e)
+                if r is None:
+                    r = ips[e] = {"g": 0.0, "n": 0.0}
+                r["g"] += g
+                r["n"] += 1.0
+            keep = set(cand.keys())
+            for e in [e for e in ips if e not in keep]:
+                del ips[e]
+            rec["ts"] = now
+            store.put_model(s, "__system__", EARNED_MODEL, rec, ts=now)
 
     def _entity_q(self, store: Any, s: str, e: str, now: float, cov: float, nat: np.ndarray,
                   tctx: Mapping[str, Any], lay: "GroupLayout", dt: float) -> int:

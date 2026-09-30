@@ -79,9 +79,16 @@ def test_p10_cost_and_memory_do_not_grow_with_ips_or_attributes():
     assert big["state_bytes"] <= 3 * mid["state_bytes"], (mid, big)
     assert abs(wide["state_bytes"] - mid["state_bytes"]) <= 0.05 * mid["state_bytes"], (mid, wide)
     assert big["nbytes"] <= 8_000_000
+    # absolute budget (§7.3 / PG4: learning p95 <= 250 us per learned event; here every
+    # row is learned and the session pass is included), with headroom for slow machines
+    for r in (small, mid, big, wide):
+        assert r["us_per_event"] <= 400.0, r
 
 
-def p09_tree(n_ips: int, seed: int = 0):
+def p09_tree(n_ips: int, seed: int = 0, n_attrs: int = 0):
+    """10 route nodes, 15 000 events over 10 days from n_ips IPs; with n_attrs,
+    every leaf also models n_attrs target attributes (as P04 would), which P09
+    must not read."""
     st = make_store()
     routes = [f"GET oa /r{i}" for i in range(10)]
     ot = OracleTree(st, "oa", routes)
@@ -90,7 +97,12 @@ def p09_tree(n_ips: int, seed: int = 0):
     for d in range(10):
         for k in range(1500):
             j = int(r.integers(0, 10))
-            ot.learn(MON + d * DAY + (480 + 60 * j + r.uniform(0, 45)) * 60, ips[int(r.integers(0, n_ips))], routes[j])
+            ts = MON + d * DAY + (480 + 60 * j + r.uniform(0, 45)) * 60
+            path = ot.learn(ts, ips[int(r.integers(0, n_ips))], routes[j])
+            if n_attrs and k % 10 == 0:
+                leaf = ot.tree.nodes[path[-1]]
+                for a in range(n_attrs):
+                    leaf.update_target(f"hdr.x{a}", f"v{int(r.integers(0, 4))}", ts, 1.0, 1.0)
     ot.apply_wants()
     return st, ot
 
@@ -101,8 +113,8 @@ def test_p09_cost_is_per_dirty_node_not_per_ip():
     a run without new evidence fits nothing (periodic cost follows the
     evidence that arrived, §6.20)."""
     res = {}
-    for n in (100, 10000):
-        st, ot = p09_tree(n)
+    for n, n_attrs in ((100, 0), (10000, 0), (1000, 200)):
+        st, ot = p09_tree(n, n_attrs=n_attrs)
         eng = TimeWindowEngine()
         t0 = time.perf_counter()
         eng.safe_run(ctx(st, MON + 10 * DAY, window_s=3600.0, config=CFG), None)
@@ -110,9 +122,13 @@ def test_p09_cost_is_per_dirty_node_not_per_ip():
         n_fit = eng.last_stats["oa"]["fitted"]
         size = len(repr(MP.get_model(st, "oa", MP.PWIN)))
         eng.safe_run(ctx(st, MON + 10 * DAY + 7 * 3600, window_s=3600.0, config=CFG), None)
-        res[n] = (dt_fit / n_fit, size, n_fit, eng.last_stats["oa"].get("fitted", 0))
+        res[(n, n_attrs)] = (dt_fit / n_fit, size, n_fit, eng.last_stats["oa"].get("fitted", 0))
     print("P09 scale", res)
-    assert res[100][2] == res[10000][2] == 11                 # root + 10 routes (the empty `other` is skipped)
-    assert res[10000][0] <= 2.0 * res[100][0] + 0.002
-    assert abs(res[10000][1] - res[100][1]) <= 0.05 * res[100][1]
-    assert res[100][3] == 0 and res[10000][3] == 0             # nothing new -> nothing refitted
+    a, b, w = res[(100, 0)], res[(10000, 0)], res[(1000, 200)]
+    assert a[2] == b[2] == w[2] == 11                          # root + 10 routes (the empty `other` is skipped)
+    assert b[0] <= 2.0 * a[0] + 0.002 and w[0] <= 2.0 * a[0] + 0.002
+    assert abs(b[1] - a[1]) <= 0.05 * a[1] and abs(w[1] - a[1]) <= 0.05 * a[1]
+    assert a[3] == 0 and b[3] == 0 and w[3] == 0               # nothing new -> nothing refitted
+    # absolute budget (§7.3: one Bayesian-Blocks DP per dirty node and day type,
+    # <= 513 minute cells): well under 100 ms per node
+    assert max(a[0], b[0], w[0]) <= 0.1, res

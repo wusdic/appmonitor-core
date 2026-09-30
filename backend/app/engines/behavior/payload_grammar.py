@@ -12,6 +12,10 @@ Writes  model.pgrammar@(tree key, '__system__'):
         record (lib/pgrammar): text -> grammar (regex), charset, len, len_cover, c_g, U_s,
         closed / U (closed value set), top, confidence; set -> required, optional,
         presence, p_new_key, p_missing; categorical -> closed / U.
+        model.pwant['p07'] = {'targets': {kind: {nid: [attr...]}}}: key sets and payload
+        text attributes P05 found informative that the node does not model (<= 3 per
+        node, 32 busiest nodes; lib/pbounds.request_targets), so key sets and value
+        grammars exist where the requirement needs them.
 Cadence 1 h per tree, dirty nodes only (§6.20).
 Nothing is pre-set: "后边内容不超过 10 个字符" is an output only when observed
 lengths reach 10 (or an operator pins it; pins only widen).
@@ -31,13 +35,14 @@ from .lib import pgrammar as PG
 from .lib import pnode as PN
 
 ARM = ("p07", "P07", "grammar", "payload_grammar")
+TEXT_TYPES = ("set", "text")
 
 
 class PayloadGrammarEngine(Engine):
     name = "behavior.payload_grammar"
     layer = "behavior"
     consumes = [MP.PTREE, MP.ATTR, MP.SYSPROF, PB.CPINS]
-    produces = [MP.PGRAMMAR]
+    produces = [MP.PGRAMMAR, MP.PWANT]
     description = "P07: required keys, value grammars and closed value sets per pattern node"
     period_s = 3600.0
     interval = 1
@@ -123,8 +128,18 @@ class PayloadGrammarEngine(Engine):
         model["gain"] = {"bits_per_event": gain_num / gain_den if gain_den > 0 else 0.0,
                          "us_per_event": ms * 1000.0 / new_ev if new_ev > 0 else None,
                          "nodes_fitted": n_fit, "ms": ms}
+        req = PB.request_targets(store, key, ptm, now, TEXT_TYPES, model.setdefault("req", {})) \
+            if on else {}
+        want = MP.get_model(store, key, MP.PWANT)
+        if not isinstance(want, dict):
+            want = {}
+        sub = {"targets": req} if req else {}
+        if want.get("p07") != sub:
+            want["p07"] = sub
+            store.put_model(key, SYSTEM_ENTITY, MP.PWANT, want, ts=now)
         store.put_model(key, SYSTEM_ENTITY, MP.PGRAMMAR, model, version=model["version"], ts=now)
-        return n_fit, {"fitted": n_fit, "skipped_kinds": skipped, "ms": ms, "on": on}
+        return n_fit, {"fitted": n_fit, "skipped_kinds": skipped, "ms": ms, "on": on,
+                       "requested": sum(len(v) for kv in req.values() for v in kv.values())}
 
     def fit_node(self, store: Any, key: str, node: Any, now: float, reg: Any,
                  config: Mapping[str, Any], closed_n: float,

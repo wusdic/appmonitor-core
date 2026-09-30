@@ -291,6 +291,8 @@ def _jsonable(obj: Any, depth: int = 0, max_depth: int = 8) -> Any:
     if isinstance(obj, (list, tuple, set, frozenset)):
         items = sorted(obj, key=repr) if isinstance(obj, (set, frozenset)) else obj
         return [_jsonable(v, depth + 1, max_depth) for v in items]
+    if callable(getattr(obj, "to_plain", None)):
+        return _jsonable(obj.to_plain(), depth + 1, max_depth)
     if hasattr(obj, "__dataclass_fields__"):
         return {k: _jsonable(getattr(obj, k), depth + 1, max_depth)
                 for k in obj.__dataclass_fields__}
@@ -299,6 +301,10 @@ def _jsonable(obj: Any, depth: int = 0, max_depth: int = 8) -> Any:
     if hasattr(obj, "__dict__"):
         return {k: _jsonable(v, depth + 1, max_depth) for k, v in vars(obj).items()
                 if not k.startswith("_")}
+    slots = [n for c in type(obj).__mro__ for n in (getattr(c, "__slots__", None) or ())
+             if isinstance(n, str) and not n.startswith("_")]
+    if slots:                                   # slotted objects (no __dict__)
+        return {n: _jsonable(getattr(obj, n, None), depth + 1, max_depth) for n in dict.fromkeys(slots)}
     return repr(obj)[:200]
 
 

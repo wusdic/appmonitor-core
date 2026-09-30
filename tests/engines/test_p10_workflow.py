@@ -284,3 +284,42 @@ def test_arm_off_and_disabled():
     st2 = make_store()
     run(st2, approvals(2), 2, cfg={"tz": "Asia/Shanghai"})
     assert model(st2) is None
+
+
+def _pcal_hook(start_day):
+    """P01's model.pcal as the pipeline would have it: day classes up to today,
+    normal flags for the finished days."""
+    from temporal_sim import local
+
+    def hook(st, t1):
+        today = local(t1 - 1.0).date().toordinal()
+        days = {d: {"mass": 1.0, "class": "workday" if (d % 7) not in (6, 0) else "weekend"}
+                for d in range(start_day, today + 1)}
+        st.put_model("oa", SYSTEM_ENTITY, "model.pcal", {"days": days, "normal": {d: True for d in days if d < today}})
+    return hook
+
+
+def test_stopped_edge_is_stale_after_two_missed_workdays():
+    """D3-like rename: the approval steps stop after two weeks. With P01's
+    calendar the old edges leave the mined view after two missed normal
+    workdays (the weekend does not count); the time rule alone keeps them for
+    a week."""
+    from temporal_sim import local
+    d0 = local(MON).date().toordinal()
+    assert d0 % 7 == 1                                       # ordinal % 7: Monday == 1
+    ev = approvals(12)                                       # approvals on the workdays of days 0..11
+    later = [e for e in approvals(21, seed=5) if e[0] >= MON + 12 * DAY and e[2] in (DOCS, DOC, LOGIN)]
+    st = make_store()
+    eng = WorkflowEngine(mine_period_s=6 * 3600)
+    run(st, ev + later, 16, eng=eng, hooks=(_pcal_hook(d0),))   # last approval day: 11 (Friday of week 2)
+    # at the end of day 15 (Tuesday, not finished yet): Sat, Sun (not workdays) and Mon missed -> kept
+    assert (ITEM, APPROVE) in edges(st)
+    st2 = make_store()
+    run(st2, ev + later, 17, hooks=(_pcal_hook(d0),))
+    E2 = edges(st2)
+    assert (ITEM, APPROVE) not in E2                                       # Mon, Tue missed
+    assert (DOCS, DOC) in E2
+    assert model(st2)["scopes"]["*"]["stale_edges"] >= 1
+    st3 = make_store()
+    run(st3, ev + later, 17)                                               # no calendar: the 7-day time rule
+    assert (ITEM, APPROVE) in edges(st3)

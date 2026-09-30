@@ -18,7 +18,8 @@ STAGES: List[str] = ["behavior", "off_hours", "discovery", "credential", "privil
 # Axes that are plain behavioural deviation. Feature-group names are also
 # valid axes (B04/B14 write the groups whose p < 0.01).
 _BEHAVIOR_AXES = frozenset({"volume", "shape", "peer", "change", "app", "dns", "tls",
-                            "timing", "transport", "probe", "comp"})
+                            "timing", "transport", "probe", "comp",
+                            "content"})   # P03 content / binding violations (progressive.md §9.2)
 _DIRECT_AXES = {
     "temporal": "off_hours",
     "exfil": "exfiltration",

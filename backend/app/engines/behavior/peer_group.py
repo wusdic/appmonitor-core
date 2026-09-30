@@ -99,6 +99,7 @@ from scipy.special import xlogy
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, EntityProfile, Severity
 from .lib import features as F
+from .lib import pactive as PA
 from .lib import m_baseline as MB
 from .lib import m_client as MC
 from .lib import m_identity as MI
@@ -698,7 +699,7 @@ class PeerGroupEngine(Engine):
         young: List[str] = []
         tctx = None
         for s in store.systems():
-            for e in store.entities(s):
+            for e in PA.entities(store, s, now, ctx.config):      # bounded mode: A_t ∪ E_t (§10.3)
                 key = assign_key(s, e)
                 if MB.n_eff(store.get_model(s, e, BASELINE)) >= MIN_COMMITS:
                     continue
@@ -821,7 +822,9 @@ class PeerGroupEngine(Engine):
         blocked = self._blocked(store)
         eligible: List[Tuple[str, str, Mapping[str, Any]]] = []
         for s in store.systems():
-            for e in store.entities(s):
+            # bounded mode: refit on the active + earned IPs (an idle unearned IP
+            # keeps its last assignment and is re-typed lazily when active)
+            for e in PA.entities(store, s, ctx.now, ctx.config):
                 bm = store.get_model(s, e, BASELINE)
                 if MB.n_eff(bm) < MIN_COMMITS or (s, e) in blocked:
                     continue
@@ -1222,7 +1225,7 @@ class PeerGroupEngine(Engine):
                              "criticality": crit, "members": []}
         store = ctx.store
         for s in store.systems():
-            for e in store.entities(s):
+            for e in PA.entities(store, s, now, ctx.config):
                 ip = _ip(e)
                 names = []
                 if ip is not None:
@@ -1254,7 +1257,7 @@ class PeerGroupEngine(Engine):
         linked: Dict[str, Set[str]] = {}
         for s in store.systems():
             linked[s] = _linkable(store.get_model(s, SYSTEM_KEY, LINK))
-            for e in store.entities(s):
+            for e in PA.entities(store, s, now, ctx.config):
                 ip = _ip(e)
                 fs, ls = store.first_seen(s, e), store.last_seen(s, e)
                 if ip is None or fs is None or ls is None or ls - fs > POOL_SHORT_S:
