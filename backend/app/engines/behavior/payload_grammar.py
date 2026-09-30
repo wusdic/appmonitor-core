@@ -78,6 +78,7 @@ class PayloadGrammarEngine(Engine):
         pc = EV.pconfig(ctx.config)
         dflt = pc.get("defaults") or {}
         closed_n = float(dflt.get("closed_n", PG.CLOSED_N))
+        closed_u = float(dflt.get("closed_u", PG.CLOSED_U))
         n_fit, gain_num, gain_den, new_ev, skipped = 0, 0.0, 0.0, 0.0, 0
         for kind, tree in ptm.kinds.items():
             root = tree.nodes.get(tree.root)
@@ -104,7 +105,8 @@ class PayloadGrammarEngine(Engine):
                     if not was_off:
                         outn[nid] = {"status": "off", "attrs": {}, "fit_t": now, "cver": 0}
                     continue
-                entry = self.fit_node(store, key, node, now, reg, ctx.config, closed_n, prev)
+                entry = self.fit_node(store, key, node, now, reg, ctx.config, closed_n, prev,
+                                      closed_u)
                 outn[nid] = entry
                 fits[nid] = PB.fit_mark(node, now)
                 n_fit += 1
@@ -126,20 +128,20 @@ class PayloadGrammarEngine(Engine):
 
     def fit_node(self, store: Any, key: str, node: Any, now: float, reg: Any,
                  config: Mapping[str, Any], closed_n: float,
-                 old: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+                 old: Optional[Mapping[str, Any]], closed_u: float = PG.CLOSED_U) -> Dict[str, Any]:
         attrs: Dict[str, Any] = {}
         old_attrs = (old or {}).get("attrs") or {}
         for a, summ in node.targets.items():
             rr = reg.get(a) if reg is not None else None
             if isinstance(summ, PN.TextSummary):
-                rec = PG.fit_text(summ, now, closed_n=closed_n,
+                rec = PG.fit_text(summ, now, closed_n=closed_n, closed_u=closed_u,
                                   pin=PB.pins_for(config, store, key, a))
                 if rec is not None:
                     rec["gain"] = PG.shape_gain(summ.shapes, getattr(rr, "top", None), now)
             elif isinstance(summ, PN.SetSummary):
                 rec = PG.fit_set(summ, now)
             elif isinstance(summ, PN.CatSummary):
-                rec = PG.fit_cat(summ, now, closed_n=closed_n)
+                rec = PG.fit_cat(summ, now, closed_n=closed_n, closed_u=closed_u)
                 if rec is not None and "closed" not in rec:
                     rec = None                    # nothing to constrain beyond P03's predictive
             else:

@@ -15,10 +15,30 @@ histogram, charset-class counts)
                             L4, L3, L5 . L1 -> [a-z]{3,5}(\\.[a-z])?
                          3 otherwise the charset-class union and the total length range
                          4 closed value set when the exact-value SS covers >= 99 % of
-                            mass, its unseen mass U <= 0.01 and n_c >= 50 (policy clear
-                            / hmac): p(new value) = U
+                            mass, its unseen mass U <= closed_u and n_c >= closed_n (policy
+                            clear / hmac): p(new value) = U
     published: grammar (regex), charset, len [lo, hi] with len_cover = 2 / (n + 1),
-    c_g (mass the grammar covers), U_s = (N1_shapes + E + 0.5) / (N + 1), closed / U.
+    c_g (mass the grammar covers), U_shapes = (N1_shapes + E + 0.5) / (N + 1),
+    U_s = the grammar's unseen mass (p of a grammar failure, and the confidence
+    c_g (1 - U_s)), closed / U.
+    Deviations from the letter of §6.11 (measured, scratch grammar_sim.py /
+    closed_sim.py, 40 fits per family and N):
+      * U_s is max(U_shapes, len_cover) in shape mode and len_cover in charset mode
+        (a new shape does not leave a charset grammar, and the observed length range
+        carries the §6.10 rank bound the text asks for). With U_shapes alone the stated
+        confidence of hex tokens was violated in 5-10 % of fits at n = 10-27 (the range
+        misses a length never drawn), and charset grammars stated 0.51-0.62 while
+        holding 1.0 (U_shapes -> 1 on random tokens). Now: <= 3/40 violations at n <= 20,
+        0 at n >= 40, over 8 value families; the stated confidence rises with n.
+      * charset mode: c_g = max(tracked shape mass, the histogram estimate
+        1 - mass in length buckets outside [lo, hi] - share of values carrying a class
+        the grammar lacks) (the tracked guaranteed mass shrinks under churn); L/U/D/X/space
+        classes present in >= 0.2 % of values join the charset.
+      * closed sets at U <= 0.02 and n_c >= 20 (spec: 0.01 and 50; config
+        progressive.defaults.closed_u / closed_n). 0.02 is the MEDIUM who-closed level
+        and 20 is n_conf. Claim-level violation rate 3.4 % (spec: 1.4 %), ECE 0.011
+        (0.008) over 9 distributions; the spec thresholds cannot close 综合部's three
+        usernames before about day 24 of pack O, PG1 asks at day 14.
     A class token A (mixed alphanumeric run > 8, lib/phier) becomes the class union
     the charset counts actually saw (e.g. [a-z0-9]), [A-Za-z0-9] when unknown
     (shape-only policy).
@@ -51,8 +71,8 @@ SHAPE_MIN_SHARE = 0.002           # shapes below this share of mass do not widen
 REQUIRED = 0.99
 OPTIONAL = 0.01
 CLOSED_COVER = 0.99
-CLOSED_U = 0.01
-CLOSED_N = 50.0
+CLOSED_U = 0.02                    # spec §6.11: 0.01 (deviation, measured: see fit_text doc)
+CLOSED_N = 20.0                    # spec §6.11: 50 (= n_conf, §6.8.1)
 N_MIN = 3.0                        # evidence needed before anything is published
 N_SCORE = 20.0                     # support needed to score (§6.16.1)
 DANGEROUS = frozenset("'\"`=<>;() ")
@@ -201,7 +221,65 @@ def instance(shp: str) -> str:
     return "".join(out)
 
 
+def _alnum_fold(shp: str) -> str:
+    """'D1 L2 D1 L1 D3' -> 'A8' (a shape made only of alphanumeric runs of at
+    least two classes); other shapes unchanged."""
+    toks = parse_shape(shp)
+    if len(toks) >= 2 and all(c in "LUDA" for c, _ in toks) and len({c for c, _ in toks}) >= 2:
+        return "A%d" % sum(n for _, n in toks)
+    return shp
+
+
 # --------------------------------------------------------------------- fits
+_CHAR_CLS = ("L", "U", "D", "X", " ")          # TextSummary.CLASSES 0..4 as grammar classes
+_PUNCT_IDX, _QUOTE_IDX = 5, 6
+
+
+def _bucket_span(b: int) -> Tuple[int, int]:
+    """Lengths of TextSummary's log2 bucket b (int(log2(n + 1)) == b)."""
+    return (2 ** b) - 1, (2 ** (b + 1)) - 2
+
+
+def _charset_cover(ts: Any, t: float, classes: Iterable[str], lo: int, hi: int) -> float:
+    """Share of the node's values a charset grammar [classes]{lo,hi} covers,
+    from the length histogram and the per-value class presence counts (not
+    from the tracked shapes, whose guaranteed mass shrinks under churn):
+    1 - (mass in length buckets outside [lo, hi]) - (share of values carrying
+    a class the grammar lacks). Punctuation counts as covered when the grammar
+    holds at least one punctuation literal (the counts do not say which)."""
+    try:
+        h = np.asarray(ts.lens.read(t), dtype=np.float64)
+    except Exception:
+        return NAN
+    tot = float(h.sum())
+    if tot <= 0:
+        return NAN
+    out_len = 0.0
+    for b in range(len(h)):
+        a, z = _bucket_span(b)
+        if z < lo or a > hi:
+            out_len += float(h[b])
+    miss = out_len / tot
+    try:
+        ch = np.asarray(ts.chars.read(t), dtype=np.float64)
+    except Exception:
+        ch = None
+    if ch is not None and ch.size >= 7 and float(ch.sum()) > 0:
+        cl = set(classes)
+        alnum = "A" in cl
+        for i, c in enumerate(_CHAR_CLS):
+            covered = c in cl or (alnum and c in "LUD")
+            if not covered:
+                miss += float(ch[i]) / tot
+        has_punct = any(len(c) == 1 and c not in _CHAR_CLS and not c.isalnum() and c not in "'\"`"
+                        for c in cl)
+        if not has_punct:
+            miss += float(ch[_PUNCT_IDX]) / tot
+        if not any(c in cl for c in "'\"`"):
+            miss += float(ch[_QUOTE_IDX]) / tot
+    return float(min(1.0, max(0.0, 1.0 - miss)))
+
+
 def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N,
              closed_u: float = CLOSED_U, pin: Optional[Mapping[str, Any]] = None
              ) -> Optional[Dict[str, Any]]:
@@ -225,6 +303,15 @@ def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N
     except Exception:
         chars = None
     alnum = alnum_class(chars)
+    if any("A" in skeleton(k).split(" ") for k, _ in items):
+        # mixed alphanumeric tokens: short mixed runs (<= 8, kept in detail by
+        # lib/phier) are instances of the A class too (L, U, D are sub-classes),
+        # so 3fa2c9d1 joins A9..A16 as A8 instead of forming a skeleton of its own
+        fold: Dict[str, float] = {}
+        for k, g in items:
+            fk = _alnum_fold(k)
+            fold[fk] = fold.get(fk, 0.0) + g
+        items = list(fold.items())
     by_skel: Dict[str, float] = {}
     for k, g in items:
         sk = skeleton(k)
@@ -236,8 +323,9 @@ def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N
         cum += g
         if cum >= SKEL_COVER * tot:
             break
-    rec: Dict[str, Any] = {"kind": "text", "n": float(N), "U_s": float(ss.unseen(t)),
-                           "mass": float(tot)}
+    u_shapes = float(ss.unseen(t))
+    u_len = 2.0 / (N + 1.0)          # next observed length outside the observed range (§6.10 rank bound)
+    rec: Dict[str, Any] = {"kind": "text", "n": float(N), "U_shapes": u_shapes, "mass": float(tot)}
     if cum >= SKEL_COVER * tot:
         inc = [(k, g) for k, g in items if skeleton(k) in chosen]
         top_of = {}
@@ -256,10 +344,15 @@ def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N
         c_g = sum(g for _, g in inc) / tot
         lens = [shape_length(k) for k, _ in inc]
         classes = {c for a in anti for c, _, _ in a}
+        u_g = max(u_shapes, u_len)
     else:
         inc = [(k, g) for k, g in items if g / tot >= SHAPE_MIN_SHARE] or items
         lens = [shape_length(k) for k, _ in inc]
         classes = {c for k, _ in inc for c, _ in parse_shape(k)}
+        if chars is not None and len(chars) >= 5 and float(np.sum(chars)) > 0:
+            ctot = max(float(np.sum(ts.lens.read(t))), 1e-12)
+            classes |= {c for i, c in enumerate(_CHAR_CLS) if float(chars[i]) / ctot >= SHAPE_MIN_SHARE
+                        and not ("A" in classes and c in "LUD")}
         lo, hi = (min(lens), max(lens)) if lens else (0, 0)
         # untracked mass: widen the length range to the length histogram's occupied buckets
         un = max(0.0, 1.0 - sum(g for _, g in inc) / tot)
@@ -276,6 +369,10 @@ def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N
         rx = charset_rx(classes, lo, hi, alnum) if classes else ""
         mode = "charset"
         c_g = min(1.0, sum(g for _, g in inc) / tot)   # tracked mass: a lower bound
+        cc = _charset_cover(ts, t, classes, lo, hi)     # the same from the histograms
+        if cc == cc:
+            c_g = max(c_g, cc)
+        u_g = u_len                                     # a new shape does not leave a charset grammar
     lo, hi = (int(min(lens)), int(max(lens))) if lens else (0, 0)
     if pin:
         plo = pin.get("len_min")
@@ -293,7 +390,7 @@ def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N
             lo, hi = nlo, nhi
             rec["pinned"] = {k: pin[k] for k in ("len_min", "len_max") if k in pin}
     rec.update({"grammar": rx, "mode": mode, "charset": sorted(classes), "alnum": alnum,
-                "len": [lo, hi], "len_cover": 2.0 / (N + 1.0), "c_g": float(c_g),
+                "len": [lo, hi], "len_cover": u_len, "c_g": float(c_g), "U_s": float(u_g),
                 "skeletons": chosen if mode == "shape" else []})
     vs = getattr(ts, "values", None)
     if vs is not None:

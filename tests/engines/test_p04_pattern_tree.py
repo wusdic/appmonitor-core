@@ -107,6 +107,36 @@ def test_b_independent_attribute_never_splits():
     assert checks >= 48
 
 
+# ------------------------------------------------------------------------ (b')
+def test_b1_perfectly_dependent_targets_do_not_inflate_false_splits():
+    """(b') The same null candidate with the target duplicated three times
+    (perfectly dependent targets): the averaged per-target e-value does not
+    grow with the copies, so there is still no split, although the summed
+    MDL saving G_c counts the same (chance) information three times."""
+    sel = {"targets_sys": {0: ["net.bytes_up", "m.copy1", "m.copy2"]},
+           "split_cands": {0: [("meta.z", 0)]}, "roles": {}}
+    sim = Sim(sel=sel)
+    systems = [f"s{i:02d}" for i in range(8)]
+
+    def day(d, t0, rng):
+        ev = []
+        for s in systems:
+            for _ in range(30):
+                m = rng.uniform(8 * 60, 18 * 60)
+                v = float(rng.lognormal(7, 0.5))
+                ev.append((t0 + m * 60, s, f"10.0.{rng.integers(0, 4)}.{rng.integers(1, 9)}",
+                           {"http.route": "GET x /a", "meta.z": f"z{rng.integers(0, 4)}",
+                            "net.bytes_up": v, "m.copy1": v, "m.copy2": v}))
+        return ev
+    sim.add(daily(day, 10, seed=11))
+    sim.run_until(MON + 10 * DAY)
+    for s in systems:
+        tr = sim.tree(s)
+        assert tr is not None and len(tr) == 1, s
+        ss = tr.nodes[tr.root].split_stats
+        assert ss is not None and ss.checks >= 5
+
+
 # ----------------------------------------------------------------------- (b'')
 def test_b2_mass_is_not_evidence():
     """An aggregated row of mass 40 and a thinned row with HT weight 1000 each
@@ -448,7 +478,10 @@ def test_d_value_grouping_one_group_of_three_ips_plus_other():
     single /32 level cannot hold them (measured: 12 + 3 sources, no split in
     15 days); the tree then reaches the department through /24 (test a) or the
     learned group level (test f)."""
-    sel = {"targets_sys": {0: ["net.bytes_up"]}, "split_cands": {0: [("net.src", 0)]}, "roles": {}}
+    # two targets: naming a /32 group costs 32 bits per group in L_split (rule G),
+    # which one numeric target alone repays only after about a month
+    sel = {"targets_sys": {0: ["net.bytes_up", "body.kv.username"]},
+           "split_cands": {0: [("net.src", 0)]}, "roles": {}}
     sim = Sim(sel=sel)
     pop = POP[:4]
 

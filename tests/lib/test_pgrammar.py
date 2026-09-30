@@ -34,7 +34,7 @@ def test_three_usernames_give_a_z4_and_closed_set():
 
 
 def test_closed_set_needs_evidence():
-    ts, t = _text(["jack", "rose", "mike"], days=5)           # 15 units < 50
+    ts, t = _text(["jack", "rose", "mike"], days=5)           # 15 units < n_conf = 20
     r = G.fit_text(ts, t)
     assert r["grammar"] == "[a-z]{4}" and "closed" not in r
 
@@ -133,3 +133,33 @@ def test_shape_gain_positive_for_concentrated_node():
         reg_top.update(shape("".join("a" * rnd.randint(1, 12))), T0 + i, 1, 1)
     ts, t = _text(["jack", "rose", "mike"], days=5)
     assert G.shape_gain(ts.shapes, reg_top.ss, t) > 1.5
+
+
+def _hex(rnd):
+    return "".join(rnd.choice("0123456789abcdef") for _ in range(rnd.randint(8, 16)))
+
+
+def test_grammar_confidence_is_calibrated_and_rises_with_evidence():
+    """Shape-only hex tokens (passwords) and free text: the stated confidence
+    c_g (1 - U_s) is met by fresh values in (nearly) every fit, and it rises
+    with the evidence (the length range carries the 2/(n+1) rank bound; a
+    charset grammar's coverage comes from the histograms, not from the tracked
+    shapes, whose guaranteed mass shrinks under churn)."""
+    rnd = random.Random(3)
+    means = []
+    for n in (20, 80, 160):
+        viol, confs = 0, []
+        for rep in range(25):
+            ts = PN.TextSummary("shape")
+            for i in range(n):
+                ts.update(Shaped(shape(_hex(rnd))), T0 + i * 3600, 1.0, 1.0)
+            r = G.fit_text(ts, T0 + n * 3600)
+            rx = re.compile(r["grammar"])
+            hold = sum(bool(rx.fullmatch(_hex(rnd))) for _ in range(300)) / 300
+            conf = r["c_g"] * (1 - r["U_s"])
+            viol += hold < conf - 0.05
+            confs.append(conf)
+            assert r["confidence"] == pytest.approx(conf)
+        assert viol <= 2, (n, viol)
+        means.append(sum(confs) / len(confs))
+    assert means[0] < means[1] < means[2] and means[2] >= 0.97, means

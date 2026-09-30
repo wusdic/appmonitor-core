@@ -235,11 +235,18 @@ class AttributeSelectionEngine(Engine):
         cand = [a for a, v in stats.items() if SEL.targetable(a) and v["U_t"] >= SEL.U_HI
                 and v["H"] >= SEL.RED_HB]
         cand = sorted(cand, key=lambda a: -stats[a]["U_t"])[:3 * SEL.M_T]
+        # the members of last run's redundant pairs stay in the comparison while
+        # they are still evaluated (a pair must not dissolve because its keeper
+        # dropped out of the top-U_t list for one run)
+        prev_red = dict(prev.get("redundant") or {})
+        cand += [a for a in dict.fromkeys(list(prev_red) + list(prev_red.values()))
+                 if a in stats and a not in cand and stats[a]["H"] >= SEL.RED_HB]
         red = {}
         if pr0 is not None and len(pr0):
             red = SEL.redundancy(pr0, now, hier, cand,
                                  cost=lambda a: float(getattr(reg.records.get(a), "cost_us", 0.0) or 0.0),
-                                 cov=lambda a: reg.coverage(a, now))
+                                 cov=lambda a: reg.coverage(a, now), prev=prev_red,
+                                 distinct=lambda a: float(stats[a].get("distinct0", 0.0)))
         out = SEL.assign_roles(stats, prev, red, ipinfo, now,
                                lambda a: reg.records[a].kinds if a in reg.records else ())
         proxies: List[str] = []

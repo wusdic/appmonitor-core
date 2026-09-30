@@ -63,6 +63,7 @@ LAMBDA_C = 0.001           # bits per microsecond
 LEVEL_CARD = 64            # the evaluation level is the finest with <= 64 distinct values
 INV_H = 0.05               # invariant: H <= 0.05 bits ...
 INV_COV = 0.99             # ... and coverage >= 0.99
+INV_COV_EXIT = 0.97        # an invariant leaves below this coverage (or above 2 INV_H bits)
 TARGET_COV = 0.05
 TARGET_STAB = 0.7
 SHAPE_DISTINCT = 0.5
@@ -91,7 +92,13 @@ DERIVED_GROUPS: Tuple[frozenset, ...] = (
     frozenset({"ctx.daytype", "ctx.dayclass", "ctx.dow", "ctx.when"}),
     frozenset({"http.status", "http.sclass"}),
     frozenset({"net.dst", "net.dport"}),
+    # R3's client stack token is a function of JA3, user agent, TTL and TCP window
+    # (lib/stack.stack_token): a split on one of them trivially "predicts" the others
+    frozenset({"client.stack", "http.ua", "hdr.user-agent", "tls.ja3", "net.ttl", "net.win"}),
 )
+# calendar context (§5.4.3): split candidates of the when facet, never m_t targets
+# (when is summarised separately in every node)
+CALENDAR_ATTRS = frozenset({"ctx.dow", "ctx.daytype", "ctx.dayclass", "ctx.dom", "ctx.mend"})
 MISSING = "\x00unrecorded"   # probe: the row did not record this attribute
 ROLE_ORDER = ("invariant", "redundant", "split", "target", "shape", "dropped", "probe")
 
@@ -104,8 +111,10 @@ def same_source(a: str, b: str) -> bool:
         return True
     if b.startswith(a + ".") or a.startswith(b + "."):
         return True
+    def _in(x: str, g: frozenset) -> bool:           # x or a derivation of it (x.len, x.keys)
+        return x in g or any(x.startswith(y + ".") for y in g)
     for g in DERIVED_GROUPS:
-        if a in g and b in g:
+        if _in(a, g) and _in(b, g):
             return True
     # X.keys vs X.kv.<k> (the key set is the presence pattern of the values)
     for x, y in ((a, b), (b, a)):
@@ -117,7 +126,7 @@ def same_source(a: str, b: str) -> bool:
 def targetable(a: str) -> bool:
     """Attributes that may be m_t targets (who and when are always summarised
     separately and are not counted in m_t; bookkeeping ids never are)."""
-    if a in WHO_ATTRS or a in WHEN_ATTRS or a in NON_TARGET:
+    if a in WHO_ATTRS or a in WHEN_ATTRS or a in NON_TARGET or a in CALENDAR_ATTRS:
         return False
     return not a.startswith(NON_TARGET_PREFIX)
 
@@ -350,6 +359,9 @@ class StratifiedProbe:
         self._want_ix: Dict[frozenset, int] = {}
         self._seq = 0
         self._size = 0
+        self._mut = 0                  # mutation counter (rows / codes caches)
+        self._rcache: Optional[Tuple[Any, Any]] = None
+        self._ccache: Optional[Tuple[Any, Dict[str, Any]]] = None
         self.n_offered = 0
 
     def _schema(self, keys: tuple, wid: Optional[int] = None) -> int:
@@ -400,6 +412,7 @@ class StratifiedProbe:
     def offer(self, stratum: Hashable, row: Mapping[str, Any], mass: float, t: float, u: float,
               want_id: Optional[int] = None) -> None:
         self.n_offered += 1
+        self._mut += 1
         sm = self.smass.get(stratum)
         if sm is None:
             if len(self.smass) >= self.strata_max:
@@ -436,6 +449,7 @@ class StratifiedProbe:
             self.R = int(R)
         if not self.smass:
             return
+        self._mut += 1
         m = {s: max(0.0, v.get(0, t)) for s, v in self.smass.items()}
         sq = {s: math.sqrt(x) for s, x in m.items()}
         tot = sum(sq.values()) or 1.0
@@ -462,7 +476,29 @@ class StratifiedProbe:
         return sum(len(h) for h in self.strata.values())
 
     def rows(self, t: float) -> Tuple[List[Tuple[int, tuple]], np.ndarray, List[Hashable]]:
-        """([(schema id, values)], probe weights, stratum per row)."""
+        """([(schema id, values)], probe weights, stratum per row). The result
+        is cached until the probe changes, so the column transposition and the
+        value codes of one evaluation are shared by every function of the run
+        (evaluate, ip_information, who_proxies, redundancy, node targets).
+        Callers must not modify the returned arrays."""
+        key = (float(t), self._mut)
+        if self._rcache is not None and self._rcache[0] == key:
+            return self._rcache[1]
+        res = self._rows(t)
+        self._rcache = (key, res)
+        return res
+
+    def codes(self, rows: Sequence[Tuple[int, tuple]], name: str) -> Tuple[np.ndarray, List[Any]]:
+        """codes_uniq of a column of `rows`, cached per rows object."""
+        c = self._ccache
+        if c is None or c[0] is not rows:
+            c = self._ccache = (rows, {})
+        r = c[1].get(name)
+        if r is None:
+            r = c[1][name] = codes_uniq(self.column(rows, name))
+        return r
+
+    def _rows(self, t: float) -> Tuple[List[Tuple[int, tuple]], np.ndarray, List[Hashable]]:
         out: List[Tuple[int, tuple]] = []
         wts: List[float] = []
         strata: List[Hashable] = []
@@ -506,8 +542,10 @@ class StratifiedProbe:
         return out
 
     def release(self) -> None:
-        """Drop the transposition cache (after an evaluation)."""
+        """Drop the transposition, rows and codes caches (after an evaluation)."""
         self._tcache = None
+        self._rcache = None
+        self._ccache = None
 
     def names(self) -> List[str]:
         used = {r[2] for rows in self.strata.values() for r in rows}
@@ -576,7 +614,7 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
     def raw(a: str) -> Tuple[np.ndarray, List[Any]]:
         r = rawcache.get(a)
         if r is None:
-            r = rawcache[a] = codes_uniq(col(a))
+            r = rawcache[a] = probe.codes(rows, a)
         return r
 
     def lev(a: str) -> Tuple[int, np.ndarray, int]:
@@ -607,6 +645,7 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
         else:
             cc, k = gen_codes(hier, a, l, *raw(a))
         ctx_codes.append((a, cc, k))
+    ctx_h = [w_plugin(cc, w) for _, cc, _ in ctx_codes]      # H(context) on all rows, once
     # target codes for U_s
     tgt = [b for b in targets_prev if b in present][:2 * M_T]
     tgt_codes = [(b,) + lev(b)[1:] for b in tgt]
@@ -651,13 +690,14 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
         hp0, _ = w_plugin(c0codes, wa)
         gain = 0.0
         gain0 = 0.0
-        for ca, ccodes, ck in ctx_codes:
+        for (ca, ccodes, ck), hc in zip(ctx_codes, ctx_h):
             if same_source(ca, a):
                 continue
             cs = sub(ccodes)
-            gain = max(gain, penalised_gain(cc, k, cs, ck, wa, na, hp))
+            hg = hc if ix is None else w_plugin(cs, wa)
+            gain = max(gain, penalised_gain(cc, k, cs, ck, wa, na, hp, hg))
             if hp0 > 0:
-                gain0 = max(gain0, penalised_gain(c0codes, k0, cs, ck, wa, na, hp0))
+                gain0 = max(gain0, penalised_gain(c0codes, k0, cs, ck, wa, na, hp0, hg))
         CR = min(1.0, gain / hp) if hp > 1e-9 else 0.0
         CR0 = min(1.0, gain0 / hp0) if hp0 > 1e-9 else 0.0
         U_t = cov * S * gain - LAMBDA_C * cost
@@ -747,11 +787,11 @@ def ip_information(probe: StratifiedProbe, t: float, hier: Any, targets: Sequenc
         return out
     ipcol = probe.column(rows, "net.src")
     tg = []
-    c_ip, u_ip = codes_uniq(ipcol)
+    c_ip, u_ip = probe.codes(rows, "net.src")
     for b in targets:
         if same_source("net.src", b):
             continue
-        l, cc, k = level_codes(hier, b, probe.column(rows, b))
+        l, cc, k = level_codes(hier, b, probe.column(rows, b), raw=probe.codes(rows, b))
         hb = w_entropy(cc, w, n)
         if hb > 0.05:
             tg.append((cc, k, hb))
@@ -787,7 +827,7 @@ def who_proxies(probe: StratifiedProbe, t: float, hier: Any, attrs: Sequence[str
     # every attribute look like a function of the IP
     w = np.ones(len(rows))
     ip = probe.column(rows, "net.src")
-    cip, uip = codes_uniq(ip)
+    cip, uip = probe.codes(rows, "net.src")
     out = []
     for a in attrs:
         if a in WHO_ATTRS:
@@ -807,17 +847,25 @@ def who_proxies(probe: StratifiedProbe, t: float, hier: Any, attrs: Sequence[str
 
 
 def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
-               cost: Callable[[str], float], cov: Callable[[str], float]) -> Dict[str, str]:
+               cost: Callable[[str], float], cov: Callable[[str], float],
+               prev: Optional[Mapping[str, str]] = None,
+               distinct: Optional[Callable[[str], float]] = None) -> Dict[str, str]:
     """{b: a}: b is redundant given a when g3(a -> b) <= 0.01 and H(b) >= 0.1
     (and a -> b holds; the member of the pair with lower cost and higher
-    coverage is kept)."""
+    coverage is kept). Keeper order, so that the choice is stable from run to
+    run (measured: re-choosing among equivalent attributes every hour flipped
+    client.stack / http.ua / net.ttl and http.route / http.path between split
+    and redundant on every run): an attribute that was not redundant in the
+    previous run first, then lower cost, higher coverage, fewer distinct values
+    (the more general of two equivalent attributes: a route template rather
+    than raw paths), name."""
     rows, w, _ = probe.rows(t)
     n = len(rows)
     if n == 0 or len(kept) < 2:
         return {}
     codes = {}
     for a in kept:
-        l, cc, k = level_codes(hier, a, probe.column(rows, a))
+        l, cc, k = level_codes(hier, a, probe.column(rows, a), raw=probe.codes(rows, a))
         codes[a] = (cc, k)
     H = {a: w_entropy(codes[a][0], w, n) for a in kept}
     # numeric pairs: the same quantity under two names (response size and bytes
@@ -837,7 +885,9 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
         r[o] = np.arange(v.size)
         return r
     red: Dict[str, str] = {}
-    order = sorted(kept, key=lambda a: (cost(a), -cov(a), a))     # preferred keepers first
+    was_red = set((prev or {}).keys())
+    order = sorted(kept, key=lambda a: (a in was_red, round(cost(a), 1), -round(cov(a), 2),
+                                        distinct(a) if distinct is not None else 0.0, a))
     for i, a in enumerate(order):
         if a in red:
             continue
@@ -846,9 +896,19 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
             if b in red or H[b] < RED_HB:
                 continue
             cb, kb = codes[b]
-            if w_g3(ca, cb, kb, w) <= RED_G3 and w_g3(cb, ca, ka, w) <= RED_G3:
-                red[b] = a
-                continue
+            e_ab = w_g3(ca, cb, kb, w)
+            if e_ab <= RED_G3:
+                e_ba = w_g3(cb, ca, ka, w)
+                if e_ba <= RED_G3:
+                    # keep the member the other is (more nearly) a function of:
+                    # a route template determines its path exactly, the path
+                    # determines the route only on the probe (GET / POST of one
+                    # path), so the route is the keeper (stickiness first)
+                    if e_ba + 1e-9 < e_ab and (a in was_red) == (b in was_red) and H[a] >= RED_HB:
+                        red[a] = b
+                        break
+                    red[b] = a
+                    continue
             if a in nums and b in nums:
                 (xa, ma), (xb, mb) = nums[a], nums[b]
                 both = ma & mb
@@ -856,6 +916,15 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
                     ra, rb = ranks(xa[both]), ranks(xb[both])
                     if ra.std() > 0 and rb.std() > 0 and abs(np.corrcoef(ra, rb)[0, 1]) >= RED_RHO:
                         red[b] = a
+    # resolve chains (b -> a -> c): every redundant attribute points at a keeper
+    for b in list(red):
+        k, hops = red[b], 0
+        while k in red and hops < len(red):
+            k, hops = red[k], hops + 1
+        if k == b:
+            del red[b]
+        else:
+            red[b] = k
     return red
 
 
@@ -882,7 +951,11 @@ def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any]
         U_t, U_s = max(st["U_t"], st.get("U_tc", st["U_t"])), st["U_s_max"]
         best_lv = list(st["best_levels"])
         new = None
-        if H <= INV_H and cov >= INV_COV:
+        # entry / exit band: an attribute enters `invariant` at H <= INV_H and
+        # leaves it only above 2 INV_H or below INV_COV_EXIT coverage (a value
+        # near the edge flapped between invariant and dropped every hour)
+        if (H <= INV_H and cov >= INV_COV) or (old == "invariant" and H <= 2 * INV_H
+                                               and cov >= INV_COV_EXIT):
             new = "invariant"
         elif a in redundant:
             new = "redundant"
@@ -907,8 +980,9 @@ def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any]
         # hysteresis: a kept role demotes only after DEMOTE_RUNS consecutive low runs
         # (the kept role's own test already uses the low threshold u_lo, so a
         # role changes here only when its utility fell below u_lo, or on an upgrade)
-        demotion = ((old in ("split", "target") and new in ("dropped", "shape"))
-                    or (old == "split" and new == "target"))
+        demotion = ((old in ("split", "target") and new in ("dropped", "shape", "redundant"))
+                    or (old == "split" and new == "target")
+                    or (old == "redundant" and new != "invariant" and a not in redundant))
         if demotion:
             low[a] = low.get(a, 0) + 1
             if low[a] < DEMOTE_RUNS:
@@ -1119,7 +1193,7 @@ def value_groups(probe: StratifiedProbe, t: float, hier: Any, a: str, targets: S
     for b in targets:
         if same_source(a, b):
             continue
-        l, bc, bk = level_codes(hier, b, probe.column(rows, b))
+        l, bc, bk = level_codes(hier, b, probe.column(rows, b), raw=probe.codes(rows, b))
         tab = np.zeros((vk, bk))
         np.add.at(tab, (vc, bc), w)
         dists.append(tab)

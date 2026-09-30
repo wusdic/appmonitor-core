@@ -16,6 +16,7 @@ from app.eval.pscale import deep_sizeof
 from app.models.schema import SYSTEM_ENTITY
 
 N_EVENTS = 4000
+N_DAYS = 3
 SEL = {"targets_sys": {0: ["net.bytes_up", "http.status", "body.kv.username"]},
        "split_cands": {0: [("http.route", 0), ("net.src", 1), ("net.src", 0), ("ctx.tod_min", 1)]},
        "roles": {}}
@@ -25,8 +26,11 @@ def _events(n_ips, n_attrs, seed=0):
     rng = np.random.default_rng(seed)
     ips = [f"10.{(i >> 16) & 255}.{(i >> 8) & 255}.{i & 255}" for i in range(1, n_ips + 1)]
     out = []
+    per_day = N_EVENTS // N_DAYS
     for k in range(N_EVENTS):
-        ts = MON + 8 * 3600 + k * (10 * 3600 / N_EVENTS)
+        # N_DAYS workdays, 08:00-18:00: a root learns after one full day, so the
+        # tree has split (routes, sizes) and grown before it is measured
+        ts = MON + (k // per_day) * DAY + 8 * 3600 + (k % per_day) * (10 * 3600 / per_day)
         r = int(rng.integers(0, 6))
         a = {"http.route": f"POST s /r{r}", "net.bytes_up": float(rng.lognormal(6 + r * 0.3, 0.3)),
              "http.status": int(rng.choice([200, 302])), "body.kv.username": f"u{rng.integers(0, 40)}"}
@@ -48,12 +52,12 @@ def _run(n_ips, n_attrs, sel=SEL, p05=False):
         t_p04[0] += time.perf_counter() - a
         return r
     sim.p04.safe_run = timed
-    sim.run_until(MON + DAY)
+    sim.run_until(MON + N_DAYS * DAY)
     m = MP.get_ptree(sim.st, "s")
     tree = m.kinds[0]
     aux = sim.p04.aux(m)
     learned = N_EVENTS
-    return {"tree_bytes": tree.nbytes(), "nodes": len(tree),
+    return {"tree_bytes": tree.nbytes(), "nodes": len(tree), "n_max": int(tree.budget.get("n_max", 0)),
             "ptree_deep": deep_sizeof(m) - deep_sizeof(aux["burst"]) - deep_sizeof(aux["seen"]),
             "burst_entries": len(aux["burst"]), "seen_entries": len(aux["seen"]),
             "reg_deep": deep_sizeof(MP.get_registry(sim.st, "s")),
@@ -64,6 +68,12 @@ def _run(n_ips, n_attrs, sel=SEL, p05=False):
 def test_i_memory_and_time_do_not_grow_with_ips():
     small = _run(100, 0)
     large = _run(10_000, 0)
+    # the measured trees are grown (split on route / size), not a single root
+    assert small["nodes"] >= 5 and large["nodes"] >= 5, (small, large)
+    # budget: node count within the tree's cap, and bytes per node within the
+    # §7.2 per-node estimate (~10 KB) with Python overhead (<= 64 KB per node)
+    assert large["nodes"] <= large["n_max"]
+    assert large["ptree_deep"] <= 64 * 1024 * max(large["nodes"], 1) + 2_000_000, large
     # the tree (nodes, summaries, split statistics) is bounded by its node budget,
     # never by the population: <= 1.5x at 100x the IPs, and far below tier M
     assert large["tree_bytes"] <= 1.5 * small["tree_bytes"] + 200_000, (small, large)
@@ -80,6 +90,7 @@ def test_i_memory_and_time_do_not_grow_with_ips():
 def test_i_memory_and_time_do_not_grow_with_attributes():
     small = _run(300, 10, sel=None, p05=True)
     large = _run(300, 300, sel=None, p05=True)
+    assert small["nodes"] >= 3 and large["nodes"] >= 3, (small, large)
     # P04 touches m_t targets and C candidates per event whatever the attribute count
     assert large["tree_bytes"] <= 1.5 * small["tree_bytes"] + 200_000, (small, large)
     assert large["us_per_event"] <= 2.0 * small["us_per_event"] + 50.0, (small, large)
