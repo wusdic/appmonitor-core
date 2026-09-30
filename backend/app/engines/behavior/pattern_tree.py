@@ -433,9 +433,13 @@ class PatternTreeEngine(Engine):
     # ------------------------------------------------------------ helpers
     @staticmethod
     def aux(m: PT.PTreeModel) -> Dict[str, Any]:
-        a = getattr(m, "aux", None)
+        """P04's private per-tree working state (batch cursors, burst runs, held
+        rows, learning / revision sets). Kept under a private attribute of the
+        model object: it is not part of the published pattern model (plain-data
+        copies of model.ptree skip it)."""
+        a = getattr(m, "_paux", None)
         if a is None:
-            a = m.aux = {"last": {}, "burst": PS.BurstEvidence(65536), "held": {}, "held_n": 0,
+            a = m._paux = {"last": {}, "burst": PS.BurstEvidence(65536), "held": {}, "held_n": 0,
                          "day": None, "snap_day": None, "learning": {}, "revising": {},
                          "systems": set(), "seen": PS.LRU(65536), "n_alt": 0, "stats": Counter()}
         return a
@@ -494,10 +498,15 @@ class PatternTreeEngine(Engine):
 
     # ------------------------------------------------------------- batches
     def _trust(self, lc: _LC, s: str, ip: str, at: float) -> Tuple[float, bool]:
+        """(trust of the row's tick, quarantined NOW). The lib-3 learner rule
+        (lib/gating): the weight is behavior.trust of the row's own tick, the
+        hold decision is the quarantine gate at t-1 (latest value before now;
+        B28 runs after P04 in a tick) - an IP quarantined during the learning
+        delay D is held, which is the purpose of learning late (§6.9.3)."""
         k = (s, ip, at)
         r = lc.trust.get(k)
         if r is None:
-            q = MG.is_quarantined(lc.store, s, ip, at)
+            q = MG.is_quarantined(lc.store, s, ip, lc.now)
             row = lc.store.vec_at(s, ip, MG.TRUST, float(at))
             if row is None:
                 tr = 1.0                                    # governor not running for this key

@@ -407,3 +407,94 @@ def test_pairs_in_p08_by_kind_shape():
     assert ("net.src", "body.kv.username") in root.pairs
     tab = root.pairs[("net.src@1", "body.kv.username")].table(sim.now)
     assert "192.168.1.0/24" in tab
+
+
+# ------------------------------------------------------------------------ (c)
+def _dup_run(order):
+    sel = {"targets_sys": {0: ["net.bytes_up", "body.kv.username"]},
+           "split_cands": {0: [(a, 0) for a in order]}, "roles": {}}
+    sim = Sim(sel=sel)
+
+    def day(d, t0, rng):
+        out = []
+        for ts, s, ip, a in _org_day(d, t0, rng):
+            dept = "ga" if ip in GA else "pop"
+            out.append((ts, s, ip, dict(a, **{"meta.dept": dept, "meta.dept_copy": dept})))
+        return out
+    sim.add(daily(day, 12, seed=3))
+    sim.run_until(MON + 12 * DAY)
+    return sim.splits()
+
+
+def test_c_tie_between_equal_candidates_is_broken_deterministically():
+    """Two copies of one informative attribute: rule (S) sees a tie (identical
+    savings, empirical-Bernstein eps = 0 <= tau_tie) and does not block the
+    split; the first-tracked candidate wins, identically on every run."""
+    a = _dup_run(["meta.dept", "meta.dept_copy"])
+    b = _dup_run(["meta.dept", "meta.dept_copy"])
+    c = _dup_run(["meta.dept_copy", "meta.dept"])
+    assert a, "the tie blocked the split"
+    assert a[0][5]["attr"] == "meta.dept" and b[0][5]["attr"] == "meta.dept"
+    assert a[0][0] == b[0][0]                      # same time, same decision
+    assert c[0][5]["attr"] == "meta.dept_copy" and c[0][0] == a[0][0]
+
+
+# ------------------------------------------------------------------------ (d)
+def test_d_value_grouping_one_group_of_three_ips_plus_other():
+    """At /32 the department's three addresses (two different /24s) form ONE
+    child; every other IP stays in `other` or in one population group (KT value
+    grouping, §6.5.5). The population has 4 IPs here so that every source holds
+    a value slot (k_v = 8): with more equally active sources than slots a
+    single /32 level cannot hold them (measured: 12 + 3 sources, no split in
+    15 days); the tree then reaches the department through /24 (test a) or the
+    learned group level (test f)."""
+    sel = {"targets_sys": {0: ["net.bytes_up"]}, "split_cands": {0: [("net.src", 0)]}, "roles": {}}
+    sim = Sim(sel=sel)
+    pop = POP[:4]
+
+    def day(d, t0, rng):
+        return [e for e in _org_day(d, t0, rng) if e[2] in GA or e[2] in pop]
+    sim.add(daily(day, 15, seed=2))
+    sim.run_until(MON + 15 * DAY)
+    assert sim.splits(), "no split"
+    nid = sim.splits()[0][2]
+    sp = sim.tree().nodes[nid].split
+    assert sp.attr == "net.src" and sp.level == 0
+    named = [set(map(str, g)) for g in sp.groups]
+    assert set(GA) in named, named
+    assert all(not (g & set(GA)) or g == set(GA) for g in named), named
+    assert sum(1 for g in named if g & set(pop)) <= 1, named
+
+
+# --------------------------------------------------------------- (h') delay
+def test_h_quarantine_during_learning_delay_holds_the_rows():
+    """Delayed learning (§6.9.3): rows of an IP that is quarantined AFTER its
+    tick but before the tick is learned (t - D) are held, not learned."""
+    sel = {"targets_sys": {0: ["net.bytes_up"]}, "split_cands": {0: []}, "roles": {}}
+    sim = Sim(sel=sel)
+    bad = "10.9.9.7"
+    t = MON + 9 * 3600.0 + 60.0
+
+    def quarantine_later(s):
+        if s.now >= t + 1800.0:                     # flagged half an hour after its events
+            s.st.add_vec("oa", bad, "behavior.quarantine", s.now, [1.0])
+    sim.hooks.append(quarantine_later)
+    sim.add([(t + i * 30, "oa", ip, {"http.route": "GET x /a", "net.bytes_up": 500.0})
+             for i in range(4) for ip in (bad, "10.0.0.1")])
+    sim.run_until(MON + 13 * 3600.0)
+    root = sim.tree().nodes[0]
+    seen = {k for k, *_ in root.who.levels[0].items(sim.now)}
+    assert "10.0.0.1" in seen and bad not in seen
+    aux = sim.p04.aux(MP.get_ptree(sim.st, "oa"))
+    assert len(aux["held"][("oa", bad)]) == 4
+
+
+def test_published_model_carries_no_working_state():
+    """Plain-data copies of model.ptree (eval snapshots, API) do not copy P04's
+    private working state (held rows, burst runs)."""
+    sim = Sim(sel=SEL_WHO)
+    sim.add(daily(_org_day, 2, seed=1))
+    sim.run_until(MON + 2 * DAY)
+    m = MP.get_ptree(sim.st, "oa")
+    assert "aux" not in vars(m) and all(not k.startswith("aux") for k in vars(m))
+    assert sim.p04.aux(m)["last"]

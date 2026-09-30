@@ -43,6 +43,21 @@ ROLE_ZH = {"invariant": "不变式", "split": "细分候选", "target": "约束�
            "redundant": "冗余", "dropped": "丢弃", "probe": "待评估"}
 
 
+class ProbeState:
+    """P05's probe reservoirs inside model.attrsel ({kind: StratifiedProbe}).
+    A slotted holder: memory reports count it (deep size follows __slots__),
+    while plain-data copies of the published model (eval snapshots, API
+    dumps) render it as one line instead of copying R_p rows per kind."""
+
+    __slots__ = ("probes",)
+
+    def __init__(self, probes: Dict[int, SEL.StratifiedProbe]) -> None:
+        self.probes = probes
+
+    def __repr__(self) -> str:
+        return "<P05 probes " + ", ".join(f"kind {k}: {len(p)} rows" for k, p in self.probes.items()) + ">"
+
+
 class AttributeSelectionEngine(Engine):
     name = "behavior.attr_select"
     layer = "behavior"
@@ -268,10 +283,10 @@ class AttributeSelectionEngine(Engine):
                  "low": out["low"], "dropped_at": out["dropped_at"], "ustat": out["ustat"],
                  "runs": run_idx + 1,
                  # the probes are part of P05's state (counted by memory reports)
-                 "probes": {k: self.probes[(key, k)] for k in (EV.KIND_TXN, EV.KIND_WIN)
-                            if (key, k) in self.probes}}
+                 "probes": ProbeState({k: self.probes[(key, k)] for k in (EV.KIND_TXN, EV.KIND_WIN)
+                                       if (key, k) in self.probes})}
         store.put_model(key, SYSTEM_ENTITY, MP.ATTRSEL, model, version=version, ts=now)
-        for prb in model["probes"].values():
+        for prb in model["probes"].probes.values():
             prb.release()
         for a, old, new in changes[:64]:
             store.add_event(BehaviorEvent(
