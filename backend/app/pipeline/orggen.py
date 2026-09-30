@@ -1515,8 +1515,18 @@ class OrgGenerator:
                 content["body.len"] = {"band90": [b.size.quantile(0.05), b.size.quantile(0.95)],
                                        "range": [lo, hi], "core": True}
                 gen["size"] = b.size.to_dict()
-            keys = sorted(list(b.fields) + (["viewstate" if b.fmt == "form" else "remark"]
-                                             if b.size is not None else []))
+            # the padding key is observable only when the capture holds it: a JSON
+            # body's trailing 'remark' is cut off whenever the body exceeds the
+            # capture cap (P00 keeps the keys of the prefix it can parse), so it
+            # is required only when no body of the step can exceed BODY_CAP
+            # (integration fix: the truth asked for 'remark' on 20-60 KB reports)
+            pad_key = []
+            if b.size is not None:
+                if b.fmt == "form":
+                    pad_key = ["viewstate"]
+                elif b.size.support()[1] <= BODY_CAP:
+                    pad_key = ["remark"]
+            keys = sorted(list(b.fields) + pad_key)
             content["body.keys"] = {"required_keys": keys, "core": True}
             for key, vs in b.fields.items():
                 gen_fields[key] = vs.to_dict()

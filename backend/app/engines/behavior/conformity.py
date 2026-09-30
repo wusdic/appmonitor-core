@@ -201,6 +201,25 @@ NON_CONTENT_PREFIX = ("ctx.", "ev.", "sess.", "net.src", "net.peer", "net.dst", 
                       "http.method", "http.host", "http.route", "http.path", "tls.sni", "dns.qname")
 
 
+def group_outsider(nd: Any, g: str, ip: str, t: float) -> bool:
+    """The IP's P11 group g has no standing at the node: the group-level
+    evidence its OTHER members brought is below MEMBER_EV. Presence of the
+    group key alone is not standing - the IP's own earlier (damped) events
+    put it there, so a foreign source that persisted became an "insider" after
+    its first visit and every later event was learned undamped (pack O, A9:
+    the sales address 192.168.3.33 reading finance's approval list daily from
+    day 11 was in the node's heavy set by day 21, against §6.9.2 "persistence
+    alone never makes a foreign source a member")."""
+    lv3 = nd.who.levels[3]
+    if lv3.total(t) <= 0:
+        return False
+    key = f"grp:{g}"
+    ev_g = lv3.evidence(key, t) if key in lv3 else 0.0
+    lv0 = nd.who.levels[0]
+    ev_ip = lv0.evidence(ip, t) if ip in lv0 else 0.0
+    return ev_g - ev_ip < MEMBER_EV
+
+
 def _nan(x: Any) -> bool:
     return x is None or (isinstance(x, float) and math.isnan(x))
 
@@ -1099,7 +1118,7 @@ class ConformityEngine(Engine):
                 if p_who < 1.0:
                     g = tc.ip2g.get(ip)
                     nd = ni.nd
-                    if g is not None and nd.who.levels[3].total(t) > 0 and f"grp:{g}" not in nd.who.levels[3]:
+                    if g is not None and group_outsider(nd, g, ip, t):
                         flags.add("outsider_group")
                     root = tree.nodes[tree.root]
                     if g is not None and root.who.levels[3].total(t) > 0 and f"grp:{g}" not in root.who.levels[3]:
@@ -1163,6 +1182,14 @@ class ConformityEngine(Engine):
                 # §6.9.2: persistence alone never makes a foreign source a member of
                 # a who-closed pattern; its events are learned damped until it
                 # qualifies (a colleague's group already there, a readdress, a label)
+                damp = DAMP
+            elif "concurrent_use" in bind_fl or ("cross_binding" in bind_fl and lb_x >= LB_CROSS):
+                # a value credibly bound to ANOTHER source (or in use there right now)
+                # is not learned at full weight either: undamped, a borrowed
+                # credential used for five days became the borrower's own binding
+                # (pack O, A2: 192.168.1.21 -> {jack, rose} on day 21, PG5
+                # non-adoption). A new value bound nowhere (a legitimate rename,
+                # D2 mike -> mike.w) carries no such flag and is learned as before.
                 damp = DAMP
         num["damp"] = damp
         if conf_nd is not None:                     # prequential: the calibration learns after scoring

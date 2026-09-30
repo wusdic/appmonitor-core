@@ -75,6 +75,8 @@ import hashlib
 import math
 from typing import Any, Dict, Hashable, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
+import re
+
 import numpy as np
 
 from . import pmdl
@@ -143,6 +145,32 @@ def etld1(host: Any) -> Optional[str]:
     return ".".join(parts[-2:])
 
 
+_DIGITS = re.compile(r"\d+")
+
+
+def host_key(host: Any) -> Optional[str]:
+    """The service a TLS SNI / DNS name stands for: the host name (lower case,
+    no port, at most its last five labels) with the digit runs of every label
+    left of the registrable domain templated (a12.cdn.example.com ->
+    a{n}.cdn.example.com: CDN / pod shards are one service; mail.corp.local
+    and git.corp.local stay two). etld1 (two labels) made every internal
+    service of one domain one action: measured on pack O, the mail and code
+    systems both rendered 'TLS corp.local', so no statement named 'TLS
+    mail.corp.local'."""
+    if not isinstance(host, str) or not host:
+        return None
+    h = host.lower().strip(".")
+    if h.count(":") == 1:
+        h = h.split(":", 1)[0]
+    parts = [p for p in h.split(".") if p]
+    if not parts:
+        return None
+    if all(p.isdigit() for p in parts):
+        return ".".join(parts)                            # an IPv4 literal
+    parts = parts[-5:]
+    return ".".join([_DIGITS.sub("{n}", p) for p in parts[:-2]] + parts[-2:])
+
+
 def route_key(get: Any) -> Optional[str]:
     """The route part r of an action from an attribute getter (None -> skip).
     Absent attributes (pevent.ABSENT, the string '⊥') read as None."""
@@ -154,10 +182,10 @@ def route_key(get: Any) -> Optional[str]:
     r = get("http.route")
     if isinstance(r, str) and r:
         return r
-    sni = etld1(get("tls.sni"))
+    sni = host_key(get("tls.sni"))
     if sni:
         return "TLS " + sni
-    q = etld1(get("dns.qname"))
+    q = host_key(get("dns.qname"))
     if q:
         return "DNS " + q
     d = get("net.dst")

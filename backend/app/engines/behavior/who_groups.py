@@ -742,7 +742,14 @@ def _ephemeral(sg: Any, now: float) -> bool:
 # split attributes that partition WHO does an action (address, client stack) or
 # WHEN (calendar / time of day); not which action (the action item carries it),
 # not its payload, not per-session measures (think time, position in session)
-CONTEXT_PREFIX = ("net.src", "client.", "ctx.when", "ctx.daytype", "ctx.dayclass", "ctx.dow",
+# Pattern items come from TIME-context splits only. A split on the source
+# address (net.src at any level) or on a client-stack proxy of it encodes WHERE a
+# source is, not what it does: measured on pack O (integration 2026-09-30), as
+# P04 split shared nodes by /24 (10.168.7.0/24 = one of 综合部's three members,
+# 192.168.1.0/24 = the other two) those items pulled a department's members
+# apart, and ARI against the departments fell from 1.0 on day 7 to 0.87 / 0.59
+# on day 21 (seeds 0 / 1) - the opposite of "longer is more precise".
+CONTEXT_PREFIX = ("ctx.when", "ctx.daytype", "ctx.dayclass", "ctx.dow",
                   "ctx.tod", "ctx.mend", "ctx.dom")
 
 

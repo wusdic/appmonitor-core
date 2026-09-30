@@ -387,7 +387,8 @@ def main() -> None:
     scores = [dict(r["score"], pack="O") for r in runs if "score" in r]
     gates = compute_pgates(scores, scale=pg4_summary(scale_pts) if scale_pts else None)
     rep = _clean({"generated": time.strftime("%Y-%m-%d %H:%M:%S"), "seeds": seeds,
-                  "registry": args.registry or "pack default (full+progressive)",
+                  "registry": (args.registry or "pack default (full+progressive)")
+                  + (", lib3.resource_mode = bounded" if args.bounded else ""),
                   "gates": gates, "runs": runs,
                   "scale": {"points": scale_pts, "pg4": pg4_summary(scale_pts)} if scale_pts else None})
     with open(os.path.join(args.out, "progressive_report.json"), "w", encoding="utf-8") as f:

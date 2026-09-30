@@ -375,8 +375,10 @@ def test_pattern_item_is_the_context_part_of_the_covering_node():
     assert WG._pattern_node(tree, 3, c) == 0
     assert WG._pattern_node(tree, 4, c) == 4           # a daytype child is context
     assert WG._pattern_node(tree, 5, c) == 4           # an exception node -> its owner
-    assert WG._pattern_node(tree, 7, c) == 7           # a who split (net.src subset)
-    assert WG._pattern_node(tree, 8, c) == 7           # ... through a path split below it
+    # an address split (net.src subset) is not behaviour: it gives no pattern
+    # item (integration 2026-09-30, see who_groups.CONTEXT_PREFIX)
+    assert WG._pattern_node(tree, 7, c) == 0
+    assert WG._pattern_node(tree, 8, c) == 0
 
 
 def test_join_queue_is_fair_to_every_address():

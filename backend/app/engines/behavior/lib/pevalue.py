@@ -27,15 +27,27 @@ p_leaf[t, b] (computed from the past only):
     d_c       = omega * sum_t (l_leaf,t - l_c,t)       bits saved (MDL gain G_c += d_c)
     then n[c, j, t, b_t] += omega
 
-Rule (V), anytime-valid (universal inference + Ville's inequality):
-    e_c = (1/T_c) sum_t 2^(L0[c, t] - L1[c, t]),  L0 = pooled ML code length
-    split allowed only when log2 e_c >= tau0 + log2 C_ever.
+Rule (V), anytime-valid (Ville's inequality):
+    e_c = (1/T_c) sum_t e_{c,t},  split allowed only when log2 e_c >= tau0 + log2 C_ever,
+    e_{c,t} = the blockwise k-sample e-process of close_block (a block ends at
+    every split check): per block, the slots' predictors are frozen at its
+    start and the block's evidence-weighted outcomes are coded under their
+    slot's predictor against pbar = the evidence-weighted mixture of those
+    predictors (the RIPr of the alternative onto "no dependence").
 Under the null (t independent of the candidate's value, evidence units
-conditionally independent), each 2^(L0 - L1) is bounded by a non-negative
-supermartingale started at 1 (because omega <= 1, Jensen), an average of
-e-processes is an e-process whatever the dependence between targets, and
-P(sup e >= 2^tau) <= 2^-tau however often it is checked. C_ever (candidates
-ever tracked, never decreasing) charges the multiplicity per candidate.
+conditionally independent) each block's factor has expectation <= 1 for every
+null distribution (proof in close_block), an average of e-processes is an
+e-process whatever the dependence between targets, and P(sup e >= 2^tau) <=
+2^-tau however often it is checked. C_ever (candidates ever tracked, never
+decreasing) charges the multiplicity per candidate.
+
+Integration change (2026-09-30): the text's universal-inference e-value
+e = 2^(L0 - L1) with L0 = the POOLED maximum-likelihood code length is also
+valid, but every candidate first repays the null model's parametric regret
+((k_b - 1)/2 log2 n bits per target) before a real dependence counts; on pack
+O's shared OA login node the /24 split that separates 综合部 / 财务部 / 销售部
+had log2 e = 5 after 101 evidence units (the usernames alone save ~45 bits).
+It is kept as log2_e_ui() for diagnosis.
 
 Rules (G), (S), (D), (M) and the greedy value grouping follow §6.5.5.
 
@@ -113,6 +125,20 @@ class SplitStats:
         self.cnt = np.zeros((C_, J, self.T, self.kb))
         self.den = np.zeros((C_, J, self.T))                 # cnt summed over bins
         self.L1 = np.zeros((C_, self.T))
+        self.Gt = np.zeros((C_, self.T))                     # per-target saving (selective gain)
+        # blockwise k-sample e-process (rule V, see _close_block): log2 e per (candidate, target),
+        # the open block's evidence-weighted counts and the slot predictors frozen at its start
+        self.E = np.zeros((C_, self.T))
+        self.bm = np.zeros((C_, J, self.T, self.kb), dtype=np.float32)
+        self.S = np.zeros((C_, J, self.T))                   # bits slot j's own predictor saved vs the leaf's
+        # e-process wealth per (candidate, target) = 2^(wlog + E); cap = stopped wealth
+        # of targets dropped without a successor (retarget); log2_e = log2 of the sum
+        self.wlog = np.full((C_, self.T), np.nan)
+        self.cap = np.zeros(C_)
+        self.blam = np.zeros((C_, J, self.T))                # mixture weights frozen at the block start
+        self.blk_open = False
+        self.blk_day: Optional[int] = None
+        self.blk_pleaf: Optional[np.ndarray] = None
         self.G = np.zeros(C_)
         self.n = np.zeros(C_)
         self.rows = np.zeros(C_)
@@ -164,6 +190,14 @@ class SplitStats:
         self.cnt[i] = 0.0
         self.den[i] = 0.0
         self.L1[i] = 0.0
+        self._gt()[i] = 0.0
+        self._blk()
+        self.E[i] = 0.0
+        self.bm[i] = 0.0                                   # started mid-block: its slots start empty
+        self.S[i] = 0.0
+        self.blam[i] = 0.0
+        self._wl()[i] = np.nan                             # weights set at the candidate's first read
+        self.cap[i] = 0.0
         self.G[i] = self.n[i] = self.rows[i] = 0.0
         self.tmask[i] = True
         self.slot_of[i] = {}
@@ -212,6 +246,14 @@ class SplitStats:
         self.cnt[i, o] += self.cnt[i, j]
         self.den[i, o] += self.den[i, j]
         self.slot_ev[i, o] += self.slot_ev[i, j]
+        if self._blk():
+            self.S[i, j] = 0.0                             # a new value starts like the leaf
+        if self.blk_open:
+            # the evicted value's block events are evaluated under `other`'s frozen
+            # predictor, the new value's under the slot's (the event -> predictor map
+            # depends on candidate values only, never on target outcomes)
+            self.bm[i, o] += self.bm[i, j]
+            self.bm[i, j] = 0.0
         self.cnt[i, j] = 0.0
         self.den[i, j] = 0.0
         self.slot_ev[i, j] = 0.0
@@ -248,8 +290,17 @@ class SplitStats:
                 elif dd != self.day0[i]:
                     self.days2[i] = True
         d = np.zeros(a.size)
+        self._blk()                                         # lazily adds the block state
+        if self.blk_open and day is not None and getattr(self, "blk_day", None) is not None \
+                and int(day) != self.blk_day:
+            self.close_block()                              # a block is one local day
+        if not self.blk_open:
+            self._open_block(np.asarray(p_leaf, dtype=np.float64))
+            self.blk_day = None if day is None else int(day)
         if tp.size:
             bt = b[tp]
+            bmf = self.bm.reshape(-1)
+            bmf[((((a * (self.kv + 1) + jj) * self.T)[:, None] + tp[None, :]) * self.kb + bt[None, :]).ravel()] += w
             pl = np.maximum(np.asarray(p_leaf, dtype=np.float64)[tp, bt], 1e-12)
             # flat row index of (candidate, slot, target) into cnt / den
             rows = ((a * (self.kv + 1) + jj) * self.T)[:, None] + tp[None, :]     # [A, Tp]
@@ -264,7 +315,12 @@ class SplitStats:
             contrib = np.where(m, lc, 0.0)
             l1f = self.L1.reshape(-1)
             l1f[(a * self.T)[:, None] + tp[None, :]] += w * contrib
-            d = w * (np.where(m, ll, 0.0) - contrib).sum(axis=1)
+            dt_ = w * (np.where(m, ll, 0.0) - contrib)
+            gtf = self._gt().reshape(-1)
+            gtf[(a * self.T)[:, None] + tp[None, :]] += dt_
+            sf = self.S.reshape(-1)
+            sf[(((a * (self.kv + 1) + jj) * self.T)[:, None] + tp[None, :]).ravel()] += dt_.ravel()
+            d = dt_.sum(axis=1)
             cf[cells] += w
             df[rows] += w
         self.G[a] += d
@@ -305,8 +361,223 @@ class SplitStats:
         """Pooled ML code length per target of candidate i."""
         return pmdl.ml_code_length_rows(self.cnt[i].sum(axis=0))
 
+    # ----------------------------------------------- k-sample e-process
+    def _blk(self) -> bool:
+        """Lazily add the block state to objects built before it existed."""
+        if getattr(self, "E", None) is None or getattr(self.E, "shape", None) != (self.C, self.T):
+            J = self.kv + 1
+            self.E = np.zeros((self.C, self.T))
+            self.bm = np.zeros((self.C, J, self.T, self.kb), dtype=np.float32)
+            self.S = np.zeros((self.C, J, self.T))
+            self.blam = np.zeros((self.C, J, self.T))
+            self.blk_open = False
+            self.blk_pleaf = None
+            return False
+        return True
+
+    def _open_block(self, p_leaf: np.ndarray) -> None:
+        """Freeze every slot's predictor for the new block: the smoothed slot
+        predictive (n[c, j, t, b] + alpha p_leaf(b)) / (n[c, j, t, .] + alpha)
+        from the counts BEFORE the block and the leaf predictive of the block's
+        first event (both functions of the past only)."""
+        pl = np.maximum(np.asarray(p_leaf, dtype=np.float64).reshape(self.T, self.kb), 1e-12)
+        pl = pl / pl.sum(axis=1, keepdims=True)
+        self.blk_pleaf = pl
+        self.bm[:] = 0.0
+        # Bayes mixture of "slot j has its own distribution" and "slot j is like
+        # the leaf" (prior 1/2 each, their past prequential likelihood ratio 2^S):
+        # a slot whose own predictor has not saved bits so far is coded like the
+        # leaf, so estimation noise in the many slots that do NOT differ costs
+        # (almost) nothing (measured: 2 undifferentiated slots of 26 events a day
+        # drew the e-process down by ~18 bits in 10 days without it)
+        self.blam = 1.0 / (1.0 + np.exp2(-np.clip(self.S, -60.0, 60.0)))
+        self.blk_open = True
+
+    def roll(self, day: Optional[int]) -> None:
+        """Close the open block when it belongs to an earlier local day than
+        `day` (or when blocks are not dated: unit use without days)."""
+        if not self._blk() or not self.blk_open:
+            return
+        bd = getattr(self, "blk_day", None)
+        if bd is None or day is None or int(day) > bd:
+            self.close_block()
+
+    def close_block(self) -> None:
+        """Close the open block: for every active candidate and target add
+
+            log2 e_blk = sum_{j,b} m[j, b] log2( P_j(b) / pbar(b) ),
+            pbar = sum_j (w_j / W) P_j,   w_j = sum_b m[j, b],  W = sum_j w_j,
+
+        m = the block's evidence-weighted counts (omega <= 1), P_j = slot j's
+        predictor frozen at the block start. A block is one local day (P04
+        passes the day; undated use closes at every check): within a day the
+        order of events is not exchangeable (who comes at 09:00, who at 15:00),
+        and a sub-day block would test the dependence GIVEN the time of day,
+        which has no power where departments differ by their hours (measured
+        on the revision test (f): /24 slots of two time-separated groups drove
+        the per-check e-process down while the daily one rises). Under the null (the target's
+        outcomes independent of the candidate's slots, independent across
+        evidence units, one distribution theta within the block) E[e_blk] <= 1
+        for EVERY theta: by independence and Jensen (x^omega concave),
+        E prod_i (P_ji(X)/pbar(X))^omega_i <= prod_i A_i^omega_i with
+        A_i = sum_x theta(x) P_ji(x) / pbar(x), and by concavity of log
+        sum_i omega_i log A_i <= W log sum_i (omega_i / W) A_i = W log 1 = 0.
+        The product over blocks is therefore a test supermartingale (Ville:
+        P(sup e >= 2^tau) <= 2^-tau), like the universal-inference e-value it
+        replaces, but its denominator is the RIPr of the split predictors onto
+        the null (Turner, Ly & Grunwald's k-sample construction), not the
+        pooled maximum-likelihood code: a correct split does not first have to
+        repay the null model's parametric regret ((k-1)/2 log2 n bits per
+        target), which is what kept a department of 3 IPs from ever splitting
+        a shared login node (measured on pack O, see _check_valid_first)."""
+        if not self._blk() or not self.blk_open:
+            return
+        act = self.active()
+        if act:
+            a = np.asarray(act, dtype=np.int64)
+            m = self.bm[a].astype(np.float64)                       # [A, J, T, K]
+            w = m.sum(axis=3)                                       # [A, J, T]
+            W = w.sum(axis=1)                                       # [A, T]
+            # the slots' predictors frozen at the block start: counts before the block
+            # (the running counts minus the block's own) backing off to the leaf
+            # predictive of the block's first event
+            before = np.maximum(self.cnt[a] - m, 0.0)
+            pl = self.blk_pleaf if self.blk_pleaf is not None else np.full((self.T, self.kb), 1.0 / self.kb)
+            Q = (before + self.alpha * pl[None, None, :, :]) / (before.sum(axis=3, keepdims=True) + self.alpha)
+            lam = self.blam[a][..., None]
+            P = np.maximum(lam * Q + (1.0 - lam) * pl[None, None, :, :], 1e-300)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                share = np.where(W[:, None, :] > 0, w / np.maximum(W[:, None, :], 1e-300), 0.0)
+            pbar = (share[..., None] * P).sum(axis=1)               # [A, T, K]
+            lr = np.log2(P) - np.log2(np.maximum(pbar, 1e-300))[:, None, :, :]
+            self.E[a] += np.where(m > 0, m * lr, 0.0).sum(axis=(1, 3))
+        self.bm[:] = 0.0
+        self.blk_open = False
+
+    def _wl(self) -> np.ndarray:
+        w = getattr(self, "wlog", None)
+        if w is None or w.shape != (self.C, self.T):
+            self.wlog = np.full((self.C, self.T), np.nan)
+            self.cap = np.zeros(self.C)
+        return self.wlog
+
+    def _weights(self, i: int) -> np.ndarray:
+        """log2 weights of candidate i's targets: 1 / (number of tested targets)
+        each, fixed at the first read (the plain average of §6.5.5), then moved
+        only by retarget (self-financing)."""
+        wl = self._wl()
+        if np.all(np.isnan(wl[i])):
+            m = self.tmask[i]
+            k = int(m.sum())
+            wl[i] = np.where(m, -math.log2(max(1, k)), -np.inf)
+        return wl[i]
+
     def log2_e(self, i: int) -> float:
-        """log2 of the averaged e-value of candidate i (-inf when empty)."""
+        """log2 of the averaged e-value of candidate i (-inf when empty): the
+        blockwise k-sample e-process of close_block, averaged over the
+        candidate's tested targets (an average of e-processes is one), plus the
+        stopped wealth of targets retarget() dropped."""
+        self._blk()
+        used = self.tmask[i] & (self.cnt[i].sum(axis=(0, 2)) > 0)
+        if not used.any() and self.cap[i] <= 0:
+            return _NEG
+        w = self._weights(i)
+        x = (w + self.E[i])[self.tmask[i] & np.isfinite(w)]
+        parts = list(x)
+        if self.cap[i] > 0:
+            parts.append(math.log2(self.cap[i]))
+        if not parts:
+            return _NEG
+        a = np.asarray(parts, dtype=np.float64)
+        m = float(a.max())
+        return m + math.log2(float(np.exp2(a - m).sum()))
+
+    def retarget(self, keep: Sequence[Optional[int]], tmask_new: np.ndarray) -> None:
+        """Change the target set without discarding evidence. keep[t'] = the old
+        index of new target t' (None for a new target); tmask_new [C, T'] the
+        candidates' target masks. Kept targets keep every statistic; a dropped
+        target's e-process wealth (weight x e) is moved to the new targets
+        (equal shares; into `cap`, a stopped e-process, when nothing is added),
+        and new targets start at e = 1 with that wealth. Moving wealth between
+        e-processes at a predictable time keeps the total a nonnegative
+        supermartingale (a self-financing portfolio of bets), so rule (V) stays
+        anytime-valid. Measured on pack O: P05's node target lists change every
+        few days as a node's probe rows change, and each change restarted the
+        split statistics of the shared OA login node (n = 49 evidence units at
+        day 10, one day block)."""
+        self._blk()
+        T2 = len(keep)
+        C_, J = self.C, self.kv + 1
+        old_T = self.T
+        wl_old = np.array([self._weights(i) if self.keys[i] is not None else self._wl()[i]
+                           for i in range(C_)])
+        def remap(a: np.ndarray, axis: int, fill: float = 0.0) -> np.ndarray:
+            shape = list(a.shape)
+            shape[axis] = T2
+            out = np.full(shape, fill, dtype=a.dtype)
+            for t2, t1 in enumerate(keep):
+                if t1 is not None and 0 <= t1 < old_T:
+                    idx_o = [slice(None)] * a.ndim
+                    idx_n = [slice(None)] * a.ndim
+                    idx_o[axis], idx_n[axis] = t1, t2
+                    out[tuple(idx_n)] = a[tuple(idx_o)]
+            return out
+        E_old = self.E.copy()
+        self.cnt = remap(self.cnt, 2)
+        self.den = remap(self.den, 2)
+        self.L1 = remap(self.L1, 1)
+        self.Gt = remap(self._gt(), 1)
+        self.E = remap(self.E, 1)
+        self.bm = remap(self.bm, 2)
+        self.S = remap(self.S, 2)
+        self.blam = remap(self.blam, 2)
+        if self.blk_pleaf is not None:
+            pl = np.full((T2, self.kb), 1.0 / self.kb)
+            for t2, t1 in enumerate(keep):
+                if t1 is not None and 0 <= t1 < old_T:
+                    pl[t2] = self.blk_pleaf[t1]
+            self.blk_pleaf = pl
+        tm_new = np.asarray(tmask_new, dtype=bool).reshape(C_, T2)
+        wl_new = np.full((C_, T2), -np.inf)
+        kept_old = {t1 for t1 in keep if t1 is not None}
+        for i in range(C_):
+            if self.keys[i] is None:
+                continue
+            wealth_drop = 0.0
+            for t1 in range(old_T):
+                if t1 not in kept_old and self.tmask[i, t1] and np.isfinite(wl_old[i, t1]):
+                    wealth_drop += 2.0 ** (wl_old[i, t1] + float(E_old[i, t1]))
+            added = [t2 for t2, t1 in enumerate(keep) if tm_new[i, t2] and
+                     (t1 is None or not self.tmask[i, t1] or not np.isfinite(wl_old[i, t1]))]
+            for t2, t1 in enumerate(keep):
+                if t1 is not None and tm_new[i, t2] and self.tmask[i, t1] and np.isfinite(wl_old[i, t1]):
+                    wl_new[i, t2] = wl_old[i, t1]
+                elif t1 is not None and self.tmask[i, t1] and not tm_new[i, t2] and np.isfinite(wl_old[i, t1]):
+                    wealth_drop += 2.0 ** (wl_old[i, t1] + float(E_old[i, t1]))
+            fund = wealth_drop + (self.cap[i] if added else 0.0)
+            if added:
+                self.cap[i] = 0.0
+                share = fund / len(added)
+                for t2 in added:
+                    wl_new[i, t2] = math.log2(share) if share > 0 else -np.inf
+                    self.E[i, t2] = 0.0
+                    self.cnt[i, :, t2] = 0.0
+                    self.den[i, :, t2] = 0.0
+                    self.L1[i, t2] = 0.0
+                    self.Gt[i, t2] = 0.0
+                    self.bm[i, :, t2] = 0.0
+                    self.S[i, :, t2] = 0.0
+                    self.blam[i, :, t2] = 0.0
+            else:
+                self.cap[i] += wealth_drop
+        self.T = T2
+        self.tmask = tm_new
+        self.wlog = wl_new
+        self.G = self.Gt.sum(axis=1)
+
+    def log2_e_ui(self, i: int) -> float:
+        """The universal-inference e-value of §6.5.5 as written (pooled ML
+        denominator), kept for comparison and diagnosis."""
         pooled = self.cnt[i].sum(axis=0)
         used = self.tmask[i] & (pooled.sum(axis=-1) > 0)
         if not used.any():
@@ -314,8 +585,29 @@ class SplitStats:
         x = pmdl.ml_code_length_rows(pooled) - self.L1[i]
         return pmdl.log2_mean_exp2(x[used])
 
+    def _gt(self) -> np.ndarray:
+        g = getattr(self, "Gt", None)
+        if g is None or g.shape != (self.C, self.T):
+            g = self.Gt = np.zeros((self.C, self.T))
+        return g
+
+    def selective_gain(self, i: int) -> float:
+        """MDL gain of candidate i when its children specialise only the
+        targets the split saves bits on and inherit the others from the leaf
+        (the §6.7 exception-child rule applied to splits): sum over tested
+        targets of max(0, per-target saving) minus one bit per tested target
+        (naming the specialised subset). The plain G sums every target, so on
+        a node with many high-entropy targets the split's early prequential
+        regret on the targets it does not predict (a password, a duration)
+        cancels what it saves on the ones it does. Measured on pack O's OA
+        login route node (day 7): /24 had log2 e = 67.6 (user agent, client
+        stack, login minute) but G = 22 < L_split, and never split."""
+        g = self._gt()[i][self.tmask[i]]
+        return float(np.maximum(g, 0.0).sum() - g.size)
+
     def per_target_log2_e(self, i: int) -> np.ndarray:
-        return pmdl.ml_code_length_rows(self.cnt[i].sum(axis=0)) - self.L1[i]
+        self._blk()
+        return self.E[i].copy()
 
     def value_groups(self, i: int, n_child_min: float = N_CHILD_MIN
                      ) -> Tuple[List[List[Hashable]], int, List[float]]:
@@ -392,6 +684,8 @@ class SplitStats:
         passes at 32 units, spec-(S) at 352, rival-valid at 64; at 30 % (V)
         at 96, spec-(S) at ~960. The range term 3 R ln(3/delta_k) / n
         dominates at small n; P04 decides which mode it uses."""
+        if getattr(self, "blk_day", None) is None:
+            self.close_block()                              # undated use: a block per check
         self.checks += 1
         self.since_check = 0.0
         act = self.active()
@@ -409,7 +703,7 @@ class SplitStats:
         n_named = sum(1 for g, vs in enumerate(groups) if vs or g == oidx)
         dec.l_split = pmdl.split_description_length(C_desc or self.C, max(1, len(groups)),
                                                     self.card[c1])
-        dec.gain = float(self.G[c1])
+        dec.gain = self.selective_gain(c1)
         dec.pass_g = dec.gain - dec.l_split >= 0.0
         dec.pass_m = sum(1 for e in gev if e >= n_child_min) >= 2 and n_named >= 2
         dec.pass_d = bool(self.days2[c1]) or self.n[c1] >= diversity_units
@@ -438,7 +732,8 @@ class SplitStats:
         return dec
 
     def nbytes(self) -> int:
-        arrs = (self.cnt, self.den, self.L1, self.G, self.n, self.rows, self.card, self.ordinal, self.tmask,
+        self._blk()
+        arrs = (self.cnt, self.den, self.L1, self._gt(), self.E, self.bm, self.G, self.n, self.rows, self.card, self.ordinal, self.tmask,
                 self.slot_ev, self.slot_pri, self.W, self.D1, self.Qaa, self.Qab, self.Rmin, self.Rmax)
         return int(sum(a.nbytes for a in arrs) + 80 * self.C * self.kv + 400)
 
@@ -446,6 +741,11 @@ class SplitStats:
         d = {k: getattr(self, k).copy() for k in (
             "cnt", "den", "L1", "G", "n", "rows", "card", "ordinal", "tmask", "slot_ev", "slot_pri", "day0",
             "days2", "W", "D1", "Qaa", "Qab", "Rmin", "Rmax")}
+        d["Gt"] = self._gt().copy()
+        self._blk()
+        d["E"] = self.E.copy()
+        d["wlog"] = self._wl().copy()
+        d["cap"] = self.cap.copy()
         d.update({"T": self.T, "kb": self.kb, "kv": self.kv, "C": self.C, "alpha": self.alpha,
                   "keys": list(self.keys), "slot_val": [list(s) for s in self.slot_val],
                   "C_ever": self.C_ever, "checks": self.checks, "since_check": self.since_check,
@@ -458,6 +758,13 @@ class SplitStats:
         for k in ("cnt", "den", "L1", "G", "n", "rows", "card", "ordinal", "tmask", "slot_ev", "slot_pri", "day0",
                   "days2", "W", "D1", "Qaa", "Qab", "Rmin", "Rmax"):
             setattr(s, k, np.asarray(d[k]).copy())
+        if "Gt" in d:
+            s.Gt = np.asarray(d["Gt"]).copy()
+        if "E" in d:
+            s.E = np.asarray(d["E"]).copy()
+        if "wlog" in d:
+            s.wlog = np.asarray(d["wlog"]).copy()
+            s.cap = np.asarray(d["cap"]).copy()
         s.keys = [tuple(k) if isinstance(k, list) else k for k in d["keys"]]
         s.slot_val = [list(v) for v in d["slot_val"]]
         s.slot_of = [{v: j for j, v in enumerate(sv) if v is not None} for sv in s.slot_val]

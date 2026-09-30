@@ -598,8 +598,10 @@ def who_compatible(truth_who: Mapping[str, Any], w: Who) -> bool:
         truth = [(_net(c), float(s)) for c, s in truth_who.get("value") or []]
         truth = [(n, s) for n, s in truth if n is not None]
         if w.level == "grp" and "grp" in (truth_who.get("alt") or []) and w.members:
-            inside = sum(1 for ip in w.members if any(_ip(ip) in n for n, _ in truth))
-            return inside / len(w.members) >= 0.9
+            # group members are IPs or prefixes (a P11 group over /24 items)
+            mem = [a for a in (_net(str(m)) for m in w.members) if a is not None]
+            inside = sum(1 for a in mem if any(a.version == n.version and a.subnet_of(n) for n, _ in truth))
+            return bool(mem) and inside / len(mem) >= 0.9
         return prefix_cover_ok(truth, w.prefixes)
     if lvl == "any":
         return w.any or len(w.regions) >= 3 or len(w.prefixes) >= 3
@@ -916,6 +918,22 @@ def _in_time_context(s: LStmt, ev: Mapping[str, Any]) -> bool:
     return True
 
 
+# context attributes the scorer can reproduce on held-out events drawn from
+# the truth program (the action, the source, the time); a statement whose
+# pattern is also defined by another attribute (a request-size bin, a client
+# stack, a session position) describes a sub-population the truth program does
+# not label, so its constraints cannot be checked against the route's events
+_JUDGEABLE_CTX = ("http.route", "http.path", "http.method", "http.host", "net.src", "tls.sni",
+                  "dns.qname", "ctx.tod_min", "ctx.when", "ctx.daytype", "ctx.dayclass", "ctx.dow")
+
+
+def judgeable_context(s: LStmt) -> bool:
+    for c in s.context:
+        if isinstance(c, (list, tuple)) and c and str(c[0]) not in _JUDGEABLE_CTX:
+            return False
+    return True
+
+
 def holdout_check(s: LStmt, rows_valid: Sequence[Mapping[str, Any]], pt: PTruth,
                   r: np.random.Generator, n: int = 400) -> Dict[str, Any]:
     """Every constraint of a statement against held-out events of its context."""
@@ -1024,11 +1042,15 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
     valid = pt.valid_at_day(day)
     rp = np.random.default_rng([seed, day, 2])
     prec_hits, conf, obs = [], [], []
+    unjudged = 0
     for s in stmts:
         if not s.confirmed or s.negative:
             continue
+        if not judgeable_context(s):
+            unjudged += 1
+            continue
         h = holdout_check(s, valid, pt, rp, precision_n)
-        prec_hits.append(bool(h["ok"]))
+        prec_hits.append(bool(h["ok"]))           # no held-out event of its context: false
         if math.isfinite(s.confidence):
             conf.append(s.confidence)
             obs.append(1.0 if h["ok"] else 0.0)
@@ -1038,6 +1060,7 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
         "n_confirmed": sum(1 for s in stmts if s.confirmed),
         "recall": recall, "components": comps, "recall_by_period": by_period,
         "precision": float(np.mean(prec_hits)) if prec_hits else None,
+        "n_precision": len(prec_hits), "n_unjudged": unjudged,
         "ece": ece(conf, obs), "mean_depth": float(np.mean(depths)) if depths else None,
         "per_pattern": {k: {"recovered": v["recovered"], "components": v["components"],
                             "period": v["period"], "stmt": v["stmt"]} for k, v in per.items()},

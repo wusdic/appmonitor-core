@@ -1368,6 +1368,7 @@ class LRU:
 
 _MISSING = object()
 TAU_BURST = 300.0
+RUN_MAX = 3600.0              # a burst run restarts after this long however dense it is
 
 
 class BurstEvidence:
@@ -1376,23 +1377,35 @@ class BurstEvidence:
     than tau_burst seconds earlier the run counter restarts, and a row gets
         omega = factor / (r + 1),  then r <- r + 1        (omega <= factor <= 1)
     so a burst of k rows contributes H(k) ~ ln k + 0.58 units. Mass (HT weight,
-    aggregation count, sampling rate) never enters omega. LRU-capped."""
+    aggregation count, sampling rate) never enters omega. LRU-capped.
 
-    __slots__ = ("tau", "_lru")
+    A run also restarts once it is older than run_max (default 1 h) however
+    dense it is: a source that repeats one action without ever pausing for
+    tau_burst (a 60-s health check, a poller) is one run per hour, so it earns
+    ~24 H(k) units a day instead of one run for its whole life. Measured on
+    pack O (integration, 2026-09-30): the monitor's GET /health node held
+    n_c = 7 after 21 days (1 440 rows a day) and was never confirmed."""
 
-    def __init__(self, cap: int = 65536, tau_burst: float = TAU_BURST) -> None:
+    __slots__ = ("tau", "_lru", "run_max")
+
+    def __init__(self, cap: int = 65536, tau_burst: float = TAU_BURST,
+                 run_max: float = RUN_MAX) -> None:
         self.tau = float(tau_burst)
+        self.run_max = float(run_max)
         self._lru = LRU(cap)
 
     def unit(self, key: Hashable, t: float, factor: float = 1.0) -> float:
         f = min(1.0, max(0.0, float(factor)))
         st = self._lru.get(key)
         t = float(t)
-        if st is None or t - st[0] > self.tau or t < st[0] - self.tau:
+        run_max = getattr(self, "run_max", RUN_MAX)
+        if st is None or t - st[0] > self.tau or t < st[0] - self.tau \
+                or (len(st) > 2 and t - st[2] >= run_max):
             r = 0
         else:
             r = st[1]
-        self._lru.put(key, (max(t, st[0]) if st is not None and r else t, r + 1))
+        start = t if not r else (st[2] if len(st) > 2 else st[0])
+        self._lru.put(key, (max(t, st[0]) if st is not None and r else t, r + 1, start))
         return f / (r + 1.0)
 
     def set_cap(self, cap: int) -> None:

@@ -172,6 +172,7 @@ EXC_SHARE = 0.10               # exceptions <= 10 % of N_max
 EXC_SAVE_BITS = 2.0
 EXC_N_CONF = 10.0
 PRUNE_RUNS = 3
+PRUNE_MIN_AGE = 7 * DAY        # a split's children have this long before it can be pruned
 TAU_MERGE = 0.02
 DAMP = 0.1
 HELD_PER_IP = 256
@@ -397,6 +398,11 @@ class _LC:
 
 HASH_COVER = 0.8             # a target whose top k_b - 1 values cover less is hash-binned
 ROUTE_ATTRS = frozenset({"http.route", "http.path", "tls.sni", "dns.qname"})
+# route-first partition of transaction trees (see PatternTreeEngine._route_partition)
+RPART_ATTR = "http.route"
+RPART_MIN_ROWS = 3             # rows a route needs ...
+RPART_MIN_DATES = 2            # ... over this many local dates before it gets its own node
+RPART_K = 512                  # routes counted while they wait (least-seen evicted)
 
 
 def _read_pwant(store: Any, key: str) -> Tuple[List[Tuple[str, int, str, Optional[Set[int]], Optional[int]]],
@@ -621,6 +627,8 @@ class PatternTreeEngine(Engine):
     def _learn_one(self, lc: _LC, tr: PT.Tree, s: str, kind: int, get: Callable[[str], Any], ip: str,
                    ts: float, mass: float, factor: float, sess: Any, rid: Any = 0) -> None:
         hier = lc.hier
+        if kind == EV.KIND_TXN:
+            self._route_partition(lc, tr, get, ts)
         path = tr.route(get, hier, lc.gone, ts)
         leaf = tr.nodes[path[-1]]
         if leaf.parent is not None and tr.dormant:
@@ -685,6 +693,74 @@ class PatternTreeEngine(Engine):
         if lc.pairs:
             self._pairs(lc, tr, path, kind, get, ts, mass, omega)
         lc.n_learned += 1
+
+    # ------------------------------------------------- route partition
+    def _route_partition(self, lc: _LC, tr: PT.Tree, get: Callable[[str], Any], ts: float) -> None:
+        """Route-first partition of a transaction tree's root.
+
+        The root of every txn tree is split multiway on the action route
+        (`http.route` at level 0: method, host and route template), one named
+        child per route that recurred (>= RPART_MIN_ROWS rows on >=
+        RPART_MIN_DATES local dates), extended as new routes recur; routes
+        still waiting (and one-off routes) share the `other` child, which does
+        not learn. Below a route node the lattice learns as before (who / time
+        / content splits under rules V, G, S, D, M).
+
+        Why (a deviation from §6.5, which lets the root find the route split
+        with rule (V) like any other candidate): measured on pack O (seed 1,
+        21 d) the OA root split on the DHCP region first, then peeled one
+        route group per split level (/health, /login, {/docs/{id}, /home},
+        ...) and split the rest by /24 before the approval and report routes
+        were separated, so 3 of 45 truth patterns had a route-specific node at
+        day 21 (PG1 recall 0.095). A route is the subject of every statement
+        the requirement asks for ("访问某个页面系统某个路由时会执行什么动作");
+        the set of templated routes is the application's vocabulary, bounded
+        by the templater and by the tree budget N_max, and never grows with
+        the number of IPs. Events without a route (TLS / DNS only systems)
+        share the ⊥ group like any value."""
+        root = tr.nodes[tr.root]
+        pm = root.meta.get("rpart")
+        if pm is None or (root.split is not None and root.split.attr != RPART_ATTR):
+            if root.split is not None:
+                return                                  # a tree split before this rule existed
+            pm = root.meta["rpart"] = {}
+        v = _h(lc.hier.gen(RPART_ATTR, 0, get(RPART_ATTR)))
+        sp = root.split
+        if sp is not None and v in sp.index:
+            return
+        day = _local_day(ts, lc.off)
+        rec = pm.get(v)
+        if rec is None:
+            if len(pm) >= RPART_K:
+                victim = min(pm, key=lambda k: (pm[k][0], pm[k][1]))
+                del pm[victim]
+            rec = pm[v] = [0, day, 0]
+        rec[0] += 1
+        if rec[2] == 0 or day != rec[1]:
+            rec[2] += 1
+            rec[1] = day
+        if rec[0] < RPART_MIN_ROWS or rec[2] < RPART_MIN_DATES:
+            return
+        n_max = int(tr.budget.get("n_max", PT.TIERS["M"]))
+        if len(tr.nodes) + (2 if sp is None else 1) > n_max:
+            self._make_room(lc, tr, 2 if sp is None else 1, protect={root.id})
+            if len(tr.nodes) + (2 if sp is None else 1) > n_max:
+                return
+        if sp is None:
+            root.split_stats = None
+            root.meta.pop("C", None)
+            root.meta.pop("cands", None)
+            root.xstats = None
+            self.aux_learning(lc, tr.kind).discard(root.id)
+            sp = tr.split(root.id, RPART_ATTR, 0, [[v]], ts, {"attr": RPART_ATTR, "level": 0,
+                                                             "partition": "route"})
+            tr.nodes[sp.other].meta["rpart_other"] = True
+        else:
+            _add_group_child(tr, root, [v], ts)
+            tr._log(ts, "split", root.id, (root.id,), (sp.children[-1],),
+                    {"attr": RPART_ATTR, "level": 0, "partition": "route", "added": str(v)[:80]})
+        del pm[v]
+        lc.aux["stats"]["route_nodes"] += 1
 
     # --------------------------------------------------------- targets
     def _targets_of(self, lc: _LC, tr: PT.Tree, nd: PN.Node, kind: int, sel: Mapping[str, Any]) -> List[str]:
@@ -907,11 +983,19 @@ class PatternTreeEngine(Engine):
         # and every pattern mixed login, documents and approvals
         route = [(a, l) for a, l in sc if a in ROUTE_ATTRS or hier.kind(a) in ("route", "path")][:1]
         rest = [(a, l) for a, l in sc if (a, l) not in set(who) | set(when) | set(route)]
+        # below the route partition the action is fixed: route-family attributes
+        # (raw path, method, host) would only split one route by its path ids
+        # (the partition's child context: one route template at level 0; a route
+        # GROUP at a coarser level can still be divided by the route family)
+        routed = any(ca == RPART_ATTR and cl == 0 and not neg and len(vals) == 1
+                     for ca, cl, vals, neg in nd.ctx)
         seen: Set[Tuple[str, int]] = set()
         for a, l in finer + who + when + route + rest:
             if (a, l) in seen:
                 continue
             seen.add((a, l))
+            if routed and SEL.same_source(RPART_ATTR, a):
+                continue
             if a in lc.gone or a in nd.inv or (a, l) in const:
                 continue
             ok = True
@@ -987,7 +1071,8 @@ class PatternTreeEngine(Engine):
                        daytype: int, minute: float) -> None:
         learning = self.aux_learning(lc, kind)
         if leaf.split_stats is None and len(learning) < self._l_max(lc, tr) \
-                and not leaf.meta.get("no_learn") and (leaf.parent is not None or (
+                and not leaf.meta.get("no_learn") and not leaf.meta.get("rpart_other") \
+                and "rpart" not in leaf.meta and (leaf.parent is not None or (
                     leaf.n_m(ts) >= LEARN_MIN and leaf.first_seen is not None
                     and ts - leaf.first_seen >= DAY)):
             self._start_learning(lc, tr, leaf, kind, sel)
@@ -1015,7 +1100,25 @@ class PatternTreeEngine(Engine):
                 # an IP trivially "differs" in its own identity: the who target is masked
                 xb = [(-1 if a == "@who" else b_) for a, b_ in zip(coder.targets, bins)]
                 xs.update(ip, xb, p, omega, day)
-            ls = [-math.log2(max(p[t, b], 1e-12)) for t, b in enumerate(bins) if b >= 0]
+            # the structural detector watches what is coded about the events, not
+            # WHEN they come: the @when bin's loss follows the hour of the day on
+            # a time-ordered stream (a 24-h source is in the node's top bins for a
+            # few hours and in `other` for the rest), which ADWIN reads as change
+            # (measured: a 60-s monitor's node was `evolving`, i.e. unconfirmed,
+            # all the time); time drift is the daily-mean Page-Hinkley's job
+            ls = [-math.log2(max(p[t, b], 1e-12)) for t, b in enumerate(bins)
+                  if b >= 0 and coder.targets[t] != "@when"]
+            # the loss is measured in the coder's bins; a refresh of a target's
+            # hierarchy (P02 moves numeric bin edges, re-groups values) changes
+            # what the bins mean, not the behaviour: the structural detectors
+            # restart instead of reading the new encoding as a change (measured:
+            # every structural `evolving` state on pack O, 21 nodes on day 21,
+            # was a false alarm)
+            hv = tuple(self._cver(lc, a) for a in coder.targets if not a.startswith("@"))
+            if leaf.meta.get("adw_ver") != hv:
+                leaf.meta["adw_ver"] = hv
+                leaf.adwin = None
+                leaf.meta.pop("adwin_nwd", None)
             if ls:
                 # one ADWIN per day type: the weekday / weekend mix of a node changes
                 # every week, which is seasonality, not drift
@@ -1066,6 +1169,15 @@ class PatternTreeEngine(Engine):
         differs = coder0 is not None and set(coder0.targets) != set(self._coder_targets(lc, tr, leaf, kind, sel))
         leaf.meta["tdiff"] = leaf.meta.get("tdiff", 0) + 1 if differs else 0
         no_real = coder0 is not None and not any(not a.startswith("@") for a in coder0.targets)
+        if coder0 is not None and not no_real and (
+                coder0.hver != self._hver(lc, coder0.targets)
+                or (differs and (young or leaf.meta["tdiff"] >= 8))):
+            # an established episode keeps its evidence: targets that stay keep
+            # their statistics, the e-process wealth of dropped ones funds the
+            # new ones (pevalue.SplitStats.retarget)
+            leaf.meta["tdiff"] = 0
+            self._retarget(lc, tr, leaf, kind, sel)
+            return False
         if coder0 is not None and (coder0.hver != self._hver(lc, coder0.targets)
                                    or (differs and (young or no_real or leaf.meta["tdiff"] >= 8))):
             leaf.meta["young_rebuilt"] = bool(young) or leaf.meta.get("young_rebuilt", False)
@@ -1086,7 +1198,7 @@ class PatternTreeEngine(Engine):
             if cv.get(a, v) != v and i < ss.C and ss.keys[i] is not None:
                 ss.set_candidate(i, (a, l), self._card(lc, a, l), self._tmask(coder0, a))
             cv[a] = v
-        dec = _check_valid_first(ss, lc.tau0, lc.s_mode)
+        dec = _check_valid_first(ss, lc.tau0, lc.s_mode, _local_day(ts, lc.off))
         aux = lc.aux
         aux["stats"]["checks"] += 1
         if dec.accept and dec.best is not None and ss.keys[dec.best] is not None:
@@ -1127,6 +1239,44 @@ class PatternTreeEngine(Engine):
                     cur[i] = want
             leaf.meta["cands"] = cur
         return False
+
+    def _retarget(self, lc: _LC, tr: PT.Tree, leaf: PN.Node, kind: int, sel: Mapping[str, Any]) -> None:
+        """Adopt P05's current target list without restarting the episode: a
+        target kept with the same value kind keeps its bins and statistics, a
+        new or re-typed one starts empty (its bins seeded from the node), the
+        split statistics move the e-process wealth of dropped targets to the
+        new ones (SplitStats.retarget)."""
+        coder0: Optional[Coder] = leaf.meta.get("C")
+        ss = leaf.split_stats
+        if coder0 is None or ss is None:
+            self._restart_learning(lc, tr, leaf, kind, sel)
+            return
+        new_t = self._coder_targets(lc, tr, leaf, kind, sel)
+        hv_new = self._hver(lc, new_t)
+        old_idx = {a: i for i, a in enumerate(coder0.targets)}
+        keep: List[Optional[int]] = []
+        for a, hv in zip(new_t, hv_new):
+            i = old_idx.get(a)
+            keep.append(i if i is not None and i < len(coder0.hver) and coder0.hver[i] == hv else None)
+        newc = self._new_coder(lc, leaf, new_t, lc.now, tr)
+        newc.wdiv = coder0.wdiv                          # the @when bins keep their meaning
+        hashed_new = list(getattr(newc, "hashed", [False] * len(new_t)))
+        hashed_old = list(getattr(coder0, "hashed", [False] * len(coder0.targets)))
+        for t2, t1 in enumerate(keep):
+            if t1 is not None:
+                newc.bmap[t2] = coder0.bmap[t1]
+                newc.p0[t2] = coder0.p0[t1]
+                newc.lc[t2] = coder0.lc[t1]
+                hashed_new[t2] = hashed_old[t1] if t1 < len(hashed_old) else False
+        newc.hashed = hashed_new
+        tm = np.ones((ss.C, len(new_t)), dtype=bool)
+        for i in range(ss.C):
+            if ss.keys[i] is not None:
+                tm[i] = self._tmask(newc, ss.keys[i][0])
+        ss.retarget(keep, tm)
+        leaf.meta["C"] = newc
+        leaf.xstats = None
+        lc.aux["stats"]["retargets"] += 1
 
     def _restart_learning(self, lc: _LC, tr: PT.Tree, leaf: PN.Node, kind: int, sel: Mapping[str, Any]) -> None:
         """R_learn restart (§6.5.2): statistics restart from empty, C_ever and the
@@ -1204,6 +1354,50 @@ class PatternTreeEngine(Engine):
                     # mass = evidence x the leaf's mass / evidence ratio; the evidence
                     # of a seeded value is its split-statistics evidence
                     child.update_target(name, v, ts, c * ratio, c, k, pol, lg)
+        # the children carry the evidence the split statistics already hold for
+        # them: evidence units (<= the leaf's own), the local dates their values
+        # were seen on and, for a split on the source address, the leaf's who
+        # summary restricted to their addresses. Without it a department's node
+        # (3 logins a workday) started from zero at the split and needed another
+        # 20 units over 3 dates before it was a confirmed pattern (measured on
+        # pack O: split on day ~12, confirmed after day 20).
+        n_leaf = float(leaf.n_c(ts))
+        named = set().union(*[set(g) for g in sp.groups]) if sp.groups else set()
+        other_vals = [v for v in (dec.groups[dec.other_group] if 0 <= dec.other_group < len(dec.groups)
+                                  else []) if v != PE.OTHER]
+        for g, cid, is_other in [(list(g), c, False) for g, c in zip(sp.groups, sp.children)] + \
+                [(other_vals, sp.other, True)]:
+            child = tr.nodes[cid]
+            js = [slot_of[v] for v in g if v in slot_of] + ([ss.kv] if is_other else [])
+            ev = float(ss.slot_ev[i, js].sum()) if js else 0.0
+            if ev > 0:
+                child.n_eff.add(ts, min(ev, n_leaf))
+            for d in sorted({int(d) for v in g for d in (sd.get((o, v)) or ())}):
+                child.touch_day(d)
+            if a == "net.src":
+                gset = set(g)
+
+                def mine(ip: Any) -> bool:
+                    gv = _h(lc.hier.gen(a, l, ip))
+                    return (gv in gset) if not is_other else (gv not in named)
+                for ip, cnt, _g, e in leaf.who.levels[0].items(ts):
+                    if cnt > 0 and mine(ip):
+                        child.who.update(lc.who_keys(str(ip)), str(ip), ts, float(cnt), float(e))
+                # binding pairs keyed by the address: the child's sources' rows
+                # (P08 fits the child's bindings from its first run, instead of
+                # from pairs counted only after its next request)
+                for (X, Y), ps in list(leaf.pairs.items()):
+                    if X != "net.src":
+                        continue
+                    cps = None
+                    for xv, rows in ps.table(ts).items():
+                        if not mine(xv):
+                            continue
+                        for yv, e, gm in rows:
+                            if e > 0:
+                                if cps is None:
+                                    cps = child.pair(X, Y)
+                                cps.update(xv, yv, ts, float(max(gm, 1e-9)), float(e))
         leaf.split_stats = None
         leaf.meta.pop("cands", None)
         leaf.meta.pop("C", None)
@@ -1277,6 +1471,7 @@ class PatternTreeEngine(Engine):
         if R is None or nd.split is None:
             return False
         ss: PE.SplitStats = R["ss"]
+        ss.roll(_local_day(lc.now, lc.off))                 # daily blocks of the e-process
         ss.checks += 1                                      # daily checks (time-uniform delta_k)
         best, best_margin = None, -math.inf
         thr = lc.tau0 + math.log2(max(1, ss.C_ever))
@@ -1577,7 +1772,14 @@ class PatternTreeEngine(Engine):
                 self._emit(lc, s, "pattern_drift", tr, nd, Severity.INFO,
                            f"模式 {ctx_text(nd.ctx, lc.hier)} 的整体分布发生了已确认的变化，置信度从新状态重新累积",
                            {"kind": "structural", "since": dr["t0"]})
-            elif t - dr["t0"] >= DRIFT_EXPIRE_S:
+            elif t - dr["t0"] >= DRIFT_EXPIRE_S or (
+                    sum(1 for d, n_ in dr["dn"].items() if n_ and normal_days(d, d + 1) and d < day)
+                    >= T_PERSIST_DAYS["structural"] + 2 and not higher):
+                # an alarm whose loss never stayed higher on any of the >= 5 normal
+                # days since is a false alarm: the node leaves `evolving` at once
+                # instead of after 14 days (measured: numeric-bin refreshes of a
+                # monitor's duration target kept its node `evolving`, i.e. not a
+                # confirmed pattern, for most of pack O)
                 nd.meta.pop("drift", None)
             else:
                 ne = nd.n_eff
@@ -1741,12 +1943,20 @@ class PatternTreeEngine(Engine):
             nd = tr.nodes.get(nid)
             if nd is None or nd.split is None:
                 continue
+            if _is_rpart(nd):
+                continue                                   # the route partition is not a learned split
             kids = [tr.nodes[c] for c in nd.split.all_children() if c in tr.nodes]
             if any(k.split is not None for k in kids):
                 continue                                   # prune bottom-up only
             sv = _split_saving(nd, kids, t, lc.who_level)
             nd.meta["saving"] = round(sv, 2)
-            if sv < 0 and nd.n_m(t) >= N_CONF:
+            # a split is judged once its children have had PRUNE_MIN_AGE of data: the
+            # two-part estimate charges every child's parameters in full, so a split
+            # rule (V) had just proven (e-process >= 2^14) read as a loss while its
+            # children were days old (measured on pack O: the OA login node's
+            # 综合部 / 财务部 / 销售部 split was pruned 2.6 days after it was made)
+            young = min((k.created for k in kids), default=t) > t - PRUNE_MIN_AGE
+            if sv < 0 and nd.n_m(t) >= N_CONF and not young:
                 nd.meta["prune_neg"] = nd.meta.get("prune_neg", 0) + 1
                 if nd.meta["prune_neg"] >= PRUNE_RUNS:
                     self._collapse(lc, tr, nid, "prune", {"saving": round(sv, 2)})
@@ -1770,7 +1980,9 @@ class PatternTreeEngine(Engine):
                 for a in [a for a in nd.targets if a not in keep][:len(nd.targets) - M_T]:
                     del nd.targets[a]
             if nd.state == "candidate":
-                if nd.n_c(t) >= N_CONF and nd.n_days() >= conf_dates and not self._fitter_pending(lc, kind, nid):
+                if nd.meta.get("rpart_other"):
+                    pass            # routes waiting for (or too rare for) a node of their own: never a pattern
+                elif nd.n_c(t) >= N_CONF and nd.n_days() >= conf_dates and not self._fitter_pending(lc, kind, nid):
                     nd.state = "confirmed"
                     nd.meta["confirmed_at"] = t
                     self._emit(lc, s, "pattern_confirmed", tr, nd, Severity.INFO,
@@ -1796,6 +2008,7 @@ class PatternTreeEngine(Engine):
         # learned since (measured on pack O: a root revision replaced a split whose
         # subtree held 20 nodes, confirmed ones included, and discarded it)
         internal = sorted([nd for nd in tr.nodes.values() if nd.split is not None and nd.n_m(t) >= REV_MIN_EV
+                           and not _is_rpart(nd)
                            and all(tr.nodes[c].split is None for c in nd.split.all_children() if c in tr.nodes)],
                           key=lambda x: -x.mass_at(t))[:R_MAX]
         keep = {nd.id for nd in internal}
@@ -2113,6 +2326,11 @@ class PatternTreeEngine(Engine):
 
 
 # ================================================================ helpers
+def _is_rpart(nd: PN.Node) -> bool:
+    """The node's split is the route-first partition (never pruned, merged or revised)."""
+    return nd.split is not None and nd.split.attr == RPART_ATTR and "rpart" in nd.meta
+
+
 def _add_group_child(tr: PT.Tree, par: PN.Node, group: Iterable[Any], t: float) -> int:
     """Re-add a named child for `group` under par's split (dormant revival)."""
     sp = par.split
@@ -2157,7 +2375,8 @@ def _rate_rows(obj: Any) -> List[Tuple[int, int, float]]:
     return out
 
 
-def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str) -> PE.SplitDecision:
+def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str,
+                       day: Optional[int] = None) -> PE.SplitDecision:
     """Rules (V), (G), (S), (D), (M) of §6.5.5, with two deviations measured on
     pack O's OA tree (both keep the false-split bound: every candidate is
     tested at tau0 + log2 C_ever and its ordinal is charged in C_ever):
@@ -2177,6 +2396,7 @@ def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str) -> PE.SplitD
       tracked since earlier can lead on G while losing on the common events
       (measured: the size bin led by 5 bits on G, the route won by 34 bits
       on the common events)."""
+    ss.roll(day)                        # the e-process advances by whole local days (pevalue)
     act = ss.active()
     thr = float(tau0) + math.log2(max(1, ss.C_ever))
     valid = [i for i in act if ss.log2_e(i) >= thr]
@@ -2222,8 +2442,11 @@ def _stability_ok(ss: PE.SplitStats, c1: int, c2: int) -> bool:
     return mu >= eps
 
 
+SDAYS_KEEP = 8                 # local dates kept per (candidate, value) of a learning leaf
+
+
 def _note_value_days(leaf: PN.Node, ss: PE.SplitStats, cvals: Sequence[Any], day: int) -> None:
-    """Up to two local dates per (candidate ordinal, value) of a learning leaf,
+    """Up to SDAYS_KEEP local dates per (candidate ordinal, value) of a learning leaf,
     for the recurrence condition on named children (bounded: stale ordinals and
     values that lost their slot are dropped when the map grows)."""
     sd = leaf.meta.get("sdays")
@@ -2236,7 +2459,7 @@ def _note_value_days(leaf: PN.Node, ss: PE.SplitStats, cvals: Sequence[Any], day
         cur = sd.get(k)
         if cur is None:
             sd[k] = (day,)
-        elif len(cur) < 2 and day not in cur:
+        elif len(cur) < SDAYS_KEEP and day not in cur:
             sd[k] = cur + (day,)
     if len(sd) > 4 * ss.C * (ss.kv + 1):
         live = {(int(ss.ordinal[i]), v) for i in range(ss.C) if ss.keys[i] is not None

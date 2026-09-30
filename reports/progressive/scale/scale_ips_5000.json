@@ -1,0 +1,49 @@
+{
+ "pack": "O-scale-5000-0",
+ "seed": 0,
+ "n_ips": 5000,
+ "n_attrs": 40,
+ "n_systems": 6,
+ "mem_bytes": 27247693,
+ "mem_by_key": {
+  "code": 2113729,
+  "crm": 3251907,
+  "finance": 3728137,
+  "mail": 1723353,
+  "oa": 7415499,
+  "portal": 8138742
+ },
+ "idle_max_bytes": null,
+ "cpu": {
+  "ms_total": 539590.537670048,
+  "events": 179684.0,
+  "us_per_event": 3002.9971375862515,
+  "scoring_p95_us": 251.87638629976456,
+  "learning_p95_us": 4147.380432865009,
+  "by_engine": {
+   "raw.event": 33520.87292814255,
+   "derived.event_context": 8510.032326459885,
+   "behavior.resource_governor": 8520.649132490158,
+   "behavior.attr_registry": 36958.631161257625,
+   "behavior.attr_select": 64091.078639507294,
+   "behavior.conformity": 21751.32534813881,
+   "behavior.pattern_tree": 302595.41195493937,
+   "behavior.content_bounds": 7542.731355633587,
+   "behavior.payload_grammar": 637.6049111559987,
+   "behavior.binding": 18673.750534959137,
+   "behavior.time_window": 2423.939829034731,
+   "behavior.workflow": 13094.73758161068,
+   "behavior.who_groups": 11556.860271438956,
+   "behavior.system_profile": 6203.917740106583,
+   "behavior.facets": 810.6393971145153,
+   "behavior.views": 2698.354558058083
+  }
+ },
+ "events": 179684,
+ "aborted": null,
+ "exceptions": 0,
+ "axis": "ips",
+ "n": 5000,
+ "days": 3,
+ "job_s": 592.2486617239992
+}

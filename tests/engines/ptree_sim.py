@@ -107,8 +107,19 @@ class Sim:
         return [e for e in self.st.events() if e.kind == kind]
 
     def splits(self, s: str = "oa", kind: int = EV.KIND_TXN) -> List[Tuple]:
+        """Learned splits (the route-first partition of the root is not one)."""
         tr = self.tree(s, kind)
-        return [] if tr is None else [x for x in tr.lineage if x[1] == "split"]
+        return [] if tr is None else [x for x in tr.lineage if x[1] == "split"
+                                      and not (isinstance(x[5], dict) and x[5].get("partition"))]
+
+    def top(self, s: str = "oa", kind: int = EV.KIND_TXN) -> int:
+        """The node where learning starts: the (first) route node of the root's
+        route partition, else the root (win trees, no route yet)."""
+        tr = self.tree(s, kind)
+        root = tr.nodes[tr.root]
+        if root.split is not None and "rpart" in root.meta and root.split.children:
+            return root.split.children[0]
+        return tr.root
 
 
 def daily(fn: Callable[[int, float, np.random.Generator], List[Event]], days: int,

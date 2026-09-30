@@ -149,8 +149,18 @@ class BindingEngine(Engine):
 
     @staticmethod
     def _who_levels(store: Any, key: str) -> Tuple[int, ...]:
+        """X levels of the source address screened for bindings: the IP itself
+        always (a binding "192.168.1.21 -> username=jack" is about one address
+        whatever level P12 chose to describe a pattern's WHO at), plus the
+        levels of the chosen who arm. Measured on pack O: P12 chose `prefix`
+        for OA, so only /24 -> username was screened and no OA login binding
+        was ever fitted (PG1 bindings 0 / 6); `none` (the portal) still
+        screens nothing."""
         arm = PB.chosen_arm(store, key, WHO_ARM, default="")
-        return WHO_LEVELS.get(arm, DEFAULT_WHO_LEVELS)
+        lv = WHO_LEVELS.get(arm, DEFAULT_WHO_LEVELS)
+        if arm == "none":
+            return lv
+        return tuple(dict.fromkeys((0,) + tuple(lv)))
 
     # ----------------------------------------------------------------- run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:

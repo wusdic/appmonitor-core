@@ -190,7 +190,7 @@ class WhenSummary:
             self._L = t
 
     def update(self, daytype: int, minute: float, t: float, mass: float, evidence: float,
-               u: Optional[float] = None) -> None:
+               u: Optional[float] = None, src: Optional[str] = None) -> None:
         d = 1 if daytype else 0
         t = float(t)
         self._rescale(t)
@@ -198,7 +198,10 @@ class WhenSummary:
         self.hist[d, slot] += mass * 2.0 ** ((t - self._L) / PS.H_M)
         self.ev[d].add(t, evidence)
         if self.res is not None:
-            self.res.offer((d, float(minute)), max(mass, 1e-12), t, u)
+            # (day type, minute, source): the source lets a view fit the window of
+            # one learned group's part of the node (lib/pwindows.part_when)
+            self.res.offer((d, float(minute)) if src is None else (d, float(minute), str(src)),
+                           max(mass, 1e-12), t, u)
 
     def density(self, daytype: int, t: Optional[float] = None) -> np.ndarray:
         """Mass shares over the 96 slots of a day type (zeros if empty)."""
@@ -688,7 +691,7 @@ class Node:
         self.last_seen = t if self.last_seen is None else max(self.last_seen, t)
         self.who.update(who_keys, ip, t, mass, evidence, who_code)
         if daytype is not None and minute is not None:
-            self.when.update(daytype, minute, t, mass, evidence, u)
+            self.when.update(daytype, minute, t, mass, evidence, u, ip)
         if day is not None:
             self.touch_day(int(day))
 

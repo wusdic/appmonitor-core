@@ -55,6 +55,7 @@ from .lib import pnode as PN
 from .lib import psketch as PS
 from .lib import prender as PR
 from .lib import pwindows as PW
+from .lib.phier import GRP_NONE
 
 def _route_key(get: Callable[[str], Any]) -> Optional[str]:
     """lib/pdfg.route_key with absent attributes read as None (pdfg tests
@@ -78,7 +79,8 @@ def _route_of_node(nd: Any, t: float) -> Optional[str]:
     value), else a route-like invariant (non-HTTP systems: TLS SNI, DNS name,
     destination), else a route target holding >= 99 % of the node's mass."""
     for a, l, vals, neg in nd.ctx:
-        if a in ROUTE_ATTRS and not neg and l == 0 and len(vals) == 1:
+        if a in ROUTE_ATTRS and not neg and l == 0 and len(vals) == 1 \
+                and next(iter(vals)) is not EV.ABSENT and next(iter(vals)) != EV.ABSENT:
             return str(next(iter(vals)))
     for a, l, vals, neg in nd.ctx:
         if a in ROUTE_ATTRS and not neg and l == 0 and 1 < len(vals) <= 3:
@@ -100,14 +102,14 @@ def _route_of_node(nd: Any, t: float) -> Optional[str]:
     for a, pre in (("tls.sni", "TLS "), ("dns.qname", "DNS ")):
         iv = nd.inv.get(a)
         if iv is not None:
-            e = DF.etld1(str(iv[1]))
+            e = DF.host_key(str(iv[1]))
             if e:
                 return pre + e
         tg = nd.targets.get(a)
         if isinstance(tg, PN.CatSummary):
             v = tg.invariant(t, 0.99, 20.0)
-            if v is not None and DF.etld1(str(v)):
-                return pre + DF.etld1(str(v))
+            if v is not None and DF.host_key(str(v)):
+                return pre + DF.host_key(str(v))
     return None
 
 
@@ -240,6 +242,7 @@ class _Ctx:
         self.pbind = MP.get_model(store, key, MP.PBIND)
         self.pwin = MP.get_model(store, key, MP.PWIN)
         self.pflow = MP.get_model(store, key, MP.PFLOW)
+        self.reg = MP.get_registry(store, key)
         self.wg = MP.who_groups(store)
         self.ip2g = self.wg.get("ip2g") or {}
         self.groups = self.wg.get("groups") or {}
@@ -278,14 +281,32 @@ class _Ctx:
 
 # ================================================================ statements
 def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system",
-                   subject: Optional[str] = None, restrict: Optional[Set[str]] = None
+                   subject: Optional[str] = None, restrict: Optional[Set[str]] = None,
+                   part: Optional[Tuple[str, List[str], str, float]] = None
                    ) -> Optional[Dict[str, Any]]:
-    """One statement for a confident node (restrict: member IPs of a group view)."""
+    """One statement for a confident node (restrict: member IPs of a group view).
+
+    `part` = (group id, member IPs seen at the node, group name, share): the
+    statement about ONE learned group's part of the node (the system view's
+    "某类人" decomposition, see group_parts): who = that group's members at
+    the node, not a closure claim (the node's other sources are the other
+    parts), context + (net.src, grp level, {grp:g}), bindings restricted to
+    the members; every other constraint is the node's."""
     t = c.now
     pid = PN.pattern_id(c.key, kind, nd.id, nd.version, nd.cver)
     who_ev, who_zh, who_en, who_c = PR.who_block(nd.who, t, nd.n_days(), c.ip2g, c.groups,
                                                  c.regions, c.mode)
-    if restrict is not None:
+    if part is not None:
+        g, mem, gname, share = part
+        restrict = set(mem)
+        lst_zh, lst_en = PR.join_zh(mem), PR.join_en(mem)
+        if len(mem) > PR.MEMBERS_LISTED:
+            lst_zh, lst_en = f"{len(mem)} 个 IP", f"{len(mem)} IPs"
+        who_zh, who_en = f"{gname}（{lst_zh}）", f"{gname} ({lst_en})"
+        who_ev = {"level": "grp", "items": [f"grp:{g}"], "members": sorted(mem), "group": g,
+                  "name": gname, "share": round(float(share), 4), "closed": False,
+                  "U": who_ev.get("U"), "confidence": who_c, "part_of": pid}
+    elif restrict is not None:
         items = [x for x in who_ev.get("items") or [] if str(x) in restrict]
         if who_ev.get("level") == "ip":
             if not items:
@@ -293,6 +314,13 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
             who_ev = dict(who_ev, items=items, members=items)
             who_zh, who_en = PR.join_zh(items), PR.join_en(items)
     wentry = PW.lookup(c.pwin, kind, nd.id)
+    if part is not None:
+        # the group's own arrival windows when the node's minute reservoir holds
+        # enough of its arrivals, else the node's windows
+        pw = PW.part_when(nd.when, part[1], c.tz)
+        if pw is not None:
+            by = pw.pop("by_daytype", None)
+            wentry = {"status": "fitted", "when": pw, "by_daytype": by}
     when_ev, when_zh, when_en, when_c = PR.when_block(wentry)
     skip = [a for a in list(((PB.lookup(c.pb, kind, nd.id) or {}).get("attrs") or {}))
             + list(((PB.lookup(c.pg, kind, nd.id) or {}).get("attrs") or {}))
@@ -300,6 +328,22 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     content, czh, cen, c_c = PR.content_block(PB.lookup(c.pb, kind, nd.id), PB.lookup(c.pg, kind, nd.id),
                                               c.labels, skip)
     bent = PB.lookup(c.pbind, kind, nd.id) if isinstance(c.pbind, Mapping) else None
+    if bent and c.reg is not None:
+        # a "binding" of an attribute with a handful of values system-wide (body
+        # format, content type) is a constant of the action, already stated as
+        # content; only identifier-like payloads (usernames, accounts) bind
+        keep = {}
+        for pk, rec in (bent.get("pairs") or {}).items():
+            X, Y = (rec or {}).get("x"), (rec or {}).get("y")
+            pay = Y if (rec or {}).get("dir") != "rev" else X
+            r = c.reg.get(str(pay)) if pay else None
+            try:
+                card = float(r.card_estimate()) if r is not None else math.inf
+            except Exception:
+                card = math.inf
+            if card >= BIND_MIN_CARD:
+                keep[pk] = rec
+        bent = dict(bent, pairs=keep)
     binds, bzh, ben, b_c = PR.binding_block(bent, c.labels)
     if restrict is not None:
         for a, b in binds.items():
@@ -330,9 +374,13 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         facets.append("content.bindings")
     if flow:
         facets.append("sequential")
+    ctx_ev = [[a, int(l), sorted(str(v) for v in vals), bool(neg)] for a, l, vals, neg in nd.ctx]
+    if part is not None:
+        ctx_ev.append(["net.src", 3, [f"grp:{part[0]}"], False])
+        pid = f"{pid}|grp:{part[0]}"
     ev: Dict[str, Any] = {
         "route": route, "system": c.key, "kind": kind, "node": nd.id,
-        "context": [[a, int(l), sorted(str(v) for v in vals), bool(neg)] for a, l, vals, neg in nd.ctx],
+        "context": ctx_ev,
         "depth": nd.depth, "is_exc": bool(nd.is_exc), "who": who_ev, "content": content,
         "bindings": binds, "workflow": flow}
     if when_ev:
@@ -343,6 +391,76 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
             "first_seen": nd.first_seen, "last_seen": nd.last_seen, "version": nd.version,
             "cver": nd.cver, "state": nd.state, "mass": float(nd.mass_at(t)),
             "facets": facets, "evidence": ev}
+
+
+BIND_MIN_CARD = 8                # distinct payload values system-wide for a binding to be stated
+PART_SHARE = 0.05                # a group's part of a node is stated when it holds >= 5 % of its mass
+PART_MAX = 8                     # parts per node (largest first)
+
+
+def _impurity(d: Optional[Mapping[str, Any]], route: str) -> float:
+    """Mass share of a node's subtree NOT on its rendered route (route index;
+    0 when the index has no data, i.e. the route is fixed by context)."""
+    if not d:
+        return 0.0
+    vals = {r: (float(v[0]) if isinstance(v, (tuple, list)) else float(v)) for r, v in d.items()}
+    tm = sum(vals.values())
+    return 0.0 if tm <= 0 else max(0.0, 1.0 - vals.get(route, 0.0) / tm)
+
+
+def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0) -> List[Tuple[str, List[str], str, float]]:
+    """The learned groups (P11) that make up a node's sources: [(g, members
+    seen at the node, name, share of the node's mass)], largest first, when
+    the node's sources span >= 2 groups (a node of one group is already
+    stated about that group).
+
+    Why: the requirement's system view is "OA 服务器的某类人会在哪个时间段访问
+    我什么页面干什么事". Where several departments do the same thing (GET /docs
+    by 综合部, 财务部 and 销售部 with the same sizes and hours) the lattice
+    correctly keeps ONE node - no target differs, so rule (V) never splits it -
+    and its who is the union. The per-group statements are the node's
+    constraints restricted to each learned group (a refinement that holds
+    wherever the node's constraints hold); where a group does behave
+    differently the tree splits and the group gets its own node instead.
+    Bounded: <= PART_MAX parts per node, read from the node's grp-level who
+    summary (never from the population). `impure` = the node's mass share on
+    other routes (a route-dominant but mixed node): a group's share must exceed
+    PART_SHARE + impure, else the whole part could be traffic of those other
+    routes (pack O: '销售部（19 个 IP）访问 GET /fin/approval/list')."""
+    if not c.ip2g or c.mode == "none":
+        return []
+    lv3 = nd.who.levels[3] if len(nd.who.levels) > 3 else None
+    if lv3 is None:
+        return []
+    tot = lv3.total(t)
+    if tot <= 0:
+        return []
+    parts = []
+    for key, cnt, g_, e_ in lv3.items(t):
+        k = str(key)
+        if not k.startswith("grp:") or k == GRP_NONE:
+            continue
+        share = float(cnt) / tot
+        if share < PART_SHARE + impure:
+            continue
+        parts.append((k[4:], share))
+    if len(parts) < 2:
+        return []
+    lv0 = nd.who.levels[0]
+    seen = {str(ip) for ip, *_ in lv0.items(t)}
+    out = []
+    for g, share in sorted(parts, key=lambda x: -x[1])[:PART_MAX]:
+        gr = c.groups.get(g) or {}
+        allm = [str(m) for m in gr.get("members") or []]
+        # the members SEEN at the node; none seen -> no part (the group key can
+        # outlive its membership: an address that left the group, or a heavy-
+        # hitter cut; listing the whole group then claimed 19 sales IPs read
+        # finance's approval list on pack O)
+        mem = [m for m in allm if m in seen]
+        if not mem:
+            continue
+        out.append((g, sorted(mem, key=PR._ip_sort), str(gr.get("name") or g), share))
+    return out if len(out) >= 2 else []
 
 
 def _walk(tree: Any, t: float, rd: Optional[Mapping[int, Mapping[str, float]]] = None):
@@ -380,7 +498,8 @@ def system_view(store: Any, key: str, config: Mapping[str, Any], now: float,
     for kind, tree in sorted(c.ptm.kinds.items()):
         if kind != EV.KIND_TXN:
             continue
-        for nd, route, act in _walk(tree, now, c.route_dist(kind)):
+        rd = c.route_dist(kind)
+        for nd, route, act in _walk(tree, now, rd):
             if route is None or nd.state not in RENDERED:
                 continue
             st = node_statement(c, kind, nd, route)
@@ -392,6 +511,16 @@ def system_view(store: Any, key: str, config: Mapping[str, Any], now: float,
             a["statements"].append(st["id"])
             if nd.id == act:
                 a["mass"] = st["mass"]
+            # the "某类人" parts of a node shared by several learned groups
+            if nd.split is None or nd.id == act:
+                for part in group_parts(c, nd, now, _impurity(rd.get(nd.id) if rd else None, route)):
+                    ps = node_statement(c, kind, nd, route, part=part)
+                    if ps is None:
+                        continue
+                    ps["act_node"] = act
+                    ps["mass"] = float(st["mass"]) * part[3]
+                    stmts.append(ps)
+                    a["statements"].append(ps["id"])
     stmts.sort(key=lambda s: (-actions.get(s.get("act_node"), {}).get("mass", 0.0), -s["mass"], s["id"]))
     stmts = stmts[:S_MAX]
     root = c.ptm.kinds.get(EV.KIND_TXN)
@@ -468,7 +597,6 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
         tree = c.ptm.kinds[EV.KIND_TXN]
         root = tree.nodes[tree.root]
         share_sys = float((gr.get("systems") or {}).get(key, 0.0))
-        gm_root = _group_mass(root, g, members, now)
         if share_sys >= GROUP_SYS_SHARE:
             used.append(key)
             for nd, route, act in _walk(tree, c.now, c.route_dist(EV.KIND_TXN)):
@@ -486,8 +614,14 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
         if cw is None:
             cw = cache[("cw", key)] = _closed_write_nodes(c)
         never = [(nd, route) for nd, route in cw if _group_mass(nd, g, members, now) <= 0.0]
-        if never and (gm_root < GROUP_SYS_SHARE or not any(
-                _group_mass(nd, g, members, now) > 0 for nd, _ in cw)):
+        # "never wrote in this system" must hold on EVERY write node, not only the
+        # who-closed ones: a group whose own write node is still a candidate (or
+        # not closed) did write there (the sentence was false on pack O's OA)
+        wr = cache.get(("wr", key))
+        if wr is None and never:
+            wr = cache[("wr", key)] = [nd for nd, route, _ in _walk(tree, c.now, c.route_dist(EV.KIND_TXN))
+                                       if route is not None and PR.is_write(route)]
+        if never and not any(_group_mass(nd, g, members, now) > 0 for nd in wr):
             n_days = int(root.days_total or 0)
             zh, en = PR.negative_sentence(name, key, n_days)
             routes = sorted({PR.route_text(r) for _, r in never})

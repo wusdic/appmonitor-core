@@ -504,3 +504,48 @@ def lookup(model: Any, kind: int, nid: int) -> Optional[Dict[str, Any]]:
     if not isinstance(sub, Mapping):
         return None
     return sub.get(nid, sub.get(str(nid)))
+
+
+def part_when(when: Any, members: Iterable[str], tz_offset_s: float = 0.0,
+              min_points: int = MIN_POINTS) -> Optional[Dict[str, Any]]:
+    """The statement-contract `when` block of ONE learned group's part of a
+    node, fitted like the node's own windows (fit_daytype, minute mode) on the
+    node's minute-reservoir arrivals whose source is a member of the group;
+    None when the node keeps no reservoir or the part has fewer than
+    `min_points` arrivals on every day type (the view then states the node's
+    windows). Integration addition (2026-09-30): on a login route shared by
+    综合部 (09:00-09:21), 财务部 (09:05-09:30) and 销售部 (08:30-09:30) the
+    node's union window matched no department's truth (IoU 0.17-0.42)."""
+    res = getattr(when, "res", None)
+    if res is None or not len(res):
+        return None
+    mem = {str(m) for m in members}
+    by: Dict[str, Optional[Dict[str, Any]]] = {}
+    for d, dk in enumerate(DAYTYPES):
+        pts = [(float(it[1]), float(t)) for it, _w, t in res.items()
+               if len(it) > 2 and int(it[0]) == d and str(it[2]) in mem]
+        if len(pts) < min_points:
+            by[dk] = None
+            continue
+        h = np.zeros(SLOTS)
+        for m, _ in pts:
+            h[int(m // 15) % SLOTS] += 1.0
+        rec = fit_daytype(h, float(len(pts)), pts, tz_offset_s=tz_offset_s)
+        if rec is not None:
+            rec["confidence"] = confidence(rec)
+            rec["text_zh"] = render_zh(dk, rec)
+            rec["text_en"] = render_en(dk, rec)
+        by[dk] = rec
+    fitted = [r for r in by.values() if r]
+    if not fitted:
+        return None
+    out: Dict[str, Any] = {DT_LONG[dk]: (as_intervals(by[dk]["windows"]) if by.get(dk) else [])
+                           for dk in DAYTYPES}
+    w = [len(r.get("windows") or []) and float(r.get("n_points") or r.get("n") or 1.0) for r in fitted]
+    tot = sum(w) or 1.0
+    out["coverage"] = float(sum(wi * float(r["coverage"]) for wi, r in zip(w, fitted)) / tot)
+    out["confidence"] = float(min(r["confidence"] for r in fitted))
+    out["part"] = True
+    out["n_points"] = int(sum(float(r.get("n_points") or 0) for r in fitted))
+    out["by_daytype"] = by
+    return out

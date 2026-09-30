@@ -275,8 +275,12 @@ class AttributeSelectionEngine(Engine):
                              if r in ("split", "target", "shape") and a not in tsys
                              and SEL.targetable(a) and a in reg.records
                              and kind in set(reg.records[a].kinds)]
+                    # n_min 12 (not 32): a rare action's node (a department's
+                    # login, 3 rows a workday in the stratified probe) inherited
+                    # its ancestor's targets for ~11 days, so its username /
+                    # opinion fields were fitted from day ~17 (measured on pack O)
                     overrides[kind] = SEL.node_targets_from_probe(
-                        tree, prk, now, hier, tsys, gone, local_pool=local)
+                        tree, prk, now, hier, tsys, gone, n_min=12, local_pool=local)
         # daily: categorical value groups (registry level 1)
         if now - self.last_vg.get(key, -math.inf) >= 86400.0 and pr0 is not None and len(pr0):
             self.last_vg[key] = now

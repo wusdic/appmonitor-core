@@ -162,7 +162,8 @@ def test_restart_keeps_counting_candidates_and_roundtrip():
     assert ss2.log2_e(0) == ss.log2_e(0)
     assert ss2.C_ever == 6
     big = PE.SplitStats(10)                          # defaults, T = m_t + 2 = 10
-    assert big.nbytes() < 56_000                     # measured 50.8 KB (float64; spec est. 21 KB f32)
+    # measured 50.8 KB before the k-sample e-process, 69.5 KB with its float32 block counts
+    assert big.nbytes() < 76_000
 
 
 def test_exception_for_distinct_sizes_not_for_same_distribution():

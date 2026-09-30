@@ -224,13 +224,19 @@ def test_c_cross_binding_is_a_credential_finding():
         "x": "net.src", "y": "body.kv.username", "dir": "fwd", "fd": {"g3": 0.0, "holds": True},
         "table": table, "bound_values": {u: [ip] for ip, u in users.items()}}})
     t = workdays(16)[-1] + 9 * 3600 + 600
-    fx.score("oa", [(t, "192.168.1.21", {"http.route": LOGIN, "body.kv.username": "rose"})])
+    _, asg = fx.score("oa", [(t, "192.168.1.21", {"http.route": LOGIN, "body.kv.username": "rose"})])
     v = [e for e in fx.violations("192.168.1.21") if e.extra["type"] == "content"]
     assert v and "cross_binding" in v[0].extra["flags"] and v[0].axes == ["credential"]
     assert v[0].severity == Severity.MEDIUM
-    # the bound value itself is clean
-    fx.score("oa", [(t + 60, "192.168.1.23", {"http.route": LOGIN, "body.kv.username": "rose"})])
+    # a borrowed credential is learned damped (integration fix, A2 non-adoption)
+    assert asg.get("damp", 0) == pytest.approx(0.1)
+    # the bound value itself is clean and learned at full weight
+    _, asg = fx.score("oa", [(t + 60, "192.168.1.23", {"http.route": LOGIN, "body.kv.username": "rose"})])
     assert not [e for e in fx.violations("192.168.1.23") if e.extra["type"] == "content"]
+    assert asg.get("damp", 0) == 1.0
+    # a value bound nowhere (a rename such as D2's mike -> mike.w) is not damped as a borrowed one
+    _, asg = fx.score("oa", [(t + 120, "10.168.7.121", {"http.route": LOGIN, "body.kv.username": "mike.w"})])
+    assert asg.get("damp", 0) == 1.0 or asg.get("p_ev", 0) <= 1e-4
 
 
 # ======================================================================== (d)

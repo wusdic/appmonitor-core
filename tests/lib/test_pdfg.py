@@ -35,7 +35,9 @@ def test_bloom_false_positive_rate_at_ten_actions():
 
 def test_route_key_fallbacks():
     get = {"tls.sni": "mail.corp.example.com"}.get
-    assert DF.route_key(lambda a: get(a)) == "TLS example.com"
+    # the service host (integration 2026-09-30: eTLD+1 merged mail. and git. of one domain)
+    assert DF.route_key(lambda a: get(a)) == "TLS mail.corp.example.com"
+    assert DF.route_key(lambda a: {"tls.sni": "a12.cdn.example.com:443"}.get(a)) == "TLS a{n}.cdn.example.com"
     assert DF.route_key(lambda a: {"net.dst": "10.0.0.5:25"}.get(a)) == "DST 10.0.0.5:25"
     assert DF.route_key(lambda a: {"http.route": "GET h /x", "tls.sni": "a.b"}.get(a)) == "GET h /x"
     assert DF.route_key(lambda a: None) is None

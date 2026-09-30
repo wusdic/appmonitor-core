@@ -71,6 +71,8 @@ SHAPE_DISTINCT = 0.5
 SHAPE_CR = 0.05
 CR_LOCAL = 0.10           # predictability where present that makes a rare attribute a target
 CR_LOCAL_LO = 0.05
+CLOSED_CARD = 16           # a categorical with <= this many values where present is a closed-set target
+CLOSED_COV_MAX = 0.25      # ... when it is a field of some actions (present on <= 25 % of the events)
 N_LOCAL = 8                # probe rows it must be present in (the penalised gain carries the small-sample cost)
 RED_G3 = 0.01
 RED_HB = 0.1
@@ -930,6 +932,18 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
 
 
 # ==================================================================== roles
+def _card0(st: Mapping[str, Any]) -> int:
+    """Distinct values of an evaluated attribute at level 0 (its raw values)."""
+    c = st.get("card")
+    if isinstance(c, Mapping):
+        v = c.get(0, c.get("0"))
+        return int(v) if v is not None else 10 ** 9
+    try:
+        return int(c)
+    except (TypeError, ValueError):
+        return 10 ** 9
+
+
 def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any],
                  redundant: Mapping[str, str], ip_info: Mapping[int, float], t: float,
                  kinds_of: Callable[[str], Iterable[int]]) -> Dict[str, Any]:
@@ -970,9 +984,22 @@ def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any]
                      and int(st.get("n_p", 0)) >= N_LOCAL)
             is_target = (targetable(a) and st["S"] >= TARGET_STAB
                          and ((U_te >= (U_LO if old == "target" else U_HI) and cov_e >= TARGET_COV) or local))
+            # a small closed value set where present (an approval's opinion 同意 /
+            # 退回 / ...) is a constraint to state and check even when no context
+            # predicts WHICH value comes: it was `dropped` (no predictive gain),
+            # so no pattern ever stated or enforced its closed set (measured on
+            # pack O: FIN approval opinion never fitted)
+            # (local fields only: an attribute present on most of the system's
+            # events that no context predicts is noise, not an action's field)
+            closed_small = (targetable(a) and st.get("S", 0.0) >= TARGET_STAB
+                            and float(st.get("cov", 1.0)) <= CLOSED_COV_MAX
+                            and 2 <= _card0(st) <= CLOSED_CARD
+                            and float(st.get("H_p", 0.0)) >= INV_H
+                            and int(st.get("n_p", 0)) >= N_LOCAL
+                            and st.get("kind") in ("categorical", "text", "cat"))
             if is_split:
                 new = "split"
-            elif is_target:
+            elif is_target or closed_small:
                 new = "target"
             elif st["distinct0"] >= SHAPE_DISTINCT and st["CR0"] < SHAPE_CR:
                 new = "shape"

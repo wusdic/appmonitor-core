@@ -66,14 +66,16 @@ def test_a_who_split_appears_within_ten_workdays_only_when_valid():
     assert det["attr"] == "net.src"
     # rule (V): the anytime-valid e-value crossed tau0 + log2 C_ever
     assert det["log2_e"] >= det["threshold"] >= 10.0
-    # (d) value grouping: the department's addresses form one child, the rest is `other`
+    # (d) value grouping: the department's addresses end in one child and the
+    # population in another (either side may be the named group; with the
+    # k-sample e-process the split can come before the department's /24s hold
+    # n_child_min units each, and then the department is the `other` child)
     tr = sim.tree()
     sp = tr.nodes[nid].split if nid in tr.nodes else None
     assert sp is not None
-    ga_groups = [g for g in sp.groups if any(str(v).startswith(("192.168.1", "10.168.7")) for v in g)]
-    assert len(ga_groups) == 1
-    pop_in_named = [g for g in sp.groups if any(str(v).startswith("192.168.3") for v in g)]
-    assert len(pop_in_named) <= 1
+    ga_kids = {sp.child_for(f"{ip.rsplit('.', 1)[0]}.0/24") for ip in GA}
+    pop_kids = {sp.child_for(f"{ip.rsplit('.', 1)[0]}.0/24") for ip in POP}
+    assert len(ga_kids) == 1 and len(pop_kids) == 1 and ga_kids != pop_kids, (sp.groups, ga_kids, pop_kids)
 
 
 # ------------------------------------------------------------------------ (b)
@@ -100,8 +102,8 @@ def test_b_independent_attribute_never_splits():
     checks = 0
     for s in systems:
         tr = sim.tree(s)
-        assert tr is not None and len(tr) == 1, (s, [x for x in tr.lineage][:3])
-        ss = tr.nodes[tr.root].split_stats
+        assert tr is not None and not sim.splits(s), (s, [x for x in tr.lineage][:3])
+        ss = tr.nodes[sim.top(s)].split_stats
         assert ss is not None and ss.checks >= 5
         checks += ss.checks
     assert checks >= 48
@@ -132,8 +134,8 @@ def test_b1_perfectly_dependent_targets_do_not_inflate_false_splits():
     sim.run_until(MON + 10 * DAY)
     for s in systems:
         tr = sim.tree(s)
-        assert tr is not None and len(tr) == 1, s
-        ss = tr.nodes[tr.root].split_stats
+        assert tr is not None and not sim.splits(s), s
+        ss = tr.nodes[sim.top(s)].split_stats
         assert ss is not None and ss.checks >= 5
 
 
@@ -164,12 +166,13 @@ def test_e_split_pruned_after_children_converge():
                  {"http.route": "GET x /a", "meta.z": f"z{rng.integers(0, 2)}",
                   "net.bytes_up": float(rng.lognormal(7, 0.5)), "http.status": 200})
                 for _ in range(80)]
-    sim.add(daily(day, 9, seed=3))
-    sim.run_until(MON + 1 * DAY)
+    sim.add(daily(day, 14, seed=3))
+    sim.run_until(MON + 2 * DAY)                                     # the route node exists
     tr = sim.tree()
-    tr.split(tr.root, "meta.z", 0, [["z0"], ["z1"]], sim.now)       # a split that saves nothing
-    sim.run_until(MON + 9 * DAY)
-    assert tr.nodes[tr.root].split is None
+    tr.split(sim.top(), "meta.z", 0, [["z0"], ["z1"]], sim.now)       # a split that saves nothing
+    # judged after PRUNE_MIN_AGE (7 d), then 3 negative daily checks
+    sim.run_until(MON + 14 * DAY)
+    assert tr.nodes[sim.top()].split is None
     assert any(op in ("prune", "merge") for _, op, *_ in tr.lineage)
 
 
@@ -194,7 +197,7 @@ def test_g_exception_for_differing_ip_not_for_bound_usernames():
     sim.add(daily(day, 12, seed=5))
     sim.run_until(MON + 12 * DAY)
     tr = sim.tree()
-    root = tr.nodes[tr.root]
+    root = tr.nodes[sim.top()]
     assert root.state in PN.CONFIDENT_STATES
     assert set(root.exc) == {odd}, root.exc
     xn = tr.nodes[root.exc[odd]]
@@ -245,7 +248,7 @@ def test_j_confidence_grows_then_restarts_after_accepted_window_change():
                 for ip, u in GA.items()]
     sim.add(daily(day, 42, seed=11))
     sim.run_until(MON + 33 * DAY)
-    root = sim.tree().nodes[0]
+    root = sim.tree().nodes[sim.top()]
     at = sim.now
     # longer is more precise: the closed who-set's unseen mass on the confidence channel
     U = root.who.levels[0].unseen(at)
@@ -301,11 +304,11 @@ def test_l_split_on_gone_attribute_collapses_at_next_daily_check():
     sim.add(daily(day, 3, seed=1))
     sim.run_until(MON + DAY + 3600)
     tr = sim.tree()
-    tr.split(tr.root, "hdr.x", 0, [["a"]], sim.now)
+    tr.split(sim.top(), "hdr.x", 0, [["a"]], sim.now)
     reg = MP.get_registry(sim.st, "oa")
     reg.records["hdr.x"].state = "gone"
     sim.run_until(MON + 2 * DAY + 3600)
-    assert tr.nodes[tr.root].split is None
+    assert tr.nodes[sim.top()].split is None
     assert any(op == "prune" and isinstance(det, dict) and det.get("gone") == "hdr.x"
                for _, op, _, _, _, det in tr.lineage)
 
@@ -318,7 +321,7 @@ def test_m_month_end_pattern_retired_dormant_then_revived():
                                                     "net.bytes_up": 1.0})])
     sim.run_until(MON + 3600 * 12)
     tr = sim.tree()
-    sp = tr.split(tr.root, "cal.me", 0, [[1]], sim.now)
+    sp = tr.split(sim.top(), "cal.me", 0, [[1]], sim.now)
     child = tr.nodes[sp.children[0]]
     # a monthly pattern: seen on three regularly spaced dates, then quiet for 30 d
     child.state = "stale"
@@ -362,22 +365,41 @@ def test_f_revision_replaces_prefix_split_by_learned_groups():
     for d in range(1, 9):
         sim.run_until(MON + d * DAY)
         tr = sim.tree()
-        if tr is not None and tr.nodes[tr.root].split is not None:
+        if tr is not None and tr.nodes[sim.top()].split is not None:
             break
-    root = tr.nodes[tr.root]
+    root = tr.nodes[sim.top()]
     assert root.split is not None and (root.split.attr, root.split.level) == ("net.src", 1)
     groups = {ip: "g1" for ip in g1} | {ip: "g2" for ip in g2}
     sim.st.put_model("__org__", "__org__", MP.WHO_GROUPS,
                      {"ip2g": groups, "groups": {"g1": {"members": g1}, "g2": {"members": g2}}})
+    hier = MP.hierarchies(sim.st, "oa", sim.cfg)
+
+    def leaf_of(ip):
+        get = {"http.route": "POST oa /login", "net.src": ip}.get
+        leaf = tr.route(lambda a: get(a, EV.ABSENT), hier)[-1]
+        return tr.nodes[leaf].exc.get(ip, leaf)       # an IP's own exception pattern (§6.7)
+
+    def separated():
+        l1, l2 = {leaf_of(ip) for ip in g1}, {leaf_of(ip) for ip in g2}
+        return not (l1 & l2)
     for d in range(d + 1, 21):
         sim.run_until(MON + d * DAY)
-        if (root.split.attr, root.split.level) == ("net.src", 3):
+        if (root.split.attr, root.split.level) == ("net.src", 3) or separated():
             break
-    assert (root.split.attr, root.split.level) == ("net.src", 3), [x[1:3] for x in tr.lineage]
-    assert any(op == "replace" for _, op, *_ in tr.lineage)
-    assert sim.events("pattern_replaced")
-    kids = [tr.nodes[c] for c in root.split.children]
-    assert sorted(len(g) for g in root.split.groups) in ([1], [1, 1])
+    # the learned groups separate the two behaviours: either EFDT revision replaced
+    # the /24 split by the group split (§6.6), or (since split children carry
+    # their evidence and learn at once, integration 2026-09-30) the /24 children
+    # split on the group level themselves or give the odd IPs exception patterns
+    # - in every case no pattern mixes g1 and g2
+    revised = (root.split.attr, root.split.level) == ("net.src", 3)
+    assert revised or separated(), [x[1:3] for x in tr.lineage]
+    if revised:
+        assert any(op == "replace" for _, op, *_ in tr.lineage)
+        assert sim.events("pattern_replaced")
+        assert sorted(len(g) for g in root.split.groups) in ([1], [1, 1])
+    else:
+        assert any(isinstance(x[5], dict) and (x[5].get("attr"), x[5].get("level")) == ("net.src", 3)
+                   for x in tr.lineage if x[1] == "split")
 
 
 # --------------------------------------------------- pairs, budget, snapshots
@@ -409,7 +431,7 @@ def test_node_budget_is_enforced():
         sim.run_until(MON + d * DAY)
         sizes.append(len(sim.tree()))
     assert max(sizes) <= 6, sizes
-    assert sim.splits()
+    assert any(x[1] == "split" for x in sim.tree().lineage)          # route nodes within the budget
 
 
 def test_reference_snapshot_of_confirmed_nodes():
