@@ -217,11 +217,15 @@ def test_accepted_time_change_switches_windows():
         ot = OracleTree(st, "oa", [LOGIN], {LOGIN: [GA]})
         return st, ot, ot.group_node[(LOGIN, 0)]
 
-    # control: no P04 signal
+    # no P04 signal: P09 finds the change in the node's own arrivals (it owns
+    # time drift, §16.2 M8) - the H_m density alone would still mix both
+    # regimes (the window was 08:30-09:21 before regime_cut)
     st0, ot0, nid0 = setup()
     run(ot0, st0, events(6), 24)
-    mixed = entry(st0, nid0)["by_daytype"]["wd"]["windows"]
-    assert mixed[0][0] <= 512 and mixed[-1][1] >= 555                 # both regimes still inside
+    rec0 = entry(st0, nid0)["by_daytype"]["wd"]
+    assert rec0["regime"] == "new" and rec0["change"]["accepted"] and not rec0["provisional"]
+    assert len(rec0["windows"]) == 1 and abs(rec0["windows"][0][0] - 510) <= 3 \
+        and abs(rec0["windows"][0][1] - 531) <= 3, rec0["windows"]
 
     st, ot, nid = setup()
     ev = events(6)

@@ -20,6 +20,14 @@ Writes  model.pbounds@(tree key, '__system__'):
         request_targets). Deviation: §8 says "none by default"; pack O's real
         lattice never made the login body size a target (P05 gives it the split
         role only), so "90 % of submissions are 1-2 KB" could not be fitted.
+Hygiene Every tick the numeric values of rows P03 judged violations (any typed
+        p <= 1e-3, damped, or a content flag; pat.assign) go to a FIFO ledger
+        (model.pbounds_state, <= 1024 rows per tree); the hard range of a node
+        is read from its daily ring without them (lib/pbounds.clean_range): a
+        day whose extreme is a violating value takes its next extreme from the
+        exceedance reservoirs, or leaves the range with its observations.
+        (2026-10-01: A3's undamped 12 KB injection login was the OA login
+        node's stated maximum, "0-12 KB".)
 Cadence 1 h per tree (entity_due); a tree that learned nothing since the last
         run is skipped, and inside a tree only dirty nodes are refitted (evidence
         grew >= 10 % or >= 20 units, or version / cver / state changed, §6.20), so
@@ -29,6 +37,9 @@ Inert unless config['progressive']['enabled'].
 from __future__ import annotations
 
 import time
+from collections import deque
+
+import numpy as np
 from typing import Any, Dict, List, Mapping, Optional
 
 from ...core.engine import Context, Engine
@@ -39,6 +50,9 @@ from .lib import pevent as EV
 from .lib import pnode as PN
 
 RATE_ATTR = "rate.ip_h"
+STATE = "model.pbounds_state"
+LEDGER_MAX = 1024               # violating rows remembered per tree (FIFO, <= RING_DAYS old)
+VIOL_FLAGS = frozenset({"above_range", "below_range", "injection_shape", "grammar", "length"})
 NUM_TYPES = ("numeric",)
 pins_for, chosen_arm, local_day, empty_model = PB.pins_for, PB.chosen_arm, PB.local_day, PB.empty_model
 CPINS = PB.CPINS
@@ -65,6 +79,8 @@ class ContentBoundsEngine(Engine):
         now = float(ctx.now)
         keys = sorted({MP.tree_key(store, s) for s in store.systems()} |
                       {MP.tree_key(store, s) for s in store.batch_systems(EV.EVT_BATCH)})
+        for s in store.batch_systems(EV.PAT_ASSIGN):
+            self._ledger(ctx, s, now)
         fitted = 0
         stats: Dict[str, Any] = {}
         for key in keys:
@@ -76,6 +92,106 @@ class ContentBoundsEngine(Engine):
             stats[key] = st
         self.last_stats = stats
         return fitted
+
+    # -------------------------------------------------------- ledger
+    @staticmethod
+    def _state(store: Any, key: str) -> Dict[str, Any]:
+        st = store.get_model(key, SYSTEM_ENTITY, STATE)
+        if not isinstance(st, dict):
+            st = {"last": {}, "led": deque(maxlen=LEDGER_MAX), "attrs": []}
+            store.put_model(key, SYSTEM_ENTITY, STATE, st)
+        return st
+
+    def _ledger(self, ctx: Context, s: str, now: float) -> int:
+        """Remember the numeric values of the rows P03 judged violations
+        (§6.9.3: learners do not absorb violations). P04 learns such rows a
+        learning delay later and, unless P03 also damped them, at full weight,
+        so they reach the daily (min, max) ring that the hard range is read
+        from (pack O, A3: the 12 KB injection login on day 18 became the OA
+        login node's stated maximum, 0-12 KB). A row counts as a violation
+        when any typed p-value is <= 1e-3 (P03's `vtype` mask), when it was
+        damped, or when it carries a content flag. Every tick, O(rows of the
+        tick) over the scored batches; FIFO of LEDGER_MAX rows per tree."""
+        store = ctx.store
+        key = MP.tree_key(store, s)
+        st = self._state(store, key)
+        attrs = set(st.get("attrs") or ())
+        if not attrs:
+            return 0
+        n = 0
+        last = st["last"].get(s)
+        for ts_b, asg in MP.batches_since(store, s, EV.PAT_ASSIGN, -1e18 if last is None else last, now):
+            st["last"][s] = max(float(ts_b), float(st["last"].get(s, -1e18)))
+            b = store.batch_at(s, EV.EVT_BATCH, ts_b)
+            if b is None or asg.n != b.n or not asg.has("leaf"):
+                continue
+            leaf = asg.dense("leaf", float("nan"))
+            cols = [a for a in attrs if b.has(a)]
+            if not cols:
+                continue
+            # violating rows, vectorised: any typed p <= 1e-3, damped, or a content flag
+            mask = np.zeros(b.n, dtype=bool)
+            if asg.has("vtype"):
+                vt = np.asarray(asg.dense("vtype", 0.0), dtype=np.float64)
+                mask |= np.nan_to_num(vt, nan=0.0) != 0.0
+            if asg.has("damp"):
+                dm = np.asarray(asg.dense("damp", 1.0), dtype=np.float64)
+                mask |= np.nan_to_num(dm, nan=1.0) < 1.0
+            fc = asg.cols.get("flags") if asg.has("flags") else None
+            if fc is not None:
+                for r_, f_s in zip(fc.rows.tolist(), fc.vals.tolist()):
+                    if isinstance(f_s, str) and VIOL_FLAGS & set(f_s.split(",")):
+                        mask[int(r_)] = True
+            mask &= np.isfinite(np.asarray(leaf, dtype=np.float64))
+            if not mask.any():
+                continue
+            kind = int((getattr(asg, "meta", None) or {}).get("kind", getattr(b, "kind", 0)) or 0)
+            for i in np.flatnonzero(mask).tolist():
+                lf = float(leaf[i])
+                vals = {}
+                for a in cols:
+                    v = b.get(a, i)
+                    try:
+                        x = float(v)
+                    except (TypeError, ValueError):
+                        continue
+                    if x == x:
+                        vals[a] = x
+                if vals:
+                    st["led"].append((kind, int(lf), local_day(float(b.ts[i]), ctx.config), vals))
+                    n += 1
+        if n or st["last"]:
+            store.put_model(key, SYSTEM_ENTITY, STATE, st, ts=now)
+        return n
+
+    @staticmethod
+    def _by_node(st: Mapping[str, Any], tree: Any, kind: int, day_now: int
+                 ) -> Dict[int, List[Any]]:
+        """The ledger's rows by node: a row belongs to its leaf and to every
+        ancestor (P04 updates the targets along the whole path). O(rows x depth)."""
+        out: Dict[int, List[Any]] = {}
+        for k, lf, d, vals in st.get("led") or ():
+            if k != kind or d <= day_now - PN.RING_DAYS:
+                continue
+            cur = tree.nodes.get(lf)
+            while cur is not None:
+                out.setdefault(cur.id, []).append((d, vals))
+                cur = tree.nodes.get(cur.parent) if cur.parent is not None else None
+        return out
+
+    @staticmethod
+    def _excl(rows: List[Any], summ: Any, a: str) -> Dict[int, List[float]]:
+        """{local day: [y]} of attribute a among a node's violating rows."""
+        out: Dict[int, List[float]] = {}
+        for d, vals in rows:
+            if a not in vals:
+                continue
+            try:
+                y = summ.y(vals[a])
+            except (TypeError, ValueError):
+                continue
+            out.setdefault(int(d), []).append(float(y))
+        return out
 
     def fit_tree(self, ctx: Context, key: str, ptm: Any, now: float) -> tuple:
         store = ctx.store
@@ -89,6 +205,12 @@ class ContentBoundsEngine(Engine):
                             .get("bytes")) or PB.BYTE_GLOBS)
         n_fit, gain_num, gain_den, new_ev = 0, 0.0, 0.0, 0.0
         skipped = 0
+        st = self._state(store, key)
+        num_attrs = sorted({a for tree in ptm.kinds.values() for nd in tree.nodes.values()
+                            for a, sm in nd.targets.items() if isinstance(sm, PN.NumSummary)})
+        if num_attrs != list(st.get("attrs") or []):
+            st["attrs"] = num_attrs
+            store.put_model(key, SYSTEM_ENTITY, STATE, st, ts=now)
         for kind, tree in ptm.kinds.items():
             root = tree.nodes.get(tree.root)
             marks = model.setdefault("tree_mark", {})
@@ -103,11 +225,12 @@ class ContentBoundsEngine(Engine):
                 fits.pop(nid, None)
             if root is not None and kind in model["fit"] and tree.root in fits:
                 new_ev += max(0.0, PB.new_evidence(fits[tree.root], root, now))
+            led = self._by_node(st, tree, kind, day)
             for nid, node in tree.nodes.items():
                 if node.last_seen is None or not PB.is_dirty(fits.get(nid), node, now):
                     continue
                 entry = self.fit_node(store, key, node, now, day, reg, ctx.config, byte_globs,
-                                      outn.get(nid))
+                                      outn.get(nid), led.get(nid))
                 outn[nid] = entry
                 fits[nid] = PB.fit_mark(node, now)
                 n_fit += 1
@@ -138,7 +261,8 @@ class ContentBoundsEngine(Engine):
 
     def fit_node(self, store: Any, key: str, node: Any, now: float, day: int, reg: Any,
                  config: Mapping[str, Any], byte_globs: tuple,
-                 old: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+                 old: Optional[Mapping[str, Any]], viol: Optional[List[Any]] = None
+                 ) -> Dict[str, Any]:
         attrs: Dict[str, Any] = {}
         node_mass = node.mass_at(now)
         n_c, n_m = node.n_c(now), node.n_m(now)
@@ -149,8 +273,10 @@ class ContentBoundsEngine(Engine):
             pres = min(1.0, summ.td.total(now) / node_mass) if node_mass > 0 else 0.0
             rr = reg.get(a) if reg is not None else None
             approx = float(getattr(rr, "approx_share", 0.0) or 0.0) if rr is not None else 0.0
+            excl = self._excl(viol, summ, a) if viol else None
             rec = PB.fit_numeric(summ, now, day, n_c * pres, n_m * pres, approx,
-                                 PB.unit_of(a, byte_globs), pins_for(config, store, key, a))
+                                 PB.unit_of(a, byte_globs), pins_for(config, store, key, a),
+                                 excl=excl, day_of=lambda ts: local_day(ts, config))
             if rec is None:
                 continue
             sysd = getattr(rr, "num", None) if rr is not None else None

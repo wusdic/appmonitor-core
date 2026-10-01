@@ -5,30 +5,44 @@ Every tick (cheap, bounded by the learned rows of tick t - D):
     * the learned, trusted rows (quarantined IPs excluded, §6.9.3) feed a
       stratified screening probe (lib/pfd.ProbeReservoir: <= S_max strata x
       R_k rows, candidate columns only);
-    * rows that reach a node holding a fitted binding update that node's
-      rebinding tracker (last 5 values of each bound source, candidate new
-      values with their normal days, first / last seen).
+    * for every screened pair (X, Y), rows of a source some node's pair sketch
+      tracks update the tree-level value history (lib/pfd.ValueHistory: per
+      source and value first / last seen, clean events and normal days, the
+      last 5 values). "Clean" = not damped by P03 (pat.assign `damp`).
 Hourly per tree (entity_due), trees whose arm 'p08' is not 'off':
     * screening (lib/pfd.screen) -> <= Q_pairs pairs (X, Y) and the nodes where
       Y (reverse: X) is a target, <= 8 nodes per pair and <= 32 pair-nodes per
       tree, written to model.pwant['pairs'] for P04, which keeps a
       pnode.PairSketch at node.pairs[(X, Y)] (X = 'net.src' or 'net.src@<level>',
       x = gen(attr, level, value));
-    * fit of every dirty node's pair sketches (lib/pfd.fit_pair) with the
-      per-source segment baselines of accepted rebindings; rebinding
-      (a renamed account, trusted, >= 5 events over >= 2 normal days, old value
-      absent from the last 5) moves y*_x, restarts x's confidence segment and
-      emits `binding_changed` (INFO).
+    * fit of every node whose sketch grew or whose sources' value histories
+      changed (lib/pfd.fit_pair) with the history's verdicts (lib/pfd.classify):
+      a value superseded by a rename (the current value has >= 5 clean events
+      over >= 2 normal days, the old one is absent from the last 5) and a
+      minority newcomer still pending confirmation (>= 5 clean events, >= 2
+      normal days, >= 5 days, no governor episode of the source, and not the
+      established value of another source: a borrowed credential is never
+      adopted by persistence, §6.9.2) are kept out of the source's counts and
+      listed on its table entry ('superseded' / 'pending'). A source whose
+      bound value moves to the value that superseded it emits
+      `binding_changed` (INFO) and carries 'rebound'.
+      Deviation (2026-10-01, measured on pack O): the per-node rebinding
+      trackers and segment baselines were replaced by the tree-level history:
+      A2 (192.168.1.21 logging in as rose for five days) was adopted as
+      {jack, rose}, and at the 综合部 login node created by a late split the
+      D2 rename read {mike, mike.w} because the rebinding lived in the parent
+      node's baselines only.
 Writes  model.pbind@(tree key, '__system__'):
           {'fmt': 1, 'version', 'updated', 'applicable',
            'nodes': {kind: {nid: {'status', 'pairs': {'X->Y': record}, 'fit_t', 'n_c'}}},
-           'fit': {kind: {nid: fit mark}}, 'screen': [pair specs], 'gain': {...}}
+           'fit': {kind: {nid: fit mark + 'hv'}}, 'screen': [pair specs], 'gain': {...}}
         record = lib/pfd.fit_pair + {'x', 'y', 'dir': 'fwd'|'rev'}; table entries carry
-        first / last seen from the tracker.
+        first / last seen from the value history.
         model.pwant['pairs'] = {'fmt': 1, 'updated', 'by_kind': {kind: {nid: [[X, Y], ...]}},
                                 'specs': [...]}
         model.pbind_state@(tree key, '__system__') = private bookkeeping (probe,
-        trackers, segment baselines, ingestion marks).
+        value histories, tracked sources, last bound values, rebinding marks,
+        ingestion marks).
 Inert unless config['progressive']['enabled'].
 """
 from __future__ import annotations
@@ -108,9 +122,12 @@ class BindingEngine(Engine):
     def _state(store: Any, key: str) -> Dict[str, Any]:
         st = store.get_model(key, SYSTEM_ENTITY, STATE)
         if not isinstance(st, dict):
-            st = {"probe": FD.ProbeReservoir(), "trackers": {}, "seg": {}, "last": {},
-                  "pairs_at": {}}
+            st = {"probe": FD.ProbeReservoir(), "hist": {}, "last": {}, "bound": {}, "rebound": {}}
             store.put_model(key, SYSTEM_ENTITY, STATE, st)
+        st.setdefault("hist", {})
+        st.setdefault("bound", {})
+        st.setdefault("rebound", {})
+        st.setdefault("track", {})
         return st
 
     @staticmethod
@@ -185,16 +202,16 @@ class BindingEngine(Engine):
                 continue
             reg = MP.get_registry(store, key)
             ycand = self._y_candidates(store, key, reg)
-            ptm = MP.get_ptree(store, key)
-            hier = None
-            if st["pairs_at"] and ptm is not None:
-                hier = MP.hierarchies(store, key, ctx.config, reg)
+            pm = MP.get_model(store, key, MP.PBIND)
+            specs = [(d["x"], d["y"]) for d in ((pm or {}).get("screen") or [])] \
+                if isinstance(pm, Mapping) else []
+            hier = MP.hierarchies(store, key, ctx.config, reg) if specs else None
             pcal = store.get_model(s, SYSTEM_ENTITY, PCAL)
             normal = (pcal or {}).get("normal", {}) if isinstance(pcal, Mapping) else {}
             for ts_b, b in batches:
                 cb = store.batch_at(s, EV.EVT_CTX, ts_b)
-                ingested += self._ingest(store, s, key, b, cb, st, ycand, ptm, hier, tz, cal,
-                                         normal, qcache)
+                ingested += self._ingest(store, s, key, ts_b, b, cb, st, ycand, specs, hier, tz,
+                                         cal, normal, qcache)
                 st["last"][s] = max(float(ts_b), float(st["last"].get(s, -1e18)))
         for key in sorted(keys | {MP.tree_key(store, s) for s in store.systems()}):
             ptm = MP.get_ptree(store, key)
@@ -207,17 +224,18 @@ class BindingEngine(Engine):
         return ingested
 
     # -------------------------------------------------------------- ingest
-    def _ingest(self, store: Any, s: str, key: str, b: Any, cb: Any, st: Dict[str, Any],
-                ycand: set, ptm: Any, hier: Any, tz: str, cal: Any, normal: Mapping[int, bool],
-                qcache: Dict[Tuple[str, str], bool]) -> int:
+    def _ingest(self, store: Any, s: str, key: str, ts_b: float, b: Any, cb: Any,
+                st: Dict[str, Any], ycand: set, specs: List[Tuple[str, str]], hier: Any, tz: str,
+                cal: Any, normal: Mapping[int, bool], qcache: Dict[Tuple[str, str], bool]) -> int:
         probe: FD.ProbeReservoir = st["probe"]
         rows = b.learned_rows()
         cols = [a for a in b.cols if a in ycand]
-        pairs_at = st["pairs_at"].get(b.kind) or {}
-        tree = ptm.tree(b.kind, b.t1, create=False) if (ptm is not None and pairs_at) else None
-        need_route = set(y for prs in pairs_at.values() for (_, y) in prs) | \
-            set(x for prs in pairs_at.values() for (x, _) in prs)
         mass = b.mass()
+        # P03's outlier damping of the row (§6.9.3): a damped row (an extreme
+        # outlier, a value credibly bound to another source, a who outsider)
+        # never counts toward the confirmation of a new value
+        asg = store.batch_at(s, EV.PAT_ASSIGN, ts_b)
+        damp = asg.dense("damp", 1.0) if (asg is not None and asg.n == b.n and asg.has("damp")) else None
         dmemo: Dict[int, int] = {}
         n = 0
         dense = {a: b.dense(a) for a in list(cols) + [a for a in X_ATTRS if a in b.cols]}
@@ -252,29 +270,33 @@ class BindingEngine(Engine):
                 probe.offer(_stratum(get), row, float(mass[i]), ts,
                             seeded_uniform("p08", s, ts, int(b.rid[i])))
                 n += 1
-            if tree is None or not (need_route & set(row)):
+            if not specs or hier is None:
                 continue
-            path = tree.route(get, hier)
-            mk = int(ts // 60)
-            day = dmemo.get(mk)
-            if day is None:
-                day = dmemo[mk] = TB.local_datetime(mk * 60.0, tz).date().toordinal()
-            is_normal = bool(normal.get(day, _dt.date.fromordinal(day) not in cal.holidays))
-            for nid in path:
-                for (X, Y) in pairs_at.get(nid, ()):
-                    xa, xl = FD.parse_x(X)
-                    xv, yv = get(xa), get(Y)
-                    if xv is EV.ABSENT or yv is EV.ABSENT:
-                        continue
-                    xg = hier.gen(xa, xl, xv) if hier is not None else xv
-                    if xg is None:
-                        continue
-                    tk = (b.kind, nid, pair_key(X, Y))
-                    tr = st["trackers"].get(tk)
-                    if tr is None:
-                        tr = st["trackers"][tk] = FD.RebindTracker()
-                    bound = st.get("bound", {}).get(tk, {}).get(str(xg))
-                    tr.observe(str(xg), yv, ts, day, bound, is_normal)
+            day = None
+            for (X, Y) in specs:
+                xa, xl = FD.parse_x(X)
+                ya, yl = FD.parse_x(Y)
+                xv, yv = get(xa), get(ya)
+                if xv is EV.ABSENT or yv is EV.ABSENT or xv is None or yv is None:
+                    continue
+                xg = hier.gen(xa, xl, xv)
+                yg = hier.gen(ya, yl, yv) if yl else yv
+                if xg is None or yg is None:
+                    continue
+                if day is None:
+                    mk = int(ts // 60)
+                    day = dmemo.get(mk)
+                    if day is None:
+                        day = dmemo[mk] = TB.local_datetime(mk * 60.0, tz).date().toordinal()
+                    is_normal = bool(normal.get(day, _dt.date.fromordinal(day) not in cal.holidays))
+                    clean = damp is None or not (float(damp[i]) < 1.0)
+                pk = pair_key(X, Y)
+                if str(xg) not in (st["track"].get(pk) or ()):
+                    continue                    # history only for sources some node tracks
+                hist = st["hist"].get(pk)
+                if hist is None:
+                    hist = st["hist"][pk] = FD.ValueHistory()
+                hist.observe(str(xg), yg, ts, day, is_normal, clean)
         return n
 
     # ----------------------------------------------------------------- fit
@@ -330,7 +352,6 @@ class BindingEngine(Engine):
         store.put_model(key, SYSTEM_ENTITY, MP.PWANT, want, ts=now)
         # ---- fits
         n_fit, gnum, gden = 0, 0.0, 0.0
-        pairs_at: Dict[int, Dict[int, List[Tuple[str, str]]]] = {}
         bound_map: Dict[Tuple[int, int, str], Dict[str, str]] = {}
         dirs = {(d["x"], d["y"]): d["dir"] for d in specs}
         for kind, tree in ptm.kinds.items():
@@ -343,26 +364,20 @@ class BindingEngine(Engine):
                 if not node.pairs:
                     continue
                 prev = outn.get(nid)
-                dirty = PB.is_dirty(fits.get(nid), node, now)
+                hv = self._hist_version(st, node)
+                dirty = PB.is_dirty(fits.get(nid), node, now) or \
+                    int((fits.get(nid) or {}).get("hv", -1)) != hv
                 entry = prev if (prev and not dirty) else {"status": "none", "pairs": {}}
                 if dirty:
                     entry = {"status": "none", "pairs": {}, "fit_t": now,
                              "n_c": float(node.n_c(now)), "state": node.state}
                     for (X, Y), ps in node.pairs.items():
                         pk = pair_key(X, Y)
-                        segs = st["seg"].setdefault((kind, nid, pk), {})
-                        rec = FD.fit_pair(ps, now, segs)
+                        rec = self._fit_one(ctx, key, kind, node, X, Y, ps, st, now)
                         if rec is None:
                             continue
                         rec.update({"x": X, "y": Y,
                                     "dir": dirs.get((X, Y), "rev" if "net.src" in Y else "fwd")})
-                        rec = self._rebind(ctx, key, kind, node, X, Y, ps, rec, st, now, segs)
-                        tr = st["trackers"].get((kind, nid, pk))
-                        if tr is not None:
-                            for x, ent in rec["table"].items():
-                                fl = tr.seen(x)
-                                if fl is not None:
-                                    ent["first"], ent["last"] = fl
                         old = ((prev or {}).get("pairs") or {}).get(pk)
                         cv = int((old or {}).get("cver", 0))
                         rec["cver"] = cv + 1 if old and FD.material_change(old, rec) else cv
@@ -371,25 +386,37 @@ class BindingEngine(Engine):
                         gden += node.mass_at(now)
                     entry["status"] = "fitted" if entry["pairs"] else "none"
                     outn[nid] = entry
-                    fits[nid] = PB.fit_mark(node, now)
+                    fits[nid] = dict(PB.fit_mark(node, now), hv=hv)
                     n_fit += 1
                 for pk, rec in (entry.get("pairs") or {}).items():
-                    # sticky: a source stays bound to its last bound value while it
-                    # is tracked (a rename first lowers its purity; rebinding needs
-                    # the old binding to recognise the new value)
+                    # a source keeps its last bound value while it is tracked (a
+                    # rename passes through a few unbound fits before the new value
+                    # has the evidence of a binding; `binding_changed` compares with it)
                     prev_b = (st.get("bound") or {}).get((kind, nid, pk)) or {}
                     bm = {x: y for x, y in prev_b.items() if x in rec["table"]}
                     bm.update({x: str(e["top"]) for x, e in rec["table"].items() if e.get("bound")})
                     if bm:
-                        pairs_at.setdefault(kind, {}).setdefault(nid, []).append((rec["x"], rec["y"]))
                         bound_map[(kind, nid, pk)] = bm
-        st["pairs_at"] = pairs_at
         st["bound"] = bound_map
-        for tk in [k for k in st["trackers"] if k not in bound_map]:
-            del st["trackers"][tk]
+        # the sources whose value history is kept: those some node's pair
+        # sketch tracks (<= PAIR_NODES x 64), so the history is bounded by the
+        # sketches and never by the number of IPs seen
+        track: Dict[str, set] = {}
+        for tree in ptm.kinds.values():
+            for node in tree.nodes.values():
+                for (X, Y), ps in (node.pairs or {}).items():
+                    track.setdefault(pair_key(X, Y), set()).update(str(x) for x in ps.x.keys())
+        st["track"] = track
+        for pk in list(st["hist"]):
+            keep = track.get(pk)
+            if not keep:
+                del st["hist"][pk]
+                continue
+            h = st["hist"][pk]
+            for x in [x for x in h.x if x not in keep]:
+                del h.x[x]
         live = {(k, n) for k, tr in ptm.kinds.items() for n in tr.nodes}
-        for sk in [k for k in st["seg"] if (k[0], k[1]) not in live or not st["seg"][k]]:
-            del st["seg"][sk]
+        st["rebound"] = {k: v for k, v in st["rebound"].items() if (k[0], k[1]) in live}
         ms = (time.perf_counter() - t0) * 1000.0
         model["last_run"] = now
         model["updated"] = now
@@ -400,46 +427,75 @@ class BindingEngine(Engine):
         store.put_model(key, SYSTEM_ENTITY, STATE, st, ts=now)
         return n_fit
 
-    def _rebind(self, ctx: Context, key: str, kind: int, node: Any, X: str, Y: str, ps: Any,
-                rec: Dict[str, Any], st: Dict[str, Any], now: float,
-                segs: Dict[Any, Any]) -> Dict[str, Any]:
-        tk = (kind, node.id, pair_key(X, Y))
-        tr = st["trackers"].get(tk)
-        if tr is None:
-            return rec
-        changed = []
-        sticky = (st.get("bound") or {}).get(tk) or {}
-        for xk in list(ps.x.keys()):
-            ent = rec["table"].get(str(xk))
-            if not ent:
-                continue
-            old_y = str(ent["top"]) if ent.get("bound") else sticky.get(str(xk))
-            if old_y is None:
-                continue
-            new = tr.rebind_candidate(str(xk), old_y)
-            if new is None:
-                continue
-            ymatch = [y for y in (ps.y.get(xk).keys() if ps.y.get(xk) is not None else [])
-                      if str(y) == new]
-            if not ymatch:
-                continue
-            segs[xk] = FD.rebind_baseline(ps, xk, ymatch[0], now)
-            tr.clear_candidates(str(xk))
-            sticky[str(xk)] = new
-            changed.append((str(xk), old_y, new))
-        if not changed:
-            return rec
-        rec2 = FD.fit_pair(ps, now, segs) or rec
-        rec2.update({"x": rec["x"], "y": rec["y"], "dir": rec["dir"]})
-        for x, old, new in changed:
-            ent = rec2["table"].get(x, {})
-            ent["rebound"] = {"from": old, "to": new, "t": now}
-            entity = x if FD.parse_x(X) == ("net.src", 0) else SYSTEM_ENTITY
-            ctx.store.add_event(BehaviorEvent(
-                system=key, entity=entity, ts=now, kind="binding_changed", score=0.0,
-                severity=Severity.INFO,
-                description=f"binding {X} -> {Y} of {x} changed from {old} to {new}",
-                extra={"node": int(node.id), "kind": int(kind), "x_attr": X, "y_attr": Y,
-                       "x": x, "old": old, "new": new},
-                dedupe_key=f"binding_changed|{key}|{node.id}|{X}|{Y}|{x}|{new}"))
-        return rec2
+    @staticmethod
+    def _hist_version(st: Mapping[str, Any], node: Any) -> int:
+        """Observation counter of the value histories of the node's tracked
+        sources: a source's new value can be confirmed or a rename recognised
+        by a row that adds too little evidence to make the node dirty
+        (< 10 % / 20 units; a department's login node grows ~3 units a day)."""
+        hv = 0
+        for (X, Y), ps in (node.pairs or {}).items():
+            h = st["hist"].get(pair_key(X, Y))
+            if h is not None:
+                hv += h.version(ps.x.keys())
+        return hv
+
+    def _fit_one(self, ctx: Context, key: str, kind: int, node: Any, X: str, Y: str, ps: Any,
+                 st: Dict[str, Any], now: float) -> Optional[Dict[str, Any]]:
+        """Fit one pair sketch of a node with the value history's verdicts
+        (lib/pfd.classify): values superseded by a rename and minority values
+        still pending confirmation are kept out of their source's counts.
+        Two passes: the established value of every source first (without the
+        cross-source rule), then each source's verdicts knowing the values
+        established at the node's other sources. A source whose bound value
+        moved to the value that superseded it emits `binding_changed` (INFO)."""
+        pk = pair_key(X, Y)
+        hist: Optional[FD.ValueHistory] = st["hist"].get(pk)
+        excl: Dict[str, Dict[str, str]] = {}
+        if hist is not None:
+            xs = list(ps.x.keys())
+            ip_x = FD.parse_x(X) == ("net.src", 0)
+            values = {str(x): [y for y, _, _ in rows] for x, rows in ps.table(now).items()}
+
+            def episode(x: str) -> Optional[Any]:
+                if not ip_x:
+                    return None
+                return lambda t0: bool(MG.episodes(ctx.store, key, x, since=float(t0)))
+            first = {str(x): FD.classify(hist.get(str(x)), values.get(str(x), ()), now,
+                                         (), episode(str(x))) for x in xs}
+            cnt = FD.pair_counts(ps, now, None, first)
+            est: Dict[str, str] = {}
+            for x, c in cnt.items():
+                if c["n"] >= FD.N_BIND and c["y"] and not FD.is_shared(x):
+                    est[str(x)] = str(FD._jv(max(c["y"].items(), key=lambda kv: kv[1])[0]))
+            for x in xs:
+                others = [v for xx, v in est.items() if xx != str(x)]
+                ex = FD.classify(hist.get(str(x)), values.get(str(x), ()), now, others, episode(str(x)))
+                if ex:
+                    excl[str(x)] = ex
+        rec = FD.fit_pair(ps, now, exclude=excl)
+        if rec is None:
+            return None
+        prev_b = (st.get("bound") or {}).get((kind, node.id, pk)) or {}
+        for x, ent in rec["table"].items():
+            if hist is not None:
+                fl = hist.seen(x)
+                if fl is not None:
+                    ent["first"], ent["last"] = fl
+            rk = (kind, node.id, pk, x)
+            old = prev_b.get(x)
+            if ent.get("bound") and old is not None and old != str(ent["top"]) \
+                    and old in (ent.get("superseded") or ()):
+                st["rebound"][rk] = {"from": old, "to": str(ent["top"]), "t": now}
+                entity = x if FD.parse_x(X) == ("net.src", 0) else SYSTEM_ENTITY
+                ctx.store.add_event(BehaviorEvent(
+                    system=key, entity=entity, ts=now, kind="binding_changed", score=0.0,
+                    severity=Severity.INFO,
+                    description=f"binding {X} -> {Y} of {x} changed from {old} to {ent['top']}",
+                    extra={"node": int(node.id), "kind": int(kind), "x_attr": X, "y_attr": Y,
+                           "x": x, "old": old, "new": str(ent["top"])},
+                    dedupe_key=f"binding_changed|{key}|{node.id}|{X}|{Y}|{x}|{ent['top']}"))
+            rb = st["rebound"].get(rk)
+            if rb is not None and rb["to"] == str(ent["top"]):
+                ent["rebound"] = dict(rb)
+        return rec

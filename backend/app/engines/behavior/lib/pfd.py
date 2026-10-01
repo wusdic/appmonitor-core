@@ -32,9 +32,15 @@ Fit (per node, from its PairSketch; n_x, k_x evidence on the confidence channel)
     one-to-one <=> the reverse FD (each y from one x) also holds
     set binding(x) <=> no binding, U_x = (N1_x + E_x + 0.5)/(n_x + 1) <= 0.05, <= 4 values >= 95 %
     shared:<ip> keys never get per-IP bindings.
-    Rebinding (legitimate rename): a new y' with >= 5 trusted events over >= 2 normal days
-    and no y*_x among x's last 5 events -> y*_x <- y'; the pair's confidence segment
-    for x restarts (subtractive baseline on the forward-decayed counts: exact, §6.1).
+    Value history (ValueHistory / classify, used by P08 since 2026-10-01): which of
+    x's values count in the fit. Superseded (a rename: the current value has >= 5
+    clean events over >= 2 normal days and the old value is absent from x's last 5)
+    and pending (a minority newcomer not yet confirmed: >= 5 clean events, >= 2
+    normal days, >= 5 days, no governor episode, not the established value of
+    another source) values are excluded (fit_pair(exclude=...)), so a borrowed
+    credential never joins x's binding by persistence and a rename rebinds at
+    every node holding x. (RebindTracker / rebind_baseline: the per-node form,
+    kept for reference; segment baselines are still accepted by fit_pair.)
 Scoring (P03)
     check_forward(rec, x, y)   p_bind = (b0 + n_x - k_x)/(a0 + b0 + n_x) for y != y*_x,
                                flag cross_binding when y is another x's bound value;
@@ -50,7 +56,7 @@ from __future__ import annotations
 import heapq
 import math
 from collections import deque
-from typing import Any, Callable, Dict, Hashable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Hashable, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -341,10 +347,12 @@ def _decay(t: float, t0: float) -> float:
     return 2.0 ** (-(float(t) - float(t0)) / PS.H_L)
 
 
-def pair_counts(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any]]] = None
-                ) -> Dict[Hashable, Dict[str, Any]]:
+def pair_counts(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any]]] = None,
+                exclude: Optional[Mapping[str, Any]] = None) -> Dict[Hashable, Dict[str, Any]]:
     """{x: {'n', 'mass', 'y': {y: evidence}, 'U'}} on the confidence channel,
-    with the per-x segment baselines (rebinding) subtracted."""
+    with the per-x segment baselines (rebinding) subtracted and the values
+    `exclude[str(x)]` (superseded or still pending, ValueHistory.classify)
+    removed from x's counts."""
     out: Dict[Hashable, Dict[str, Any]] = {}
     for x in ps.x.keys():
         tab = ps.y.get(x)
@@ -353,6 +361,14 @@ def pair_counts(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, 
         ys = {k: e for k, _, _, e in tab.items(t, 0)}
         n = tab.total_evidence(t)
         U = tab.unseen(t)
+        ex = (exclude or {}).get(str(x))
+        if ex:
+            drop = {k for k in ys if str(_jv(k)) in ex}
+            if drop and len(drop) < len(ys):
+                n = max(0.0, n - sum(ys[k] for k in drop))
+                ys = {k: e for k, e in ys.items() if k not in drop}
+                n1 = sum(1 for e in ys.values() if e < PS.N1_EVIDENCE)
+                U = min(1.0, (n1 + 0.5) / (n + 1.0))
         sg = (seg or {}).get(x)
         if sg:
             f = _decay(t, sg["t"])
@@ -367,9 +383,13 @@ def pair_counts(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, 
 
 
 def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any]]] = None,
-             n_bind: float = N_BIND, lb_bind: float = LB_BIND) -> Optional[Dict[str, Any]]:
-    """Fitted binding of one node pair (§6.12). None without tracked x."""
-    cnt = pair_counts(ps, t, seg)
+             n_bind: float = N_BIND, lb_bind: float = LB_BIND,
+             exclude: Optional[Mapping[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Fitted binding of one node pair (§6.12). None without tracked x.
+    `exclude` {str(x): {str(y): reason}}: values kept out of x's counts
+    (ValueHistory.classify: superseded by a rename, or a minority value still
+    pending confirmation); they are listed on x's table entry."""
+    cnt = pair_counts(ps, t, seg, exclude)
     heavy = {x: c for x, c in cnt.items() if c["n"] >= 1.0 and c["y"]}
     if not heavy:
         return None
@@ -391,6 +411,10 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
         y, k = tops[x]
         n = c["n"]
         ent: Dict[str, Any] = {"n": n, "top": _jv(y), "k": k, "mass": c["mass"]}
+        ex = (exclude or {}).get(str(x))
+        if ex:
+            for yy, why in ex.items():
+                ent.setdefault(str(why), []).append(yy)
         if not is_shared(x):
             a0, b0 = _loo_prior(SK - ks[x], SN - ns[x],
                                 SP - pur.get(x, 0.0), SP2 - pur.get(x, 0.0) ** 2,
@@ -398,7 +422,13 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
             lb = pmdl.beta_quantile(0.05, a0 + k, b0 + max(0.0, n - k))
             ent.update({"LB": float(lb), "a0": float(a0), "b0": float(b0),
                         "p_viol": float((b0 + n - k) / (a0 + b0 + n))})
-            if n >= n_bind and lb >= lb_bind:
+            # a rename (a superseded value: the successor already has >= REBIND_N
+            # clean events over >= REBIND_DAYS normal days in the value history)
+            # moves the binding to the new value, y*_x <- y' (§6.12), with the
+            # confidence of the new segment: the evidence-unit count of the new
+            # segment may still be below n_bind (decay, burst runs)
+            renamed = "superseded" in set(map(str, ((exclude or {}).get(str(x)) or {}).values()))
+            if (n >= n_bind or renamed) and lb >= lb_bind:
                 ent["bound"] = True
                 bound_mass += c["mass"]
         if not ent.get("bound"):
@@ -420,7 +450,7 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
     # (n_x >= n_bind): a DHCP pool whose personas show up on a new address every
     # day contributes many one-login sources that are neither bound nor
     # counter-examples, and must not veto 综合部's bindings at a shared login node
-    judged = {x for x in heavy if heavy[x]["n"] >= n_bind}
+    judged = {x for x in heavy if heavy[x]["n"] >= n_bind or table[_jx(x)].get("bound")}
     ents = dict(zip(heavy, table.values()))
     tot_mass = sum(heavy[x]["mass"] for x in judged)
     set_mass = sum(heavy[x]["mass"] for x in judged if ents[x].get("set"))
@@ -616,3 +646,134 @@ def rebind_baseline(ps: Any, x: Any, y_new: Any, t: float) -> Dict[str, Any]:
     kn = ys.get(y_new, 0.0)
     return {"t": float(t), "n0": float(max(0.0, n - kn)),
             "k0": {k: float(e) for k, e in ys.items() if k != y_new}, "y": _jv(y_new)}
+
+
+# ========================================================= value history
+NEWCOMER_GAP = 86400.0      # a value first seen >= 1 d after x's earliest value is a newcomer
+PERSIST_S = 5 * 86400.0     # §6.9.2: a single source's change persists >= 5 d
+HIST_X = 2048               # sources tracked per pair (LRU)
+HIST_Y = 8                  # values tracked per source
+HIST_DAYS = 8               # normal days remembered per value (>= REBIND_DAYS)
+
+
+class ValueHistory:
+    """Temporal history of the values of each source x of one pair (X, Y)
+    over the whole tree (not per node: a child created by a split sees the
+    history its rows already had). Per x: per value y [first ts, last ts,
+    clean events, clean normal days], and the last RECENT values; bounded by
+    an LRU of HIST_X sources and HIST_Y values per source.
+
+    "Clean" events are trusted rows P03 did not damp (§6.9.3): a borrowed
+    credential's damped rows never count toward its confirmation. The history
+    feeds `classify`, which decides which minority values may count in the
+    binding fit (§6.9.2 acceptance of a change applied to a binding):
+      superseded  the source's current value (majority of its last RECENT
+                  events) qualifies as a rename (>= REBIND_N clean events over
+                  >= REBIND_DAYS normal days) and y was last seen before the
+                  current value first appeared and is absent from the recent
+                  events (D2: mike -> mike.w; replaces per-node segment baselines)
+      pending     y appeared >= NEWCOMER_GAP after the source's earliest value
+                  (a newcomer next to an established value) and is not yet
+                  confirmed: >= REBIND_N clean events over >= REBIND_DAYS normal
+                  days, persisting >= PERSIST_S, the source without a governor
+                  episode since y appeared, and y not the established value of
+                  another source of the node (a credential bound elsewhere is
+                  never adopted by persistence alone: anomaly A2, 192.168.1.21
+                  logging in as rose for five days)
+    Values present from the start (a shared terminal's users) are neither."""
+
+    def __init__(self, cap_x: int = HIST_X, cap_y: int = HIST_Y) -> None:
+        from collections import OrderedDict
+        self.cap_x, self.cap_y = int(cap_x), int(cap_y)
+        self.x: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+    def observe(self, x: str, y: Any, ts: float, day: int, normal: bool, clean: bool = True) -> None:
+        st = self.x.get(x)
+        if st is None:
+            if len(self.x) >= self.cap_x:
+                self.x.popitem(last=False)
+            st = self.x[x] = {"v": {}, "recent": deque(maxlen=RECENT), "ver": 0}
+        else:
+            self.x.move_to_end(x)
+        st["ver"] = int(st.get("ver", 0)) + 1
+        ys = str(_jv(y))
+        v = st["v"]
+        r = v.get(ys)
+        if r is None:
+            if len(v) >= self.cap_y:
+                drop = min(v, key=lambda k: (v[k][2], v[k][1]))
+                del v[drop]
+            r = v[ys] = [float(ts), float(ts), 0, []]
+        r[0] = min(r[0], float(ts))
+        r[1] = max(r[1], float(ts))
+        if clean:
+            r[2] += 1
+            if normal and int(day) not in r[3]:
+                r[3].append(int(day))
+                if len(r[3]) > HIST_DAYS:
+                    del r[3][0]
+        st["recent"].append(ys)
+
+    def get(self, x: str) -> Optional[Dict[str, Any]]:
+        return self.x.get(str(x))
+
+    def version(self, xs: Iterable[Any]) -> int:
+        """Sum of the observation counters of the sources xs: changes whenever
+        one of them was observed (a node holding them must be refitted, its
+        verdicts may have changed although its own evidence barely grew)."""
+        return int(sum(int((self.x.get(str(x)) or {}).get("ver", 0)) for x in xs))
+
+    def seen(self, x: str) -> Optional[Tuple[float, float]]:
+        st = self.x.get(str(x))
+        if not st or not st["v"]:
+            return None
+        return (min(r[0] for r in st["v"].values()), max(r[1] for r in st["v"].values()))
+
+    def nbytes(self) -> int:
+        return int(100 + sum(200 + 120 * len(s["v"]) for s in self.x.values()))
+
+
+def _qualifies(r: Sequence[Any]) -> bool:
+    return int(r[2]) >= REBIND_N and len(r[3]) >= REBIND_DAYS
+
+
+def classify(hx: Optional[Mapping[str, Any]], values: Iterable[Any], t: float,
+             established_elsewhere: Iterable[str] = (),
+             episode_since: Optional[Callable[[float], bool]] = None) -> Dict[str, str]:
+    """{str(y): 'superseded' | 'pending'} for the values of one source x
+    (ValueHistory docstring). hx: ValueHistory.get(x); values: x's values at
+    the node; established_elsewhere: the established values of the node's
+    other sources; episode_since(ts) -> True when x had a governor episode
+    (an incident regime) since ts. Values the history does not know are left
+    alone, and at least one value always remains."""
+    if not hx:
+        return {}
+    vals = {str(_jv(y)) for y in values}
+    known = {y: hx["v"][y] for y in vals if y in hx["v"]}
+    if len(known) < 2:
+        return {}
+    recent = list(hx.get("recent") or ())
+    out: Dict[str, str] = {}
+    if recent:
+        cnt: Dict[str, int] = {}
+        for y in recent:
+            cnt[y] = cnt.get(y, 0) + 1
+        cur = max(cnt, key=lambda y: (cnt[y], -recent[::-1].index(y)))   # majority, ties -> latest
+        rc = known.get(cur)
+        if rc is not None and _qualifies(rc):
+            for y, r in known.items():
+                if y != cur and y not in recent and r[1] < rc[0]:
+                    out[y] = "superseded"
+    rest = {y: r for y, r in known.items() if y not in out}
+    if len(rest) < 2:
+        return out
+    t_est = min(r[0] for r in rest.values())
+    other = set(map(str, established_elsewhere))
+    for y, r in rest.items():
+        if r[0] - t_est < NEWCOMER_GAP:
+            continue                                  # co-existed from the start
+        ok = (_qualifies(r) and float(t) - r[0] >= PERSIST_S and y not in other
+              and not (episode_since is not None and episode_since(r[0])))
+        if not ok:
+            out[y] = "pending"
+    return out

@@ -182,8 +182,63 @@ def _text(lo: float, hi: float, unit: str) -> str:
 
 
 # ---------------------------------------------------------------------- fit
+def _close(a: float, b: float) -> bool:
+    return abs(float(a) - float(b)) <= 1e-9 * (1.0 + abs(float(b)))
+
+
+def clean_range(num: Any, day_now: int, excl: Optional[Mapping[int, Sequence[float]]] = None,
+                day_of: Any = None) -> Tuple[float, float, float, int]:
+    """(min, max, n_rng, days dropped) of the node's daily ring over the
+    current confidence segment (pnode.NumSummary.observed_range), without
+    the values of rows P03 judged violations (§6.9.3: a violation never
+    teaches the pattern; an undamped 12 KB injection login must not become
+    the login's stated maximum). excl = {local day: [y values]} (transformed
+    scale). A day whose extreme is such a value takes its next extreme from
+    the exceedance reservoirs (values beyond the running Q(0.10) / Q(0.90),
+    with their timestamps; day_of(ts) -> local day); when they hold none for
+    that day the whole day leaves the range and its observations leave n_rng,
+    so the rank bound 2 / (n_rng + 1) stays about the days it was taken over."""
+    if not excl:
+        lo, hi, n = num.observed_range(int(day_now))
+        return lo, hi, n, 0
+    r = num.ring
+    ok = np.isfinite(r[:, 0]) & (r[:, 0] > day_now - len(r)) & (r[:, 0] <= day_now)
+    if getattr(num, "seg_day", None) is not None:
+        ok &= r[:, 0] >= num.seg_day
+    if not ok.any():
+        return NAN, NAN, 0.0, 0
+    res_hi = res_lo = None
+    los, his, ns, dropped = [], [], [], 0
+    for row in r[ok]:
+        d, lo, hi, n = int(row[0]), float(row[1]), float(row[2]), float(row[3])
+        bad = [float(y) for y in (excl.get(d) or ())]
+        if bad:
+            if any(_close(hi, y) for y in bad):
+                if res_hi is None:
+                    res_hi = [(float(y), float(t)) for y, _w, t in num.hi_res.items()]
+                c = [y for y, t in res_hi if day_of is not None and day_of(t) == d and y < hi
+                     and not any(_close(y, b) for b in bad)]
+                hi = max(c) if c else NAN
+            if any(_close(lo, y) for y in bad):
+                if res_lo is None:
+                    res_lo = [(float(y), float(t)) for y, _w, t in num.lo_res.items()]
+                c = [y for y, t in res_lo if day_of is not None and day_of(t) == d and y > lo
+                     and not any(_close(y, b) for b in bad)]
+                lo = min(c) if c else NAN
+            if not (_fin(lo) and _fin(hi)):
+                dropped += 1
+                continue
+        los.append(lo)
+        his.append(hi)
+        ns.append(n)
+    if not los:
+        return NAN, NAN, 0.0, dropped
+    return float(min(los)), float(max(his)), float(sum(ns)), dropped
+
+
 def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float = NAN,
-                approx_share: float = 0.0, unit: str = "", pin: Optional[Mapping[str, Any]] = None
+                approx_share: float = 0.0, unit: str = "", pin: Optional[Mapping[str, Any]] = None,
+                excl: Optional[Mapping[int, Sequence[float]]] = None, day_of: Any = None
                 ) -> Optional[Dict[str, Any]]:
     """Fitted numeric constraint of one node attribute (§6.10); None when the
     summary is empty. n_c / n_eff: the attribute's evidence on the confidence
@@ -199,7 +254,7 @@ def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float
     band90 = [_inv(y05, lg), _inv(y95, lg)]
     band98 = [_inv(y01, lg), _inv(y99, lg)]
     cov90 = closed_coverage(td, y05, y95) if _fin(y05) and _fin(y95) else NAN
-    ymin, ymax, n_rng = num.observed_range(int(day_now))
+    ymin, ymax, n_rng, n_drop = clean_range(num, int(day_now), excl, day_of)
     rng = [_inv(ymin, lg), _inv(ymax, lg)] if n_rng > 0 else None
     approx = float(approx_share) if _fin(approx_share) else 0.0
     rec: Dict[str, Any] = {
@@ -208,7 +263,7 @@ def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float
         "coverage": coverage_lb(cov90, n_eff),
         "n_rng": float(n_rng), "n_eff": float(n_eff) if _fin(n_eff) else NAN,
         "n_c": float(n_c) if _fin(n_c) else NAN, "approx": approx,
-        "mass": float(td.total(t)),
+        "mass": float(td.total(t)), "excluded_days": int(n_drop),
         "qgrid": [float(q(i / (QGRID - 1))) for i in range(QGRID)],
     }
     if pin:

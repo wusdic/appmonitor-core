@@ -38,6 +38,22 @@ Cadence 6 h per tree (entity_due, crc32 phase). A tree without learned events
         last fit, or a state / version change (§6.20). Periodic cost therefore
         follows the evidence that arrived, not #systems x N_max; it never depends
         on the number of IPs or attributes (a node's when summary has a fixed size).
+Hygiene (2026-10-01, measured on pack O, oa seeds 0-1; §6.9.2-§6.9.3):
+        * points are weighted by their learning mass relative to the median
+          point (capped at 1): a row P04 learned with outlier damping (0.1)
+          weighs 0.1 of an arrival and never extends a window by snapping;
+        * a node created by a source split reads its own sources' arrivals
+          from the nearest ancestor reservoir when its context adds only
+          source restrictions (_backoff), merged with its own points;
+        * P09 owns arrival-time drift (§16.2 M8: '@when' left P04's ADWIN):
+          without a P04 alarm, lib/pwindows.regime_cut finds the local date
+          from which the arrivals follow a different time-of-day law (weighted
+          two-sample KS per date boundary, >= 3 dates each side, Bonferroni,
+          alpha 1e-3); the windows are fitted on the arrivals since then
+          (accepted when >= 2 sources show it or it persists >= 5 dates, else
+          provisional). Before: the 综合部 login window after D1 (08:30-08:51)
+          read 08:30-09:15 (IoU 0.47) from a slot histogram mixing both regimes
+          and A2's undamped 09:10 logins.
 Change  while P04 has an open Page-Hinkley alarm on the node's arrival time
         (node.meta['evolving']['@when']), windows are PROVISIONAL and fitted
         from the reservoir arrivals since the alarm; when P04 accepts the change
@@ -55,6 +71,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+import numpy as np
 
 from ...core.engine import Context, Engine
 from ...models.schema import SYSTEM_ENTITY
@@ -147,12 +164,68 @@ def _changed(mark: Optional[Mapping[str, Any]], node: Any) -> bool:
             or int(mark.get("cver", -1)) != int(node.cver) or _when_alarm(node) != mark.get("when_t0"))
 
 
-def _points(node: Any, d: int, since: Optional[float] = None) -> List[Tuple[float, float]]:
+def _points(node: Any, d: int, since: Optional[float] = None,
+            members: Optional[set] = None) -> List[Tuple[float, float, float, str]]:
+    """[(minute, ts, weight, source)] of the node's minute reservoir for day
+    type d. The weight is the row's learning mass relative to the median
+    point, capped at 1 (trust x outlier damping, §6.9.3): a damped row counts
+    0.1 of an arrival. (A full reservoir is a time-decayed weighted sample in
+    which a recent damped row still often survives, so the weight is applied
+    there too; rows heavier than the median count 1, so HT-weighted rows are
+    not double-counted.)"""
     res = node.when.res
     if res is None or not len(res):
         return []
-    return [(float(it[1]), float(t)) for it, _w, t in res.items()
-            if int(it[0]) == d and (since is None or t >= since)]
+    items = res.items()
+    med = float(np.median([w for _it, w, _t in items])) if items else 1.0
+    out = []
+    for it, w, t in items:
+        if int(it[0]) != d or (since is not None and t < since):
+            continue
+        src = str(it[2]) if len(it) > 2 else ""
+        if members is not None and src not in members:
+            continue
+        out.append((float(it[1]), float(t), 1.0 if med <= 0 else min(1.0, float(w) / med), src))
+    return out
+
+
+def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, str]]
+             ) -> Tuple[List[Tuple[float, float, float, str]], Optional[int]]:
+    """A node created by a source split (P04 seeds its who summary, not its
+    arrivals; its own minute reservoir starts when P09 asks for it) reads the
+    arrivals of ITS sources from the nearest ancestor that keeps a reservoir,
+    provided everything the node adds to that ancestor's context is a
+    source-address restriction (then the ancestor's arrivals of those sources
+    are exactly the node's, over the ancestor's longer history). The node's
+    own points are merged in, without duplicates (an event reaches every node
+    of its path). Drift between the older and newer arrivals is then P09's
+    regime test's business (pack O, seed 0: the 综合部 login node created on
+    day ~16 held 13 own arrivals from 3 dates and stated 08:32-08:49 against
+    the truth 08:30-08:51)."""
+    if tree is None:
+        return own, None
+    try:
+        members = {str(k) for k in node.who.levels[0].keys()}
+    except Exception:
+        return own, None
+    if not members:
+        return own, None
+    cur = node
+    while cur.parent is not None:
+        anc = tree.nodes.get(cur.parent)
+        if anc is None:
+            break
+        extra = node.ctx[len(anc.ctx):]
+        if any(c[0] != "net.src" for c in extra):
+            break
+        if anc.when.res is not None and len(anc.when.res):
+            pts = _points(anc, d, members=members)
+            if len(pts) > len(own):
+                seen = {(round(m, 3), round(t, 3), s_) for m, t, _w, s_ in pts}
+                pts += [p for p in own if (round(p[0], 3), round(p[1], 3), p[3]) not in seen]
+                return pts, int(anc.id)
+        cur = anc
+    return own, None
 
 
 class TimeWindowEngine(Engine):
@@ -231,7 +304,7 @@ class TimeWindowEngine(Engine):
             else:
                 new_ev += n_tot
             regime = _regime(mk, node)
-            entry = self.fit_node(node, now, off, outn.get(nid), regime)
+            entry = self.fit_node(node, now, off, outn.get(nid), regime, tree)
             outn[nid] = entry
             fits[nid] = _mark(node, n_tot, now, regime)
             n_fit += 1
@@ -256,26 +329,44 @@ class TimeWindowEngine(Engine):
 
     # ------------------------------------------------------------- per node
     def fit_node(self, node: Any, now: float, off: float, old: Optional[Mapping[str, Any]],
-                 regime: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+                 regime: Optional[Mapping[str, Any]] = None, tree: Any = None) -> Dict[str, Any]:
         by: Dict[str, Optional[Dict[str, Any]]] = {}
         rg = regime or {}
-        since = rg.get("when_t0") if rg.get("when_t0") is not None else rg.get("regime_t0")
+        since0 = rg.get("when_t0") if rg.get("when_t0") is not None else rg.get("regime_t0")
         for d, dk in enumerate(DT_KEYS):
             n_m = node.when.evidence(d, now, conf=False)
-            if n_m < N_FIT_MIN:
+            pts, anc = _backoff(tree, node, d, _points(node, d))
+            if n_m < N_FIT_MIN and len(pts) < PW.MIN_POINTS:
                 by[dk] = None
                 continue
-            pts = _points(node, d)
-            recent = _points(node, d, since) if since is not None else pts
-            use_recent = since is not None and len(recent) >= PW.MIN_POINTS
-            rec = PW.fit_daytype(node.when.hist[d], n_m, recent if use_recent else pts, tz_offset_s=off)
+            hist = node.when.hist[d]
+            if float(np.sum(hist)) <= 0:
+                hist = np.zeros(PW.SLOTS)
+                for m, _t, w, _s in pts:
+                    hist[int(m // PW.SLOT_MIN) % PW.SLOTS] += w
+            since, provisional, cut = since0, rg.get("when_t0") is not None, None
+            if since is None:
+                # P09 owns arrival-time drift (§16.2 M8): the latest significant
+                # change of the time-of-day law in the node's own arrivals
+                cut = PW.regime_cut(pts, hist, tz_offset_s=off)
+                if cut is not None:
+                    since, provisional = cut["since"], not cut["accepted"]
+            recent = [p for p in pts if p[1] >= since] if since is not None else pts
+            need = PW.REGIME_POINTS if cut is not None else PW.MIN_POINTS
+            use_recent = since is not None and len(recent) >= need
+            rec = PW.fit_daytype(hist, max(n_m, float(len(pts))), recent if use_recent else pts,
+                                 tz_offset_s=off, min_points=min(need, PW.MIN_POINTS))
             if rec is None:
                 by[dk] = None
                 continue
             if since is not None:
                 rec["since"] = float(since)
-                rec["provisional"] = rg.get("when_t0") is not None
+                rec["provisional"] = bool(provisional)
                 rec["regime"] = "new" if use_recent else "mixed"
+                if cut is not None:
+                    rec["change"] = {k: cut[k] for k in ("p", "dates_after", "sources_after", "accepted")}
+            if anc is not None:
+                rec["backoff"] = anc
             if rec.get("dates") is None:
                 rec["dates"] = node.n_days()
             rec["n_c"] = node.when.evidence(d, now, conf=True)

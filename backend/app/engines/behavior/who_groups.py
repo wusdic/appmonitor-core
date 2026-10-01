@@ -57,7 +57,11 @@ Daily (entity_due, 24 h) — the clustering:
                   pack O: 5 of SALES' 20 members (no document comments) split off
                   from day 17 on both seeds (ARI 0.48 on day 21); they remain
                   a display sub-group;
-              singletons stay ungrouped (grp:∅).
+              singletons stay ungrouped (grp:∅) - after the join rule below
+              was applied to them in the same run (groups_views round: the
+              mutual-kNN graph cannot link a member slightly off a large
+              tight group, whose members fill each other's 10 nearest; pack
+              O's A9 sales IP was ungrouped on every run, ARI 0.97 -> 0.86).
               Deviation (measured, tests/eval/who_convergence.py): the text's
               "final Louvain level" suffers modularity's resolution limit on an
               organisation with a large public population (a 3-IP department
@@ -71,6 +75,10 @@ Daily (entity_due, 24 h) — the clustering:
               [{cidr, name}] -> Hungarian on Jaccard >= 0.5; else the auto name
               'G<id>·<top-2 action labels>'.
   labels      top-5 actions by lift x sqrt(support), lift >= 2.
+  actions     per system the group's action mix (items >= 2 % of the group's
+              mass there, <= 8, with the members that perform an action only
+              some of them do): the user view's "what the group does where"
+              (P14 group view).
   covers      smallest CIDR set covering >= 90 % of members with purity >= 0.8
               (lib/plouvain.prefix_covers) — the "某几个 IP 段" rendering and the
               `reg` level of the IP hierarchy when no configured region matches.
@@ -88,7 +96,7 @@ Who mode per system (the IP-agnostic decision, published in `mode`):
 Writes  model.who_groups@(__org__, __org__):
           {'fmt': 1, 'version', 'updated', 'last_run',
            'groups': {gid: {'id', 'name', 'name_source', 'auto_name', 'members',
-                            'n', 'sub', 'covers', 'labels', 'systems', 'first_seen',
+                            'n', 'sub', 'covers', 'labels', 'systems', 'actions', 'first_seen',
                             'changed', 'provisional'}},
            'ip2g': {ip: gid}, 'covers': {gid: [cidr]}, 'shared': [ip],
            'mode': {system: {'mode', 'source', 'bits'}}, 'stats'}
@@ -651,6 +659,7 @@ class WhoGroupsEngine(Engine):
                 key = sigs.items.key_of(k) or ""
                 sk = key.partition("|")[0]
                 systems[sk] = systems.get(sk, 0.0) + v / tot
+            acts = _group_actions(gp, tot, mi, prof, srcs, sigs.items)
             cv = LV.prefix_covers([m for m in members if "/" not in m], active)
             cv += [m for m in members if "/" in m]                  # prefix-mode sources
             subs: Dict[int, List[str]] = {}
@@ -669,6 +678,7 @@ class WhoGroupsEngine(Engine):
                    "members": members, "n": len(members), "sub": sub, "covers": cv,
                    "labels": labels, "systems": {k: round(v, 4) for k, v in sorted(systems.items())
                                                   if v >= 0.01},
+                   "actions": acts,
                    "first_seen": old.get("first_seen", now), "changed": now, "provisional": prov,
                    "materialise": rank < G_MAX or bool(nm)}
             if not old:
@@ -704,6 +714,19 @@ class WhoGroupsEngine(Engine):
                                 "levels": n_levels, "groups": len(groups),
                                 "grouped": len(ip2g), "pending_moves": len(pend),
                                 "ms_cluster": round((time.perf_counter() - t0) * 1000.0, 1)}})
+        # the join rule (one label-propagation step) for the eligible sources the
+        # run left ungrouped. The mutual-kNN graph drops a member that is only
+        # slightly off a large tight group: with 20 near-identical SALES
+        # members every member's 10 nearest are other members, so an address
+        # with one extra item (A9's sales IP, J 0.92 to its colleagues at
+        # cohesion 0.95) was in nobody's top 10 and left ungrouped on every run
+        # (pack O seeds 0-1, day 21, ARI 0.97 -> 0.86); between runs it joined
+        # and the next run dropped it again
+        st.join_queue = {src for src in srcs if "/" not in src and src not in ip2g
+                         and sigs.get(src) is not None and sigs.get(src).ev >= EV_JOIN}
+        if self._joins(st, now, model):
+            for g, gr in model["groups"].items():
+                st.prev_members[g] = set(gr.get("members") or [])
         for kind, g, extra in events:
             store.add_event(BehaviorEvent(
                 system=ORG, entity=ORG, ts=now, kind=kind, score=0.0, severity=Severity.INFO,
@@ -727,6 +750,56 @@ def _trust(store: Any, s: str, ip: str, at: float,
             tr = 0.0 if not tr == tr else min(1.0, max(0.0, tr))
         r = cache[k] = (tr, q)
     return r
+
+
+ACT_SHARE = 0.02            # an action is part of a group's activity in a system at this share
+ACT_MEMBER_W = 0.02         # ... and a member "does" it at this share of its own signature
+ACTS_PER_SYSTEM = 8
+ACT_MEMBERS_MAX = 16       # members listed per action (a subset of a large group is a share only)
+
+
+def _group_actions(gp: Mapping[int, float], tot: float, mi: Sequence[int],
+                   prof: Sequence[Mapping[int, float]], srcs: Sequence[str],
+                   items: Any) -> Dict[str, List[Dict[str, Any]]]:
+    """What the group does in each system (the user view's "综合部 访问 OA：登录、
+    审批、生成报告"): per system key the action items of the group profile holding
+    >= ACT_SHARE of the group's mass IN THAT SYSTEM, largest first, each with
+    its share and - when only some members do it - the members that do (a
+    member does an action when it holds >= ACT_MEMBER_W of its own normalised
+    signature; 综合部's approvals are one member's, its reports two others').
+    Read from the signatures the clustering already holds: O(group items)."""
+    per_sys: Dict[str, List[Tuple[str, int, float]]] = {}
+    for k, v in gp.items():
+        key = items.key_of(k) or ""
+        sk, _, act = key.partition("|")
+        if not act or act.startswith("@"):
+            continue
+        per_sys.setdefault(sk, []).append((act, int(k), float(v)))
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for sk, lst in sorted(per_sys.items()):
+        s_tot = sum(v for _, _, v in lst)
+        if s_tot <= 0:
+            continue
+        rows = []
+        for act, k, v in sorted(lst, key=lambda x: (-x[2], x[0])):
+            share = v / s_tot
+            if share < ACT_SHARE:
+                continue
+            who = []
+            for i in mi:
+                p = prof[i]
+                s = sum(p.values()) or 1.0
+                if p.get(k, 0.0) / s >= ACT_MEMBER_W:
+                    who.append(srcs[i])
+            rows.append({"action": act, "label": item_label(f"{sk}|{act}"), "share": round(share, 4),
+                         "support": round(len(who) / max(1, len(mi)), 3),
+                         "members": sorted(who, key=_ip_key) if len(who) < min(len(mi), ACT_MEMBERS_MAX + 1)
+                         else []})
+            if len(rows) >= ACTS_PER_SYSTEM:
+                break
+        if rows:
+            out[sk] = rows
+    return out
 
 
 def _first(labels: np.ndarray, c: int) -> int:

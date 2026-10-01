@@ -66,6 +66,12 @@ Q_OFF = 0.15                     # the quietest 15 % of the day is the backgroun
 F_MEAN = 0.5                     # ... and an active block has >= half the mean rate
 MERGE_GAP = 15.0                 # windows closer than one slot are one window
 MIN_POINTS = 10                  # reservoir points of a day type needed for minute mode
+CLEAN_W = 0.5                    # a point weighing < 1/2 of a typical arrival is a damped outlier
+REGIME_DATES = 3                 # §6.9.2: a time window change persists >= 3 workdays ...
+REGIME_ALPHA = 1e-3              # ... and differs from the earlier arrivals at this level
+REGIME_SINGLE_DATES = 5          # a change shown by one source only persists >= 5 dates
+REGIME_POINTS = 6                # arrivals on each side of a change (3 workdays x 2); with so
+                                 # few points only a clean separation passes alpha after Bonferroni
 
 W_MAX = 8                        # windows per node and day type
 MOVE_MIN = 10                    # an endpoint move > 10 min is a material change (cver + 1)
@@ -232,12 +238,16 @@ def _cells_slots(hist: np.ndarray, cut: int, n: float) -> Tuple[np.ndarray, np.n
     return counts, widths, starts
 
 
-def _cells_minutes(minutes: np.ndarray, cut: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _cells_minutes(minutes: np.ndarray, cut: int, weights: Optional[np.ndarray] = None
+                   ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """1-minute cells for occupied minutes, one zero cell per empty run,
-    covering [0, 1440) in unwrapped minutes."""
+    covering [0, 1440) in unwrapped minutes; a cell counts the weights of its
+    points (1 each without weights)."""
     u = np.floor((np.asarray(minutes, dtype=np.float64) - cut) % DAY_MIN).astype(np.int64)
     u = np.clip(u, 0, DAY_MIN - 1)
-    occ, cnt = np.unique(u, return_counts=True)
+    occ, inv = np.unique(u, return_inverse=True)
+    w = np.ones(u.size) if weights is None else np.asarray(weights, dtype=np.float64)
+    cnt = np.bincount(inv, weights=w, minlength=occ.size)
     counts: List[float] = []
     widths: List[float] = []
     starts: List[float] = []
@@ -372,14 +382,17 @@ def _local_date(ts: float, tz_offset_s: float) -> int:
     return int((float(ts) + tz_offset_s) // 86400.0)
 
 
-def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Tuple[float, float]]] = None,
+def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[Any]]] = None,
                 tz_offset_s: float = 0.0, kappa: float = KAPPA, min_share: float = MIN_SHARE,
                 p0: float = P0, min_points: int = MIN_POINTS) -> Optional[Dict[str, Any]]:
     """Windows of one node and day type.
 
     hist    the node's hist96 for the day type (mass, any positive scale)
     n       evidence units behind it (H_m channel): the Bayesian-Blocks sample size
-    points  [(minute, ts)] of the minute reservoir for this day type, or None
+    points  [(minute, ts[, weight[, source]])] of the minute reservoir for this
+            day type, or None; a weight (default 1, relative to a typical
+            arrival) scales the point's count, so a row P04 learned with
+            outlier damping (0.1) or low trust weighs that much
 
     Returns {'windows': [[s, e]], 'labels', 'shares', 'coverage', 'res':
     'minute'|'slot', 'n', 'n_points', 'dates', 'stability', 'blocks', 'cut',
@@ -390,17 +403,21 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Tuple[floa
     cut = unwrap_cut(h)
     pts = list(points or [])
     minute_mode = len(pts) >= min_points
+    wts = np.asarray([float(p[2]) if len(p) > 2 else 1.0 for p in pts], dtype=np.float64)
     if minute_mode:
         mins = np.asarray([p[0] for p in pts], dtype=np.float64)
-        counts, widths, starts = _cells_minutes(mins, cut)
-        ncp = ncp_prior(len(pts), p0)
+        counts, widths, starts = _cells_minutes(mins, cut, wts)
+        ncp = ncp_prior(float(wts.sum()), p0)
     else:
         counts, widths, starts = _cells_slots(h, cut, n)
         ncp = ncp_prior(n, p0)
     blocks = bayesian_blocks(counts, widths, ncp)
     wins_u, info = _windows_from_blocks(blocks, counts, widths, starts, kappa, min_share)
     if minute_mode and not info.get("all_day"):
-        wins_u = _snap(wins_u, (mins - cut) % DAY_MIN, float(len(mins)))
+        # edge snapping / trimming on the clean arrivals (a damped outlier, weight
+        # < 1/2 of a typical arrival, never extends a window)
+        clean = wts >= CLEAN_W
+        wins_u = _snap(wins_u, (mins[clean] - cut) % DAY_MIN, float(clean.sum()) or 1.0)
     windows: List[List[int]] = []
     for s, e, _ in wins_u:
         if info.get("all_day"):
@@ -416,7 +433,8 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Tuple[floa
     # coverage: reservoir fraction in minute mode (edges are minute-exact),
     # slot mass share in slot mode (edges are slot edges)
     if minute_mode:
-        cov = float(np.mean([in_windows(m, windows) for m in mins]))
+        inside = np.asarray([in_windows(m, windows) for m in mins], dtype=np.float64)
+        cov = float(np.sum(inside * wts) / max(float(wts.sum()), 1e-12))
     else:
         tot = h.sum()
         mids = np.arange(SLOTS) * SLOT_MIN + SLOT_MIN / 2.0
@@ -424,15 +442,99 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Tuple[floa
     dates, stab = None, None
     if pts:
         by_date: Dict[int, List[bool]] = {}
-        for m, ts in pts:
-            by_date.setdefault(_local_date(ts, tz_offset_s), []).append(in_windows(m, windows))
+        for p, w in zip(pts, wts):
+            if w < CLEAN_W:
+                continue                        # damped outliers are not the pattern's days
+            by_date.setdefault(_local_date(p[1], tz_offset_s), []).append(in_windows(p[0], windows))
         dates = len(by_date)
         stab = float(np.mean([all(v) for v in by_date.values()])) if by_date else None
     return {"windows": windows, "labels": [label(s, e) for s, e in windows],
             "shares": [round(float(x[2]), 4) for x in wins_u], "coverage": cov,
             "res": "minute" if minute_mode else "slot", "n": float(n), "n_points": len(pts),
+            "w_points": round(float(wts.sum()), 3),
             "dates": dates, "stability": stab, "blocks": int(info.get("blocks", 0)),
             "cut": int(cut), "all_day": bool(info.get("all_day", False))}
+
+
+def _ks_sf(lam: float) -> float:
+    """Kolmogorov distribution survival function Q(lam) = 2 sum (-1)^(j-1) e^(-2 j^2 lam^2)."""
+    if lam <= 0.2:
+        return 1.0
+    s, j = 0.0, 1
+    while j <= 100:
+        term = math.exp(-2.0 * j * j * lam * lam)
+        s += term if j % 2 else -term
+        if term < 1e-12:
+            break
+        j += 1
+    return float(min(1.0, max(0.0, 2.0 * s)))
+
+
+def _wks(ua: np.ndarray, wa: np.ndarray, ub: np.ndarray, wb: np.ndarray) -> Tuple[float, float]:
+    """Weighted two-sample Kolmogorov-Smirnov (D, p), effective sample sizes
+    (sum w)^2 / sum w^2 (Kish)."""
+    grid = np.unique(np.concatenate([ua, ub]))
+    oa, ob = np.argsort(ua), np.argsort(ub)
+    ca = np.concatenate(([0.0], np.cumsum(wa[oa])))
+    cb = np.concatenate(([0.0], np.cumsum(wb[ob])))
+    Fa = ca[np.searchsorted(ua[oa], grid, side="right")] / max(ca[-1], 1e-12)
+    Fb = cb[np.searchsorted(ub[ob], grid, side="right")] / max(cb[-1], 1e-12)
+    D = float(np.max(np.abs(Fa - Fb))) if grid.size else 0.0
+    na = float(wa.sum()) ** 2 / max(float((wa * wa).sum()), 1e-12)
+    nb = float(wb.sum()) ** 2 / max(float((wb * wb).sum()), 1e-12)
+    ne = na * nb / max(na + nb, 1e-12)
+    return D, _ks_sf(D * math.sqrt(ne))
+
+
+def regime_cut(points: Sequence[Sequence[Any]], hist: np.ndarray, tz_offset_s: float = 0.0,
+               alpha: float = REGIME_ALPHA, min_dates: int = REGIME_DATES,
+               min_points: int = REGIME_POINTS) -> Optional[Dict[str, Any]]:
+    """The arrival-time change P09 owns (§6.9.2, §16.2 M8): the local date from
+    which a node's arrivals of one day type follow a different time-of-day law.
+
+    Candidates are the boundaries between consecutive local dates of the
+    reservoir points with >= min_dates dates (and >= min_points points) on
+    each side; each is tested by a weighted two-sample Kolmogorov-Smirnov test
+    (minutes unwrapped at the quiet cut of `hist`), Bonferroni over the
+    candidates. The most significant boundary with adjusted p <= alpha is the
+    change. It is *accepted* (§6.9.2) when the later arrivals come from >= 2
+    sources (a coordinated change: a department's new schedule) or persist
+    for >= REGIME_SINGLE_DATES dates; otherwise it is provisional.
+    points [(minute, ts, weight, source)]; returns {'since' (ts of the first
+    local midnight of the new regime), 'p', 'dates_after', 'sources_after',
+    'accepted'} or None."""
+    pts = [p for p in points if len(p) >= 2]
+    if len(pts) < 2 * min_points:
+        return None
+    cut = unwrap_cut(np.asarray(hist, dtype=np.float64))
+    dates = np.asarray([_local_date(p[1], tz_offset_s) for p in pts], dtype=np.int64)
+    ud = np.unique(dates)
+    if ud.size < 2 * min_dates:
+        return None
+    u = np.asarray([(float(p[0]) - cut) % DAY_MIN for p in pts], dtype=np.float64)
+    w = np.asarray([float(p[2]) if len(p) > 2 else 1.0 for p in pts], dtype=np.float64)
+    cands = []
+    for k in range(min_dates, ud.size - min_dates + 1):
+        after = dates >= ud[k]
+        if after.sum() < min_points or (~after).sum() < min_points:
+            continue
+        cands.append((k, after))
+    if not cands:
+        return None
+    best = None
+    for k, after in cands:
+        D, p = _wks(u[after], w[after], u[~after], w[~after])
+        pa = min(1.0, p * len(cands))
+        if best is None or pa < best[0] or (pa == best[0] and D > best[2]):
+            best = (pa, k, D, after)
+    pa, k, D, after = best
+    if pa > alpha:
+        return None
+    srcs = {str(p[3]) for p, a in zip(pts, after) if a and len(p) > 3}
+    n_after = int(ud.size - k)
+    return {"since": float(int(ud[k]) * 86400.0 - tz_offset_s), "p": float(pa), "D": float(D),
+            "dates_after": n_after, "sources_after": len(srcs),
+            "accepted": bool(len(srcs) >= 2 or n_after >= REGIME_SINGLE_DATES)}
 
 
 def confidence(rec: Mapping[str, Any]) -> float:

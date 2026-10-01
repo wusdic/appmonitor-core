@@ -410,3 +410,59 @@ def test_join_queue_is_fair_to_every_address():
             break
     assert joined is not None and joined <= 1
     assert model["ip2g"]["192.168.3.33"] == "G1"
+
+
+
+def test_member_slightly_off_a_large_tight_group_stays_in_it():
+    """20 SALES members with near-identical signatures fill each other's 10
+    nearest neighbours, so the mutual-kNN graph never links a member with one
+    small extra item (pack O A9: a sales IP that also reads finance's approval
+    list once a day; J 0.92 to its colleagues at cohesion 0.95). The run
+    applies the join rule to the eligible sources it left ungrouped: the
+    member stays in its department (pack O day 21: ARI 0.86 -> 0.97)."""
+    for seed in range(6):
+        rng = np.random.default_rng(seed)
+        st = WG.WGState()
+        eng = WG.WhoGroupsEngine()
+        model = WG.empty_model()
+        store = make_store()
+        items = {"crm|GET crm /c": 40, "crm|POST crm /v": 15, "mail|TLS mail": 20,
+                 "oa|GET oa /docs": 25, "oa|POST oa /login": 5}
+        ips = [f"192.168.3.{20 + i}" for i in range(20)]
+        for d in range(10):
+            t = T0 + d * DAY + 36000.0
+            for ip in ips:
+                for it, m in items.items():
+                    st.sigs.add(ip, it, t, m * (1 + 0.15 * rng.standard_normal()), 3.0, d)
+            st.sigs.add(ips[13], "finance|GET fin /list", t, 0.15, 1.0, d)
+            for k in range(3):
+                st.sigs.add(f"192.168.2.{10 + k}", "finance|GET fin /ledger", t,
+                            30 * (1 + 0.15 * rng.standard_normal()), 3.0, d)
+                st.sigs.add(f"192.168.2.{10 + k}", "mail|TLS mail", t, 20.0, 3.0, d)
+        now = T0 + 10 * DAY
+        eng._cluster(ctx(store, now), st, model, now)
+        ip2g = model["ip2g"]
+        assert ip2g.get(ips[0]) is not None
+        assert all(ip2g.get(ip) == ip2g[ips[0]] for ip in ips), seed
+
+
+def test_group_record_states_what_the_group_does_per_system(org7):
+    """The group record carries the group's action mix per system (the user
+    view's '综合部 访问 OA：登录、审批…'), and names the members of an action
+    only some of them perform."""
+    m = org7.model()
+    g = m["ip2g"]["192.168.1.21"]
+    acts = m["groups"][g]["actions"]
+    oa = {a["action"]: a for a in acts["oa"]}
+    assert {"POST oa /login", "GET oa /approval/list", "POST oa /approval/{num}"} <= set(oa)
+    assert all(a["support"] == 1.0 and a["members"] == [] for a in oa.values())
+    assert "mail" in acts
+    # members of an action only some of them do (unit, on the helper)
+    items = MH.ItemDict()
+    i_login, i_appr = items.id_of("oa|POST oa /login"), items.id_of("oa|POST oa /approval/{num}")
+    prof = [{i_login: 1.0, i_appr: 1.0}, {i_login: 1.0}, {i_login: 1.0}]
+    gp = {i_login: 3.0 / 2 + 1.0, i_appr: 0.5}
+    out = WG._group_actions(gp, sum(gp.values()), [0, 1, 2], prof, ["192.168.1.21", "192.168.1.23", "10.168.7.121"],
+                            items)
+    appr = next(a for a in out["oa"] if a["action"] == "POST oa /approval/{num}")
+    assert appr["members"] == ["192.168.1.21"] and appr["support"] == pytest.approx(1 / 3, abs=1e-3)

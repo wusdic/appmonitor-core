@@ -233,7 +233,8 @@ class AttributeSelectionEngine(Engine):
             st = SEL.evaluate(pr, now, hier, todo, reg, tprev, sprev,
                               coverage=lambda a: reg.coverage(a, now),
                               stability=lambda a: float(reg.records[a].stability) if a in reg.records else 1.0,
-                              cost_us=lambda a: float(getattr(reg.records.get(a), "cost_us", 0.0) or 0.0))
+                              cost_us=lambda a: float(getattr(reg.records.get(a), "cost_us", 0.0) or 0.0),
+                              proxies=prev.get("who_proxies") or ())
             stats.update(st)
             if kind == EV.KIND_TXN and "net.src" in present:
                 ipinfo = SEL.ip_information(pr, now, hier, tprev)
@@ -260,8 +261,10 @@ class AttributeSelectionEngine(Engine):
                                lambda a: reg.records[a].kinds if a in reg.records else ())
         proxies: List[str] = []
         if pr0 is not None and len(pr0):
+            # every kept attribute: a source property that is only a target (a client
+            # stack P05 kept as a target) must not pay for splits either (§6.5.3)
             proxies = SEL.who_proxies(pr0, now, hier,
-                                      [a for a, r in out["roles"].items() if r == "split"])
+                                      [a for a, r in out["roles"].items() if r in ("split", "target", "shape")])
         # per-node overrides from the node summaries
         pt = MP.get_ptree(store, key)
         overrides: Dict[int, Dict[int, List[str]]] = {}

@@ -136,6 +136,17 @@ def finance_fixture(days: int = 21, per_day: int = 10) -> Tuple[Fx, int]:
     return fx, nid
 
 
+def _rate_history(fx: "Fx", route: str, n: int = 20000, t: float = T0) -> None:
+    """n finished one-login IP-hours at the route's node in P03's own tally
+    (the reference an hour count is ranked against, conformity.RateTally)."""
+    st = fx.st.get_model(ORG, ORG, CF.STATE)
+    if not isinstance(st, CF.ConfState):
+        st = CF.ConfState()
+    nd = fx.node("portal", route)
+    st.tally().close_hour(MP.tree_key(fx.st, "portal"), [(0, nd.id, f"h{i}", 1.0) for i in range(n)], t)
+    fx.st.put_model(ORG, ORG, CF.STATE, st)
+
+
 def _approve(ip: str, ts: float, user: str = "") -> Tuple[float, str, Dict[str, Any]]:
     a = {"http.route": APPROVE, "http.method": "POST"}
     if user:
@@ -393,6 +404,7 @@ def test_i_intensity_scored_on_guaranteed_counts_only():
         "kind": "num", "band90": [1.0, 3.0], "band98": [1.0, 5.0], "qgrid": [1.0, 1.0, 2.0, 3.0, 6.0],
         "range": [1.0, 6.0], "n_c": 20000.0, "hard": True, "cover": 1e-4, "log": False}})
     fx.eng = CF.ConformityEngine(k_int=64)
+    _rate_history(fx, route)
     t = workdays(9)[-1] + 20 * 3600
     evs = [(t + i * 5, "10.60.7.7", {"http.route": route}) for i in range(400)]
     evs += [(t + i, f"10.61.{i // 200}.{i % 200}", {"http.route": route}) for i in range(1500)]
@@ -561,6 +573,7 @@ def test_intensity_routine_is_judged_on_magnitude():
         "kind": "num", "band90": [1.0, 3.0], "band98": [1.0, 5.0], "qgrid": [1.0, 1.0, 2.0, 3.0, 6.0],
         "range": [1.0, 6.0], "n_c": 20000.0, "mass": 20000.0, "hard": True, "cover": 1e-4, "log": False}})
     fx.eng = CF.ConformityEngine(k_int=64)
+    _rate_history(fx, route)
     days = workdays(14)[8:]
     busy = ["10.62.0.1", "10.62.0.2", "10.62.0.3"]
 
@@ -654,3 +667,176 @@ def test_foreign_to_the_closed_system_is_judged_at_the_root_not_only_the_young_n
     fx.score("finance", [_approve("192.168.1.23", t)])
     who = [e for e in fx.violations("192.168.1.23") if e.extra["type"] == "who"]
     assert who and who[0].severity == Severity.HIGH
+
+
+# ---------------------------------------------------------- novelty (groups_views round)
+SALES_IPS = [f"192.168.3.{i}" for i in range(20, 26)]
+WEEKLY = "POST fin /report/weekly"
+
+
+def _novel_fixture():
+    from app.engines.behavior.lib import pdfg as DF
+    fx, nid = finance_fixture(days=10)
+    wg = dict(fx.st.get_model(ORG, ORG, MP.WHO_GROUPS))
+    wg["groups"] = dict(wg["groups"], G3={"id": "G3", "name": "销售部", "members": SALES_IPS})
+    wg["ip2g"] = dict(wg["ip2g"], **{ip: "G3" for ip in SALES_IPS})
+    fx.st.put_model(ORG, ORG, MP.WHO_GROUPS, wg)
+    flow = DF.PFlowModel()
+    flow.state = DF.FlowState()
+    for i in range(200):
+        flow.state.acts.add(APPROVE, T0 + i, 1.0, 1.0)
+        flow.state.acts.add("GET fin /fin/ledger", T0 + i, 1.0, 1.0)
+    flow["scopes"] = {}
+    fx.st.put_model("finance", SYSTEM_ENTITY, MP.PFLOW, flow)
+    return fx
+
+
+def _novel_findings(fx, ips):
+    return {ip: [e.severity for e in fx.violations(ip) if e.extra["type"] == "novel"] for ip in ips}
+
+
+def test_new_action_of_a_whole_group_is_one_finding_then_low():
+    """A department starting a new write action (SALES' Friday report, 20 IPs
+    within the hour) is a new behaviour of the GROUP: the first source is
+    reported (nothing could know yet), every further member doing it the same
+    day is capped at LOW - not one MEDIUM incident per member (pack O: 39
+    MEDIUM `novel` findings for the weekly report, the largest FAR source)."""
+    fx = _novel_fixture()
+    t = workdays(11)[-1] + 16 * 3600
+    for k, ip in enumerate(SALES_IPS):
+        fx.score("finance", [(t + 600 * k, ip, {"http.route": WEEKLY, "http.method": "POST"})])
+    f = _novel_findings(fx, SALES_IPS)
+    assert f[SALES_IPS[0]] == [Severity.MEDIUM]
+    assert all(all(s == Severity.LOW for s in f[ip]) for ip in SALES_IPS[1:])
+    # a single source's new action is not "coordinated": still MEDIUM
+    fx.score("finance", [(t + 7200, "192.168.2.11", {"http.route": "POST fin /fin/purge", "http.method": "POST"})])
+    assert _novel_findings(fx, ["192.168.2.11"])["192.168.2.11"] == [Severity.MEDIUM]
+
+
+def test_recurring_action_is_not_new_when_the_dictionary_lost_it():
+    """An action performed by >= 2 sources on an earlier date is a recurring
+    action of the system (weekly / monthly), whatever P10's decayed dictionary
+    still holds; one source alone never establishes an action."""
+    fx = _novel_fixture()
+    days = workdays(16)
+    t1, t2 = days[10] + 16 * 3600, days[15] + 16 * 3600          # one week apart
+    for k, ip in enumerate(SALES_IPS[:3]):
+        fx.score("finance", [(t1 + 600 * k, ip, {"http.route": WEEKLY, "http.method": "POST"})])
+    fx.score("finance", [(t1 + 5000, "192.168.2.11", {"http.route": "GET fin /admin/export"})])
+    n0 = {ip: len(v) for ip, v in _novel_findings(fx, SALES_IPS + ["192.168.2.11"]).items()}
+    # a week later: the report again (P10's dictionary never learned it) and the probe again
+    for k, ip in enumerate(SALES_IPS[:3]):
+        fx.score("finance", [(t2 + 600 * k, ip, {"http.route": WEEKLY, "http.method": "POST"})])
+    fx.score("finance", [(t2 + 5000, "192.168.2.11", {"http.route": "GET fin /admin/export"})])
+    n1 = {ip: len(v) for ip, v in _novel_findings(fx, SALES_IPS + ["192.168.2.11"]).items()}
+    assert all(n1[ip] == n0[ip] for ip in SALES_IPS[:3])
+    assert n1["192.168.2.11"] == n0["192.168.2.11"] + 1
+    b, asg = fx.score("finance", [(t2 + 9000, SALES_IPS[4], {"http.route": WEEKLY, "http.method": "POST"})])
+    assert "recurring_action" in str(asg.get("flags", 0))
+
+
+def test_lateral_read_into_a_closed_system_is_medium():
+    """A source whose group never used the SYSTEM reading a node closed to one
+    approver (pack O A9: a sales address reading finance's approval list,
+    GET, sensitivity 1.5) is a lateral move: MEDIUM, axis lateral - LOW gave
+    no incident at all. A colleague-free read by a group that already uses the
+    system stays LOW."""
+    fx = _novel_fixture()
+    LIST = "GET fin /fin/approval/list"
+    for d in workdays(10):
+        for k in range(4):
+            fx.learn("finance", LIST, "192.168.2.10", d + (10 * 60 + 7 * k) * 60.0)
+    t = workdays(11)[-1] + 10.5 * 3600
+    fx.score("finance", [(t, SALES_IPS[0], {"http.route": LIST, "http.method": "GET"})])
+    v = [e for e in fx.violations(SALES_IPS[0]) if e.extra["type"] == "who"]
+    assert v and v[0].severity == Severity.MEDIUM
+    assert {"outsider_group", "system_new"} <= set(v[0].extra["flags"]) and "lateral" in v[0].axes
+    # a finance colleague (group already in the system) reading it: not a lateral move
+    fx.score("finance", [(t + 600, "192.168.2.11", {"http.route": LIST, "http.method": "GET"})])
+    w = [e for e in fx.violations("192.168.2.11") if e.extra["type"] == "who"]
+    assert all(CF.SEV_RANK[e.severity] <= CF.SEV_RANK[Severity.LOW] for e in w)
+
+
+def test_hour_count_beyond_every_ip_hour_ever_seen_is_ranked_against_all_of_them():
+    """The rate.ip_h digest's n is its DECAYED mass of IP-hours (a few hundred
+    on a portal login node), so its conformal rank p of a count beyond its
+    maximum never went below ~1/(mass + 1) = 2.5e-3: 400 logins in one hour
+    (pack O A7) were never an intensity finding. P03's own tally of every
+    finished IP-hour at the node ranks such a count first among all N of
+    them: p = 1/(N + 1) -> MEDIUM on the write action once N >= 1e4."""
+    fx = Fx()
+    route = "POST portal /login"
+    rng = np.random.default_rng(5)
+    for d in workdays(8):
+        for i in range(50):
+            fx.learn("portal", route, f"10.60.{i}.{int(rng.integers(1, 250))}", d + (10 + rng.random()) * 3600)
+    nd = fx.node("portal", route)
+    fx.put("portal", MP.PBOUNDS, nd.id, attrs={"rate.ip_h": {
+        "kind": "num", "band90": [1.0, 1.0], "band98": [1.0, 1.95], "qgrid": [1.0] * 31 + [1.05, 2.0],
+        "range": None, "n_c": 774.0, "mass": 397.0, "hard": False, "log": False}})
+    fx.eng = CF.ConformityEngine(k_int=4096)
+    t0 = workdays(9)[-1]
+    for h in range(36):                                        # 36 finished hours x 300 one-login IPs
+        th = t0 + h * 3600.0
+        fx.score("portal", [(th + i * 10.0, f"10.61.{(h * 300 + i) // 250 % 250}.{(h * 300 + i) % 250}",
+                             {"http.route": route, "http.method": "POST"}) for i in range(300)])
+    t = t0 + 37 * 3600.0
+    burst = [(t + i * 5.0, "10.60.7.7", {"http.route": route, "http.method": "POST"}) for i in range(400)]
+    fx.score("portal", burst)
+    v = [e for e in fx.violations("10.60.7.7") if e.extra["type"] == "content" and "intensity" in e.extra["flags"]]
+    assert v and max(CF.SEV_RANK[e.severity] for e in v) >= CF.SEV_RANK[Severity.MEDIUM]
+    # none of the one-login sources is a finding
+    assert not [e for e in fx.violations() if e.entity != "10.60.7.7" and "intensity" in e.extra["flags"]]
+
+
+def test_small_hour_count_is_ranked_not_extrapolated_by_a_continuous_tail():
+    """An integer hour count of 3 where the node's history holds hundreds of
+    2s and dozens of 3s is ordinary: its rank among the node's IP-hours is
+    ~1e-3, whatever a GPD tail fitted to counts that are almost all 1 says
+    (P06's bounded tail put it at the p floor 1e-9: 40 clean portal / crm
+    visitors were intensity findings on pack O seed 0)."""
+    fx = Fx()
+    route = "POST portal /login"
+    rng = np.random.default_rng(6)
+    for d in workdays(8):
+        for i in range(50):
+            fx.learn("portal", route, f"10.60.{i}.{int(rng.integers(1, 250))}", d + (10 + rng.random()) * 3600)
+    nd = fx.node("portal", route)
+    fx.put("portal", MP.PBOUNDS, nd.id, attrs={"rate.ip_h": {
+        "kind": "num", "band90": [1.0, 1.0], "band98": [1.0, 1.95], "qgrid": [1.0] * 31 + [1.05, 2.0],
+        "range": [1.0, 2.0], "n_c": 20000.0, "mass": 400.0, "hard": False, "log": False,
+        "tail_hi": [1.95, -0.5, 0.05]}})
+    _rate_history(fx, route, n=20000)
+    st = fx.st.get_model(ORG, ORG, CF.STATE)
+    key = MP.tree_key(fx.st, "portal")
+    st.tally().close_hour(key, [(0, nd.id, f"x{i}", 2.0) for i in range(300)], T0)
+    st.tally().close_hour(key, [(0, nd.id, f"y{i}", 3.0) for i in range(30)], T0)
+    fx.st.put_model(ORG, ORG, CF.STATE, st)
+    t = workdays(9)[-1] + 20 * 3600
+    fx.score("portal", [(t + i * 60.0, "10.60.8.8", {"http.route": route, "http.method": "POST"}) for i in range(3)])
+    assert not [e for e in fx.violations("10.60.8.8") if "intensity" in e.extra["flags"]]
+
+
+def test_new_lease_of_a_configured_dhcp_pool_is_not_an_unknown_source(monkeypatch):
+    """A login node used by a DHCP pool closes at /24 (its IPs churn); a fresh
+    lease from a /24 of the same configured pool that had not been drawn yet
+    is a re-addressed member, not an unknown source (pack O: five MEDIUM
+    unknown_ip findings on the make-up Saturday). An address outside every
+    pool is still judged."""
+    monkeypatch.setitem(CFG, "dhcp_scopes", [{"cidr": "10.50.0.0/22", "name": "研发 DHCP"}])
+    fx = Fx()
+    rng = np.random.default_rng(7)
+    pool = [f"10.50.{b}.{i}" for b in (0, 2, 3) for i in range(1, 21)]
+    for d in workdays(12):
+        for ip in rng.choice(pool, 30, replace=False):
+            fx.learn("oa", LOGIN, str(ip), d + (9.5 + rng.random()) * 3600)
+    nd = fx.node("oa", LOGIN)
+    lvl, mem, U = CF._who_closed(nd, workdays(13)[-1])
+    assert lvl == 1 and U <= 0.02                       # closed at /24
+    t = workdays(13)[-1] + 10 * 3600
+    fx.score("oa", [(t, "10.50.1.19", {"http.route": LOGIN, "http.method": "POST"})])
+    assert not [e for e in fx.violations("10.50.1.19") if e.extra["type"] == "who"
+                and CF.SEV_RANK[e.severity] >= CF.SEV_RANK[Severity.MEDIUM]]
+    fx.score("oa", [(t + 60, "10.77.1.19", {"http.route": LOGIN, "http.method": "POST"})])
+    assert [e for e in fx.violations("10.77.1.19") if e.extra["type"] == "who"
+            and CF.SEV_RANK[e.severity] >= CF.SEV_RANK[Severity.MEDIUM]]

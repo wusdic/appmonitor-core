@@ -128,6 +128,28 @@ implementation report):
     (the store has one pat.assign series per system, aligned with evt.batch).
   * the content-attribute test of P10's action variants is duplicated here
     (a shared helper belongs in lib/pdfg, W-P5 / open issue).
+  * novel (groups_views round, ActionLedger): an action P10's dictionary does
+    not hold is NOT new when it was performed on an earlier local date by >= 2
+    distinct sources (a recurring weekly / monthly action - P10's decayed
+    dictionary never held SALES' Friday report, flagged MEDIUM for all 20
+    members on both Fridays, the largest FAR source); and a new action that
+    another member of the source's P11 group performed the same day is a new
+    behaviour of the group, capped at LOW (flags recurring_action /
+    group_action).
+  * who: a source whose group never used the SYSTEM (system_new) and is an
+    outsider at a node closed with U <= 0.02 is MEDIUM whatever the node's
+    sensitivity (a lateral move into a closed system; the HIGH row's
+    `lateral` axis). A9 (sales IP reading finance's approval list) was LOW:
+    no incident ever opened.
+  * who: a new address inside a configured DHCP pool (dhcp_scopes) whose pool
+    (reg level) has standing at the node is a re-addressed member.
+  * intensity: the hour count's p is its conformal rank among every IP-hour
+    P03 closed at the node (RateTally, binned histogram, H_L decay), not
+    P06's rate.ip_h p - that digest is H_m-decayed (rank floor ~1/(mass+1)
+    = 2.5e-3: A7's 400 logins an hour was LOW) and its GPD tail, fitted to
+    integer counts, put counts of 2-3 at the 1e-9 floor (~40 clean
+    intensity findings per run). rate.ip_h's band still gates the test
+    (count > band90 top) and is what the finding states as expected.
 """
 from __future__ import annotations
 
@@ -168,6 +190,7 @@ CONF_SERIES = "behavior.conf"
 STATE = "model.pconf_state"
 P_FLOOR = 1e-9                  # a finite sample never supports p = 0 (bounded GPD tails)
 GRP_LEVEL = 3                   # the who level of P11's groups (grp:<id>)
+REG_LEVEL = 4                   # the who level of configured / learned regions (reg:<name>)
 GROUP_MIN_MEMBERS = 2           # other members with standing that make a node a pattern of their group
 MEMBER_EV = 3.0                 # a source recurring at an ANCESTOR population (back-off) is a member
 CAL_TYPES = ("when", "content", "seq")
@@ -409,6 +432,143 @@ class CalStore:
         return int(len(self.h) * (4 * (self.NB + 2) + 200) + 128)
 
 
+LEDGER_CAP = 16_384             # (system, action) entries remembered (LRU)
+LEDGER_SRC = 4                  # distinct sources kept per action
+LEDGER_GRP_SRC = 2              # distinct sources kept per group and action for the current day
+
+
+class ActionLedger:
+    """Which actions a system has seen, by how many sources and on which local
+    dates - a long memory next to P10's H_m-decayed action dictionary (whose
+    k-slot Space-Saving can lose a weekly or monthly action between two of its
+    occurrences, and which learns nothing from quarantined sources).
+
+    Per (system, action route): [first local day, last local day, number of
+    local dates, up to LEDGER_SRC distinct sources, the day of `grp`, and grp =
+    {group: up to LEDGER_GRP_SRC distinct member sources that performed it on
+    that day}]. LRU-bounded (LEDGER_CAP entries); O(1) per scored event.
+
+    Two facts P03's `novel` type reads from it (both computed BEFORE the event
+    itself is added, prequential):
+      established  performed on an EARLIER local date by >= 2 distinct sources:
+                   a recurring action of the system (SALES' Friday report on its
+                   second Friday), not a new one - one source alone can never
+                   establish an action (an attacker repeating its own probe);
+      coordinated  another member of the source's P11 group performed this new
+                   action today: a new behaviour of the group (§6.9.2's
+                   coordinated change), reported at most LOW."""
+
+    __slots__ = ("d",)
+
+    def __init__(self, cap: int = LEDGER_CAP) -> None:
+        self.d = PS.LRU(cap)
+
+    def peek(self, s: str, key: str) -> Optional[List[Any]]:
+        return self.d.peek((s, key))
+
+    @staticmethod
+    def established(e: Optional[List[Any]], day: int) -> bool:
+        return e is not None and int(e[0]) < day and len(e[3]) >= 2
+
+    @staticmethod
+    def coordinated(e: Optional[List[Any]], g: Optional[str], ip: str, day: int) -> bool:
+        if e is None or g is None or int(e[4]) != day:
+            return False
+        return any(x != ip for x in (e[5].get(g) or ()))
+
+    def add(self, s: str, key: str, ip: str, g: Optional[str], day: int) -> None:
+        e = self.d.get((s, key))
+        if e is None:
+            e = [day, day, 1, [], day, {}]
+            self.d.put((s, key), e)
+        elif int(e[1]) != day:
+            e[1] = day
+            e[2] += 1
+        if ip not in e[3] and len(e[3]) < LEDGER_SRC:
+            e[3].append(ip)
+        if int(e[4]) != day:
+            e[4], e[5] = day, {}
+        if g is not None:
+            m = e[5].setdefault(g, [])
+            if ip not in m and len(m) < LEDGER_GRP_SRC:
+                m.append(ip)
+
+    def nbytes(self) -> int:
+        return int(len(self.d) * 360 + 128)
+
+
+RATE_TALLY_CAP = 8192
+RATE_BINS = 48
+
+
+def _rate_bin(c: float) -> int:
+    """Bin of an hour count: exact for 1-4, half-octave above (5-5, 6-7, 8-11, ...)."""
+    c = max(1.0, float(c))
+    if c < 5.0:
+        return int(c) - 1
+    return min(RATE_BINS - 1, 4 + int(2.0 * math.log2(c / 4.0)))
+
+
+class RateTally:
+    """Per (tree key, kind, node): the distribution of the finished hour counts
+    of every (IP, node) pair P03 has closed there - a binned histogram (exact
+    for 1-4, half-octave bins above) with forward decay at H_L (30 d),
+    LRU-bounded by nodes, O(1) per pat.rate row.
+
+    p(c) = (1 + W(>= bin(c))) / (W + 1): the conformal rank of an hour count
+    among all IP-hours counted at the node, the whole bin of c counted as "at
+    least as extreme" (conservative). Valid for count data under
+    exchangeability of IP-hours (prequential: only finished hours enter).
+
+    Why not P06's rate.ip_h p: the digest is H_m-decayed (its mass is a few
+    hundred IP-hours on a portal login node however long it is watched), so a
+    count beyond its maximum had the rank p 1/(mass + 1) ~ 2.5e-3 and 400
+    logins in one hour (pack O A7) was never more than LOW; and its GPD tail,
+    fitted to integer counts that are almost all 1, put a count of 2-3 at the
+    p floor 1e-9 - 40 clean portal / crm visitors were intensity findings
+    (seed 0), most of them MEDIUM incidents."""
+
+    __slots__ = ("d", "L")
+
+    def __init__(self, cap: int = RATE_TALLY_CAP) -> None:
+        self.d = PS.LRU(cap)
+        self.L: Optional[float] = None
+
+    def _f(self, t: float) -> float:
+        if self.L is None:
+            self.L = float(t)
+        e = (float(t) - self.L) / PS.H_L
+        if e > 60.0:
+            g = np.float64(2.0 ** -e)
+            for _, a in self.d._d.items():
+                a *= g
+            self.L = float(t)
+            e = 0.0
+        return 2.0 ** e
+
+    def close_hour(self, key: str, rows: Sequence[Tuple[int, int, str, float]], t: float) -> None:
+        f = self._f(t)
+        for kind, nid, _ip, g in rows:
+            k = (key, int(kind), int(nid))
+            a = self.d.get(k)
+            if a is None:
+                a = np.zeros(RATE_BINS, dtype=np.float64)
+                self.d.put(k, a)
+            a[_rate_bin(g)] += f
+
+    def p(self, key: str, kind: int, nid: int, c: float, t: float) -> float:
+        a = self.d.peek((key, int(kind), int(nid)))
+        if a is None:
+            return 1.0
+        f = self._f(t)
+        W = float(a.sum()) / f
+        w_ge = float(a[_rate_bin(c):].sum()) / f
+        return float(min(1.0, (1.0 + w_ge) / (W + 1.0)))
+
+    def nbytes(self) -> int:
+        return int(len(self.d) * (8 * RATE_BINS + 160) + 128)
+
+
 class ConfState:
     """P03's private state (model.pconf_state@(__org__, __org__); P03 writes no
     pattern model)."""
@@ -418,13 +578,26 @@ class ConfState:
         self.hour: Dict[str, HourSS] = {}
         self.cells = PS.LRU(cells)
         self.last_active = PS.LRU(last_active)
+        self.ledger = ActionLedger()
         self.last_batch: Dict[Tuple[str, str], float] = {}
         self.stats: Dict[str, float] = {"events": 0, "scored": 0, "violations": 0, "suppressed": 0,
                                         "us": 0.0}
 
     def nbytes(self) -> int:
         return int(sum(h.nbytes() for h in self.hour.values()) + 120 * len(self.cells)
-                   + 100 * len(self.last_active) + self.cal.nbytes() + 1024)
+                   + 100 * len(self.last_active) + self.cal.nbytes() + self.led().nbytes() + 1024)
+
+    def tally(self) -> RateTally:
+        r = getattr(self, "rate_tally", None)
+        if r is None:                           # a state saved before the tally existed
+            r = self.rate_tally = RateTally()
+        return r
+
+    def led(self) -> ActionLedger:
+        lg = getattr(self, "ledger", None)
+        if lg is None:                          # a state saved before the ledger existed
+            lg = self.ledger = ActionLedger()
+        return lg
 
 
 # ================================================================ node info
@@ -461,6 +634,10 @@ class _TreeCtx:
         self.sigs = getattr(ws, "sigs", None)
         self.tz = PW.tz_offset(config, now)
         self.sens = [re.compile(p) for p in (config.get("sensitive_patterns") or []) if isinstance(p, str)]
+        # configured address POOLS (DHCP scopes): reg-level items whose new
+        # addresses are re-addressed members, not strangers
+        self.pool_regions: Set[str] = {f"reg:{it.get('name', 'dhcp_scopes')}"
+                                       for it in (config.get("dhcp_scopes") or []) if isinstance(it, Mapping)}
         pc = EV.pconfig(config)
         self.gap = float(pc["defaults"].get("session_gap_s", 1800.0))
         self.info: Dict[Tuple[int, int], _NodeInfo] = {}
@@ -803,6 +980,9 @@ class ConformityEngine(Engine):
         if hs.hour == hid:
             return
         rows = [(k[1], k[2], k[0], g) for k, g in hs.rows() if g > 0]
+        # long-run tally of finished IP-hours per node (the rank reference of
+        # the hour count, see RateTally)
+        st.tally().close_hour(MP.tree_key(store, s), rows, now)
         store.add_batch(s, EV.PAT_RATE, now, {"rows": rows, "hour": hs.hour, "N": hs.N,
                                               "untracked": max(0.0, hs.N - sum(g for *_, g in rows))})
         st.hour[s] = HourSS(k_int, hid)
@@ -892,6 +1072,7 @@ class ConformityEngine(Engine):
             num["conf"] = float(path[conf_i]) if conf_i >= 0 else NAN
         # ---- action, variant, session (seq)
         p_seq, p_novel = NAN, NAN
+        novel_coord = False
         flags: Set[str] = set()
         seq_missing: List[str] = []
         if txn and route_key is not None:
@@ -931,11 +1112,24 @@ class ConformityEngine(Engine):
                     res["p_req"] = sc.get("p_req")
                 acts = tc.flow.acts
                 k10 = DF.route_key(get)                  # the key P10 itself computes
+                led = st.led()
+                lday = int((ts + tc.tz) // DAY)
+                le = led.peek(s, route_key)
+                g_ip = tc.ip2g.get(ip)
+                g_ip = str(g_ip) if g_ip is not None else None
                 if all(acts.id_of(x) is None for x in {key, route_key, k10} if x):
                     tot_ev = acts.ss.ss.total_evidence(t)
-                    if tot_ev >= N_MIN:
+                    if ActionLedger.established(le, lday):
+                        # seen on an earlier date by >= 2 sources: a recurring action
+                        # (weekly / monthly) P10's decayed dictionary no longer holds
+                        flags.add("recurring_action")
+                    elif tot_ev >= N_MIN:
                         p_novel = float(acts.unseen(t))
                         flags.add("new_action")
+                        if ActionLedger.coordinated(le, g_ip, ip, lday):
+                            novel_coord = True
+                            flags.add("group_action")
+                led.add(s, route_key, ip, g_ip, lday)
             overlay[sess_k] = [None, ts, key, b"", bits | DF.bloom_bits(DF.h64(key))]
         # ---- novelty: `other` branch of a confident route split (without P10's dictionary)
         if tree is not None and tc.flow is None:
@@ -958,6 +1152,8 @@ class ConformityEngine(Engine):
         p_int = NAN
         details: Dict[str, Any] = {}
         cap_low: Set[str] = set()
+        if novel_coord:
+            cap_low.add("novel")                  # a new behaviour of the group, not of one source
         readdr_src: Optional[str] = None
         bind_fl: Set[str] = set()
         lb_x = NAN
@@ -1071,10 +1267,9 @@ class ConformityEngine(Engine):
                         if rrec:
                             break
                     if rrec and rrec.get("band90") and g_cnt > float(rrec["band90"][1]):
-                        # the evidence of the rate digest is its IP-hours (mass), not the
-                        # node's event count: the tail rank is 1/(IP-hours + 1)
-                        n_ih = rrec.get("mass")
-                        p, fl = PB.p_value(rrec, g_cnt, n=float(n_ih) if n_ih else None)
+                        # the rank of the count among every IP-hour P03 closed at the
+                        # node (RateTally), not P06's decayed continuous fit
+                        p = st.tally().p(tc.key, kind, conf_nd.id, g_cnt, ts)
                         if not _nan(p):
                             # the hour count is one cumulative statistic, not a new test per
                             # event: it bypasses calibration and the per-day multiplicity
@@ -1134,6 +1329,20 @@ class ConformityEngine(Engine):
                     # members use it), not one member's individual pattern
                     g0 = tc.ip2g.get(ip)
                     return g0 is None or group_members_at(ni_.nd, g0, ip, t, tc.ip2g) >= GROUP_MIN_MEMBERS
+                # a new address inside a CONFIGURED address pool (dhcp_scopes /
+                # ip_classes: the operator's statement that these addresses are one
+                # population) whose pool has standing at the node: a re-addressed
+                # member, not an unknown source. Pack O: on the make-up Saturday
+                # five fresh 研发 DHCP leases logging in to OA were MEDIUM unknown_ip
+                # who findings against a /24-closed login node whose fourth /24 of the
+                # pool had not been drawn yet
+                if ni_.who_l < REG_LEVEL and len(keys_) > REG_LEVEL:
+                    rg = keys_[REG_LEVEL]
+                    if rg is not None and str(rg) not in NONE_ITEMS and tc.pool_regions \
+                            and str(rg) in tc.pool_regions:
+                        lv = ni_.nd.who.levels[REG_LEVEL] if len(ni_.nd.who.levels) > REG_LEVEL else None
+                        if lv is not None and rg in lv and lv.evidence(rg, t) >= MEMBER_EV:
+                            return True
                 return False
 
             for j in range(conf_i, -1, -1):
@@ -1330,6 +1539,13 @@ class ConformityEngine(Engine):
                 sev = Severity.HIGH
             elif U <= 0.02 and sigma >= 2 and ("outsider_group" in flags or "unknown_ip" in flags):
                 sev = Severity.LOW if "readdress_candidate" in bind_fl else Severity.MEDIUM
+            elif U <= 0.02 and {"outsider_group", "system_new"} <= flags and "readdress_candidate" not in bind_fl:
+                # a lateral move: the source's group never used this SYSTEM at all and
+                # the node is closed to others - MEDIUM on a read too (the §6.16.3
+                # HIGH row's `lateral` axis, without its write / sensitivity
+                # condition). Pack O A9: a sales address reading finance's approval
+                # list (GET, sigma 1.5) was LOW, so no incident ever opened
+                sev = Severity.MEDIUM
             elif U <= 0.05:
                 sev = Severity.INFO if "readdress_candidate" in bind_fl else Severity.LOW
             if "concurrent_use" in bind_fl and sev is not None:

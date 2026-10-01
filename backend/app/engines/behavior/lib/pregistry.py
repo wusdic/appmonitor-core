@@ -48,6 +48,7 @@ PAYLOAD_TEXT_NS = ("body", "q", "hdr")        # string payload values are text (
 TYPES = ("categorical", "numeric", "ordinal", "ip", "time", "set", "text", "unknown")
 A_MAX = 512
 TOP_K = 32
+TOP_K_DROPPED = 8          # a dropped attribute is registry-only (§6.4): presence, HLL, a small top
 DAY = PS.DAY
 UNSEEN_EVICT_S = 30 * DAY
 LOCK_N = 500.0
@@ -356,15 +357,18 @@ class AttrRegistry:
                      else "|".join(sorted(str(x) for x in v)), t)
         top = rec.top
         key = rec.key
+        dropped = rec.role_sys == "dropped"
         for v, mm, e in zip(vals, m, ev):
             top.add(key(v), t, mm, e)
+            if dropped:
+                continue
             if isinstance(v, (frozenset, set, list)):
                 if rec.elem is None:
                     rec.elem = PS.DecayedSpaceSaving(TOP_K)
                 for x in list(v)[:32]:
                     rec.elem.add(str(x), t, mm, e)
-        # numeric summaries
-        if nums:
+        # numeric summaries (not for a dropped attribute: registry-only)
+        if nums and not dropped:
             if rec.num is None:
                 rec.num = PS.TDigest(50.0, PS.H_M)
                 rec.mom = PS.DecayedVector([PS.H_M] * 9)
@@ -456,8 +460,8 @@ class AttrRegistry:
                 out.append((nm, rec.type, new))
                 rec.type = new
                 rec.version += 1
-                rec.top = PS.DecayedSpaceSaving(TOP_K)      # keys change meaning with the type
-                if new == "set" and rec.elem is None:
+                rec.top = PS.DecayedSpaceSaving(TOP_K_DROPPED if rec.role_sys == "dropped" else TOP_K)
+                if new == "set" and rec.elem is None and rec.role_sys != "dropped":
                     rec.elem = PS.DecayedSpaceSaving(TOP_K)
             if n >= LOCK_N and t - rec.first_seen >= DAY and rec.type != "unknown":
                 rec.locked = True
@@ -536,9 +540,26 @@ class AttrRegistry:
             rec.version += 1
 
     def set_role(self, name: str, role: str) -> None:
+        """P05's system role. A `dropped` attribute is registry-only (§6.4 role
+        table: presence, HLL): its value summaries (top values, numeric digest
+        and moments, set elements) are released and kept at TOP_K_DROPPED; they
+        are rebuilt from the next events when P05 gives it a role again (its
+        weekly re-probe evaluates it on P05's own probe rows). Measured on the
+        PG4 attribute axis: every registered attribute kept a 32-value top,
+        a t-digest and moments, so the registry grew with the number of
+        attributes although 2/3 of pack O-scale's synthetic ones are noise."""
         rec = self.records.get(name)
-        if rec is not None:
-            rec.role_sys = role
+        if rec is None:
+            return
+        old = rec.role_sys
+        rec.role_sys = role
+        if role == "dropped" and old != "dropped":
+            rec.top = PS.DecayedSpaceSaving(TOP_K_DROPPED)
+            rec.num = None
+            rec.mom = None
+            rec.elem = None
+        elif old == "dropped" and role != "dropped":
+            rec.top = PS.DecayedSpaceSaving(TOP_K)
 
     # ------------------------------------------------------- schema change
     def check_gone(self, t: float, normal_day: bool = True, daytype: Optional[int] = None) -> List[str]:

@@ -404,6 +404,32 @@ def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N
     return rec
 
 
+def inherit_text(anc: Optional[Mapping[str, Any]], ts: Any, t: float) -> Optional[Dict[str, Any]]:
+    """Hierarchical back-off of a grammar (§6.16.1 applied to publishing): a
+    node too young for its own grammar (< N_MIN evidence, e.g. a department's
+    login node created by a late split) states its nearest ancestor's grammar,
+    which every value of the node also obeys (the node's events are a subset of
+    the ancestor's) - looser, never wrong. Published only when every shape the
+    node did see matches it; no closed set (that is the ancestor's population)
+    and the confidence is the ancestor's, scaled by the node's own share of
+    evidence. Marked `inherited` (the ancestor's node id)."""
+    if not anc or not anc.get("grammar"):
+        return None
+    try:
+        rx = re.compile(str(anc["grammar"]))
+    except re.error:
+        return None
+    seen = [k for k, _, g, _ in ts.shapes.items(t) if g > 0]
+    if not seen or not all(rx.fullmatch(instance(k)) for k in seen):
+        return None
+    n = float(ts.shapes.total_evidence(t))
+    out = {k: v for k, v in anc.items() if k not in ("closed", "U", "top", "value_cover", "n_values",
+                                                       "_from", "cver", "gain")}
+    out.update({"inherited": int(anc.get("_from", -1)), "n": n,
+                "confidence": float(anc.get("confidence", 0.0)) * min(1.0, n / N_MIN)})
+    return out
+
+
 def _closed(vs: Any, t: float, closed_n: float, closed_u: float) -> Dict[str, Any]:
     vtot = vs.total(t)
     nv = vs.total_evidence(t)

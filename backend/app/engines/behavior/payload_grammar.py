@@ -111,7 +111,8 @@ class PayloadGrammarEngine(Engine):
                         outn[nid] = {"status": "off", "attrs": {}, "fit_t": now, "cver": 0}
                     continue
                 entry = self.fit_node(store, key, node, now, reg, ctx.config, closed_n, prev,
-                                      closed_u)
+                                      closed_u, lambda nd, a, tree=tree, outn=outn:
+                                      _ancestor_grammar(tree, outn, nd, a))
                 outn[nid] = entry
                 fits[nid] = PB.fit_mark(node, now)
                 n_fit += 1
@@ -143,7 +144,8 @@ class PayloadGrammarEngine(Engine):
 
     def fit_node(self, store: Any, key: str, node: Any, now: float, reg: Any,
                  config: Mapping[str, Any], closed_n: float,
-                 old: Optional[Mapping[str, Any]], closed_u: float = PG.CLOSED_U) -> Dict[str, Any]:
+                 old: Optional[Mapping[str, Any]], closed_u: float = PG.CLOSED_U,
+                 inherit: Any = None) -> Dict[str, Any]:
         attrs: Dict[str, Any] = {}
         old_attrs = (old or {}).get("attrs") or {}
         for a, summ in node.targets.items():
@@ -153,6 +155,8 @@ class PayloadGrammarEngine(Engine):
                                   pin=PB.pins_for(config, store, key, a))
                 if rec is not None:
                     rec["gain"] = PG.shape_gain(summ.shapes, getattr(rr, "top", None), now)
+                elif inherit is not None:
+                    rec = PG.inherit_text(inherit(node, a), summ, now)
             elif isinstance(summ, PN.SetSummary):
                 rec = PG.fit_set(summ, now)
             elif isinstance(summ, PN.CatSummary):
@@ -170,3 +174,16 @@ class PayloadGrammarEngine(Engine):
         return {"status": "fitted" if attrs else "none", "attrs": attrs,
                 "n_c": float(node.n_c(now)), "fit_t": float(now), "state": node.state,
                 "cver": max([r.get("cver", 0) for r in attrs.values()] or [0])}
+
+
+def _ancestor_grammar(tree: Any, outn: Mapping[int, Any], node: Any, a: str) -> Optional[Dict[str, Any]]:
+    """The nearest ancestor's own (not inherited) grammar record of a."""
+    cur = node
+    while cur.parent is not None:
+        cur = tree.nodes.get(cur.parent)
+        if cur is None:
+            return None
+        rec = ((outn.get(cur.id) or {}).get("attrs") or {}).get(a)
+        if rec and rec.get("kind") == "text" and rec.get("grammar") and not rec.get("inherited"):
+            return dict(rec, _from=int(cur.id))
+    return None

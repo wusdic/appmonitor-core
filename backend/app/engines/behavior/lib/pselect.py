@@ -123,6 +123,12 @@ def same_source(a: str, b: str) -> bool:
     for x, y in ((a, b), (b, a)):
         if x.endswith(".keys") and y.startswith(x[:-5] + ".kv."):
             return True
+        # X.len vs its parts (X.kv.<k>, X.kv.<k>.len, X.keys): the length of a body
+        # is the sum of its fields' lengths, so a split on the body-size bin
+        # "predicts" the length of its padding field trivially (pack O: the OA
+        # login children split on body.len paid by body.kv.viewstate.len)
+        if x.endswith(".len") and (y.startswith(x[:-4] + ".kv.") or y == x[:-4] + ".keys"):
+            return True
     return False
 
 
@@ -589,11 +595,15 @@ class AttrStats(dict):
     """Per-attribute evaluation record (plain dict for storage)."""
 
 
+TIME_TARGET = "ctx.tod_min"   # the time of day is behaviour: a split candidate's utility counts it
+
+
 def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
              registry: Any = None, targets_prev: Sequence[str] = (),
              splits_prev: Sequence[str] = (), coverage: Optional[Callable[[str], float]] = None,
              stability: Optional[Callable[[str], float]] = None,
-             cost_us: Optional[Callable[[str], float]] = None) -> Dict[str, Dict[str, Any]]:
+             cost_us: Optional[Callable[[str], float]] = None,
+             proxies: Sequence[str] = ()) -> Dict[str, Dict[str, Any]]:
     """Evaluate attributes `names` on the probe (§6.4). Returns {a: stats} with
     keys level, H, H0, distinct0, CR, U_t, U_s{l: bits}, best_levels, card{l},
     cov, S, n."""
@@ -649,8 +659,18 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
             cc, k = gen_codes(hier, a, l, *raw(a))
         ctx_codes.append((a, cc, k))
     ctx_h = [w_plugin(cc, w) for _, cc, _ in ctx_codes]      # H(context) on all rows, once
-    # target codes for U_s
-    tgt = [b for b in targets_prev if b in present][:2 * M_T]
+    # target codes for U_s: the BEHAVIOUR a split would explain (§6.5.3, P04 M26):
+    # the system targets except source properties (a client stack is predicted
+    # by every who level and says nothing about what the sources do), plus the
+    # time of day - P04 codes it as the @when target of every split, and it is
+    # often the only behaviour that tells groups apart (measured on pack O's
+    # mail, opaque TLS: the system target list was the TCP-window class alone,
+    # so no who or time level ever got the split role and the departments' mail
+    # windows were never separated)
+    prox = set(proxies)
+    tgt = [b for b in targets_prev if b in present and b not in prox][:2 * M_T]
+    if TIME_TARGET in present and TIME_TARGET not in tgt:
+        tgt.append(TIME_TARGET)
     tgt_codes = [(b,) + lev(b)[1:] for b in tgt]
     tknown = {b: np.fromiter((v is not MISSING for v in col(b)), dtype=bool, count=n) for b in tgt}
     Hb = {b: w_plugin(cc, w)[0] for b, cc, _ in tgt_codes}
@@ -816,13 +836,27 @@ def ip_information(probe: StratifiedProbe, t: float, hier: Any, targets: Sequenc
     return out
 
 
+PROXY_COV = 0.5            # a source property is present on >= half of the probe rows
+
+
 def who_proxies(probe: StratifiedProbe, t: float, hier: Any, attrs: Sequence[str],
-                g3_max: float = 0.05, min_h: float = 0.1) -> List[str]:
-    """Attributes that are a function of the source (g3(net.src -> a) <= g3_max,
-    each IP shows one value) while shared by several sources: identity proxies
-    such as a department's client stack or user agent. A split on one is a true
-    statement about the population, and P04's revision may replace it by a split
-    on a who level when that predicts better (§6.5.5, §6.6)."""
+                g3_max: float = 0.05, min_h: float = 0.1, min_cov: float = PROXY_COV) -> List[str]:
+    """Source properties ("identity proxies"): attributes that are a function
+    of the source (g3(net.src -> a) <= g3_max, each IP shows one value), shared
+    by several sources (>= 2 sources per value) and carried by the source's
+    events whatever the action (present on >= min_cov of the probe rows): a
+    department's client stack, TCP window class, TTL, user agent. They describe
+    WHO the client is, not what it does, so P04 treats them as context: they
+    are never split targets (a split is paid for by the behaviour it explains,
+    §6.5.3) and, as split candidates, they yield to the who levels they stand
+    in for unless they explain the behaviour better (P04 _check_valid_first);
+    a split on one may also be revised into a who level (§6.6).
+
+    Action fields are not source properties even when they are bound to the
+    source: a login form's username is a function of the IP, but it is present
+    on one action only (coverage << min_cov) and it is what the action submits.
+    Time context (tod / calendar) is not a property of the source either,
+    although a source active on workdays only shows one day type."""
     rows, w, _ = probe.rows(t)
     if not rows:
         return []
@@ -833,12 +867,15 @@ def who_proxies(probe: StratifiedProbe, t: float, hier: Any, attrs: Sequence[str
     cip, uip = probe.codes(rows, "net.src")
     out = []
     for a in attrs:
-        if a in WHO_ATTRS:
-            continue
+        if a in WHO_ATTRS or not targetable(a):
+            continue                                    # who, time / calendar context, bookkeeping
         col = probe.column(rows, a)
         known = np.fromiter((v is not MISSING and v is not ABSENT for v in col), dtype=bool, count=len(col))
         if known.sum() < N_LOCAL:
             continue
+        rec = np.fromiter((v is not MISSING for v in col), dtype=bool, count=len(col))
+        if known.sum() < min_cov * max(1, int(rec.sum())):
+            continue                                    # an action's field, not a source property
         l, cc, k = level_codes(hier, a, [col[i] for i in np.flatnonzero(known)])
         ci = cip[known]
         wk = w[known]

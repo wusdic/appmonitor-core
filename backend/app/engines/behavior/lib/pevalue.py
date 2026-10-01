@@ -126,6 +126,10 @@ class SplitStats:
         self.den = np.zeros((C_, J, self.T))                 # cnt summed over bins
         self.L1 = np.zeros((C_, self.T))
         self.Gt = np.zeros((C_, self.T))                     # per-target saving (selective gain)
+        # per-target saving of candidate c on the events where candidate o was also
+        # tracked (Gp[c, o, t]): the selective comparison of two candidates on their
+        # COMMON events (rule (S) in 'margin' mode)
+        self.Gp = np.zeros((C_, C_, self.T))
         # blockwise k-sample e-process (rule V, see _close_block): log2 e per (candidate, target),
         # the open block's evidence-weighted counts and the slot predictors frozen at its start
         self.E = np.zeros((C_, self.T))
@@ -191,6 +195,9 @@ class SplitStats:
         self.den[i] = 0.0
         self.L1[i] = 0.0
         self._gt()[i] = 0.0
+        gp = self._gp()
+        gp[i] = 0.0
+        gp[:, i] = 0.0
         self._blk()
         self.E[i] = 0.0
         self.bm[i] = 0.0                                   # started mid-block: its slots start empty
@@ -273,13 +280,18 @@ class SplitStats:
         d_out = np.zeros(self.C)
         if w <= 0.0:
             return d_out
+        # the check cadence counts every unit, also while no candidate is tracked:
+        # a leaf whose candidates were all dropped (constant at the leaf so far)
+        # is re-offered candidates at its next check - counting only while some
+        # candidate was active, it never reached that check and stayed without
+        # candidates for good (a split's `other` child, pack O-like replay)
+        self.total_evidence += w
+        self.since_check += w
         act = self.active()
         if not act:
             return d_out
         b = np.asarray(bins, dtype=np.int64)
         tp = np.flatnonzero(b >= 0)
-        self.total_evidence += w
-        self.since_check += w
         a = np.asarray(act, dtype=np.int64)
         jj = np.asarray([self._slot(i, values[i], w) for i in act], dtype=np.int64)
         if day is not None:
@@ -318,6 +330,9 @@ class SplitStats:
             dt_ = w * (np.where(m, ll, 0.0) - contrib)
             gtf = self._gt().reshape(-1)
             gtf[(a * self.T)[:, None] + tp[None, :]] += dt_
+            if a.size > 1:
+                gp = self._gp()
+                gp[a[:, None, None], a[None, :, None], tp[None, None, :]] += dt_[:, None, :]
             sf = self.S.reshape(-1)
             sf[(((a * (self.kv + 1) + jj) * self.T)[:, None] + tp[None, :]).ravel()] += dt_.ravel()
             d = dt_.sum(axis=1)
@@ -527,6 +542,7 @@ class SplitStats:
         self.den = remap(self.den, 2)
         self.L1 = remap(self.L1, 1)
         self.Gt = remap(self._gt(), 1)
+        self.Gp = remap(self._gp(), 2)
         self.E = remap(self.E, 1)
         self.bm = remap(self.bm, 2)
         self.S = remap(self.S, 2)
@@ -565,6 +581,7 @@ class SplitStats:
                     self.den[i, :, t2] = 0.0
                     self.L1[i, t2] = 0.0
                     self.Gt[i, t2] = 0.0
+                    self.Gp[i, :, t2] = 0.0
                     self.bm[i, :, t2] = 0.0
                     self.S[i, :, t2] = 0.0
                     self.blam[i, :, t2] = 0.0
@@ -590,6 +607,27 @@ class SplitStats:
         if g is None or g.shape != (self.C, self.T):
             g = self.Gt = np.zeros((self.C, self.T))
         return g
+
+    def _gp(self) -> np.ndarray:
+        g = getattr(self, "Gp", None)
+        if g is None or g.shape != (self.C, self.C, self.T):
+            g = self.Gp = np.zeros((self.C, self.C, self.T))
+        return g
+
+    def selective_margin(self, c: int, o: int) -> float:
+        """Selective saving of candidate c minus that of candidate o, both on the
+        events where the two were tracked together (per target clipped at 0, each
+        over its own tested targets). The plain difference of total savings
+        (D1) charges every candidate the prequential regret of the targets it
+        does NOT predict, which grows with its number of value slots: on pack
+        O's OA login node a 2-value client-stack attribute led a department /24
+        split by 50-170 bits on D1 for 21 days although the /24 split explained
+        more of every behaviour target it predicts (selective gains 695 vs 598,
+        log2 e 619 vs 505; offline replay of the captured login events)."""
+        gp = self._gp()
+        a = np.maximum(gp[c, o][self.tmask[c]], 0.0).sum()
+        b = np.maximum(gp[o, c][self.tmask[o]], 0.0).sum()
+        return float(a - b)
 
     def selective_gain(self, i: int) -> float:
         """MDL gain of candidate i when its children specialise only the
@@ -733,7 +771,7 @@ class SplitStats:
 
     def nbytes(self) -> int:
         self._blk()
-        arrs = (self.cnt, self.den, self.L1, self._gt(), self.E, self.bm, self.G, self.n, self.rows, self.card, self.ordinal, self.tmask,
+        arrs = (self.cnt, self.den, self.L1, self._gt(), self._gp(), self.E, self.bm, self.G, self.n, self.rows, self.card, self.ordinal, self.tmask,
                 self.slot_ev, self.slot_pri, self.W, self.D1, self.Qaa, self.Qab, self.Rmin, self.Rmax)
         return int(sum(a.nbytes for a in arrs) + 80 * self.C * self.kv + 400)
 
@@ -742,6 +780,7 @@ class SplitStats:
             "cnt", "den", "L1", "G", "n", "rows", "card", "ordinal", "tmask", "slot_ev", "slot_pri", "day0",
             "days2", "W", "D1", "Qaa", "Qab", "Rmin", "Rmax")}
         d["Gt"] = self._gt().copy()
+        d["Gp"] = self._gp().copy()
         self._blk()
         d["E"] = self.E.copy()
         d["wlog"] = self._wl().copy()
@@ -760,6 +799,8 @@ class SplitStats:
             setattr(s, k, np.asarray(d[k]).copy())
         if "Gt" in d:
             s.Gt = np.asarray(d["Gt"]).copy()
+        if "Gp" in d:
+            s.Gp = np.asarray(d["Gp"]).copy()
         if "E" in d:
             s.E = np.asarray(d["E"]).copy()
         if "wlog" in d:

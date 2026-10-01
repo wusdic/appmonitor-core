@@ -53,6 +53,8 @@ HEAVY_COVER = 0.95                 # heavy set covers >= 95 % of mass
 HEAVY_MAX = 8
 CLOSED_DAYS = 5
 DAY = PS.DAY
+SUS_MAX = 16                       # suspect sources remembered per who summary
+SUS_KEEP_S = 30 * DAY              # a suspect source is forgotten after 30 d without a row
 
 
 def _conf_ss(k: int) -> PS.DecayedSpaceSaving:
@@ -65,13 +67,45 @@ class WhoSummary:
     generalised IP per level (keys[l] for l in 0..4, ABSENT / None to skip a
     level, e.g. grp when the IP has no group) and the raw /32 for the HLL."""
 
-    __slots__ = ("levels", "hll", "code", "code_n")
+    __slots__ = ("levels", "hll", "code", "code_n", "sus")
 
     def __init__(self, n_levels: int = WHO_LEVELS, k: int = WHO_K) -> None:
         self.levels = [_conf_ss(k) for _ in range(n_levels)]
         self.hll = PS.EpochHLL(p=WHO_HLL_P)
         self.code = np.zeros(n_levels)        # prequential code length per level (bits)
         self.code_n = 0.0                     # evidence those code lengths cover
+        # suspect sources: {ip: [last row ts, rows]} - sources P03 learned damped as
+        # foreign here; their rows never enter the levels (mass, evidence, U, heavy
+        # sets, rendering), §6.9.2-§6.9.3
+        self.sus: Dict[str, List[float]] = {}
+
+    # ------------------------------------------------------- suspects
+    def _sus(self) -> Dict[str, List[float]]:
+        d = getattr(self, "sus", None)
+        if d is None:
+            d = self.sus = {}
+        return d
+
+    def is_suspect(self, ip: str, t: float) -> bool:
+        r = self._sus().get(ip)
+        return r is not None and float(t) - r[0] <= SUS_KEEP_S
+
+    def mark_suspect(self, ip: str, t: float) -> None:
+        """Record a row of a suspect source (its first damped-as-foreign row, or any
+        later row while it is suspect: persistence alone never makes it a member,
+        §6.9.2). Bounded: the source with the oldest last row is forgotten first."""
+        d = self._sus()
+        r = d.get(ip)
+        if r is None:
+            if len(d) >= SUS_MAX:
+                del d[min(d, key=lambda k: d[k][0])]
+            d[ip] = [float(t), 1.0]
+        else:
+            r[0] = max(r[0], float(t))
+            r[1] += 1.0
+
+    def suspects(self, t: float) -> List[str]:
+        return [ip for ip, r in self._sus().items() if float(t) - r[0] <= SUS_KEEP_S]
 
     def code_lengths(self, keys: Sequence[Any], t: float, space_bits: Sequence[float],
                      escape_bits: Sequence[float], alpha: float = 2.0) -> np.ndarray:
@@ -153,6 +187,8 @@ class WhoSummary:
         self.hll.merge(other.hll)
         self.code += other.code
         self.code_n += other.code_n
+        for ip, r in other._sus().items():
+            self.mark_suspect(ip, r[0])
         return self
 
     def reset_confidence(self, t: float) -> None:
@@ -160,7 +196,8 @@ class WhoSummary:
             ss.reset_confidence(t)
 
     def nbytes(self) -> int:
-        return int(sum(s.nbytes() for s in self.levels) + self.hll.nbytes() + self.code.nbytes + 64)
+        return int(sum(s.nbytes() for s in self.levels) + self.hll.nbytes() + self.code.nbytes + 64
+                   + 96 * len(self._sus()))
 
 
 # ================================================================= when
@@ -517,6 +554,104 @@ def new_summary(kind: str, policy: str = "clear", log: bool = False) -> Any:
     return CatSummary()
 
 
+# ======================================================= hold record
+HOLD_N_REF = 300                   # "holds": coverage within the 3-sigma error of a 300-event check
+HOLD_EPS_MIN = 0.02
+HOLD_HALF_DAYS = 30.0              # the record forgets at H_l (the confidence channel's half-life)
+
+
+def hold_eps(nominal: float) -> float:
+    """Tolerance of "the constraint holds": its coverage on new data is at least
+    nominal - eps, eps = max(0.02, 3 sqrt(nom (1 - nom) / 300)) - the sampling
+    error of checking the statement on a few hundred fresh events (0.05 for a
+    90 % band, 0.02 for a 99 % set)."""
+    nom = min(max(float(nominal), 0.0), 1.0)
+    return max(HOLD_EPS_MIN, 3.0 * math.sqrt(max(nom * (1.0 - nom), 1e-4) / HOLD_N_REF))
+
+
+class HoldRecord:
+    """Prequential record of how a node's stated constraints held on NEW data
+    (§6.9.4, the statement's confidence): every learned event of a confident
+    node is checked against the node's reference snapshot (§6.8.3) of the
+    previous day - built only from earlier data, so each check is held-out -
+    per constraint key (`who`, `when`, a target attribute) with its nominal
+    coverage, weighted by the event's evidence unit and forgotten at H_l.
+
+    p_hold() is the posterior probability that EVERY constraint holds, i.e.
+    that its true coverage on new data is >= nominal - HOLD_EPS:
+    prod_c P(theta_c >= nom_c - eps_c | Beta(hits_c + 1, misses_c + 1)) with
+    eps_c = hold_eps(nom_c). It is a
+    probability about the statement, not the smallest nominal coverage of its
+    parts; it rises with the evidence of a pattern that keeps holding (each
+    tail tends to 1) and falls when one constraint keeps failing on new data.
+    Forward-decayed counts (landmark L): O(constraints) floats per node."""
+
+    __slots__ = ("c", "L")
+
+    def __init__(self) -> None:
+        self.c: Dict[str, List[float]] = {}          # key -> [n, hits, nominal] (forward-decayed)
+        self.L: Optional[float] = None
+
+    def _f(self, t: float) -> float:
+        if self.L is None:
+            self.L = float(t)
+        x = (float(t) - self.L) / (HOLD_HALF_DAYS * DAY)
+        if x > 60.0:                                  # rescale the landmark
+            g = 2.0 ** (-x)
+            for v in self.c.values():
+                v[0] *= g
+                v[1] *= g
+            self.L = float(t)
+            x = 0.0
+        return 2.0 ** x
+
+    def add(self, key: str, hit: bool, nominal: float, t: float, w: float = 1.0) -> None:
+        f = self._f(t) * float(w)
+        v = self.c.get(key)
+        if v is None:
+            v = self.c[key] = [0.0, 0.0, float(nominal)]
+        v[0] += f
+        if hit:
+            v[1] += f
+        v[2] = float(nominal)
+
+    def counts(self, t: float) -> Dict[str, Tuple[float, float, float]]:
+        if self.L is None:
+            return {}
+        g = 2.0 ** (-(float(t) - self.L) / (HOLD_HALF_DAYS * DAY))
+        return {k: (v[0] * g, v[1] * g, v[2]) for k, v in self.c.items()}
+
+    def p_hold(self, t: float, eps: Optional[float] = None, keys: Optional[Iterable[str]] = None) -> float:
+        """P(every constraint's coverage on new data >= nominal - eps) (eps per
+        constraint: hold_eps(nominal) unless given); NaN before any check."""
+        from scipy.special import betainc
+        cs = self.counts(t)
+        if keys is not None:
+            ks = set(keys)
+            cs = {k: v for k, v in cs.items() if k in ks}
+        if not cs:
+            return float("nan")
+        p = 1.0
+        for n, h, nom in cs.values():
+            x = min(1.0, max(0.0, nom - (hold_eps(nom) if eps is None else eps)))
+            a, b = h + 1.0, max(0.0, n - h) + 1.0
+            p *= float(1.0 - betainc(a, b, x)) if x > 0 else 1.0
+        return float(p)
+
+    def drop(self, keys: Optional[Iterable[str]] = None) -> None:
+        """Forget the record (all of it, or the given constraints): an accepted
+        change (§6.9.2) or a structural change starts a new confidence segment."""
+        if keys is None:
+            self.c.clear()
+            self.L = None
+            return
+        for k in keys:
+            self.c.pop(k, None)
+
+    def nbytes(self) -> int:
+        return int(64 + 80 * len(self.c))
+
+
 # ============================================================ bindings
 class PairSketch:
     """Binding pair counts (X, Y) at a node (§6.12): SpaceSaving(64) over x
@@ -651,7 +786,25 @@ class Node:
                 "created": self.created, "first_seen": self.first_seen, "last_seen": self.last_seen,
                 "days_total": self.days_total, "version": self.version, "cver": self.cver,
                 "targets": sorted(self.targets), "inv": {k: [int(v[0]), str(v[1])] for k, v in self.inv.items()},
-                "alt": self.alt}
+                "alt": self.alt, "p_hold": self.p_hold(),
+                "hold": {k: [round(n, 2), round(h, 2), round(nom, 4)]
+                         for k, (n, h, nom) in (self.hold.counts(self.last_seen or self.created).items()
+                                                if self.hold is not None else ())}}
+
+    # ------------------------------------------------------- confidence
+    @property
+    def hold(self) -> Optional[HoldRecord]:
+        return self.meta.get("hold") if self.meta else None
+
+    def p_hold(self, t: Optional[float] = None) -> Optional[float]:
+        """Calibrated confidence of the node's statement (HoldRecord.p_hold):
+        the probability that all of its constraints hold on new data; None
+        before the first held-out check."""
+        hr = self.hold
+        if hr is None:
+            return None
+        p = hr.p_hold(self.last_seen or self.created if t is None else t)
+        return None if p != p else round(p, 4)
 
     # ----------------------------------------------------------- updates
     def touch_day(self, day: int) -> None:
@@ -682,14 +835,21 @@ class Node:
     def update_core(self, t: float, mass: float, evidence: float, who_keys: Sequence[Any],
                     ip: str, daytype: Optional[int] = None, minute: Optional[float] = None,
                     day: Optional[int] = None, who_code: Optional[np.ndarray] = None,
-                    u: Optional[float] = None) -> None:
-        """Mass, evidence, who, when and dates: every node on the path (§6.5.1)."""
+                    u: Optional[float] = None, suspicious: bool = False) -> None:
+        """Mass, evidence, who, when and dates: every node on the path (§6.5.1).
+        A suspicious row (P03 learned it damped as a foreign source), and every
+        row of a source already suspect at this node, is kept out of the who
+        summary (mass, evidence, unseen-source estimate, heavy sets): a damped
+        source must not become part of the pattern's who by repetition."""
         t = float(t)
         self.mass.add(t, mass)
         self.n_eff.add(t, evidence)
         self.first_seen = t if self.first_seen is None else min(self.first_seen, t)
         self.last_seen = t if self.last_seen is None else max(self.last_seen, t)
-        self.who.update(who_keys, ip, t, mass, evidence, who_code)
+        if suspicious or self.who.is_suspect(ip, t):
+            self.who.mark_suspect(ip, t)
+        else:
+            self.who.update(who_keys, ip, t, mass, evidence, who_code)
         if daytype is not None and minute is not None:
             self.when.update(daytype, minute, t, mass, evidence, u, ip)
         if day is not None:
@@ -744,12 +904,17 @@ class Node:
         """§6.9.4: reset the confidence channel to the H_m state for the
         changed attributes (all, and the node's own evidence, when attrs is
         None, i.e. a structural change)."""
+        hr = self.hold
         if attrs is None:
             self.n_eff.set_entry(PS.CH_L, self.n_eff.get(PS.CH_M, t), t)
             self.who.reset_confidence(t)
             self.when.reset_confidence(t)
             self.seg_start = float(t)
             attrs = list(self.targets.keys())
+            if hr is not None:
+                hr.drop()
+        elif hr is not None:
+            hr.drop([("when" if a in ("@when", "ctx.tod_min", "ctx.when") else a) for a in attrs])
         for a in attrs:
             s = self.targets.get(a)
             if isinstance(s, NumSummary):

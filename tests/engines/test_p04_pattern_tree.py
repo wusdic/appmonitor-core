@@ -226,11 +226,18 @@ def test_h_quarantined_events_held_released_and_rejected():
     aux = sim.p04.aux(MP.get_ptree(sim.st, "oa"))
     assert len(aux["held"][("oa", q_ip)]) == 5
     sim.hooks.clear()
+    n0 = root.n_eff.get(PS.CH_S, sim.now)
     sim.st.put_model("oa", q_ip, "model.control", {"version": 1, "release": (t - 1, t + 3600)})
     sim.st.put_model("oa", r_ip, "model.control", {"version": 1, "frozen": True})
     sim.tick()
+    # released rows are learned (the node's evidence grows by q_ip's rows), but a
+    # quarantined source does not become part of the pattern's who by its release
+    # (M29: §6.9.2 - only a colleague group, a re-addressing or an operator label
+    # absorbs a foreign source; B28 releases a quiet episode automatically)
+    assert root.n_eff.get(PS.CH_S, sim.now) > n0
     seen = {k for k, *_ in root.who.levels[0].items(sim.now)}
-    assert q_ip in seen and r_ip not in seen
+    assert q_ip not in seen and r_ip not in seen
+    assert root.who.is_suspect(q_ip, sim.now) and not root.who.is_suspect(r_ip, sim.now)
     assert ("oa", q_ip) not in aux["held"] and ("oa", r_ip) not in aux["held"]
 
 
@@ -398,8 +405,12 @@ def test_f_revision_replaces_prefix_split_by_learned_groups():
         assert sim.events("pattern_replaced")
         assert sorted(len(g) for g in root.split.groups) in ([1], [1, 1])
     else:
+        # the /24 children split on the group level, or the odd IP of each /24 got
+        # its own exception pattern (the docstring's third outcome; with M27/M33 the
+        # exceptions can come before the revision's margin is reached)
         assert any(isinstance(x[5], dict) and (x[5].get("attr"), x[5].get("level")) == ("net.src", 3)
-                   for x in tr.lineage if x[1] == "split")
+                   for x in tr.lineage if x[1] == "split") or \
+            {x[5] for x in tr.lineage if x[1] == "exc_add"} >= {"192.168.1.3", "192.168.2.3"}
 
 
 # --------------------------------------------------- pairs, budget, snapshots

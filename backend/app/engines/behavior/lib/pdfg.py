@@ -901,6 +901,20 @@ def p_req(st: FlowState, scope: Mapping[str, Any], acts: ActionDict, b: Optional
         p = (c_b - c_with + 0.5) / (c_b + 1.0)
         missing.append(a)
         best = p if not best == best else min(best, p)
+    if missing and bits == 0:
+        # b OPENS the session, so its required predecessor is missing because
+        # nothing came before it: the same event is also a transition from the
+        # session start (the start pseudo-action of the heuristics miner),
+        # p_start = (starts(b) + 1/2) / (sessions + 1). Of the two predictive
+        # tests the one with the larger reference class is used (chosen from
+        # the past counts, before looking at this event, so the p-value stays
+        # valid without a multiplicity charge): the KT floor 1/2 / (n + 1)
+        # falls with n. Pack O, A5 (a report generated without its form page):
+        # c(b) ~ 20 report sessions -> p_req >= 0.024 can never pass P03's
+        # SEQ_P = 0.02, while the report action had opened none of ~150 GA sessions.
+        n_sess = _ss_total_ev(st.starts, g, t)
+        if n_sess > _ev(st.pcnt, (g, b), t):
+            best = float((_ev(st.starts, (g, b), t) + 0.5) / (n_sess + 1.0))
     return best, missing
 
 

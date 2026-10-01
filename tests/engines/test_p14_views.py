@@ -314,3 +314,72 @@ def test_view_cost_bounded_in_ips_and_attributes():
             t_big = dt_
     assert t_big < 5 * t_small + 0.02
     assert lens[1] < 3 * lens[0]
+
+
+# ---------------------------------------------------------------- user view (groups_views round)
+def test_group_view_states_what_the_group_does_in_each_system(store):
+    """The user view names the systems a group uses AND what it does there
+    ('综合部 访问 oa：登录、审批、提交报告'), with the members of an action only
+    some of them perform - from P11's per-system action mix of the group."""
+    wg = dict(store.get_model(ORG, ORG, MP.WHO_GROUPS))
+    gr = dict(wg["groups"]["G1"])
+    gr["actions"] = {"oa": [
+        {"action": "POST oa.corp /login", "share": 0.4, "support": 1.0, "members": []},
+        {"action": "POST oa.corp /approval/{num}/approve", "share": 0.3, "support": 0.333,
+         "members": ["192.168.1.21"]},
+        {"action": "POST oa.corp /report/generate", "share": 0.2, "support": 0.667,
+         "members": ["10.168.7.121", "192.168.1.23"]}]}
+    wg["groups"] = dict(wg["groups"], G1=gr)
+    store.put_model(ORG, ORG, MP.WHO_GROUPS, wg)
+    gv = VW.group_view(store, "G1", CFG, store.now)
+    act = [s for s in gv["statements"] if s["evidence"].get("activity")]
+    assert len(act) == 1
+    zh = act[0]["text_zh"]
+    assert zh.startswith("综合部 访问 oa（占其活动 100 %）：登录（POST /login）、")
+    assert "审批（POST /approval/{num}/approve）[192.168.1.21]" in zh
+    assert "提交报告（POST /report/generate）[10.168.7.121、192.168.1.23]" in zh
+    assert "log in (POST /login)" in act[0]["text_en"]
+    # the negative statement names the closed write action
+    neg = next(s for s in gv["statements"] if s["evidence"].get("negative"))
+    assert "封闭的写操作：审批（POST /fin/approval/{num}/approve）" in neg["text_zh"]
+    # a configured name wins over the built-in display vocabulary
+    cfg = dict(CFG, progressive={"enabled": True, "action_names": [[r"/report/generate", "生成报告",
+                                                                     "generate reports"]]})
+    zh2 = [s for s in VW.group_view(store, "G1", cfg, store.now)["statements"]
+           if s["evidence"].get("activity")][0]["text_zh"]
+    assert "生成报告（POST /report/generate）" in zh2
+
+
+def test_negative_statement_states_foreign_attempts_of_members(store):
+    """A member's write in the closed system that P03 judged foreign (learned
+    damped, kept out of the pattern's who by P04) does not make the group a
+    user of that action: the negative statement stays, and says who tried."""
+    fin = store.get_model("finance", SYSTEM_ENTITY, MP.PTREE)
+    tr = fin.kinds[0]
+    node = tr.nodes[tr.nodes[tr.root].split.children[0]]
+    if not hasattr(node.who, "mark_suspect"):
+        pytest.skip("pnode without suspect sources")
+    node.who.mark_suspect("192.168.1.23", store.now - 3600.0)
+    gv = VW.group_view(store, "G1", CFG, store.now)
+    neg = next(s for s in gv["statements"] if s["evidence"].get("negative"))
+    assert "192.168.1.23 的尝试被判定为越权" in neg["text_zh"]
+    assert neg["evidence"]["foreign_attempts"] == ["192.168.1.23"]
+
+
+def test_statement_confidence_is_the_held_out_hold_probability(store):
+    """Where P04 has checked a node's constraints on held-out data the
+    statement states that calibrated probability, not the weakest part's
+    nominal coverage."""
+    from app.engines.behavior.lib import pnode as PN
+    if not hasattr(PN, "HoldRecord"):
+        pytest.skip("pnode without hold records")
+    oa = store.get_model("oa", SYSTEM_ENTITY, MP.PTREE)
+    tr = oa.kinds[0]
+    node = tr.nodes[tr.nodes[tr.root].split.children[0]]
+    hr = PN.HoldRecord()
+    for i in range(200):
+        hr.add("who", i % 10 != 0, 0.95, store.now - 3600.0 + i)       # 90 % < 95 % nominal
+    node.meta["hold"] = hr
+    st = _login_stmt(VW.system_view(store, "oa", CFG, store.now))
+    assert st["confidence"] == pytest.approx(node.p_hold(store.now), abs=1e-4)
+    assert st["confidence"] < 0.5

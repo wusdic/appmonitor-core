@@ -356,6 +356,15 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     conf = float(min(x for x in confs if x is not None and math.isfinite(x))) if confs else 1.0
     if nd.state == "stale":
         conf *= PR.STALE_FACTOR
+    # the calibrated confidence when P04 has checked the node's constraints on
+    # held-out data (pnode.HoldRecord: the probability that every constraint
+    # holds on new events); the min-over-parts formula above states the
+    # weakest part's NOMINAL coverage and was under-confident on pack O
+    # (PG2 ECE 0.36-0.43)
+    ph = getattr(nd, "p_hold", None)
+    ph = ph(t) if callable(ph) else None
+    if ph is not None and math.isfinite(float(ph)) and part is None and restrict is None:
+        conf = float(ph)
     sys_label = c.key
     addr = ""
     root = c.ptm.kinds[kind].nodes.get(c.ptm.kinds[kind].root) if c.ptm is not None else None
@@ -559,6 +568,16 @@ def _closed_write_nodes(c: _Ctx) -> List[Tuple[Any, str]]:
     return out
 
 
+def _suspects(nd: Any, t: float) -> List[str]:
+    """Sources P04 keeps out of a node's who summary as foreign (P03 damped
+    them there; pnode.WhoSummary.suspects), [] for summaries without them."""
+    f = getattr(nd.who, "suspects", None)
+    try:
+        return list(f(t)) if callable(f) else []
+    except Exception:                               # pragma: no cover
+        return []
+
+
 def _group_mass(nd: Any, g: str, members: Set[str], t: float) -> float:
     """Share of the node's mass held by group g (grp level, else member IPs)."""
     lv3 = nd.who.levels[3]
@@ -571,6 +590,83 @@ def _group_mass(nd: Any, g: str, members: Set[str], t: float) -> float:
     if tot0 <= 0:
         return 0.0
     return float(sum(lv0.count(ip, t) for ip in members if ip in lv0) / tot0)
+
+
+# Display vocabulary for action names (a display aid, never a model input): the
+# first rule whose pattern matches a route's literal path words names the action.
+# Config progressive.action_names [[regex, zh, en], ...] is tried first (an
+# operator's / API catalogue's names); unmatched routes are shown as the route.
+ACTION_NAMES: Tuple[Tuple[str, str, str], ...] = (
+    (r"(^|/)(login|signin|logon|auth)(/|$)", "登录", "log in"),
+    (r"(^|/)(logout|signout)(/|$)", "退出", "log out"),
+    (r"approv|/flow/", "审批", "approve"),
+    (r"(^|/)report(s)?(/|$)", "报告", "report"),
+    (r"(^|/)(docs?|documents?|files?)(/|$)", "文档", "documents"),
+    (r"(^|/)(mail|inbox)(/|$)|^TLS mail", "邮件", "mail"),
+    (r"(^|/)voucher", "凭证", "vouchers"),
+    (r"(^|/)(customer|crm)(/|$)", "客户", "customers"),
+    (r"(^|/)comment", "评论", "comments"),
+    (r"(^|/)news(/|$)", "新闻", "news"),
+    (r"(^|/)(export|backup)(/|$)", "导出", "export"),
+    (r"(^|/)health(/|$)", "健康检查", "health check"),
+)
+
+
+def action_name(route: str, config: Optional[Mapping[str, Any]] = None) -> Tuple[str, str]:
+    """(zh, en) display name of an action: '<name>（<METHOD path>）', or the
+    route text when no vocabulary entry matches."""
+    import re
+    rt = PR.route_text(route)
+    m, path = PR.route_parts(route)
+    rules: List[Tuple[str, str, str]] = []
+    for it in (EV.pconfig(config or {}).get("action_names") or []):
+        try:
+            p, zh, en = it
+            rules.append((str(p), str(zh), str(en)))
+        except (TypeError, ValueError):
+            continue
+    rules.extend(ACTION_NAMES)
+    for p, zh, en in rules:
+        try:
+            if re.search(p, path, re.I) or re.search(p, rt, re.I):
+                if m == "GET" and zh in ("审批", "报告", "凭证", "评论"):
+                    zh, en = f"查看{zh}", f"view {en}"
+                elif m in PR.WRITE_METHODS and zh in ("报告",):
+                    zh, en = "提交报告", "submit reports"
+                return f"{zh}（{rt}）", f"{en} ({rt})"
+        except re.error:
+            continue
+    return rt, rt
+
+
+def activity_statement(g: str, name: str, key: str, acts: Sequence[Mapping[str, Any]], share_sys: float,
+                       members: Set[str], subject: str,
+                       config: Optional[Mapping[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """The user view's "which systems a group uses and what it does there"
+    (综合部 访问 oa：登录、审批、提交报告): P11's per-system action mix of the
+    group (its learned signatures), each action with the members that do it
+    when not all of them do."""
+    if not acts:
+        return None
+    pz, pe, rows = [], [], []
+    for a in acts:
+        zh, en = action_name(str(a.get("action")), config)
+        mem = [str(m) for m in a.get("members") or []]
+        if mem and len(mem) <= PR.MEMBERS_LISTED:
+            zh += f"[{PR.join_zh(mem)}]"
+            en += f" [{PR.join_en(mem)}]"
+        pz.append(zh)
+        pe.append(en)
+        rows.append({"action": a.get("action"), "share": a.get("share"), "members": mem,
+                     "support": a.get("support")})
+    zh = f"{name} 访问 {key}（占其活动 {PR.pct(share_sys)}）：{PR.join_zh(pz)}"
+    en = f"{name} uses {key} ({PR.pct(share_sys)} of its activity): {PR.join_en(pe)}"
+    return {"id": f"act:{g}:{key}", "pattern_id": f"act:{g}:{key}", "view": "group",
+            "subject": subject, "text_zh": zh, "text_en": en, "support": float(len(members)),
+            "confidence": None, "state": "confirmed", "version": 1, "cver": 0,
+            "facets": ["functional", "relational"],
+            "evidence": {"activity": True, "system": key, "group": g, "actions": rows,
+                         "who": {"level": "grp", "items": [f"grp:{g}"], "members": sorted(members)}}}
 
 
 def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
@@ -599,6 +695,12 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
         share_sys = float((gr.get("systems") or {}).get(key, 0.0))
         if share_sys >= GROUP_SYS_SHARE:
             used.append(key)
+            act_st = activity_statement(g, name, key, (gr.get("actions") or {}).get(key) or [],
+                                        share_sys, members, subject, config)
+            if act_st is not None:
+                # how alike the members behave (P11's within-group similarity)
+                act_st["confidence"] = float(gr.get("cohesion") or 0.0)
+                stmts.append(act_st)
             for nd, route, act in _walk(tree, c.now, c.route_dist(EV.KIND_TXN)):
                 if route is None or nd.state not in RENDERED:
                     continue
@@ -625,8 +727,17 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
             n_days = int(root.days_total or 0)
             zh, en = PR.negative_sentence(name, key, n_days)
             routes = sorted({PR.route_text(r) for _, r in never})
-            zh += "（封闭的写操作：" + PR.join_zh(routes[:6]) + "）"
-            en += " (closed write actions: " + PR.join_en(routes[:6]) + ")"
+            names = sorted({action_name(r, config) for _, r in never})
+            zh += "（封闭的写操作：" + PR.join_zh([x[0] for x in names][:6]) + "）"
+            en += " (closed write actions: " + PR.join_en([x[1] for x in names][:6]) + ")"
+            # members whose attempts there were judged foreign (P03 damped them, P04
+            # kept them out of the pattern's who): stated, not hidden - "never" is
+            # about the group's learned behaviour, the attempts are findings
+            sus = sorted({str(ip) for nd, _ in never for ip in _suspects(nd, now) if str(ip) in members},
+                         key=PR._ip_sort)
+            if sus:
+                zh += f"；{PR.join_zh(sus)} 的尝试被判定为越权（未学习）"
+                en += f"; attempts by {PR.join_en(sus)} were judged foreign (not learned)"
             stmts.append({"id": f"neg:{g}:{key}", "pattern_id": f"neg:{g}:{key}", "view": "group",
                           "subject": subject, "text_zh": zh, "text_en": en,
                           "support": float(sum(nd.n_c(now) for nd, _ in never)),
@@ -635,7 +746,7 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
                           "state": "confirmed", "version": 1, "cver": 0,
                           "facets": ["relational", "risk"],
                           "evidence": {"negative": True, "target_system": key, "system": key,
-                                       "routes": routes, "group": g,
+                                       "routes": routes, "group": g, "foreign_attempts": sus,
                                        "who": {"level": "grp", "items": [f"grp:{g}"],
                                                "members": sorted(members)}}})
     zh = f"{name}（{len(members)} 个 IP）使用 {PR.join_zh(used) or '（尚无系统）'}"
