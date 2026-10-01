@@ -1221,6 +1221,7 @@ class OrgGenerator:
         self.opportunities: Dict[str, Dict[str, Dict[str, int]]] = {}
         self.who_log: Dict[str, Dict[str, Dict[str, int]]] = {}
         self.attr_first: Dict[str, float] = {}
+        self.attr_tick: Dict[str, float] = {}
         self.stats = {"events": 0, "records": 0, "benign": 0, "anomalous": 0, "dropped": 0}
         self._anom_events: Dict[int, List[OEv]] = {}
         self._suppress: Set[Tuple[int, str, str]] = set()
@@ -1899,11 +1900,6 @@ class OrgGenerator:
                 e.l7["headers"] = dict(e.l7.get("headers") or {}, **{"x-forwarded-for": e.src})
             wl = self.who_log.setdefault(e.system, {}).setdefault(date_iso, {})
             wl[e.src] = wl.get(e.src, 0) + 1
-            if e.l7 is not None:
-                for hn in (e.l7.get("headers") or {}):
-                    self.attr_first.setdefault(f"hdr.{hn}", e.ts)
-            for mn in (e.meta or {}):
-                self.attr_first.setdefault(f"meta.{mn}", e.ts)
             self.stats["events"] += 1
             rows.append((e, src, extra, xff))
         if sampling is not None:
@@ -1923,8 +1919,37 @@ class OrgGenerator:
                     continue
                 keep.append(o)
             obs = keep
+        self._note_attr_first(obs, t1)
         self.stats["records"] += len(obs)
         return obs
+
+    def _note_attr_first(self, obs: List[Observation], t1: float) -> None:
+        """First OBSERVABLE time of each header / meta attribute (PG7 truth):
+        only what reaches a capture record counts – in aggregated mode an
+        event's l7 / meta is visible only when the event is in `ev_sample`.
+        `attr_tick[k]` = end of the tick that delivered it (an event can carry
+        a timestamp a fraction of a second before the window it is delivered
+        in, e.g. a 60-s monitor's jittered schedule)."""
+        af = self.attr_first
+        at = self.attr_tick
+        before = set(af)
+        for o in obs:
+            ex = o.extra or {}
+            rows = ex.get("ev_sample")
+            items = ([(float(o.ts) + float(r.get("o", 0.0)), r.get("l7"), r.get("meta")) for r in rows]
+                     if rows else [(float(o.ts), ex.get("l7"), ex.get("meta"))])
+            for ts, l7, meta in items:
+                if l7:
+                    for hn in (l7.get("headers") or {}):
+                        k = f"hdr.{hn}"
+                        if ts < af.get(k, math.inf):
+                            af[k] = ts
+                for mn in (meta or {}):
+                    k = f"meta.{mn}"
+                    if ts < af.get(k, math.inf):
+                        af[k] = ts
+        for k in set(af) - before:
+            at[k] = float(t1)
 
     def _aggregate(self, rows: List[Tuple[OEv, str, Dict[str, Any], str]]) -> List[Observation]:
         groups: Dict[tuple, List[Tuple[OEv, Dict[str, Any]]]] = {}
@@ -2051,6 +2076,7 @@ class OrgGenerator:
             out.append({"name": name, "type": a.type, "cls": a.cls, "by": a.by,
                         "day": a.day, "until_day": a.until_day,
                         "appears": self.attr_first.get(name, self.day_start(a.day)),
+                        "appears_tick": self.attr_tick.get(name),
                         "systems": a.system if isinstance(a.system, list) else [a.system]})
         return out
 

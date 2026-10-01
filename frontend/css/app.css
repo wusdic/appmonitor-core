@@ -173,3 +173,32 @@ a.x{color:var(--muted)}
   .card{padding:12px}
   input.search{width:100%}
 }
+
+/* ---------------------------------------------------------------- 画像模式 (API v3, progressive core) */
+.pp-subnav{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.pp-sub{color:var(--muted);padding:5px 10px;border-radius:7px;font-size:12px;font-weight:600;white-space:nowrap}
+.pp-sub:hover{background:var(--chip);color:var(--ink)}
+.pp-sub.active{background:var(--chip);color:var(--ink);border:1px solid var(--accent)}
+.pp-h3{margin:16px 0 4px;font-size:13px;color:var(--muted)}
+.pp-hint{border-left:4px solid var(--medium)}
+.pp-action{border-left:3px solid var(--accent)}
+.pp-stmt{margin-top:10px;background:var(--panel2);box-shadow:none}
+.pp-stmt.pp-neg{border-left:3px solid var(--serious)}
+.pp-stmt.pp-part{border-left:3px dashed var(--accent2)}
+.pp-blocks>div{padding:6px 0}
+.pp-mini td,.pp-mini th{padding:4px 6px}
+.pp-bind{margin:4px 0}
+.meter.pp-conf>span{background:var(--accent)}
+.pp-tree li{margin:2px 0}
+.pp-node{cursor:pointer;padding:2px 4px;border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.pp-node:hover{background:var(--chip)}
+.pp-massbar{display:inline-block;width:60px;height:6px;background:var(--panel2);border-radius:4px;overflow:hidden;margin-left:6px}
+.pp-massbar>i{display:block;height:100%;background:var(--accent)}
+.pp-treewrap{max-height:680px}
+.pp-detail{max-height:680px;overflow:auto}
+.pp-detail h4,.pp h4{margin:12px 0 4px;font-size:12px;color:var(--muted)}
+.pp-path a{color:var(--accent)}
+.chip.pp-on{border-color:var(--accent);color:var(--ink)}
+.pp-facet{border-left:2px solid var(--line);padding:4px 0 4px 10px;margin:6px 0}
+.pp-facet.d0{border-left-color:var(--accent)}
+@media(max-width:700px){.pp-massbar{display:none}.pp-subnav{overflow-x:auto;flex-wrap:nowrap}}

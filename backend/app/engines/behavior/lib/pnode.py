@@ -319,7 +319,7 @@ class NumSummary:
             return
         if not extreme:
             self.td.add(y, t, max(mass, 1e-12))
-            self.mom.add(t, np.tile([mass, mass * y, mass * y * y], 3))
+            self.mom.add(t, [mass, mass * y, mass * y * y] * 3)   # list: DecayedVector fast path
             return
         if self._thr_n % self.THR_EVERY == 0 and self.td.total() > 0:
             self._thr = (self.td.quantile(0.1), self.td.quantile(0.9)) \
@@ -332,7 +332,7 @@ class NumSummary:
             elif y < q10:
                 self.lo_res.offer(y, max(mass, 1e-12), t)
         self.td.add(y, t, max(mass, 1e-12))
-        self.mom.add(t, np.tile([mass, mass * y, mass * y * y], 3))
+        self.mom.add(t, [mass, mass * y, mass * y * y] * 3)   # list: DecayedVector fast path
         if day is not None:
             self._ring_add(int(day), y, evidence)
 

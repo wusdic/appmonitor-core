@@ -578,3 +578,79 @@ def test_intensity_routine_is_judged_on_magnitude():
     v_last = [e for e in fx.violations() if e.extra["type"] == "content" and "intensity" in e.extra["flags"]
               and e.ts >= t]
     assert {e.entity for e in v_last} == {"10.60.7.7"}
+
+
+def test_low_volume_member_with_standing_is_not_flagged_at_the_covering_node():
+    """A source with its own standing (>= MEMBER_EV units over days) is a member
+    of the covering node though it holds < 5 % of the node's mass and evidence
+    (pack O: the finance approver at finance's root was outside the 95 % heavy
+    set, flagged on every login - 8 HIGH incidents - and damped, so its own
+    approval nodes never confirmed)."""
+    fx = Fx()
+    big = [f"192.168.2.{20 + i}" for i in range(4)]
+    for d in workdays(15):
+        for ip in big:
+            for k in range(30):
+                fx.learn("finance", "GET fin /fin/ledger", ip, d + (9 * 60 + 9 * k) * 60.0 + hash(ip) % 7)
+        fx.learn("finance", "GET fin /fin/ledger", "192.168.2.10", d + 15 * 3600.0)
+    fx.st.put_model(ORG, ORG, MP.WHO_GROUPS, {
+        "groups": {"G2": {"id": "G2", "name": "财务部", "members": big + ["192.168.2.10"]}},
+        "ip2g": {ip: "G2" for ip in big + ["192.168.2.10"]}})
+    nd = fx.node("finance", "GET fin /fin/ledger")
+    t = workdays(16)[-1] + 15 * 3600.0
+    l, mem, U = CF._who_closed(nd, t)
+    assert l == 0 and "192.168.2.10" not in mem            # outside the heavy set ...
+    assert nd.who.levels[0].evidence("192.168.2.10", t) >= CF.MEMBER_EV   # ... with standing
+    fx.score("finance", [(t, "192.168.2.10", {"http.route": "GET fin /fin/ledger", "http.method": "GET"})])
+    assert not [e for e in fx.violations("192.168.2.10") if e.extra["type"] == "who"]
+    # a never-seen address is still a violation
+    fx.score("finance", [(t + 600, "192.168.2.99", {"http.route": "GET fin /fin/ledger", "http.method": "GET"})])
+    assert [e for e in fx.violations("192.168.2.99") if e.extra["type"] == "who"]
+
+
+def test_reference_snapshot_keeps_low_volume_sources_with_standing():
+    """P04's daily reference snapshot (§6.8.3) keeps every source with standing
+    in its who list, so P03's dual anchor (current vs reference) does not flag
+    a low-volume legitimate user that the 95 %-mass heavy set leaves out."""
+    import types
+    from app.engines.behavior.pattern_tree import PatternTreeEngine
+    fx = Fx()
+    big = [f"192.168.2.{20 + i}" for i in range(4)]
+    for d in workdays(10):
+        for ip in big:
+            for k in range(30):
+                fx.learn("finance", "GET fin /fin/ledger", ip, d + (9 * 60 + 9 * k) * 60.0)
+        fx.learn("finance", "GET fin /fin/ledger", "192.168.2.10", d + 15 * 3600.0)
+    tr = fx.tree("finance", ["GET fin /fin/ledger"])
+    nd = fx.node("finance", "GET fin /fin/ledger")
+    t = workdays(11)[-1] + 4 * 3600.0
+    lc = types.SimpleNamespace(now=t, store=fx.st, key="finance", aux={"held": {}})
+    PatternTreeEngine._snapshots(PatternTreeEngine(), lc, tr, EV.KIND_TXN, "finance")
+    heavy, _ = nd.who.heavy_set(0, t)
+    assert "192.168.2.10" not in heavy
+    assert "192.168.2.10" in nd.ref["who"] and set(map(str, heavy)) <= set(nd.ref["who"])
+
+
+def test_foreign_to_the_closed_system_is_judged_at_the_root_not_only_the_young_node():
+    """A source foreign at the covering node AND at every closed ancestor is
+    judged with the most confident closed population (Bonferroni over the
+    levels): a young single-user node (U ~ 1/n_c) does not hide that the
+    source never used the closed system (pack O A1 on day 16: node U 0.029 ->
+    LOW and no incident; finance root U 0.0013)."""
+    fx = Fx()
+    for d in workdays(15):
+        for ip in ("192.168.2.11", "192.168.2.12", "192.168.2.13"):
+            for k in range(6):
+                fx.learn("finance", "GET fin /fin/ledger", ip, d + (9 * 60 + 40 * k) * 60.0)
+    for d in workdays(15)[-9:]:
+        for k in range(3):
+            fx.learn("finance", APPROVE, "192.168.2.10", d + (10 * 60 + 30 * k) * 60.0)
+    t = fx.now = workdays(23)[-1] + 10.5 * 3600
+    nd = fx.node("finance", APPROVE)
+    l, mem, U = CF._who_closed(nd, t)
+    tr = fx.tree("finance", [APPROVE])
+    lr, _, Ur = CF._who_closed(tr.nodes[tr.root], t)
+    assert l == 0 and U > 0.01 and lr is not None and 2 * Ur <= 0.01
+    fx.score("finance", [_approve("192.168.1.23", t)])
+    who = [e for e in fx.violations("192.168.1.23") if e.extra["type"] == "who"]
+    assert who and who[0].severity == Severity.HIGH

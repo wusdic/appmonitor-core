@@ -1574,7 +1574,7 @@ def pg6_far(run: Any, pt: PTruth) -> Dict[str, Any]:
 def _attr_records(model: Any) -> Dict[str, Mapping[str, Any]]:
     if not isinstance(model, Mapping):
         return {}
-    for key in ("attrs", "attributes", "registry"):
+    for key in ("records", "attrs", "attributes", "registry"):     # P02 AttrRegistry: 'records'
         if isinstance(model.get(key), Mapping):
             model = model[key]
             break
@@ -1598,7 +1598,11 @@ def pg7_schema(run: Any, pt: PTruth) -> Dict[str, Any]:
                 reg_ok.append(False)
                 continue
             fs = _f(rec.get("first_seen"))
-            reg_ok.append(math.isfinite(fs) and fs <= float(a["appears"]) + dt + 1e-6)
+            # registered by the end of the tick that first DELIVERED it (truth
+            # 'appears_tick'); older truth: within one tick of its first time
+            due = float(a["appears_tick"]) if a.get("appears_tick") is not None \
+                else float(a["appears"]) + dt
+            reg_ok.append(math.isfinite(fs) and fs <= due + 1e-6)
             if a.get("type"):
                 type_ok.append(str(rec.get("type")) == str(a["type"]))
             d_role = pt.day_of_ts(float(a["appears"]) + 86400.0)

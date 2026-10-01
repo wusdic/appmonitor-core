@@ -1,6 +1,40 @@
-# Behavior Library v2.1 — layered design
+# Behavior Library — layered design (v3: progressive profile core + statistical engine library v2.1)
 
-> **Spec v2.1 note (docs sync, 2026-09-28).** In canonical grain mode (the default for the pipeline, Runtime, eval and scripts) `cadence.md` amends this document: features are scored on H (3600 s) and Q (900 s) grain rows at decision ticks; single-tick severity uses `e_day = q_all·n_τ/β_τ` over tick types instead of `q·86400/Δt` (§4); the evidence CUSUM is split into S_t and S_h with ARL 66 d each (§4); §6's cadence handling is replaced by cadence.md §2–§9; and the §7 cost envelope was not met (integration.md §9, §10.4). P2 engines B19–B22 are not built. Current results: integration.md §11.
+> **Docs sync, 2026-10-01.** Library 3 now has two parts (§0a). The **progressive profile core** (P00–P15, `progressive.md`) is the profile: it learns patterns from behaviour events top-down, within fixed budgets, and scores every event against the most specific confirmed pattern. The **statistical engine library** (B01–B30, §0–§10 below) supplies facets and detector families; its decision chain B23–B30 is shared. §0–§10 describe the statistical library as before. In canonical grain mode (the default for the pipeline, Runtime, eval and scripts) `cadence.md` amends §0–§10: features are scored on H (3600 s) and Q (900 s) grain rows at decision ticks; single-tick severity uses `e_day = q_all·n_τ/β_τ` over tick types instead of `q·86400/Δt` (§4); the evidence CUSUM is split into S_t and S_h with ARL 66 d each (§4); §6's cadence handling is replaced by cadence.md §2–§9; and the §7 cost envelope was not met (integration.md §9, §10.4). P2 engines B19, B20 and B22 are not built; B21 cross_system is (round 4). Results: integration.md §12 (packs A–E) and `progressive.md` §16 (pack O).
+
+## 0a. Two parts of library 3
+
+**Why.** The statistical library models every (system, IP) × 52 fixed features × tick: per-entity baselines, detectors, calibration rings and checkpoints, so cost and memory grow with #IPs × #metrics (9.4–11.7 MB and ≈ 15 ms per entity-tick, integration.md §9.2), the metric set is fixed in `lib/features.py`, and the granularity of a profile (individual or role class) is set in advance. The user requirement for library 3 asks for the opposite: never enumerate all users and servers, learn from coarse to fine until a class of behaviour or one IP's behaviour is described, become more precise the longer it runs, follow behaviour as it changes, never hard-code metrics, combine several algorithms into facets, and adapt engines to the scenario. On the organisation pack O (≈ 700 sources) the B library together with the core held a 2.26 GB store by day 4 and two 21-day runs were OOM-killed at 4.4 GB and 7.1 GB per process (`progressive.md` §16.2 M25).
+
+**Structure.**
+
+| Part | Engines | Unit of learning | Role |
+|---|---|---|---|
+| Progressive profile core | P00 (raw), P01 (derived), P02–P15 (behaviour) | behaviour event (request, connection, query, session step) with an open attribute map; per-(IP, H-grain) metric-window events | the profile: pattern tree per system or system family, content / time / workflow constraints, behavioural groups, typed conformity p-values, facet tree, system view and group view |
+| Statistical engine library | B01–B18, B21 (detectors and per-entity models), B23–B30 (decision chain, explanation, portrait) | (system, IP) feature row per tick / grain | facets (rhythm, destinations, links, client stacks, …), detector families, the shared decision chain; per-IP models only for *earned* IPs in bounded mode |
+
+**Principles added by the core** (`progressive.md` §4.1, PPC-1 … PPC-11): learn from events, not entity rows; general first, specific only when proven (an anytime-valid e-value test, an MDL gain and a stability test per split; single-IP patterns are exceptions); bounded by construction (every structure has a cap and an explicit eviction utility); open schema (types, hierarchies and roles are inferred and versioned); prequential everywhere, with bits per event as the one currency for split evidence, drift, attribute utility, earned models and strategy utility; learn only what is trusted (event mass × B28 trust of t−1; quarantined IPs held); store-only coupling; explain in natural units; mass is not evidence (aggregation, HT and sensor-sampling weights scale distributions, never tests); servers are not enumerated (system families share one tree, `net.dst` is an ordinary split attribute, per-tree state allocated by activity, periodic fits only on nodes with new evidence); anytime validity for structural decisions (Ville's inequality).
+
+**Per-tick flow with the core on** (`full+progressive`, `progressive.md` §4.2, §9.1):
+
+```
+raw        R1 l2l3, l4flow, http, tls, dns, probe → R2 action_token → R3 client_stack → P00 event_builder (evt.batch)
+derived    D0 aggregation, periodicity, trend → D1 ratio, entropy, graph → D2 session → P01 event_context (evt.ctx, evt.win)
+behaviour  P15 resource_governor (budgets, active / earned sets; reads t−1)
+           B01 … B18, B21                                  statistical detectors and per-entity models
+           P02 attr_registry → P05 attr_select (1 h)        schema, roles, kept sets
+           P03 conformity (scores every event of t against the tree of t−1) → P04 pattern_tree (learns t−D with trust)
+           P06 content_bounds, P07 payload_grammar, P08 binding, P09 time_window, P10 workflow, P11 who_groups (daily), P12 system_profile (daily)
+           B23 feedback → B24 calibration (incl. conf_*) → B25 fusion → B26 risk → B27 incident → B28 governor → B29 explain
+           P13 facets → P14 views → B30 portrait (embeds the facet tree by reference)
+signature  rule_match, correlation
+```
+
+Allowed one-tick lags in addition to §1: P03 reads the tree of t−1 (prequential by design), P04 reads trust / quarantine of t−1, P15 reads engine costs of t−1, readers of daily / hourly models see the last finished run. Closed loops (each with hysteresis and stable ids): P11 groups → IP hierarchy level `grp` → P04 splits → P11 signatures; P05 kept sets → P04 targets → node entropies → P05; P12 strategy → which engines run → measured utility → P12.
+
+**Registry modes** (`build.py::REGISTRY_MODES`): `full` (default, 44 engines, no P engine; default Runtime, packs A–E, smoke, mini, golden test), `full+progressive` (60), `progressive_only` (18: R2, R3, P00–P15; scaling packs), `progressive_decision` (24: `progressive_only` + B24–B29; every pack O measurement). The Runtime runs `full` by default; with `APPMON_PROGRESSIVE=decision|only|full` it runs the core on an organisation pack (`api/progressive_runtime.py`), and the core's views (`model.pviews` and the other P models) are served read-only by API v3 (`api/routes_v3.py`, `/api/v3`) and the frontend page 画像模式 (`frontend/js/progressive.js`).
+
+**How the B library plugs in.** (1) P03's detectors `conf_who/when/content/seq/novel` are family `conformity` in `lib/detectors.py` (stream T) and flow through B24–B29 like every detector; `pattern_violation` is a discrete kind for B25 / B26 / B27 / B29 and B23. (2) B engines produce facets in P13's registry (B07 weekly rhythm, B08 destinations, B17 links, D0 automation periodicity, R3 client stacks, B27 incidents). (3) `config['lib3']['resource_mode'] = 'bounded'` (default `full`) makes the B engines process only the active set A_t(s) and the earned set E_t(s) published by P15 (`lib/pactive.py`); per-IP models (B03, B06, B07, B10, B14, B15) exist only for IPs whose prequential gain over their class is ≥ 2 bits per row, or that are forced (criticality, open incident, P04 exception or binding, automation, identification). The accuracy cost of bounded mode (PG9) has not been measured.
 
 ## 0. Principles
 1. **Engines are coupled only through the store.** Engines exchange data only through MetricStore: series, float32 vector rings, models, events, incidents, checkpoints and health records. Shared maths lives in pure helper modules under `engines/behavior/lib/`:
@@ -84,7 +118,7 @@ Layer order is raw, derived, behavior, signature. Within a layer, engines run in
 | B16 attribution | identity; events identity_mismatch, unknown_identity |
 | B17 entity_link | model.link; events entity_resolution, possible_impersonation, shared_ip |
 | B18 class_monitor | class_int, class_shape, class_rhythm, class_novel, class_coherence (at `class:<id>`) |
-| P2 B19–B22 | mixture, session, cross_system, action_embedding |
+| B21 cross_system (P2, built in round 4) | cross_system score per system \| ip; event first_access_system; model.xsys (B19 mixture, B20 session, B22 action_embedding: specified, not built) |
 | B23 feedback | model.feedback |
 | B24 calibration | behavior.p (randomised, Mondrian, GPD tail) |
 | B25 fusion | p_family, q_inst, q_all, e_day, evidence, alarm |
@@ -103,7 +137,7 @@ Layer order is raw, derived, behavior, signature. Within a layer, engines run in
   - B03 publishes the entity, class, system and org predictives with two anchors.
   - B15 publishes the identity metric and the calibrations for the LLR of each modality.
   - Every detector engine B04–B22 owns one small model. It scores first against its model as of the last commit, then commits gated rows.
-- **Identification (B04–B22).** B04–B18 are P0/P1; B19–B22 are P2 and enabled only after the ablation gate.
+- **Identification (B04–B22).** B04–B18 are P0/P1; B19–B22 are P2 and enabled only after the ablation gate (B21 is built and registered since round 4; B19, B20, B22 are not built).
 - **Decision (B23–B30).**
 
 ## 3. Trust, gating, rollback, bootstrap

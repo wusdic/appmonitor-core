@@ -334,3 +334,19 @@ def test_lru_and_burst_evidence():
     for i in range(10):
         ev.unit((f"x{i}", "n"), 6000.0)
     assert len(ev) == 4                                          # LRU cap
+
+
+def test_decayed_vector_list_fast_path_matches_array_path():
+    """The per-entry Python path for list weights (P04 NumSummary moments)
+    gives the same decayed sums as the numpy path, across a landmark rescale."""
+    import numpy as _np
+    hl = [PS.H_S] * 3 + [PS.H_M] * 3 + [PS.H_L] * 3
+    a, b = PS.DecayedVector(hl), PS.DecayedVector(hl)
+    t0 = 1.7e9
+    for i in range(400):
+        t = t0 + i * 3600.0 * 6
+        w = [1.0 + i % 3, 2.0 * i, 0.5] * 3
+        a.add(t, w)
+        b.add(t, _np.asarray(w))
+    t_end = t0 + 400 * 3600.0 * 6
+    assert _np.allclose(a.read(t_end), b.read(t_end), rtol=1e-12, atol=0.0)

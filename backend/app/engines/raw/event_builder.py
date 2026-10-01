@@ -269,6 +269,10 @@ class EventBuilderEngine(Engine):
                             e["http.sclass"] = status_class(int(float(r["st"])))
                         if isinstance(r.get("l7"), Mapping):
                             l7 = r["l7"]
+                        # per-event adapter / WAF fields (§5.1.2): an aggregated
+                        # record carries them on its ev_sample rows, not on the record
+                        if isinstance(r.get("meta"), Mapping):
+                            EV.flatten("meta", r["meta"], e, max_leaves=64)
                     elif count > 1:
                         flags |= EV.FLAG_APPROX
                     if l7:

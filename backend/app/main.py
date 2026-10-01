@@ -9,7 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import routes, routes_v2
+from .api import routes, routes_v2, routes_v3
+from .api.progressive_runtime import runtime_from_env
 from .pipeline.build import Runtime
 
 FRONTEND_DIR = os.environ.get(
@@ -26,15 +27,20 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 def _startup() -> None:
     # APPMON_WARMUP_TICKS=n keeps the v2 plan n x 900 s; unset = the spec v2.1
     # plan (Runtime.DEFAULT_WARMUP_PLAN: 120 x 3600 s + 192 x 900 s)
-    warm = os.environ.get("APPMON_WARMUP_TICKS")
-    period = float(os.environ.get("APPMON_LIVE_PERIOD_S", "3.0"))
-    runtime = Runtime(warmup_ticks=int(warm) if warm else None, live_period_s=period)
+    # APPMON_PROGRESSIVE=decision|only|full runs the progressive profile core
+    # on an organisation pack (api/progressive_runtime.py; "画像模式" pages)
+    runtime = runtime_from_env()
+    if runtime is None:
+        warm = os.environ.get("APPMON_WARMUP_TICKS")
+        period = float(os.environ.get("APPMON_LIVE_PERIOD_S", "3.0"))
+        runtime = Runtime(warmup_ticks=int(warm) if warm else None, live_period_s=period)
     runtime.start()
     routes.RUNTIME = runtime
 
 
 app.include_router(routes.router)
 app.include_router(routes_v2.router)      # API v2 (docs/lib3/api_ui.md)
+app.include_router(routes_v3.router)      # API v3: progressive profile core (docs/lib3/progressive.md §9.4)
 
 
 @app.get("/")

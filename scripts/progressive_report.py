@@ -198,8 +198,29 @@ def anomaly_table(res: Any, sc: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 # ------------------------------------------------------------------ worker
-def _job(seed: int, opts: Mapping[str, Any]) -> Dict[str, Any]:
+def _score(res: Any, seed: int, prev: Mapping[str, Any]) -> Dict[str, Any]:
     from app.eval.pmetrics import score_prun
+    from app.eval.report import _clean
+    sc = score_prun(res)
+    sc["exceptions"] = len(res.exceptions)
+    sc["exception_samples"] = [str(e)[:300] for e in res.exceptions[:5]]
+    ex = example_views(res)
+    tm = res.timings or {}
+    eng = {}
+    if tm.get("engine_names") is not None:
+        import numpy as np
+        em = np.asarray(tm["engine_ms"])
+        for i, n in enumerate(tm["engine_names"]):
+            eng[n] = round(float(em[:, i].sum()) / 1000.0, 1)
+    out = {"seed": seed, "score": sc, "example": ex, "anomalies": anomaly_table(res, sc),
+           "engine_s": eng, "wall_s": res.wall_s, "registry": prev.get("registry"),
+           "incidents": len(res.incidents), "events": len(res.events)}
+    if "job_s" in prev:
+        out["job_s"] = prev["job_s"]
+    return _clean(out)
+
+
+def _job(seed: int, opts: Mapping[str, Any]) -> Dict[str, Any]:
     from app.eval.report import _clean
     from app.eval.runner import run_pack
     from app.eval.packs import get_pack
@@ -210,24 +231,22 @@ def _job(seed: int, opts: Mapping[str, Any]) -> Dict[str, Any]:
             pack.registry_mode = opts["registry"]
         if opts.get("bounded"):
             pack.config.setdefault("lib3", {})["resource_mode"] = "bounded"
-        res = run_pack(pack, seed, strict=True, record_series=True)
-        sc = score_prun(res)
-        sc["exceptions"] = len(res.exceptions)
-        sc["exception_samples"] = [str(e)[:300] for e in res.exceptions[:5]]
-        ex = example_views(res)
-        tm = res.timings or {}
-        eng = {}
-        if tm.get("engine_names") is not None:
-            import numpy as np
-            em = np.asarray(tm["engine_ms"])
-            for i, n in enumerate(tm["engine_names"]):
-                eng[n] = round(float(em[:, i].sum()) / 1000.0, 1)
-        out = {"seed": seed, "score": sc, "example": ex, "anomalies": anomaly_table(res, sc),
-               "engine_s": eng, "wall_s": res.wall_s, "registry": pack.registry_mode,
-               "incidents": len(res.incidents), "events": len(res.events)}
+        res = run_pack(pack, seed, strict=True, record_series=not opts.get("no_series"))
+        if opts.get("keep_res"):                     # re-scorable later (--rescore) without a re-run
+            import pickle
+            os.makedirs(opts["keep_res"], exist_ok=True)
+            res.store = None
+            with open(os.path.join(opts["keep_res"], f"O_{seed}.res.pkl"), "wb") as f:
+                pickle.dump(res, f, protocol=pickle.HIGHEST_PROTOCOL)
+        out = _score(res, seed, {"registry": pack.registry_mode})
     except Exception as exc:
         return {"seed": seed, "error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()[-4000:]}
     out["job_s"] = time.perf_counter() - t0
+    try:
+        import resource
+        out["peak_rss_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
+    except Exception:                                # pragma: no cover
+        pass
     return _clean(out)
 
 
@@ -352,6 +371,16 @@ def main() -> None:
     ap.add_argument("--bounded", action="store_true", help="lib3.resource_mode = bounded")
     ap.add_argument("--scale", default=None, help="directory with scale_*.json points (pscale.run_point)")
     ap.add_argument("--render", default=None, help="only re-render the HTML of a saved report dir")
+    ap.add_argument("--assemble", action="store_true",
+                    help="run nothing: build the report from <out>/runs/O_<seed>.json already saved")
+    ap.add_argument("--no-series", action="store_true",
+                    help="do not record the per-entity p series (saves memory; PG6 KS of conf_* not measured)")
+    ap.add_argument("--keep-res", default=None,
+                    help="directory to pickle each seed's RunResult into (for --rescore)")
+    ap.add_argument("--rescore", default=None,
+                    help="run nothing: re-score the RunResults pickled in this directory")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="do not re-run a seed whose <out>/runs/O_<seed>.json exists without error")
     args = ap.parse_args()
     if args.render:
         with open(os.path.join(args.render, "progressive_report.json"), encoding="utf-8") as f:
@@ -364,11 +393,40 @@ def main() -> None:
     from app.eval.report import _clean
     seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
     os.makedirs(os.path.join(args.out, "runs"), exist_ok=True)
-    opts = {"registry": args.registry, "bounded": args.bounded}
+    opts = {"registry": args.registry, "bounded": args.bounded, "keep_res": args.keep_res,
+            "no_series": args.no_series}
+    if args.rescore:
+        import pickle
+        for s in seeds:
+            fn = os.path.join(args.rescore, f"O_{s}.res.pkl")
+            if not os.path.exists(fn):
+                continue
+            with open(fn, "rb") as f:
+                res = pickle.load(f)
+            old_fn = os.path.join(args.out, "runs", f"O_{s}.json")
+            prev = json.load(open(old_fn, encoding="utf-8")) if os.path.exists(old_fn) else {}
+            r = _score(res, s, prev)
+            with open(old_fn, "w", encoding="utf-8") as f:
+                json.dump(r, f, indent=1, ensure_ascii=False)
+            print(f"re-scored seed {s}", flush=True)
+        args.assemble = True
     runs: List[Dict[str, Any]] = []
+    todo = list(seeds)
+    if args.assemble or args.skip_existing:
+        for s in seeds:
+            fn = os.path.join(args.out, "runs", f"O_{s}.json")
+            if os.path.exists(fn):
+                with open(fn, encoding="utf-8") as f:
+                    r = json.load(f)
+                if "error" not in r:
+                    runs.append(r)
+                    todo.remove(s)
+    if args.assemble:
+        todo = []
+        seeds = sorted(int(r["seed"]) for r in runs)
     t0 = time.perf_counter()
     with ProcessPoolExecutor(max_workers=max(1, args.workers)) as ex:
-        futs = {ex.submit(_job, s, opts): s for s in seeds}
+        futs = {ex.submit(_job, s, opts): s for s in todo}
         for fut in as_completed(futs):
             r = fut.result()
             runs.append(r)

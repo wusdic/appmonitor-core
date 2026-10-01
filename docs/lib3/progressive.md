@@ -1,6 +1,9 @@
 # lib-3 v3 — Progressive Profile Core (PPC): specification
 
-Status: **specification, not implemented** (2026-09-29, base commit 482c534).
+Status: **implemented and integrated** (specification of 2026-09-29, base commit 482c534; integration and
+measured results 2026-09-30 / 10-01 in §16, where the deviations M1–M25 from §6 are listed). Sections §0–§15
+are the specification as written; where the code differs, §16.2 and the as-built cards at the end of
+`engines.md` say so.
 Scope: library 3 (行为库) profile core, redesigned per the user requirement quoted
 in §3, plus the changes that make the existing B01–B30 engines resource-bounded
 (§10). Library 1/2 get a capture extension (§5.1) and two event engines (P00, P01);
@@ -31,7 +34,7 @@ the changes made by the adversarial review of 2026-09-29 and why.
 
 ---
 
-## 0. 中文摘要（供主设计文档 §3.6 直接引用）
+## 0. 中文摘要（主设计文档库三 §3.0–§3.12 是完整的中文版，含实测结果）
 
 **要解决的问题。** 现有行为库（B01–B30）以“每个 (系统, IP) × 固定 52 维特征 × 每拍”为单位建模：
 每个实体独立维护基线、检测器、校准环、检查点，成本与内存随“IP 数 × 指标数”线性增长
@@ -317,7 +320,8 @@ replacement from the w events of the record:
 extra['ev_sample'] = [ {'o': float,          # offset from obs.ts in seconds (as ts_sample)
                         'up': int, 'down': int,
                         'st': int,           # HTTP status (optional)
-                        'l7': {...}}, ... ]  # optional per-event l7 view (§5.1.1)
+                        'l7': {...},         # optional per-event l7 view (§5.1.1)
+                        'meta': {...}}, ... ]  # optional per-event adapter / WAF fields (meta.*)
 ```
 
 P00 expands each row into one event with weight w / len(ev_sample). Without
@@ -2371,6 +2375,22 @@ test untouched (it compares the first 31 detector columns only).
 
 ### 9.4 API and UI (owner W-P7)
 
+**Implemented (2026-10-01)** — `backend/app/api/routes_v3.py` (HTTP layer), `progressive_views.py`
+(read projections), `progressive_runtime.py` (`APPMON_PROGRESSIVE=decision|only|full` builds the Runtime
+on an organisation pack, default O, `APPMON_PROGRESSIVE_DAYS` of 900-s warm-up, then live 60-s ticks),
+`frontend/js/progressive.js` ("画像模式" tab, zh/en), tests `tests/api/test_routes_v3.py`. Endpoints as
+specified below, plus: `GET /api/v3/status`, `GET /api/v3/systems`, `GET /api/v3/systems/{s}/precision`
+(per local day: confirmed patterns, mean depth, splits, drift, violations from the store; the evaluation
+runs' recall / precision against the generator truth as a separate, labelled curve), `GET
+/api/v3/systems/{s}/lattice` (bounded BFS), `GET /api/v3/violations` (typed, bilingual reasons and flags),
+`GET /api/v3/{systems/{s},groups/{g},systems/{s}/entities/{ip}}/facets` (P13), and the IP view at
+`/api/v3/systems/{s}/entities/{ip}/view`. Rendering on read reuses P14's `system_view` / `group_view` /
+`ip_view` and P13's composers; the lattice reads P14's route index for each node's action. Deviation:
+the group name POST persists `{name, ips (, cidrs)}` into both the runtime config and the pipeline's
+config copy; it takes effect at P11's next daily run (no immediate rename).
+
+Original specification:
+
 New read-only endpoints in `backend/app/api/routes_v3.py` (same serialisation helpers):
 `GET /api/v3/systems/{s}/view` (system view), `GET /api/v3/groups`,
 `GET /api/v3/groups/{g}/view`, `GET /api/v3/systems/{s}/entities/{ip}/view`,
@@ -2929,6 +2949,225 @@ comes from a report.
 - Tran-Thanh, Chapman, Rogers, Jennings. Knapsack based optimal policies for budget-limited multi-armed bandits. AAAI 2012.
 - Weijters, van der Aalst. Rediscovering workflow models from event-based data using Little Thumb (heuristics miner). ICAE 2003.
 - Wilks. Determination of sample sizes for setting tolerance limits. Ann. Math. Stat. 1941.
+
+---
+
+## 16. Integration and measured results (2026-09-30)
+
+Everything in this section is measured; nothing is an estimate. Runs: pack O (§11.3), 21 days at
+900-s ticks, aggregated records with `ev_sample`, registry `progressive_decision` (P00–P15 +
+B24–B29; the pack's default `full+progressive` did not fit in memory, §16.2 M25), strict mode,
+seeds 0–2 (the doc's tuning seeds are 0–1; seed 2 is reported as held out). Scoring is
+`backend/app/eval/pmetrics.py` only; the report is `reports/progressive/progressive_report.{json,html}`
+(`scripts/progressive_report.py`), per-seed results `reports/progressive/runs/O_<seed>.json`,
+scaling points `reports/progressive/scale/`. Five seeds, O-red, O-real and O60 were **not** run
+in this round (wall-time budget); gates that require them are reported as not measured, and every
+gate result below is therefore provisional in the sense of §12 (medians over 3 seeds, not 5).
+
+### 16.1 Registration
+
+`pipeline/build.py::build_registry(progressive=...)` registers P00–P15 exactly in the §9.1
+order when `registry_mode` is `full+progressive` (config `progressive.enabled`, or the pack's
+`registry_mode`) and the §9.1 subset for `progressive_only`; the default (`full`) registry is
+unchanged, so packs A–E, smoke and mini run the same engine set as before (§16.6).
+
+### 16.2 Mechanism changes made during integration (deviations from §6)
+
+Each change below was made because a measurement on pack O showed the specified
+mechanism failing for a stated reason; each has a regression test (M1–M18, M22 in
+`tests/engines/test_progressive_integration_fixes.py`; M19 in `tests/engines/test_p00_event_builder.py`;
+M20, M21, M23 in `tests/engines/test_p03_conformity.py`; M24 in `tests/core/test_store_batches.py`;
+M25 in `tests/test_progressive_integration.py`), and the tests of M19–M24 were checked to fail
+without the change.
+
+| # | Where | Specified (§) | Changed to | Why (measured) |
+|---|---|---|---|---|
+| M1 | P04 `pattern_tree._route_partition` | root splits only through rule (V) (§6.5.5) | **route-first multiway partition** of every transaction root: a route that recurred (≥ 3 rows on ≥ 2 local dates) gets its own child of the root at once; the partition is not a learned split (never pruned, merged or revised; its `other` child never learns and is never a pattern); route-family candidates are not re-offered below it | the root's (V) test had to discover each route one binary split at a time; at day 21 the OA tree still held routes pooled in `other` branches, PG1 recall 0.095 on seed 1 (baseline HEAD). A route is the requirement's "页面/路由" – an identifier of the action, not a hypothesis to test |
+| M2 | `lib/pevalue.SplitStats` rule (V) | universal-inference e-value `2^(L0−L1)`, L0 = pooled ML code length (§6.5.5) | **blockwise k-sample e-process**: blocks are local days; at a block's start every slot's predictor is frozen (Bayes mixture of the slot's own smoothed counts and the leaf predictive, weight `1/(1+2^−S)` from the bits the slot saved so far); the block's outcomes are coded under their slot's predictor against the evidence-weighted mixture of all slot predictors (the RIPr onto "no dependence"). Validity: for any null θ0 the mixture's expected log-ratio is ≤ 0 twice by Jensen, so each block factor has expectation ≤ 1; Ville's inequality applies unchanged. `log2_e_ui` is kept for diagnosis | the pooled-ML form charges the null model's parametric regret (≈ (k_b−1)/2·log2 n bits per target) before a real dependence counts: the OA login node's /24 split that separates 综合部 / 财务部 / 销售部 had log2 e = 5 after 101 evidence units although usernames alone saved ≈ 45 bits. Null test: sup log2 e over 60 days ≥ 5 in ≤ 2⁻⁵ + 0.02 of 200 runs; power: a 3-IP department is found where the UI e-value is not |
+| M3 | `SplitStats.retarget`, P04 `_retarget` | a changed target list restarts the leaf's learning episode (§6.5.5, §6.4) | the episode is **re-targeted**: kept targets keep their bins and statistics, the e-process wealth of dropped targets funds the new ones (a self-financing portfolio of e-processes: wealth is conserved, so the sum stays an e-process) | P05 revises targets daily for young nodes; each restart discarded up to a week of evidence and the login node never accumulated 2^14 |
+| M4 | rule (G) | total MDL gain over all targets | **selective gain** Σ_t max(0, G_t) − T_c: a split is paid for by the targets it predicts; targets it does not predict cost their smoothing overhead only once | a split that predicts one target (username) was vetoed by ten unrelated targets' small negative savings |
+| M5 | P04 `_do_split` | children start as `candidate` with target summaries seeded; everything else empty (§6.5.5) | children also receive their evidence units (≤ the leaf's), the local dates their values were seen on, and – for a split on `net.src` – the leaf's who summary and `net.src`-keyed binding pairs restricted to their addresses | a department's node (3 logins a workday) re-earned 20 units over 3 dates after the split: split on day ≈ 12, confirmed after day 20 |
+| M6 | P04 prune | decayed-saving prune at any age (§6.6) | children younger than 7 days are not judged (`PRUNE_MIN_AGE`) | the two-part saving charges every child parameter in full: the 综合部/财务部/销售部 split was pruned 2.6 days after (V) had proven it |
+| M7 | `psketch.BurstEvidence` | one run per burst (gap ≤ τ_burst) (§6.5.4) | a run also restarts after `run_max` = 1 h | a 60-s health check never pauses for τ_burst: its node held n_c = 7 after 21 days (1 440 rows a day) and was never confirmed |
+| M8 | P04 drift | ADWIN on the node's log-loss incl. `@when`; structural alarm persists 14 days | `@when` excluded from the ADWIN loss (P09 owns time drift); ADWIN reset when the targets' hierarchy versions change; a structural alarm that never showed higher loss on ≥ T_persist + 2 normal days is cleared as a false alarm | numeric-bin refreshes of a monitor's duration target kept its node `evolving` (not a pattern) for most of pack O |
+| M9 | P14 system view | one statement per node, who = union (§6.17) | a node shared by ≥ 2 learned groups (each ≥ 5 % of its mass, and more than the node's mass on other routes) is also stated **per group** ("某类人"), each part with its own arrival window from the node's minute reservoir restricted to the group's members; a part lists only the members seen at the node (no part when none is) | the requirement's system view "OA 服务器的某类人会在哪个时间段访问我什么页面": GET /docs by three departments is correctly ONE node (no target differs), so no split will ever name the groups |
+| M10 | P14 group view | negative statement when a who-closed write node has no group mass | only when **no** write node of the system (closed or not) has group mass | "综合部 在 oa 中从未执行写操作" was rendered next to 综合部's own logins (its login node was not yet who-closed) |
+| M11 | P14 bindings / invariants | every fitted binding rendered; TLS/DNS invariants by eTLD+1 | bindings rendered only when the bound attribute's registry cardinality ≥ 8; TLS/DNS keyed by `pdfg.host_key` (≤ 5 labels, digit runs templated) | attributes with a handful of values system-wide (body format, content type) were rendered as "bindings" – they are constants of the action, already stated as content; mail/code host names collapsed to one eTLD+1 route |
+| M12 | P11 items | pattern items from every split context | time contexts only | address-split contexts (a /24 child) made the group items restate the address and degraded ARI 1.0 → 0.87 / 0.59 |
+| M13 | P08 who levels | levels chosen by P12's who arm | level 0 (IP) always screened unless the arm is `none` | OA's arm `prefix` screened only /24 pairs: no IP → username binding could be fitted |
+| M14 | P05 | closed small categoricals are shape-only / dropped by cardinality | a local field with registry cardinality ≤ 16 and coverage ≤ 25 % is a target | finance's `opinion` (同意/驳回/退回) was dropped as noise |
+| M15 | `eval/pmetrics` | precision over all confirmed statements | statements whose context the generator cannot reproduce (non-judgeable) are reported as `n_unjudged`, not counted; group members may be prefixes | a statement whose pattern is also defined by an attribute the truth program does not label (a request-size bin, a client stack, a session position) cannot be checked on held-out events of its context; the grp-alt who check raised on /24 members |
+| M16 | `pipeline/orggen` truth | JSON padding key `remark` always required | required only when no body of the step can exceed the capture cap `BODY_CAP` | P00 keeps the keys of the parsed prefix; the truth asked for `remark` on 20–60 KB reports whose tail is cut |
+| M17 | P03 `group_outsider` | `outsider_group` = the IP's group key absent from the node's group level | the group's standing is the group-level evidence its OTHER members brought (≥ MEMBER_EV = 3 units); the IP's own earlier events do not count | the first damped event of a foreign source put its group key at the node, after which its events were learned undamped: A9's sales address was in the finance approval list's heavy set by day 21 (all 3 seeds), against §6.9.2 "persistence alone never makes a foreign source a member" |
+| M18 | P03 damping | damp 0.1 only for p_ev ≤ 1e-4 or a who outsider | also for a value credibly bound to another source (`cross_binding` with LB ≥ 0.9) or in concurrent use there | A2's borrowed credential (192.168.1.21 logging in as rose, days 17–21) became .21's own binding ({jack, rose} on day 21, PG5 non-adoption failed on all seeds); a value bound nowhere (D2's rename) is not affected |
+| M19 | P00 `event_builder` | per-event fields come from the record or its `ev_sample` row `l7` (§5.1.2) | an `ev_sample` row's `meta` is flattened into that row's event (`meta.*`); §5.1.2 lists `meta` | in aggregated mode every `meta.*` attribute (the WAF score, all synthetic O-scale attributes) was dropped: PG7 never saw `meta.waf.score`, and the first PG4 attribute axis (60 / 300 attributes) measured nothing (memory 22.0 MB at 40, 100 and 340 attributes; after the fix 22.0 / 31.4 / 36.5 MB) |
+| M20 | P03 who member | member = in the closed level's heavy set (95 % of mass ∪ 95 % of evidence) at the covering node; standing (≥ `MEMBER_EV` = 3 units) only at back-off ancestors | standing makes a member at the covering node too | the finance approver (≈ 3 % of finance's evidence) was outside the root's heavy set: a who violation on every login (4 HIGH findings, 8 HIGH incidents on seed 0), damped learning, and its own approval nodes stalled at n_c ≈ 12 for 10 days (confirmed on day 19 instead of day 10) |
+| M21 | P04 reference snapshot | `ref.who` = the heavy set (top 16) | heavy set ∪ sources with standing (≥ 3 units, ≤ 16 more) | P03's dual anchor (§6.8.3) flagged the same approver against the reference after M20 fixed the current summary |
+| M22 | P03 group rule | a member group at a node whose group level is closed makes a new address a colleague; `outsider_group` when the group's evidence from other members < `MEMBER_EV` | the node is a pattern **of the group** only when ≥ 2 other members have standing there (`GROUP_MIN_MEMBERS`); otherwise colleague status does not apply and the IP is a group outsider | P11 put the finance approver into 综合部's group on days 15–17 (seed 0): A1 (192.168.1.23 approving in finance) was scored as the approver's colleague — LOW, no incident. One member's individual habit is not the group's pattern |
+| M23 | P03 who p-value | U of the covering node's closed level | when the source is foreign at the covering node, the closed ancestors where it is also foreign are tested too: p = min(U_node, n · min U_ancestor) (Bonferroni over the n closed levels tested) | a young single-user node has U ≈ 1/n_c (finance approval on day 16: 0.029, above the MEDIUM bound 0.02) although the source never used the closed system (finance root U = 0.0013): A1 was LOW |
+| M24 | `lib/template.apply_path` (P00's read-only route) | an unsettled segment (unseen, or seen ≤ 2 times) renders `{var}` | a word segment (letters, `-`, `_`, ≤ 32 chars) stays literal unless R2 has merged rare siblings into `{var}` at that position; R2 itself is unchanged | every new action rendered as the same route: `GET /admin/export` (A6) and the first `/flow/list` after D3 were `GET /{var}/{var}`, which P10's dictionary already held — a new action could never be novel |
+| M25 | eval registry | pack O runs `full+progressive` | the measured runs use `progressive_decision` = R2, R3, P00, P01, P15, P02–P12, B24–B28, B29, P13, P14 (no R1, D0–D2, B01–B23, lib-4) | `full+progressive` on pack O: the B-library's per-entity state over ≈ 700 sources held a 2.26 GB store by day 4 (pickled; approx 1.27 GB, derived 0.62 GB, vectors 0.48 GB), 290 s per simulated day with two runs in parallel, and two attempts were OOM-killed at 7.1 GB per run; `progressive_decision` runs 21 days in ≈ 35 min at < 2 GB. This is the requirement's own point: enumerating every source is what exhausts resources |
+
+
+Evaluation-harness corrections (scoring and truth only, no engine behaviour):
+
+- `eval/pmetrics._attr_records` did not read P02's `records` key, so PG7 scored every attribute as
+  unregistered (0.0) on every run.
+- PG7 truth: `appears` is now the first time an attribute is **observable** (in aggregated mode an
+  event's l7 / meta reaches the capture only through `ev_sample`), and `appears_tick` is the end of
+  the tick that delivered it — a 60-s monitor's event stamped 0.17 s before a tick boundary is
+  delivered in the next window, which made "registered in the first tick" fail by 0.17 s.
+- `scripts/progressive_report.py`: `--keep-res`/`--rescore` (re-score pickled runs), `--assemble`,
+  `--skip-existing`, `--no-series` (the per-entity p series is only used for PG6's KS of `conf_*` and
+  costs ≈ 0.9 GB per run), peak RSS per run.
+
+### 16.3 Pack O: gates (seeds 0–2, registry `progressive_decision`, 21 days at 900 s)
+
+Source: `reports/progressive/progressive_report.json` (per seed: `runs/O_<seed>.json`). Each run:
+≈ 261 000 behaviour events (582 anomalous), 27–28 min wall with three runs in parallel, peak RSS
+1.37–1.40 GB, no engine exception. "Before" = the same runs at the start of this round (seeds 0–1,
+`reports/progressive/baseline/`), i.e. without M19–M25.
+
+| Gate | Target | Seed 0 | Seed 1 | Seed 2 | Before (seed 0 / 1) | Status |
+|---|---|---|---|---|---|---|
+| PG1 recall @ day 14 | ≥ 0.90 | 0.21 | 0.18 | 0.21 | 0.18 / 0.16 | fail |
+| PG1 precision @ 14 | ≥ 0.90 | 0.30 | 0.39 | 0.34 | 0.32 / 0.40 | fail |
+| PG1 components who / when / content / bindings / workflow | ≥ 0.85 each | .45/.66/.53/.67/.92 | .37/.66/.50/.67/.92 | .39/.71/.55/.67/.92 | .37/.55/.47/.67/.77 (s0) | workflow passes |
+| PG2 ECE | ≤ 0.05 | 0.39 | 0.43 | 0.36 | 0.50 / 0.43 | fail |
+| PG3 GA login who = 3 IPs | yes | yes | no | no | yes / no | fail (1/3) |
+| PG3 finance approval who = {192.168.2.10} | yes | no | no | no | no / no | fail |
+| PG3 P11 ARI vs departments | ≥ 0.9 | 0.86 | 0.86 | 0.87 | 0.97 / – | fail |
+| PG5 D2 rebinding (mike → mike.w) | ≤ 5 events, 2 d | pass | pass | pass | pass | pass |
+| PG5 D1 / D3 / D4 / non-adoption (.21 still jack) | pass | fail | fail | fail | fail | fail |
+| PG6 anomalies detected (violation + incident) | ≥ 0.95 | 7/10 | 6/10 | 6/10 | 4/10 / 4/10 | fail (19/30) |
+| PG6 FAR incidents ≥ LOW / entity-day | ≤ 0.10 | 0.027 | 0.032 | 0.031 | 0.030 / 0.032 | pass |
+| PG6 FAR incidents ≥ MEDIUM / entity-day | ≤ 0.02 | 0.025 | 0.029 | 0.029 | 0.028 / 0.029 | fail |
+| PG6 pattern_violation ≥ LOW / entity-day | ≤ 0.05 | 0.033 | 0.041 | 0.040 | 0.047 / 0.053 | pass |
+| PG7 registered in the first tick / role ≤ 24 h / informative kept | 1 / 1 / ≥ 0.9 | 1 / 1 / 1 | 1 / 1 / 1 | 1 / 1 / 1 | 0 / 1 / 1 | pass |
+| PG7 type correct | ≥ 0.95 | 0.67 | 0.67 | 0.67 | 0 | fail (header typed `text`, see below) |
+| PG8 arms ∈ strategy truth @ 14 | ≥ 0.95 | 0.33 | 0.67 | 0.50 | 0.33 / – | fail |
+| PG10 view checks (day 11, day 21, finance single IP, GA negative) | all | none | none | none | none | fail |
+| PG9 (packs A–E × bounded), PG11 (O-real), O-red, O60 | – | not run | | | | not measured |
+
+PG7 type: `hdr.x-client-ver` (two version strings) is typed `text` because P02 types every string
+payload attribute (`body`, `q`, `hdr`) as `text` so that P07 fits a grammar and a closed set
+(§16.6); the truth says `categorical`. `meta.waf.score` is `ordinal` as in the truth.
+
+### 16.4 The anomalies of the requirement (PG6)
+
+| | Expected | Seed 0 | Seed 1 | Seed 2 | Before | Engine chain / cause |
+|---|---|---|---|---|---|---|
+| A1 192.168.1.23 approves in finance | who, ≥ MEDIUM | detected (who) | detected | detected | seed 0 no, seed 1 yes | M20–M23: was LOW (scored as the approver's "colleague", node U 0.029) |
+| A2 .21 logs in as rose | binding, ≥ MEDIUM | detected | — | — (incident without the typed violation) | seed 0 yes, seed 1 no | needs the .21 → jack binding confirmed before day 17; the GA login node is split late or by client stack (§16.6) |
+| A3 injection + 12 KB login | content | detected | detected | detected | detected | P06/P07 |
+| A4 login at 03:05 | when | detected | detected | detected | detected | P09 |
+| A5 report without its form page | seq | — | — | — | — | P10: the form → generate dependency is learned, but no missing-predecessor finding at 17:02 (not diagnosed in this round) |
+| A6 GET /admin/export | novel, ≥ MEDIUM | detected | detected | detected | — | M24 (route was `/{var}/{var}`) |
+| A7 400 portal logins in one hour | content (rate), ≥ MEDIUM | violation LOW only | — | — | LOW | population rate digest: crawler-like portal sources put 400/h inside the tail (WHO/VIEWS owner's open issue) |
+| A8 unknown FIN-subnet IP as lucy | who + concurrent_use | detected HIGH | detected | detected | LOW | M20/M21 let the approver's own nodes confirm, so P08's lucy → .2.10 binding exists: `concurrent_use` |
+| A9 sales IP reads the approval list daily (slow poisoning) | who ≥ LOW on day 11 and day 21, never in the heavy set | violation LOW (no incident) | same | same | same | B27 opens only on ≥ MEDIUM (§9.3); GET is not a write, so sensitivity < 2 keeps it LOW; outside the heavy set on day 21 in 2 of 3 seeds |
+| A10 comment spam from 50 public IPs | who (region) + content | detected | detected | detected | detected | |
+
+FAR: 136–164 clean entity-days with an incident ≥ MEDIUM per seed (budget 0.02 → 110). The largest
+single source (seed 0) is 39 MEDIUM `novel` findings for SALES' legitimate weekly report (`POST
+/report/weekly`, Fridays 16:00–17:00): the 20 sales IPs are flagged on day 11 and again on day 18.
+Probable cause (not verified row by row): the MEDIUM incidents make B28 mark the sales IPs
+`suspect` (26–34 `regime: suspect` events on 192.168.3.x per seed), P10 does not learn rows of
+quarantined sources, so the weekly action never enters P10's action dictionary — a feedback loop
+that an analyst label would break (open). The finance approver, which produced 8 HIGH incidents
+before M20, produces no HIGH finding and 0–4 MEDIUM incidents per seed.
+
+### 16.5 The requirement's example, as learned (seed 0, day 21; both views)
+
+Rendered statements (zh, as produced by P14; English versions are in the report):
+
+- **System view, OA login** — `【oa】工作日 08:30–09:15（覆盖 100 %，10 个工作日），10.168.7.121、192.168.1.21、192.168.1.23访问 POST /login：…提交数据量 90 % 在 1.2–1.8 KB，观测范围 1.1–1.8 KB（n = 8）；…username= 取值 [a-z]{4}(\.[a-z])?；…绑定：192.168.1.21 → username={jack,rose}`, plus the
+  "某类人" parts per learned group: `综合部（10.168.7.121、192.168.1.23）访问 POST /login …` and
+  `G22（192.168.1.21）访问 POST /login …`.
+- **System view, OA approvals** — `G22（192.168.1.21）访问 POST /approval/{num}/approve：工作日 09:34–11:29 … 提交数据量 90 % 在 0.8–1.4 KB，全部在 0.8–1.5 KB（n = 50，下次越界概率 ≤ 4.0 %）` (state `stale` after D3 renamed the route; the `/flow/...` nodes are candidates).
+- **System view, 17:00 report** — `【oa】工作日 17:01–17:14（覆盖 100 %，11 个工作日），综合部（10.168.7.121、192.168.1.23）访问 POST /report/generate：提交数据量 90 % 在 20–55 KB …`, preceded by `GET /report/form` 17:00–17:10.
+- **System view, finance approval** — `【finance】工作日 10:00–11:27、15:01–15:56 … 192.168.2.10、192.168.3.33 访问 GET /fin/approval/list` and `来自 192.168.2.0/24（约 3 个 IP）访问 POST /fin/approval/{num}/approve`.
+- **User (group) view** — `综合部（2 个 IP）使用 mail、oa` with `综合部 在 crm 中从未执行写操作（15 天、0 次）`, `综合部 在 portal 中从未执行写操作`; `G22（192.168.1.21）… 在 finance 中从未执行写操作（21 天、0 次）（封闭的写操作：POST /fin/approval/{num}/approve、POST /fin/login、POST /fin/voucher/create）`.
+  综合部's view correctly has **no** "never writes in finance" statement: A1 (192.168.1.23
+  approving in finance on day 16) is exactly such a write.
+
+Checklist against the truth valid on day 21 (`example.checklist` in the report):
+
+| Clause | Seed 0 | Seed 1 | Seed 2 |
+|---|---|---|---|
+| 综合部 3 IPs log in to OA | pass (Jaccard 1.0) | 0.67 | 0.33 |
+| workday window 08:30–08:51 (after D1) | IoU 0.47 (08:30–09:15) | 0.00 | 0.46 |
+| 90 % of submissions 1–2 KB | pass (1.2–1.8 KB) | 1.41–1.59 KB | 0.5–1.5 KB |
+| 100 % in 0.5–3 KB | 1.1–1.8 KB (observed range, n = 8) | 1.4–1.6 KB | 0–12 KB (A3's 12 KB) |
+| `username=`, ≤ 10 chars | pass `[a-z]{4}(\.[a-z])?` | none | pass `[a-z]{3,8}(\.[a-z])?` |
+| bindings .21→jack, .23→rose, .121→mike.w | 1/3 (`.21 → {jack, rose}`) | 1/3 | 1/3 |
+| .21 opens the approval pages | pass | pass | pass |
+| 17:00 report by .23 / .121 | pass | pass | pass |
+| finance approval only by 192.168.2.10 | 0.5 | 0 | 0 |
+| group view: 综合部 never writes in finance | present (G22) | present | present |
+
+What is recovered on all seeds: the approval and report activities with their actors, windows and
+sizes, the login grammar on 2 of 3 seeds, the group view's negative statements, and the
+anomalies A1, A3, A4, A6, A8, A10. What is not: the GA login node is isolated with its three IPs on
+seed 0 only, and only from day 18 (on the others it is split by TCP-window class and /24, §16.6);
+consequently the three bindings are not confirmed before A2 starts on day 17 and A2's borrowed
+`rose` is adopted for .21 (PG5 non-adoption fails); the login window after D1 includes A2's 09:10
+logins; and the finance approval statement includes the damped sources A9 (192.168.3.33) and A8
+(192.168.2.99), so it is rendered at /24 or with two IPs instead of the single approver.
+
+### 16.6 Diagnosis of the remaining failures (by engine)
+
+1. **P04 lattice, OA login (PG1 who, PG3, PG10, A2, PG5).** On seed 0 the login node splits first on
+   `net.win` (TCP window class, part of the client-stack source group) on day ≈ 10 and then by /24
+   (`10.168.7.0/24 + 192.168.1.0/24` vs `192.168.2–3.0/24`); the three GA IPs sit in different
+   window branches, and the node holding exactly them appears on day 18. The client-stack keeper is
+   still a split candidate, and its gain (it predicts TTL / UA / window) beats the department split.
+2. **P11 groups (ARI 0.86).** 综合部 is split by activity (192.168.1.21 approves, .23 / .121 report);
+   on some days the finance approver joins 综合部's group (weighted signatures dominated by document
+   reading, which both do). M22 removes the consequence for scoring, not the grouping.
+3. **Rendering of damped sources (PG3 finance, PG10).** P04 keeps damped rows in the who mass and
+   P14 renders the heavy set by mass; a slow-poisoning source (A9) and a one-off (A8) appear in the
+   finance approval statement, and the IP level is not closed (each counts as a singleton in U).
+4. **Novel feedback loop (FAR ≥ MEDIUM).** §16.4.
+5. **A7, A5**: §16.4.
+6. **P12 (PG8 0.33–0.67).** oa chooses `prefix` (truth: ip or grp) because P11's groups do not beat
+   /24 in code length; portal / code as reported by the ADAPTIVE owner.
+7. **Calibration (PG2 ECE 0.36–0.43).** Statements' stated confidence is below their held-out hold
+   rate (under-confident); not tuned in this round.
+
+### 16.7 Resources (PG4) and non-regression
+
+Scaling points (`reports/progressive/scale/`, `progressive_only`, 3 days, seed 0; the spec asks for
+7 days — shortened for wall time):
+
+| Axis | Points | P-core memory | CPU per event (all P engines) | Slope (target) |
+|---|---|---|---|---|
+| IPs (portal population) | 500 / 5 000 / 20 000 | 22.0 / 27.2 / 30.0 MB | 2.0 / 3.0 / 2.9 ms | memory 0.085 (≤ 0.15) pass; CPU 0.107 (≤ 0.1) fail |
+| attributes (after M19) | 40 / 100 / 340 | 22.0 / 31.4 / 36.5 MB | 2.0 / 2.6 / 2.6 ms | memory 0.23 (≤ 0.2) fail; CPU 0.12 (≤ 0.2) pass |
+| systems (O-servers, 12 families) | 20 / 100 | 30.7 / 42.7 MB | – | memory 0.21 (≤ 0.3) pass |
+| idle system after 1 day | | 0.41 MB | | ≤ 1 MB pass |
+| largest tree | | 11.6 MB | | ≤ 40 MB pass |
+| scoring p95 / learning p95 per event | | | 0.19–2.1 ms / 1.6–5.0 ms | ≤ 100 µs / ≤ 250 µs: fail |
+
+The 5 000 / 20 000-IP points were measured before M19–M24 (they do not use `meta.*`; only
+`meta.waf.score` differs) under a different machine load, so the CPU slope mixes two code states.
+The absolute per-event costs fail by 10–20× (the Python-cost risk of §14.2); a P04 profile at
+5 000 IPs shows no single hotspot (Space-Saving updates 15 %, target summaries 38 %, e-process
+updates 7 %), and the per-event P04 cost grows 965 → 2 049 µs from 500 to 20 000 IPs (slope 0.20),
+mostly from more Space-Saving evictions per event. 300 systems and the 7-day points were not run.
+
+Non-regression (`full` registry, the default): packs smoke, mini (seed 0), A (seed 0) and E (seed 0)
+are bit-identical to `reports/round4/runs` (every key except timings). Smoke and mini were
+re-checked after all changes of this round; A and E were checked before M19–M24, whose modules
+(P00, P03, P04, `Templater.apply_path`, `DecayedVector`) are not executed by the `full` registry.
+Full suite after all changes: 2 769 passed, 4 skipped.
+
+### 16.8 Not done in this round
+
+Five seeds, O-red, O-real (PG11), O60, PG9 (packs A–E with the core on and in bounded mode), the
+300-system and 7-day scaling points, and pack O with the full B-library (`full+progressive`, §16.2
+M25) were not run.
+
 
 ---
 

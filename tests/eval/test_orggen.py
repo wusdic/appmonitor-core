@@ -3,6 +3,7 @@ truth consistency, drifts, anomalies, real-world perturbations."""
 from __future__ import annotations
 
 import ipaddress
+import math
 import re
 from collections import Counter, defaultdict
 from urllib.parse import parse_qs
@@ -368,3 +369,19 @@ def test_body_specs_fit_their_size(builder):
             for _ in range(60):
                 body, _ = G.render_body(b, r, {"username": "abcdefgh", "dept": "GA", "aid": "x"})
                 assert len(body.encode()) <= hi + 1, (act.name, st.route_fmt, len(body.encode()))
+
+
+def test_attribute_appears_is_first_observable_time():
+    """PG7 truth: an attribute 'appears' when it first reaches a capture record
+    (in aggregated mode only ev_sample rows carry l7 / meta), not when the
+    generator first planned it — an event left out of ev_sample is invisible."""
+    pack = _pack("O-scale", n_days=4, n_meta=60)
+    g, obs = _run(pack, 0)
+    first = {}
+    for o, ts, up, l7, meta in _events(obs):
+        names = [f"hdr.{h}" for h in ((l7 or {}).get("headers") or {})] + [f"meta.{m}" for m in (meta or {})]
+        for k in names:
+            first[k] = min(first.get(k, math.inf), ts)
+    for a in g.ptruth["attr_truth"]:
+        if a["name"] in first:
+            assert a["appears"] == pytest.approx(first[a["name"]], abs=1e-6), a["name"]

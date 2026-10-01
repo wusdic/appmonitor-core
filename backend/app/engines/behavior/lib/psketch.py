@@ -134,6 +134,14 @@ class DecayedVector:
             for i, h in enumerate(self._hs):
                 v[i] += w * 2.0 ** (d / h)
             return
+        if n <= 16 and isinstance(w, (list, tuple)) and len(w) == n:
+            # per-entry Python loop: np.exp2 + asarray cost ~3x more at these sizes
+            # (P04 NumSummary moments, 9 entries, once per learned numeric target)
+            d = t - self._lm.L
+            v = self.v
+            for i, h in enumerate(self._hs):
+                v[i] += float(w[i]) * 2.0 ** (d / h)
+            return
         self.v += np.exp2((t - self._lm.L) / self.hl) * np.asarray(w, dtype=np.float64)
 
     def read(self, t: Optional[float] = None) -> np.ndarray:

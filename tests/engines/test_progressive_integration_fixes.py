@@ -574,3 +574,35 @@ def test_group_part_lists_only_members_seen_at_the_node():
 
     parts = VW.group_parts(_C(), _Nd(), 0.0)
     assert parts == []          # B's key outlived its members at the node: no '19 IPs' part, and A alone is no split
+
+
+def test_one_members_habit_is_not_a_pattern_of_the_group():
+    """A node used by ONE member of a P11 group (the finance approver) is that
+    member's pattern, not the group's: another member of the same group is an
+    outsider there (pack O A1: P11 put 192.168.2.10 in 综合部's group on days
+    15-17, so 192.168.1.23 approving in finance was scored as a colleague, LOW,
+    no incident). A node used by >= 2 other members is a group pattern."""
+    from app.engines.behavior.conformity import group_members_at, group_outsider
+    m = PT.PTreeModel("finance")
+    tr = m.tree(EV.KIND_TXN, T0, create=True)
+    nd = tr.nodes[tr.root]
+    ip2g = {"192.168.2.10": "G10", "192.168.1.23": "G10", "192.168.1.21": "G10",
+            "192.168.1.30": "G10"}
+    t = T0
+    for d in range(10):
+        t = T0 + d * DAY + 36000.0
+        dayn = int((t + 8 * 3600) // DAY)
+        for k in range(3):
+            nd.update_core(t + 400 * k, 1.0, 1.0, _keys("192.168.2.10", "G10"), "192.168.2.10", 0, 600.0, dayn)
+    assert group_members_at(nd, "G10", "192.168.1.23", t, ip2g) == 1
+    assert group_outsider(nd, "G10", "192.168.1.23", t, ip2g)          # one colleague's habit
+    assert not group_outsider(nd, "G10", "192.168.1.23", t)            # the old rule called it a colleague
+    for d in range(10):
+        tt = t + (d + 1) * DAY
+        dayn = int((tt + 8 * 3600) // DAY)
+        for ip in ("192.168.1.21", "192.168.1.30"):
+            for k in range(3):
+                nd.update_core(tt + 400 * k, 1.0, 1.0, _keys(ip, "G10"), ip, 0, 600.0, dayn)
+    t2 = t + 11 * DAY
+    assert group_members_at(nd, "G10", "192.168.1.23", t2, ip2g) == 3
+    assert not group_outsider(nd, "G10", "192.168.1.23", t2, ip2g)    # now a pattern of the group

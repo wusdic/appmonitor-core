@@ -207,6 +207,7 @@ SERVICE_PORTS: Dict[int, str] = {
 }
 
 # ------------------------------------------------------------ private constants
+_WORD_SEG = re.compile(r"^[A-Za-z][A-Za-z_\-]{0,31}$")     # P-core apply_path: a word stays literal
 _STABLE = frozenset(MASK_TOKENS) | {VAR_TOKEN}      # children never provisional / merged
 _OTHER_METHOD = "OTHER"
 _EXTRA_METHODS = frozenset({"PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK",
@@ -937,7 +938,33 @@ class Templater:
         node or vocabulary changes; unknown segments render as {var}."""
         key = _norm_key(host, method)
         tpl, _ = self._template(key, path, 0.0)
+        if VAR_TOKEN in tpl:
+            tpl = self._keep_words(key, path, tpl)
         return f"{key[1]} {key[0]} {tpl}"
+
+    def _keep_words(self, key: Tuple[str, str], path: Any, tpl: str) -> str:
+        """Read-only: a segment rendered {var} only because R2 has not settled it
+        (never seen, or seen <= MERGE_MAX_COUNT times) stays literal when it is
+        a word (letters, '-', '_', <= 32 chars) and its tree node is not a
+        merged variable. R2's provisional {var} keeps ITS vocabulary bounded;
+        for the progressive core it made every new action ('GET /admin/export',
+        the first '/flow/list' after a rename) the same route '/{var}/{var}',
+        which P10 already knew - a new action could never be novel (pack O, A6).
+        A position where R2 already merged rare siblings into {var} stays {var}.
+        The P-core bounds route cardinality itself (P04 route partition needs a
+        recurring route, P10's dictionary is a Space-Saving sketch)."""
+        segs, _params, _m = _mask_path(path)
+        out = tpl[1:].split("/") if tpl.startswith("/") else tpl.split("/")
+        if len(segs) > MAX_DEPTH or len(out) != len(segs):
+            return tpl
+        node: Optional[_Node] = self.trees.get(key)
+        for i, seg in enumerate(segs):
+            k = VAR_TOKEN if (node is not None and node.is_var) else seg
+            var_pos = node is not None and VAR_TOKEN in node.children      # rare siblings merged here
+            if out[i] == VAR_TOKEN and k != VAR_TOKEN and not var_pos and _WORD_SEG.match(seg):
+                out[i] = seg
+            node = node.children.get(k) if node is not None else None
+        return "/" + "/".join(out)
 
     def http_token(self, method: str, host: str, path: str, status: Optional[int],
                    w: float = 1.0) -> Tuple[str, List[Tuple[str, str]]]:

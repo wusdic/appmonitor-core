@@ -83,7 +83,7 @@ class Pack:
     ev_sample: bool = False                          # extra['ev_sample'] in aggregated records
     snapshot_days: List[int] = field(default_factory=list)       # light P-model snapshots
     full_snapshot_days: List[int] = field(default_factory=list)  # + model.ptree & fitted models
-    registry_mode: str = "full"                      # 'full' | 'full+progressive' | 'progressive_only'
+    registry_mode: str = "full"                      # 'full' | 'full+progressive' | 'progressive_only' | 'progressive_decision'
     n_warmup_phases: Optional[int] = None
     variant: str = ""
 

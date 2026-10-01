@@ -81,5 +81,14 @@ def test_templater_apply_path_is_read_only():
     r = tp.apply_path("oa.local", "POST", "/approval/99999/approve")
     assert r == "POST oa.local /approval/{num}/approve"
     assert tp.apply_path("oa.local", "GET", "/approval/list") == "GET oa.local /approval/list"
-    assert tp.apply_path("oa.local", "GET", "/never/seen") == "GET oa.local /{var}/{var}"
+    # an unsettled WORD segment stays literal for the P-core (a new action is a
+    # new route, so P10 / P03 can call it novel: pack O A6 'GET /admin/export'
+    # was '/{var}/{var}', a route P10 already knew); a non-word stays {var}
+    assert tp.apply_path("oa.local", "GET", "/never/seen") == "GET oa.local /never/seen"
+    assert tp.apply_path("oa.local", "GET", "/x9f3a2b77/seen") == "GET oa.local /{id}/seen"
     assert tp.to_dict() == snap                                  # no count / node / vocab change
+    # a merged variable position stays {var}: 60 distinct user names under /u/
+    for i in range(60):
+        tp.template_path("oa.local", "GET", f"/u/user{chr(97 + i % 26)}{chr(97 + i // 26)}")
+    tp.maintain()
+    assert tp.apply_path("oa.local", "GET", "/u/someone") == "GET oa.local /u/{var}"

@@ -158,3 +158,23 @@ def test_r_tick_cap_keeps_a_row_per_record_and_mass():
     for i in range(b.n):
         per[b.ip_of(i)] = per.get(b.ip_of(i), 0.0) + float(b.w[i])
     assert len(per) == 30 and all(v == pytest.approx(640.0) for v in per.values())
+
+
+def test_ev_sample_row_meta_becomes_attributes():
+    """Aggregated records carry per-event adapter / WAF fields on their
+    ev_sample rows (§5.1.2 'meta'): each row's meta.* is an attribute of that
+    row's event (before the fix they were dropped, so a WAF score or a new
+    adapter field was invisible in aggregated mode)."""
+    st = make_store()
+    rows = [{"o": float(i), "up": 1000, "down": 300, "st": 200,
+             **({"meta": {"waf.score": i % 3, "f007": "x"}} if i % 2 == 0 else {})} for i in range(6)]
+    agg = obs("oa", "192.168.1.23", T0, peer="192.168.100.100", dst_port=8080,
+              http_method="GET", http_host="oa.local", http_path="/doc/list", http_status=200,
+              bytes_up=1000, bytes_down=300,
+              extra={"count": 6, "bytes_up_total": 6000, "bytes_down_total": 1800, "ev_sample": rows})
+    _run(st, [agg])
+    b = st.batch_at("oa", EV.EVT_BATCH, T0 + 60)
+    assert "meta.waf.score" in b.names() and "meta.f007" in b.names()
+    vals = [b.get("meta.waf.score", i) for i in range(b.n)]
+    assert sorted(v for v in vals if v is not EV.ABSENT) == [0, 1, 2]
+    assert sum(v is EV.ABSENT for v in vals) == 3

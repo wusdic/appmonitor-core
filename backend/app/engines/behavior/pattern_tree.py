@@ -159,6 +159,7 @@ K_V = PE.K_V
 M_T = 8
 R_TARGET = 1.0                 # events / s of H_s mass above which ancestors thin targets
 N_CONF = 20.0
+REF_MEMBER_EV = 3.0             # sources with standing kept in the reference who (= P03 MEMBER_EV)
 CONF_DATES = {EV.KIND_TXN: 3, EV.KIND_WIN: 2}
 STABLE_S = 7 * DAY
 STABLE_DATES = 5
@@ -2304,9 +2305,17 @@ class PatternTreeEngine(Engine):
             heavy, _ = nd.who.heavy_set(0, t)
             if held_ips and any(ip in held_ips for ip in heavy):
                 continue
+            # the reference who also keeps every source with standing of its own
+            # (>= REF_MEMBER_EV evidence units; P03's member rule): a low-volume
+            # legitimate user outside the 95 %-mass heavy set (the finance approver,
+            # ~3 % of finance's evidence) is not a stranger to the reference anchor
+            hs = {str(x) for x in heavy[:16]}
+            standing = [str(k) for k, _c, _g, ev in nd.who.levels[0].items(t)
+                        if ev >= REF_MEMBER_EV and str(k) not in hs]
+            ref_who = [str(x) for x in heavy[:16]] + standing[:16]
             nd.ref = {"t": t, "version": nd.version, "cver": nd.cver,
                       "targets": {a: _compact(sm, t) for a, sm in nd.targets.items()},
-                      "who": [str(x) for x in heavy[:16]],
+                      "who": ref_who,
                       "when": {"wd": nd.when.density(0).astype(np.float32),
                                "nwd": nd.when.density(1).astype(np.float32)},
                       "fitted": {name: _fitted_entry(mdl, kind, nd.id) for name, mdl in fitted.items()

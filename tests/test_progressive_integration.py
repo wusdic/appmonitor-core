@@ -52,6 +52,14 @@ def test_registry_modes_follow_section_9_1_order():
     only = [e.name for e in build.build_registry(progressive="progressive_only").ordered()]
     assert only[:4] == ["raw.action_token", "raw.client_stack", "raw.event", "derived.event_context"]
     assert not any(n.startswith("signature.") or n == "behavior.feature_vector" for n in only)
+    # P-core + decision spine: same relative order as full+progressive, no B01-B23
+    dec = [e.name for e in build.build_registry(progressive="progressive_decision").ordered()]
+    assert set(only) < set(dec)
+    assert [idx[n] for n in dec] == sorted(idx[n] for n in dec)
+    assert {"behavior.calibration", "behavior.fusion", "behavior.risk", "behavior.incident",
+            "behavior.governor", "behavior.explain"} <= set(dec)
+    assert not any(n.startswith("signature.") or n in ("behavior.feature_vector", "behavior.baseline",
+                                                        "behavior.portrait") for n in dec)
 
 
 def test_registry_mode_resolution():

@@ -154,7 +154,7 @@ def _explain_engines() -> list:
     return [ExplainEngine()]
 
 
-REGISTRY_MODES = ("full", "full+progressive", "progressive_only")
+REGISTRY_MODES = ("full", "full+progressive", "progressive_only", "progressive_decision")
 
 
 def registry_mode(progressive: Any = None, config: Optional[Dict[str, Any]] = None,
@@ -194,7 +194,8 @@ def build_registry(sig_store: Optional[SignatureStore] = None, composite_rules=N
     `progressive` selects the engine set (see registry_mode): 'full' (default)
     registers no P engine, so the conf_* detector columns stay NaN;
     'full+progressive' adds P00-P15 in §9.1 order; 'progressive_only' is the
-    P-core alone.
+    P-core alone; 'progressive_decision' is the P-core plus B24-B29 (the
+    decision spine that turns pattern violations into incidents).
 
     `sig_store` / `composite_rules` default to the files under DATA_DIR.
     `config`, `pack` and `seed` are accepted for the eval runner's factory
@@ -207,6 +208,18 @@ def build_registry(sig_store: Optional[SignatureStore] = None, composite_rules=N
         reg.add(ActionTokenEngine(), ClientStackEngine(), EventBuilderEngine())   # R2, R3, P00
         reg.add(EventContextEngine())                                             # P01
         reg.add(ResourceGovernorEngine(), *_pcore_learners(), *_pcore_views())
+        return reg
+    if mode == "progressive_decision":
+        # the P-core plus the decision spine only (B24 calibration .. B28
+        # governor, B29 explain): P03's conf_* p-values and pattern_violation
+        # events become incidents without the per-entity B01-B23 library
+        # (which on pack O's ~700 sources holds a 2.3 GB store by day 4;
+        # progressive.md §16.3). Same §9.1 order, B01-B23 and R1/D0-D2 removed.
+        reg.add(ActionTokenEngine(), ClientStackEngine(), EventBuilderEngine())   # R2, R3, P00
+        reg.add(EventContextEngine())                                             # P01
+        reg.add(ResourceGovernorEngine(), *_pcore_learners(),
+                CalibrationEngine(), FusionEngine(), RiskEngine(), IncidentEngine(),
+                GovernorEngine(), *_explain_engines(), *_pcore_views())
         return reg
     prog = mode == "full+progressive"
     if sig_store is None or composite_rules is None:

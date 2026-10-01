@@ -34,6 +34,11 @@ One-tick lags that the spec allows and the engines are written for:
 
 P2 engines B19, B20 and B22 are not registered; B21 cross_system is (round 4, §12). They stay behind the ablation gate.
 
+The table above is the default registry mode `full` (44 engines). Since the progressive-core integration
+(§13) `build_registry(progressive=…)` also has `full+progressive` (60 engines: P00 after R3, P01 after D2,
+P15 first in the behaviour layer, P02 P05 P03 P04 P06–P12 after B21, P13 P14 after B29),
+`progressive_only` (18) and `progressive_decision` (24); the order is `progressive.md` §9.1.
+
 Runtime (`Runtime`): `ctx.config` carries tz, the calendar (holidays and
 make-up workdays from the generator clock) and `strict`. Warm-up runs with
 `training=True` over the warm-up plan (spec v2.1 default `Runtime.DEFAULT_WARMUP_PLAN`
@@ -982,7 +987,7 @@ evaluation (§8): the cadence-invariant spec v2.1 (§8.1, cadence.md), the W7
 tuning fixes (§8.2), the results-neutral performance pass (§9) and the
 evaluator rounds 2 and 3 (§10). This section is the summary; the evidence is
 in the sections cited. The Chinese design document
-(`docs/组织业务系统画像平台设计.md`, library 3 §3.3–§3.4) carries the same results.
+(`docs/组织业务系统画像平台设计.md`, library 3 §3.10–§3.11.2 since the 2026-10-01 reorganisation) carries the same results.
 
 ### 11.1 What changed
 
@@ -1109,3 +1114,51 @@ extreme upper ~1 % of fused q, which changes a Gaussian scale estimate by
 the row trust now withholds. The self-selection that mattered is the null
 calibration rings', fixed for B24 / B25 in b20c4da; the detector learners
 keep row trust (a poisoning defence, not a calibration estimate).
+
+## 13. Progressive profile core integration (2026-09-30 / 10-01)
+
+Full record: `progressive.md` §16 (registration, the 25 mechanism changes M1–M25 with their measured
+reasons and regression tests, pack O gates, the requirement's example as learned, diagnosis, resources).
+This section summarises what changed in the integrated system and where the evidence is.
+
+### 13.1 Registration and contracts
+
+- `pipeline/build.py`: `REGISTRY_MODES = ("full", "full+progressive", "progressive_only",
+  "progressive_decision")`; `registry_mode()` resolves an explicit argument, a pack's `registry_mode`, or
+  `config['progressive']['enabled']`; the default stays `full`, so the Runtime, the API, packs A–E, smoke,
+  mini and the tick-mode golden test run the same engine set as round 4.
+- `progressive_decision` (P-core + B24–B29) was added because `full+progressive` on pack O held a 2.26 GB
+  store by day 4 (pickled; approx 1.27 GB, derived 0.62 GB, vectors 0.48 GB) and two 21-day attempts were
+  OOM-killed at 4.4 GB and 7.1 GB per process (M25). Every pack O number is from this mode.
+- Detector registry: `conf_who`, `conf_when`, `conf_content`, `conf_seq`, `conf_novel` appended
+  (family `conformity`, stream T; 40 detectors in all). `pattern_violation` is a discrete kind for B25,
+  B26, B27, B29 and B23 (family `conformity` in `lib/m_feedback.py`).
+- Store: batch series (`add_batch`, `batch_at`, `batches_since`, `compact_batch`, `drop_batches`) and the
+  per-system tick clock `ops.tick` (contract.md N). Config: `DEFAULT_CONFIG['progressive'] = {'enabled':
+  False}` deep-merged over `lib/pevent.PROGRESSIVE_DEFAULTS`, `who_group_names`, `lib3.resource_mode`.
+- Bounded mode (`lib3.resource_mode = 'bounded'`): `lib/pactive.py` accessors in 22 B engines, the D0
+  engines and R2; in `full` mode every accessor returns `store.entities(s)` unchanged (by construction).
+
+### 13.2 Results (all measured; `reports/progressive/`)
+
+- Pack O, seeds 0–2, 21 days at 900 s, `progressive_decision`: PG1 recall @ day 14 0.21 / 0.18 / 0.21
+  (precision 0.30 / 0.39 / 0.34; workflow component 0.92 passes); A1–A10 detected 7 / 6 / 6 of 10;
+  FAR incidents ≥ LOW 0.027–0.032 per entity-day (passes ≤ 0.10), ≥ MEDIUM 0.025–0.029 (fails ≤ 0.02);
+  PG7 registration and roles 1.0, type 0.67; PG8 0.33 / 0.67 / 0.50; PG2 ECE 0.36–0.43; PG3, PG5 (except
+  D2), PG10 fail. Per run ≈ 261 000 events, 27–28 min, peak RSS 1.37–1.40 GB; engine time P-core
+  760–792 s, B24–B29 825–834 s.
+- Scaling (`progressive_only`, 3 days): P-core memory 22.0 / 27.2 / 30.0 MB at 500 / 5 000 / 20 000 IPs
+  (slope 0.085), 22.0 / 31.4 / 36.5 MB at 40 / 100 / 340 attributes (0.23, fails ≤ 0.2), 30.7 / 42.7 MB
+  at 20 / 100 systems in 12 families (0.21); idle system 0.41 MB; largest tree 11.6 MB; scoring / learning
+  p95 0.2–2.1 / 1.6–5.0 ms per event (fails 100 / 250 µs).
+- Non-regression of the default registry: smoke and mini seed 0 have 0 differences from
+  `reports/round4/runs` on every key except timings after all changes; packs A and E seed 0 had 0
+  differences before the last engine changes, whose modules `full` does not execute.
+- Tests: 2 769 passed, 4 skipped, 983 s (after all changes); the regression tests of M19–M24 were checked
+  to fail without their change.
+
+### 13.3 Not run, and open
+
+Not run: five seeds, O-red, O-real (PG11), O60, PG9, the 300-system and 7-day scaling points, pack O with
+`full+progressive`. Open issues ordered by impact: design doc §3.11.1 and `progressive.md` §16.6.
+

@@ -168,6 +168,7 @@ CONF_SERIES = "behavior.conf"
 STATE = "model.pconf_state"
 P_FLOOR = 1e-9                  # a finite sample never supports p = 0 (bounded GPD tails)
 GRP_LEVEL = 3                   # the who level of P11's groups (grp:<id>)
+GROUP_MIN_MEMBERS = 2           # other members with standing that make a node a pattern of their group
 MEMBER_EV = 3.0                 # a source recurring at an ANCESTOR population (back-off) is a member
 CAL_TYPES = ("when", "content", "seq")
 INT_P = 1e-3                    # an hour count is a finding only at this tail (§6.16.4)
@@ -201,7 +202,20 @@ NON_CONTENT_PREFIX = ("ctx.", "ev.", "sess.", "net.src", "net.peer", "net.dst", 
                       "http.method", "http.host", "http.route", "http.path", "tls.sni", "dns.qname")
 
 
-def group_outsider(nd: Any, g: str, ip: str, t: float) -> bool:
+def group_members_at(nd: Any, g: str, ip: str, t: float, ip2g: Mapping[str, Any]) -> int:
+    """Number of OTHER members of P11 group g that have standing at the node
+    (each brought >= MEMBER_EV evidence units to its IP-level who summary).
+    Bounded: one pass over the node's level-0 heavy hitters."""
+    lv0 = nd.who.levels[0]
+    n = 0
+    for x, _c, _gu, ev in lv0.items(t):
+        if str(x) != str(ip) and ip2g.get(str(x)) == g and ev >= MEMBER_EV:
+            n += 1
+    return n
+
+
+def group_outsider(nd: Any, g: str, ip: str, t: float,
+                   ip2g: Optional[Mapping[str, Any]] = None) -> bool:
     """The IP's P11 group g has no standing at the node: the group-level
     evidence its OTHER members brought is below MEMBER_EV. Presence of the
     group key alone is not standing - the IP's own earlier (damped) events
@@ -213,6 +227,13 @@ def group_outsider(nd: Any, g: str, ip: str, t: float) -> bool:
     lv3 = nd.who.levels[3]
     if lv3.total(t) <= 0:
         return False
+    if ip2g is not None:
+        # the node is a pattern OF THE GROUP only when >= GROUP_MIN_MEMBERS other
+        # members use it; one colleague's individual habit (the finance approver,
+        # whom P11 placed in 综合部's group on days 15-17 of pack O seed 0) gives the
+        # rest of the group no standing there (A1: 192.168.1.23 approving in
+        # finance was scored as a colleague of 192.168.2.10 -> LOW, no incident)
+        return group_members_at(nd, g, ip, t, ip2g) < GROUP_MIN_MEMBERS
     key = f"grp:{g}"
     ev_g = lv3.evidence(key, t) if key in lv3 else 0.0
     lv0 = nd.who.levels[0]
@@ -1090,23 +1111,55 @@ class ConformityEngine(Engine):
             if not _nan(p_content):
                 details["content"] = worst
             # ---- who
+            def _is_member(ni_: Any, keys_: Sequence[Any]) -> bool:
+                item_ = keys_[ni_.who_l]
+                if item_ in ni_.who_heavy:
+                    return True
+                # a source with standing of its own (>= MEMBER_EV evidence units,
+                # i.e. recurring over runs and days, damped rows counting 0.1)
+                # is a member though it holds < 5 % of the mass or evidence:
+                # at an ancestor (back-off) whose population mixes the
+                # children's, and equally at the covering node itself (pack O:
+                # the finance approver, ~3 % of finance's evidence, was outside
+                # the root's heavy set, flagged on every login - 8 HIGH incidents
+                # - and damped, so its own approval nodes stalled at n_c = 12
+                # and never confirmed)
+                ss_ = ni_.nd.who.levels[ni_.who_l]
+                if item_ in ss_ and ss_.evidence(item_, t) >= MEMBER_EV:
+                    return True
+                if ni_.who_grp and keys_[GRP_LEVEL] in ni_.who_grp:
+                    # a new address of a member group at a node whose group level is
+                    # closed too: a colleague, not an outsider (§6.9.2) - provided the
+                    # node is a pattern of the group (>= GROUP_MIN_MEMBERS other
+                    # members use it), not one member's individual pattern
+                    g0 = tc.ip2g.get(ip)
+                    return g0 is None or group_members_at(ni_.nd, g0, ip, t, tc.ip2g) >= GROUP_MIN_MEMBERS
+                return False
+
             for j in range(conf_i, -1, -1):
                 ni = tc.node_info(kind, tree, path[j])
                 if ni.who_l is None:
                     continue
                 keys = tc.who_keys(ip)
-                item = keys[ni.who_l]
-                member = item in ni.who_heavy
-                if not member and j < conf_i:
-                    # back-off to an ancestor: its population is a mixture of the
-                    # children's; a source recurring there is a member of it
-                    ss = ni.nd.who.levels[ni.who_l]
-                    member = item in ss and ss.evidence(item, t) >= MEMBER_EV
-                if not member and ni.who_grp and keys[GRP_LEVEL] in ni.who_grp:
-                    # a new address of a member group at a node whose group level is
-                    # closed too: a colleague, not an outsider (§6.9.2)
-                    member = True
+                member = _is_member(ni, keys)
                 p_cur = 1.0 if member else ni.who_U
+                if not member:
+                    # foreign at every closed ancestor too (up to the system root):
+                    # the most confident of those closed populations says how
+                    # unlikely the source is - a young single-user node (U ~ 1/n_c)
+                    # must not hide that the source never used the closed SYSTEM
+                    # (pack O A1: 192.168.1.23 approving in finance, node U 0.029,
+                    # root U 0.0013). Bonferroni over the closed levels tested.
+                    u_min, n_t = ni.who_U, 1
+                    for j2 in range(j - 1, -1, -1):
+                        ni2 = tc.node_info(kind, tree, path[j2])
+                        if ni2.who_l is None:
+                            continue
+                        if _is_member(ni2, keys):
+                            break
+                        n_t += 1
+                        u_min = min(u_min, ni2.who_U)
+                    p_cur = min(ni.who_U, u_min * n_t)
                 p_ref = NAN
                 if ni.who_ref is not None and ni.who_l == 0:
                     p_ref = 1.0 if str(ip) in ni.who_ref else ni.who_U
@@ -1118,7 +1171,7 @@ class ConformityEngine(Engine):
                 if p_who < 1.0:
                     g = tc.ip2g.get(ip)
                     nd = ni.nd
-                    if g is not None and group_outsider(nd, g, ip, t):
+                    if g is not None and group_outsider(nd, g, ip, t, tc.ip2g):
                         flags.add("outsider_group")
                     root = tree.nodes[tree.root]
                     if g is not None and root.who.levels[3].total(t) > 0 and f"grp:{g}" not in root.who.levels[3]:
