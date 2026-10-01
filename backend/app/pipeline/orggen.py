@@ -553,6 +553,14 @@ class OEv:
     route: str = ""
 
 
+def act_of(e: "OEv") -> str:
+    """The action of a generated event as the core sees it: method and route
+    template for HTTP, the server name for TLS (truth only; PG8)."""
+    if e.ch == "h":
+        return f"{e.method} {e.route or e.path}"
+    return f"TLS {e.host}"
+
+
 def _net_hosts(cidr: str) -> List[str]:
     net = ipaddress.ip_network(cidr, strict=False)
     return [str(h) for h in net.hosts()]
@@ -810,10 +818,16 @@ def build_org(variant: str = "O", portal_n: int = 500, n_meta: int = 0,
               {"max_allowed_severity": "info"}),
     ]
     anomalies = _o_anomalies(P, red)
+    # a string in a payload namespace (hdr.*, body.kv.*, q.kv.*) is typed `text`
+    # (progressive.md §5.4.5: payload values use the shape hierarchy, and P07
+    # states a few-valued one as its closed set - the categorical constraint -
+    # next to its grammar); §5.3 rule 5 (categorical when distinct <= 256)
+    # governs non-payload strings. Typed categorical, the username of the
+    # requirement (3 values) would lose its grammar (§16.2 A2).
     sched: List[AttrSchedule] = [
         AttrSchedule(8, "oa", "headers", "x-client-ver", ValueSpec("by_dept", {
             "map": {"GA": "5.2.1", "FIN": "5.2.1", "SALES": ["5.1.9", "5.2.1"]},
-            "default": "5.2.1"}), by="dept", cls="informative", type="categorical",
+            "default": "5.2.1"}), by="dept", cls="informative", type="text",
             until_day=15 if "R10" in real else None),
         AttrSchedule(10, ["oa", "portal"], "meta", "waf.score", ValueSpec("int", {"lo": 0, "hi": 2}),
                      by="noise", cls="anomaly_signal", type="ordinal"),
@@ -822,14 +836,25 @@ def build_org(variant: str = "O", portal_n: int = 500, n_meta: int = 0,
     if independent_attrs:
         sched += synthetic_attrs(independent_attrs, day=1, systems=["oa", "finance", "crm", "portal"],
                                  prefix="z", independent=True)
+    # who arms (progressive.md §16.2 A1): the who arm is the granularity at
+    # which behaviour is conditioned on who, so the right arms are the levels
+    # whose held-out behaviour gain is within 5 % (+ 0.01 bits/event) of the
+    # best (pmetrics.who_arm_utilities, the oracle of PG8's third clause; the
+    # same sets on seeds 0-2): oa - grp / prefix (every department owns its
+    # /24s, so /24 refines the departments; per IP loses 0.8 bits/event because
+    # 研发's pool users re-address daily); finance - ip (the approver and the
+    # bookkeepers do different things inside one department); crm - grp /
+    # prefix (one department whose members behave alike); code, mail - grp /
+    # prefix / reg (the region is the 研发 DHCP scope, the same partition);
+    # portal - prefix (public visitors: per-IP behaviour models lose 2 bits/event)
     strategy = {
-        "oa": {"who": ["ip", "grp"], "P07": ["on"], "P08": ["on"], "P10": ["on"]},
-        "finance": {"who": ["ip", "grp"], "P07": ["on"], "P08": ["on"], "P10": ["on"]},
-        "crm": {"who": ["ip", "grp", "prefix"], "P07": ["on"], "P08": ["on", "off"],
+        "oa": {"who": ["grp", "prefix"], "P07": ["on"], "P08": ["on"], "P10": ["on"]},
+        "finance": {"who": ["ip"], "P07": ["on"], "P08": ["on"], "P10": ["on"]},
+        "crm": {"who": ["grp", "prefix"], "P07": ["on"], "P08": ["on", "off"],
                 "P10": ["on", "off"]},
-        "code": {"who": ["grp", "prefix"], "P07": ["off"], "P08": ["off"], "P10": ["on", "off"]},
-        "mail": {"who": ["grp", "prefix", "ip"], "P07": ["off"], "P08": ["off"], "P10": ["on", "off"]},
-        "portal": {"who": ["prefix", "reg", "none"], "P07": ["on"], "P08": ["off"],
+        "code": {"who": ["grp", "prefix", "reg"], "P07": ["off"], "P08": ["off"], "P10": ["on", "off"]},
+        "mail": {"who": ["grp", "prefix", "reg"], "P07": ["off"], "P08": ["off"], "P10": ["on", "off"]},
+        "portal": {"who": ["prefix"], "P07": ["on"], "P08": ["off"],
                    "P10": ["on", "off"]},
     }
     config: Dict[str, Any] = {
@@ -996,7 +1021,7 @@ def _apply_real(spec: OrgSpec, real: Set[str], r1_trusted: bool) -> None:
                                                  "view_hint": True})}))
         if r1_trusted:
             spec.config.setdefault("progressive", {})["trusted_proxies"] = ["192.168.100.99/32"]
-        spec.strategy["oa"] = ({"who": ["ip", "grp"], "P07": ["on"], "P08": ["on"], "P10": ["on"]}
+        spec.strategy["oa"] = ({"who": ["grp", "prefix"], "P07": ["on"], "P08": ["on"], "P10": ["on"]}
                                if r1_trusted else {"who": ["none"], "P07": ["on"],
                                                    "P08": ["off", "on"], "P10": ["on", "off"]})
     if "R2" in real:
@@ -1220,6 +1245,10 @@ class OrgGenerator:
         self._mend = self._month_end_dates()
         self.opportunities: Dict[str, Dict[str, Dict[str, int]]] = {}
         self.who_log: Dict[str, Dict[str, Dict[str, int]]] = {}
+        # (source, action, local hour) counts per system and date: the offline
+        # who-arm utility of PG8 (held-out code of who + behaviour given who,
+        # pmetrics.who_arm_utilities) needs what each source did, not only how often
+        self.act_log: Dict[str, Dict[str, Dict[str, int]]] = {}
         self.attr_first: Dict[str, float] = {}
         self.attr_tick: Dict[str, float] = {}
         self.stats = {"events": 0, "records": 0, "benign": 0, "anomalous": 0, "dropped": 0}
@@ -1900,6 +1929,9 @@ class OrgGenerator:
                 e.l7["headers"] = dict(e.l7.get("headers") or {}, **{"x-forwarded-for": e.src})
             wl = self.who_log.setdefault(e.system, {}).setdefault(date_iso, {})
             wl[e.src] = wl.get(e.src, 0) + 1
+            ak = f"{e.src}\t{act_of(e)}\t{self.clock.local(e.ts).hour}"
+            al = self.act_log.setdefault(e.system, {}).setdefault(date_iso, {})
+            al[ak] = al.get(ak, 0) + 1
             self.stats["events"] += 1
             rows.append((e, src, extra, xff))
         if sampling is not None:
@@ -2151,6 +2183,7 @@ class OrgGenerator:
             "attr_truth": self.attr_truth(),
             "opportunities": self.opportunities,
             "who_log": self.who_log,
+            "act_log": self.act_log,
             "stats": dict(self.stats),
             "days": {"start": self.start.isoformat(), "n_days": self.n_days,
                      "day_start": [self.day_start(d) for d in range(1, self.n_days + 2)],

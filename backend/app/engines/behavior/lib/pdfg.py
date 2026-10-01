@@ -933,6 +933,16 @@ def seq_scores(model: Mapping[str, Any], g: str, a_key: Optional[str], b_key: st
     b = st.acts.id_of(b_key)
     pt = p_trans(st, g, a, b, t)
     pr, miss = p_req(st, scopes.get(g) or {}, st.acts, b, bits, t, g)
+    if g != STAR and b is not None and STAR in scopes and _ev(st.pcnt, (g, b), t) < REQ_MIN_B:
+        # the group's scope has too little evidence of b to hold a requirement
+        # for it (c(g, b) < REQ_MIN_B): back off to the population scope, as a
+        # young node states its ancestor's constraints. P11 re-forms groups under
+        # new ids: pack O seed 1, 综合部 became G31 on day 17, P10 mined a G31
+        # scope from two days of its traffic (edges, no requirement for the
+        # report), and A5's report without its form page (day 19) was scored
+        # against it - no requirement, no finding - while '*' and the old G12
+        # scope both required the form page
+        pr, miss = p_req(st, scopes.get(STAR) or {}, st.acts, b, bits, t, STAR)
     ps = [p for p in (pt, pr) if p == p]
     return {"p_trans": pt, "p_req": pr, "p_seq": float(min(1.0, 2.0 * min(ps))) if ps else nan,
             "missing": miss, "a": a, "b": b}

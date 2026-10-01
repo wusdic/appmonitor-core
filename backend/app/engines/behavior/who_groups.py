@@ -72,7 +72,12 @@ Daily (entity_due, 24 h) — the clustering:
               "elsewhere" are counted); events group_formed / group_changed (INFO,
               at (__org__, __org__)).
   names       config who_group_names [{name, ips | cidrs}] and dhcp_scopes
-              [{cidr, name}] -> Hungarian on Jaccard >= 0.5; else the auto name
+              [{cidr, name}] -> Hungarian on Jaccard >= 0.5 over the groups'
+              ADDRESSES (prefix-mode pool sources are not people of the
+              department); a group whose addresses lie >= 80 % inside a configured
+              name that went to another group is one of its ROLES, named
+              '<name>·<top action label>' (rec 'dept' = the configured name; P14
+              composes a department view from its roles); else the auto name
               'G<id>·<top-2 action labels>'.
   labels      top-5 actions by lift x sqrt(support), lift >= 2.
   actions     per system the group's action mix (items >= 2 % of the group's
@@ -81,7 +86,13 @@ Daily (entity_due, 24 h) — the clustering:
               (P14 group view).
   covers      smallest CIDR set covering >= 90 % of members with purity >= 0.8
               (lib/plouvain.prefix_covers) — the "某几个 IP 段" rendering and the
-              `reg` level of the IP hierarchy when no configured region matches.
+              `reg` level of the IP hierarchy when no configured region matches;
+              plus the group's prefix-mode pool sources whose recurring addresses
+              are >= 80 % the group's own (_pool_pure).
+  members     the group's ADDRESSES; its prefix-mode pool sources (one-shot
+              addresses pooled per /24) are published apart as 'pools' (pack O:
+              财务部's 192.168.2.0/24 pool was listed as a member of 综合部's group
+              and rendered in the login statement's who).
 Who mode per system (the IP-agnostic decision, published in `mode`):
   model.sysprof chosen['who'] (P12) when present; else P05's attrsel who_mode
   'none' (IP carries no information about the targets); else the level with
@@ -95,9 +106,9 @@ Who mode per system (the IP-agnostic decision, published in `mode`):
 
 Writes  model.who_groups@(__org__, __org__):
           {'fmt': 1, 'version', 'updated', 'last_run',
-           'groups': {gid: {'id', 'name', 'name_source', 'auto_name', 'members',
-                            'n', 'sub', 'covers', 'labels', 'systems', 'actions', 'first_seen',
-                            'changed', 'provisional'}},
+           'groups': {gid: {'id', 'name', 'name_source', 'auto_name', 'dept', 'members',
+                            'n', 'pools', 'sub', 'covers', 'labels', 'systems', 'actions',
+                            'first_seen', 'changed', 'provisional', 'cohesion'}},
            'ip2g': {ip: gid}, 'covers': {gid: [cidr]}, 'shared': [ip],
            'mode': {system: {'mode', 'source', 'bits'}}, 'stats'}
         model.who_groups_state@(__org__, __org__) (private: signatures, cursors,
@@ -622,7 +633,13 @@ class WhoGroupsEngine(Engine):
         gsum = sum(glob.values()) or 1.0
         idx = {src: i for i, src in enumerate(srcs)}
         named = _named_sets(ctx.config, sigs.keys())
-        names = LV.match_names(final, named, J_NAME) if named else {}
+        # names are matched on the groups' ADDRESSES: prefix-mode pool sources
+        # (one-shot visitors pooled per /24) are not people of the department -
+        # pack O: 综合部's learned group {.23, .121} carried 10.168.7.0/24 and
+        # 192.168.2.0/24 pool sources, Jaccard 2/5 < J_NAME, and stayed unnamed
+        ipsets = {g: {m for m in final[g] if "/" not in m} for g in final}
+        names = LV.match_names(ipsets, named, J_NAME) if named else {}
+        subnames = _sub_names(ipsets, named, names)
         old_groups = model.get("groups") or {}
         groups: Dict[str, Dict[str, Any]] = {}
         ip2g: Dict[str, str] = {}
@@ -660,8 +677,14 @@ class WhoGroupsEngine(Engine):
                 sk = key.partition("|")[0]
                 systems[sk] = systems.get(sk, 0.0) + v / tot
             acts = _group_actions(gp, tot, mi, prof, srcs, sigs.items)
-            cv = LV.prefix_covers([m for m in members if "/" not in m], active)
-            cv += [m for m in members if "/" in m]                  # prefix-mode sources
+            ips = [m for m in members if "/" not in m]
+            pools = [m for m in members if "/" in m]
+            cv = LV.prefix_covers(ips, active)
+            # a prefix-mode pool source covers the group only where the group's
+            # addresses are the pool's recurring population (purity, as for
+            # prefix_covers): 192.168.2.0/24 (财务部's subnet, whose members'
+            # first-day OA rows were pooled) is not a 综合部 address range
+            cv += [m for m in pools if _pool_pure(m, set(ips), active)]
             subs: Dict[int, List[str]] = {}
             for i in mi:
                 subs.setdefault(int(sub0[i]), []).append(srcs[i])
@@ -670,12 +693,17 @@ class WhoGroupsEngine(Engine):
                                  for k, _ in sorted(gp.items(), key=lambda kv: -kv[1])[:2]
                                  if not (sigs.items.key_of(k) or "").partition("|")[2].startswith("@")]
             auto = f"{g}·" + "+".join(x["label"] for x in top) if top else g
-            nm = names.get(g)
+            nm = names.get(g) or subnames.get(g)
             old = old_groups.get(g) or {}
             prov = [ip for ip in old.get("provisional") or [] if ip in prov_keep.get(g, set())]
+            if nm is not None and g in subnames and g not in names:
+                # a learned role inside a configured department (another group got
+                # the department's name): '综合部·<its top action>'
+                nm = (f"{nm[0]}·" + "+".join(x["label"] for x in top[:1]) if top else nm[0], nm[1])
             rec = {"id": g, "name": nm[0] if nm else auto, "name_source": "config" if nm else "auto",
                    "name_jaccard": round(nm[1], 3) if nm else None, "auto_name": auto,
-                   "members": members, "n": len(members), "sub": sub, "covers": cv,
+                   "dept": (names.get(g) or subnames.get(g) or (None,))[0],
+                   "members": ips, "n": len(ips), "pools": pools, "sub": sub, "covers": cv,
                    "labels": labels, "systems": {k: round(v, 4) for k, v in sorted(systems.items())
                                                   if v >= 0.01},
                    "actions": acts,
@@ -705,7 +733,7 @@ class WhoGroupsEngine(Engine):
                 reps[g] = M[sel]
                 cl = {int(lab[i]) for i in mi}
                 rec["cohesion"] = round(float(np.mean([intra.get(c, 1.0) for c in cl])), 4)
-        st.prev_members = {g: set(r["members"]) for g, r in groups.items()}
+        st.prev_members = {g: set(final[g]) for g in groups}
         st.reps = reps
         st.cohesion = {g: float(r.get("cohesion", 1.0)) for g, r in groups.items()}
         st.runs += 1
@@ -726,7 +754,7 @@ class WhoGroupsEngine(Engine):
                          and sigs.get(src) is not None and sigs.get(src).ev >= EV_JOIN}
         if self._joins(st, now, model):
             for g, gr in model["groups"].items():
-                st.prev_members[g] = set(gr.get("members") or [])
+                st.prev_members[g] = set(gr.get("members") or []) | set(gr.get("pools") or [])
         for kind, g, extra in events:
             store.add_event(BehaviorEvent(
                 system=ORG, entity=ORG, ts=now, kind=kind, score=0.0, severity=Severity.INFO,
@@ -785,15 +813,21 @@ def _group_actions(gp: Mapping[int, float], tot: float, mi: Sequence[int],
             share = v / s_tot
             if share < ACT_SHARE:
                 continue
+            # members are the group's ADDRESSES (prefix-mode pool sources are
+            # not people: '提交报告[10.168.7.121、192.168.1.23、10.168.7.0/24]')
             who = []
+            n_ip = 0
             for i in mi:
+                if "/" in str(srcs[i]):
+                    continue
+                n_ip += 1
                 p = prof[i]
                 s = sum(p.values()) or 1.0
                 if p.get(k, 0.0) / s >= ACT_MEMBER_W:
                     who.append(srcs[i])
             rows.append({"action": act, "label": item_label(f"{sk}|{act}"), "share": round(share, 4),
-                         "support": round(len(who) / max(1, len(mi)), 3),
-                         "members": sorted(who, key=_ip_key) if len(who) < min(len(mi), ACT_MEMBERS_MAX + 1)
+                         "support": round(len(who) / max(1, n_ip), 3),
+                         "members": sorted(who, key=_ip_key) if len(who) < min(n_ip, ACT_MEMBERS_MAX + 1)
                          else []})
             if len(rows) >= ACTS_PER_SYSTEM:
                 break
@@ -866,6 +900,54 @@ def _root_id(store: Any, key: str) -> int:
     ptm = MP.get_ptree(store, key)
     tree = ptm.kinds.get(EV.KIND_TXN) if ptm is not None else None
     return int(tree.root) if tree is not None else -1
+
+
+SUB_NAME_IN = 0.8           # a group whose addresses lie >= 80 % inside a configured department
+
+
+def _sub_names(ipsets: Mapping[str, Set[str]], named: Sequence[Tuple[str, Set[str]]],
+               names: Mapping[str, Tuple[str, float]]) -> Dict[str, Tuple[str, float]]:
+    """{group: (department name, share inside)} for learned groups that are not
+    the Hungarian match of a configured name but whose addresses lie >= SUB_NAME_IN
+    inside one: the department's other ROLES. Pack O: 综合部's approver
+    (192.168.1.21) and its two report writers behave differently enough to be two
+    learned groups (approvals vs reports, weighted Jaccard 0.47); the address
+    list names both as 综合部, the learned split is its role structure. Names
+    only - membership stays learned."""
+    out: Dict[str, Tuple[str, float]] = {}
+    for g, ips in ipsets.items():
+        if g in names or not ips:
+            continue
+        best = None
+        for nm, ss in named:
+            share = len(ips & ss) / len(ips)
+            if share >= SUB_NAME_IN and (best is None or share > best[1]):
+                best = (nm, share)
+        if best is not None:
+            out[g] = best
+    return out
+
+
+def _pool_pure(pool: str, ips: Set[str], active: Any) -> bool:
+    """A prefix-mode pool source belongs to a group's address range when the
+    group's own addresses are >= PURITY of the recurring addresses inside it."""
+    try:
+        n = ipaddress.ip_network(pool, strict=False)
+    except ValueError:
+        return False
+    lo = int(n.network_address)
+    hi = lo + n.num_addresses - 1
+    tot = active.count(n.version, lo, hi)
+    own = sum(1 for ip in ips if _in_net(ip, n))
+    return tot == 0 or own / tot >= LV.PURITY
+
+
+def _in_net(ip: str, n: Any) -> bool:
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return a.version == n.version and a in n
 
 
 def _named_sets(config: Mapping[str, Any], sources: Iterable[str]) -> List[Tuple[str, Set[str]]]:

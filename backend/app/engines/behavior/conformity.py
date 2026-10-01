@@ -143,6 +143,22 @@ implementation report):
     no incident ever opened.
   * who: a new address inside a configured DHCP pool (dhcp_scopes) whose pool
     (reg level) has standing at the node is a re-addressed member.
+  * who (round 2b): the colleague rule needs min(2, other members) colleagues
+    (a two-member group has one), and a colleague "uses" the node when the
+    node's IP-level summary shows its standing OR its own P11 signature holds
+    the action as a recurring use (>= 2 % over >= 5 days; the summary keeps 8
+    heavy hitters). An address whose group LABEL is new to the system (P11
+    re-formed the group under a new id) is a member where its own signature
+    holds the action, and is not system_new where it holds the system. Pack O
+    seed 0: 10.168.7.121 (综合部) was 'outsider_group' at the 30-source login
+    node from day 9, damped and untrusted (B28) ever after; 192.168.1.21's
+    re-formed group made its daily mail use MEDIUM findings.
+  * content (round 2b): a numeric value inside the observed clean range has
+    p >= 2 / (n_rng + 1) (_in_range_floor): a bounded GPD tail on integer
+    counts put the observed minimum at 1e-9.
+  * intensity (round 2b): p = min(conformal rank, Cantelli bound with the
+    node's own count moments, variance >= mean): the rank alone cannot go
+    below 1 / (W + 1) (A7's 400 logins an hour was LOW on seed 1).
   * intensity: the hour count's p is its conformal rank among every IP-hour
     P03 closed at the node (RateTally, binned histogram, H_L decay), not
     P06's rate.ip_h p - that digest is H_m-decayed (rank floor ~1/(mass+1)
@@ -191,6 +207,7 @@ STATE = "model.pconf_state"
 P_FLOOR = 1e-9                  # a finite sample never supports p = 0 (bounded GPD tails)
 GRP_LEVEL = 3                   # the who level of P11's groups (grp:<id>)
 REG_LEVEL = 4                   # the who level of configured / learned regions (reg:<name>)
+SIG_STANDING = 0.02             # share of an address's own signature that is a recurring use (P11's ACT_MEMBER_W)
 GROUP_MIN_MEMBERS = 2           # other members with standing that make a node a pattern of their group
 MEMBER_EV = 3.0                 # a source recurring at an ANCESTOR population (back-off) is a member
 CAL_TYPES = ("when", "content", "seq")
@@ -225,20 +242,82 @@ NON_CONTENT_PREFIX = ("ctx.", "ev.", "sess.", "net.src", "net.peer", "net.dst", 
                       "http.method", "http.host", "http.route", "http.path", "tls.sni", "dns.qname")
 
 
-def group_members_at(nd: Any, g: str, ip: str, t: float, ip2g: Mapping[str, Any]) -> int:
-    """Number of OTHER members of P11 group g that have standing at the node
-    (each brought >= MEMBER_EV evidence units to its IP-level who summary).
-    Bounded: one pass over the node's level-0 heavy hitters."""
+def signature_share(sigs: Any, key: str, ip: str, t: float, route: Optional[str] = None) -> float:
+    """Share of an address's own P11 signature mass on tree `key` (or on one
+    action `route` of it), 0 unless the signature spans >= CLOSED_DAYS active
+    days: the address's own recurring use, independent of group ids and of
+    the nodes' bounded IP-level summaries (shared by P03's colleague rule and
+    P14's group parts)."""
+    sg = sigs.get(ip) if sigs is not None else None
+    if sg is None or sg.days < PN.CLOSED_DAYS:
+        return 0.0
+    ids, w = sigs.weights(ip, t)
+    tot = float(w.sum())
+    if tot <= 0:
+        return 0.0
+    pre = f"{key}|"
+    acc = 0.0
+    for i, x in zip(ids.tolist(), w.tolist()):
+        it = sigs.items.key_of(int(i)) or ""
+        if route is None:
+            if it.startswith(pre) and not it[len(pre):].startswith("@"):
+                acc += x
+        elif it == pre + route:
+            acc += x
+    return acc / tot
+
+
+MEMBERS_CHECKED = 64            # members of a group whose own signatures are read (group_members_at)
+
+
+def group_members_at(nd: Any, g: str, ip: str, t: float, ip2g: Mapping[str, Any],
+                     uses: Optional[Callable[[str], bool]] = None,
+                     members: Optional[Sequence[str]] = None) -> int:
+    """Number of OTHER members of P11 group g that use the node: >= MEMBER_EV
+    evidence units in its IP-level who summary, or - `uses(member)`, the
+    member's own P11 signature holding the node's action as a recurring use -
+    for the members that summary cannot show: it keeps WHO_K = 8 heavy
+    hitters, and at a 30-source login node shared by 销售部, 财务部 and 综合部 no
+    综合部 member was among them, so 10.168.7.121 had no colleague there, was
+    'outsider_group', damped and untrusted from day 9 (pack O seed 0).
+    Bounded: the node's 8 heavy hitters plus <= MEMBERS_CHECKED members."""
     lv0 = nd.who.levels[0]
     n = 0
+    seen = {str(ip)}
     for x, _c, _gu, ev in lv0.items(t):
         if str(x) != str(ip) and ip2g.get(str(x)) == g and ev >= MEMBER_EV:
             n += 1
+            seen.add(str(x))
+    if uses is not None and members:
+        for m in list(members)[:MEMBERS_CHECKED]:
+            m = str(m)
+            if m in seen or "/" in m:
+                continue
+            seen.add(m)
+            if uses(m):
+                n += 1
     return n
 
 
+def group_need(g: Optional[str], ip: str, groups: Optional[Mapping[str, Any]]) -> int:
+    """Other members with standing that make a node a pattern of group g:
+    GROUP_MIN_MEMBERS, but never more than the group's other members (a
+    two-member group has one colleague: pack O's report writers 192.168.1.23
+    and 10.168.7.121 - with a fixed 2 the second one was an outsider of the
+    login node its colleague and itself use daily, damped 0.1 and then
+    untrusted by B28 from day 8, so it never became a member: the statement
+    lost it)."""
+    gr = (groups or {}).get(g) if g is not None else None
+    if not isinstance(gr, Mapping):
+        return GROUP_MIN_MEMBERS
+    others = sum(1 for m in gr.get("members") or [] if "/" not in str(m) and str(m) != str(ip))
+    return max(1, min(GROUP_MIN_MEMBERS, others))
+
+
 def group_outsider(nd: Any, g: str, ip: str, t: float,
-                   ip2g: Optional[Mapping[str, Any]] = None) -> bool:
+                   ip2g: Optional[Mapping[str, Any]] = None,
+                   groups: Optional[Mapping[str, Any]] = None,
+                   uses: Optional[Callable[[str], bool]] = None) -> bool:
     """The IP's P11 group g has no standing at the node: the group-level
     evidence its OTHER members brought is below MEMBER_EV. Presence of the
     group key alone is not standing - the IP's own earlier (damped) events
@@ -256,12 +335,28 @@ def group_outsider(nd: Any, g: str, ip: str, t: float,
         # whom P11 placed in 综合部's group on days 15-17 of pack O seed 0) gives the
         # rest of the group no standing there (A1: 192.168.1.23 approving in
         # finance was scored as a colleague of 192.168.2.10 -> LOW, no incident)
-        return group_members_at(nd, g, ip, t, ip2g) < GROUP_MIN_MEMBERS
+        mem = ((groups or {}).get(g) or {}).get("members") if uses is not None else None
+        if uses is not None and isinstance((groups or {}).get(g), Mapping) and \
+                not any("/" not in str(m) and str(m) != str(ip) for m in mem or []):
+            # a group of one address (its other sources are prefix-mode pools):
+            # there is no colleague to judge by, so the address's own recurring
+            # use of the action is the group's standing (pack O seed 0: 192.168.1.21,
+            # alone in its group, was 'outsider_group' on its own daily mail)
+            return not uses(str(ip))
+        return group_members_at(nd, g, ip, t, ip2g, uses, mem) < group_need(g, ip, groups)
     key = f"grp:{g}"
     ev_g = lv3.evidence(key, t) if key in lv3 else 0.0
     lv0 = nd.who.levels[0]
     ev_ip = lv0.evidence(ip, t) if ip in lv0 else 0.0
     return ev_g - ev_ip < MEMBER_EV
+
+
+def _own_standing(nd: Any, ip: Any, t: float) -> bool:
+    """The address itself brought >= MEMBER_EV evidence units to the node's
+    IP-level who summary (damped rows count 0.1: persistence of a foreign
+    source still takes 30 events)."""
+    lv0 = nd.who.levels[0]
+    return ip in lv0 and lv0.evidence(ip, t) >= MEMBER_EV
 
 
 def _nan(x: Any) -> bool:
@@ -509,6 +604,13 @@ def _rate_bin(c: float) -> int:
     return min(RATE_BINS - 1, 4 + int(2.0 * math.log2(c / 4.0)))
 
 
+CANTELLI_MIN_W = 30.0       # IP-hours before the node's count moments are used (RateTally.p)
+_RATE_LO = np.asarray([float(b + 1) if b < 4 else max(5.0, 4.0 * 2.0 ** ((b - 4) / 2.0))
+                       for b in range(RATE_BINS)])
+_RATE_HI = np.asarray([float(b + 1) if b < 4 else 4.0 * 2.0 ** ((b - 3) / 2.0)
+                       for b in range(RATE_BINS)])
+
+
 class RateTally:
     """Per (tree key, kind, node): the distribution of the finished hour counts
     of every (IP, node) pair P03 has closed there - a binned histogram (exact
@@ -557,13 +659,37 @@ class RateTally:
             a[_rate_bin(g)] += f
 
     def p(self, key: str, kind: int, nid: int, c: float, t: float) -> float:
+        """min(conformal rank, Cantelli bound). The rank cannot resolve below
+        1 / (W + 1): every count beyond the node's maximum gets that p, so a
+        node with W ~ 2 500 IP-hours could never state that 400 logins in one
+        hour are rarer than 13 (pack O seed 1, A7: p 4e-4, LOW). The one-sided
+        Chebyshev (Cantelli) bound P(X - mu >= c - mu) <= var / (var + (c -
+        mu)^2) speaks about the MAGNITUDE: with the node's own moments
+        (conservative bin edges: E[X^2] from upper edges, E[X] from lower
+        edges for the variance, the upper mean for the distance; variance at
+        least the mean, the Poisson dispersion of counts, so an all-ones node
+        does not put a count of 2 at 1e-9) it is far above the rank for a count near the bulk and only
+        undercuts it for counts many standard deviations out - a node whose
+        IP-hours routinely reach hundreds keeps a large variance and masks
+        nothing it should not."""
         a = self.d.peek((key, int(kind), int(nid)))
         if a is None:
             return 1.0
         f = self._f(t)
         W = float(a.sum()) / f
         w_ge = float(a[_rate_bin(c):].sum()) / f
-        return float(min(1.0, (1.0 + w_ge) / (W + 1.0)))
+        p = float(min(1.0, (1.0 + w_ge) / (W + 1.0)))
+        if W >= CANTELLI_MIN_W:
+            w = a / max(float(a.sum()), 1e-300)
+            mu_hi = float(w @ _RATE_HI)
+            mu_lo = float(w @ _RATE_LO)
+            # counts are at least Poisson-dispersed (var >= mean): a node whose
+            # IP-hours are all 1 has sample variance 0, and a plug-in bound would
+            # put a count of 2 at 1e-9 (the integer-count failure of P06's GPD)
+            var = max(float(w @ (_RATE_HI ** 2)) - mu_lo * mu_lo, mu_hi)
+            if c > mu_hi:
+                p = min(p, var / (var + (float(c) - mu_hi) ** 2))
+        return p
 
     def nbytes(self) -> int:
         return int(len(self.d) * (8 * RATE_BINS + 160) + 128)
@@ -668,6 +794,19 @@ class _TreeCtx:
                 ref = _hdr_table(SC.when_density(np.asarray(refw, dtype=np.float64) * Nd, Nd))
         self.info[k] = (cur, ref)
         return cur, ref
+
+    def sig_share(self, ip: str, t: float, route: Optional[str] = None) -> float:
+        """Share of the address's own P11 signature mass on this system (or on
+        one action of it), 0 unless the signature spans >= CLOSED_DAYS active
+        days: the address's own recurring use, independent of group ids and of
+        the nodes' bounded IP-level summaries."""
+        k = ("sig", ip, route)
+        hit = self.info.get(k)
+        if hit is not None:
+            return hit
+        out = signature_share(self.sigs, self.key, ip, t, route)
+        self.info[k] = out
+        return out
 
     def who_keys(self, ip: str) -> List[Any]:
         k = self.whokeys.get(ip)
@@ -810,6 +949,44 @@ def _ref_record(nd: Any, name: str, attr: str) -> Optional[Mapping[str, Any]]:
     return (ent.get("attrs") or {}).get(attr)
 
 
+RANGE_MARGIN = 0.01             # beyond an observed extreme by <= 1 % of the range width: a new extreme
+
+
+def _in_range_floor(rec: Mapping[str, Any], v: Any, p: float) -> float:
+    """A value inside the record's observed clean range is at least as common
+    as the observed extreme it does not pass: p >= (1 + 1) / (n_rng + 1). The
+    tail models can say otherwise - a bounded GPD (xi < 0) fitted to integer
+    counts ends at its estimated endpoint, and pack O's 192.168.1.21 sending
+    net.pkts_down = 6 (the node's observed minimum, range 6-14) got p = 1e-9,
+    was damped as an outlier and lost its trust for the day (B28)."""
+    if _nan(p):
+        return p
+    rng = rec.get("range") if isinstance(rec, Mapping) else None
+    n_rng = rec.get("n_rng") if isinstance(rec, Mapping) else None
+    if not rng or n_rng is None or not (float(n_rng) >= 1.0):
+        return p
+    try:
+        x = float(v)
+        lo, hi = float(rng[0]), float(rng[1])
+    except (TypeError, ValueError):
+        return p
+    # the stated range is the inverse transform of the observed extremes
+    # (exp(log 460) = 460.0000000000001): compare with a relative tolerance, and
+    # a value within RANGE_MARGIN of the range width beyond an extreme is a new
+    # extreme of the same sample, whose exchangeable rank p is 1 / (n_rng + 1)
+    # (pack O portal: net.dur_ms 336.98 against an observed maximum of ~336.5 got
+    # p = 1e-9 from a bounded GPD; bytes_up 460 'below' 460.0000000000001)
+    tol = 1e-9 * max(1.0, abs(lo), abs(hi))
+    if lo - tol <= x <= hi + tol:
+        return max(float(p), SC.conformal_rank_p(1.0, float(n_rng)))
+    m = RANGE_MARGIN * max(hi - lo, tol)
+    if all(abs(z - round(z)) <= 1e-6 * max(1.0, abs(z)) for z in (x, lo, hi)):
+        m = max(m, 1.0)                  # integer data: one resolution step (bytes 516 vs max 515)
+    if lo - m <= x <= hi + m:
+        return max(float(p), SC.conformal_rank_p(0.0, float(n_rng)))
+    return p
+
+
 class _NumFast:
     """lib/pbounds.p_value(rec, v) without a live digest, with the record's
     quantile grid prepared once per record and batch (the per-event cost of
@@ -880,8 +1057,10 @@ class _NumFast:
 def _check(typ: str, rec: Any, v: Any, num: Any) -> Tuple[float, List[str]]:
     if typ == "num":
         if isinstance(rec, _NumFast):
-            return rec.p(v)
-        return PB.p_value(rec, v, num=num)
+            p, fl = rec.p(v)
+            return _in_range_floor(rec.rec, v, p), fl
+        p, fl = PB.p_value(rec, v, num=num)
+        return _in_range_floor(rec, v, p), fl
     if typ == "set":
         return PG.check_set(rec, v)
     if typ == "cat":
@@ -1171,6 +1350,7 @@ class ConformityEngine(Engine):
                            if tree.nodes[path[j]] is not X and (j > 0 or conf_i == 0)]
             ps: List[float] = []
             seen_attr: Set[str] = set()
+            bind_top: Dict[Tuple[str, str], str] = {}
             worst: Tuple[float, str, Any, str, Any] = (2.0, "", None, "", None)
             for nd in chain:
                 ni = tc.node_info(kind, tree, nd.id)
@@ -1221,7 +1401,22 @@ class ConformityEngine(Engine):
                 # bindings
                 for rec in ni.binds:
                     X_, Y_ = rec.get("x"), rec.get("y")
-                    if not X_ or not Y_ or ("bind", X_, Y_) in seen_attr:
+                    if not X_ or not Y_:
+                        continue
+                    if ("bind", X_, Y_) in seen_attr:
+                        # checked at a deeper node; an ancestor's record of the same
+                        # pair still speaks for how credibly THIS source is bound to
+                        # the same value: a who split restarts the child's table, and
+                        # pack O's 综合部 login node (split on day 10) held 192.168.1.21
+                        # -> jack at LB < 0.9 on day 17, so A2 (rose's credential from
+                        # .21) was not credential-grade until day 19 (max_ttd 1 h)
+                        top = bind_top.get((X_, Y_))
+                        if top is not None and rec.get("dir") != "rev" and \
+                                (rec.get("fd") or {}).get("holds"):
+                            xa, xl = FD.parse_x(X_)
+                            ent = (rec.get("table") or {}).get(str(tc.hier.gen(xa, xl, get(xa)))) or {}
+                            if ent.get("bound") and str(ent.get("top")) == top and ent.get("LB") is not None:
+                                lb_x = float(ent["LB"]) if _nan(lb_x) else max(lb_x, float(ent["LB"]))
                         continue
                     seen_attr.add(("bind", X_, Y_))
                     if rec.get("dir") == "rev":
@@ -1249,6 +1444,8 @@ class ConformityEngine(Engine):
                         ent = (rec.get("table") or {}).get(str(x)) or {}
                         if ent.get("LB") is not None:
                             lb_x = float(ent["LB"])
+                        if ent.get("bound") and ent.get("top") is not None:
+                            bind_top[(X_, Y_)] = str(ent["top"])
                     if _nan(p):
                         continue
                     ps.append(p)
@@ -1322,13 +1519,26 @@ class ConformityEngine(Engine):
                 ss_ = ni_.nd.who.levels[ni_.who_l]
                 if item_ in ss_ and ss_.evidence(item_, t) >= MEMBER_EV:
                     return True
+                if ni_.who_l != 0 and (_own_standing(ni_.nd, keys_[0], t)
+                                       or (new_label and tc.sig_share(ip, t, route_key) >= SIG_STANDING)):
+                    # the ADDRESS has standing of its own at a node closed at a coarser
+                    # level - in the node's IP-level summary (<= WHO_K heavy hitters), or,
+                    # when its group LABEL is new to the system, in its own P11
+                    # signature (this action recurring over >= CLOSED_DAYS days): its group
+                    # key changed (P11 re-formed its group under a new id), not its
+                    # behaviour. Pack O seed 0: 192.168.1.21's new group G22 had no mass
+                    # at any node, so its daily mail and OA use was 'outsider_group,
+                    # system_new' (MEDIUM, a HIGH incident on clean day 15, trust 0)
+                    return True
                 if ni_.who_grp and keys_[GRP_LEVEL] in ni_.who_grp:
                     # a new address of a member group at a node whose group level is
                     # closed too: a colleague, not an outsider (§6.9.2) - provided the
                     # node is a pattern of the group (>= GROUP_MIN_MEMBERS other
                     # members use it), not one member's individual pattern
                     g0 = tc.ip2g.get(ip)
-                    return g0 is None or group_members_at(ni_.nd, g0, ip, t, tc.ip2g) >= GROUP_MIN_MEMBERS
+                    return g0 is None or group_members_at(
+                        ni_.nd, g0, ip, t, tc.ip2g, uses_route,
+                        (tc.groups.get(g0) or {}).get("members")) >= group_need(g0, ip, tc.groups)
                 # a new address inside a CONFIGURED address pool (dhcp_scopes /
                 # ip_classes: the operator's statement that these addresses are one
                 # population) whose pool has standing at the node: a re-addressed
@@ -1345,6 +1555,14 @@ class ConformityEngine(Engine):
                             return True
                 return False
 
+            def uses_route(m: str) -> bool:
+                # the action's item in the member's own signature; a system without
+                # routes (TLS / DNS: P03 reads no route) is its own action
+                return tc.sig_share(m, t, route_key) >= SIG_STANDING
+            g_ip = tc.ip2g.get(ip)
+            root_ = tree.nodes[tree.root]
+            new_label = g_ip is not None and root_.who.levels[GRP_LEVEL].total(t) > 0 \
+                and f"grp:{g_ip}" not in root_.who.levels[GRP_LEVEL]
             for j in range(conf_i, -1, -1):
                 ni = tc.node_info(kind, tree, path[j])
                 if ni.who_l is None:
@@ -1380,10 +1598,11 @@ class ConformityEngine(Engine):
                 if p_who < 1.0:
                     g = tc.ip2g.get(ip)
                     nd = ni.nd
-                    if g is not None and group_outsider(nd, g, ip, t, tc.ip2g):
+                    if g is not None and group_outsider(nd, g, ip, t, tc.ip2g, tc.groups, uses_route):
                         flags.add("outsider_group")
                     root = tree.nodes[tree.root]
-                    if g is not None and root.who.levels[3].total(t) > 0 and f"grp:{g}" not in root.who.levels[3]:
+                    if g is not None and root.who.levels[3].total(t) > 0 and f"grp:{g}" not in root.who.levels[3] \
+                            and not _own_standing(root, ip, t) and tc.sig_share(ip, t) < SIG_STANDING:
                         flags.add("system_new")
                     if g is None and not self._known(tc, st, s, ip):
                         flags.add("unknown_ip")

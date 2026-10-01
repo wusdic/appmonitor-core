@@ -383,3 +383,252 @@ def test_statement_confidence_is_the_held_out_hold_probability(store):
     st = _login_stmt(VW.system_view(store, "oa", CFG, store.now))
     assert st["confidence"] == pytest.approx(node.p_hold(store.now), abs=1e-4)
     assert st["confidence"] < 0.5
+
+
+def test_department_view_composes_the_roles_of_a_configured_department():
+    """A configured department learned as several groups (its roles) gets one
+    view stating what the requirement asks: the systems it uses and what it
+    does there, each action with the members doing it, and a negative
+    statement only where EVERY role never wrote (pack O: 综合部 = approver group
+    {.21} + report-writer group {.23, .121}; neither group view alone said
+    '综合部 访问 OA：登录、审批、提交报告')."""
+    from app.engines.behavior import views as VW
+    groups = {
+        "G22": {"id": "G22", "name": "综合部·oa GET /approval/{num}", "dept": "综合部",
+                "members": ["192.168.1.21"], "systems": {"oa": 0.9, "mail": 0.1},
+                "actions": {"oa": [{"action": "POST oa.corp.local /login", "share": 0.2, "members": []},
+                                   {"action": "POST oa.corp.local /approval/{num}/approve", "share": 0.5,
+                                    "members": []}]}},
+        "G10": {"id": "G10", "name": "综合部", "dept": "综合部",
+                "members": ["10.168.7.121", "192.168.1.23"], "systems": {"oa": 0.8, "mail": 0.2},
+                "actions": {"oa": [{"action": "POST oa.corp.local /login", "share": 0.2, "members": []},
+                                   {"action": "POST oa.corp.local /report/generate", "share": 0.4,
+                                    "members": []}]}}}
+
+    def neg(g, key):
+        return {"id": f"neg:{g}:{key}", "text_zh": "x", "text_en": "x", "support": 3.0, "confidence": 0.99,
+                "evidence": {"negative": True, "target_system": key, "routes": ["POST /fin/approval/{num}/approve"],
+                             "n_days": 21, "closed_zh": ["审批（POST /fin/approval/{num}/approve）"],
+                             "closed_en": ["approve (POST /fin/approval/{num}/approve)"],
+                             "foreign_attempts": []}}
+    views = [{"group": "G22", "name": groups["G22"]["name"], "statements": [neg("G22", "finance"), neg("G22", "crm")]},
+             {"group": "G10", "name": "综合部", "statements": [neg("G10", "finance")]}]
+    dv = VW.dept_view("综合部", views, groups, {}, T0)
+    assert dv["subject"] == "class:grp:dept:综合部" and set(dv["groups"]) == {"G22", "G10"}
+    act = next(s for s in dv["statements"] if s["evidence"].get("activity"))
+    assert act["text_zh"].startswith("综合部 访问 oa")
+    assert "审批（POST /approval/{num}/approve）[192.168.1.21]" in act["text_zh"]
+    assert "提交报告（POST /report/generate）[192.168.1.23、10.168.7.121]" in act["text_zh"] or \
+        "提交报告（POST /report/generate）[10.168.7.121、192.168.1.23]" in act["text_zh"]
+    assert "登录（POST /login）" in act["text_zh"] and "登录（POST /login）[" not in act["text_zh"]
+    negs = [s for s in dv["statements"] if s["evidence"].get("negative")]
+    assert [s["evidence"]["target_system"] for s in negs] == ["finance"]       # crm: only one role never wrote
+    assert negs[0]["text_zh"].startswith("综合部 在 finance 中从未执行写操作（21 天、0 次）（封闭的写操作：审批")
+    assert set(negs[0]["evidence"]["who"]["members"]) == {"192.168.1.21", "192.168.1.23", "10.168.7.121"}
+    assert VW.dept_view("综合部", views[:1], groups, {}, T0) is None
+
+
+def test_group_part_states_the_nodes_held_out_confidence(monkeypatch):
+    """A group's part of a shared node states the node's own constraints for
+    some of its sources, so it states the node's held-out hold rate (pnode
+    p_hold) as its confidence, not the min-of-parts formula (pack O: /docs parts
+    said 0.09 where the held-out hold was 1.0; PG2 calibration)."""
+    from app.engines.behavior.lib import ptree as PT
+    from app.models.schema import ORG, SYSTEM_ENTITY
+    ga = ["192.168.1.21", "192.168.1.23", "10.168.7.121"]
+    fin = ["192.168.2.10", "192.168.2.11"]
+    m = PT.PTreeModel("oa")
+    tr = m.tree(EV.KIND_TXN, T0, create=True)
+    sp = tr.split(tr.root, "http.route", 0, [["GET oa.corp /docs"]], T0)
+    node, root = tr.nodes[sp.children[0]], tr.nodes[tr.root]
+    t = T0
+    for d in range(21):
+        day0 = T0 + d * 86400.0
+        for k, (ip, g) in enumerate([(x, "G1") for x in ga] + [(x, "G2") for x in fin]):
+            t = day0 + (10 * 60 + 7 * k) * 60.0
+            p = ip.split(".")
+            keys = [ip, ".".join(p[:3]) + ".0/24", ".".join(p[:2]) + ".0.0/16", f"grp:{g}", "reg:∅"]
+            for nd in (root, node):
+                nd.update_core(t, 1.0, 1.0, keys, ip, 0, (t + 8 * 3600) % 86400 / 60.0, int((t + 8 * 3600) // 86400))
+    for nd in (root, node):
+        nd.state = "confirmed"
+    from app.engines.behavior.lib import pnode as PN
+    orig = PN.Node.p_hold
+    monkeypatch.setattr(PN.Node, "p_hold", lambda self, _t: 0.83 if self is node else orig(self, _t))
+    m.t_last = t
+    st = make_store()
+    st.put_model("oa", SYSTEM_ENTITY, MP.PTREE, m, version=1)
+    st.put_model(ORG, ORG, MP.WHO_GROUPS, {
+        "groups": {"G1": {"id": "G1", "name": "综合部", "members": ga},
+                   "G2": {"id": "G2", "name": "财务部", "members": fin}},
+        "ip2g": dict({ip: "G1" for ip in ga}, **{ip: "G2" for ip in fin}),
+        "mode": {"oa": {"mode": "ip"}}})
+    v = VW.system_view(st, "oa", {"progressive": {"enabled": True}, "tz": "Asia/Shanghai"}, t + 3600.0)
+    parts = [s for s in v["statements"] if (s["evidence"].get("who") or {}).get("part_of")]
+    assert len(parts) == 2
+    assert all(s["confidence"] == pytest.approx(0.83) for s in parts)
+
+
+def test_group_part_lists_members_beyond_the_heavy_hitters_and_merges_department_roles():
+    """A group's part of a shared node lists every member whose own P11
+    signature holds the action, not only the members among the node's 8
+    heavy hitters, and the roles of one configured department are one part
+    (pack O seed 0, GET /docs shared by 销售部 (20 IPs), 财务部 and 综合部: the
+    parts were {192.168.1.23} and {192.168.1.21} for 综合部's two learned roles
+    and {192.168.2.11} for 财务部 - PG1 who failed for every department)."""
+    from app.engines.behavior import who_groups as WG
+    from app.engines.behavior import conformity as CF
+    ga = ["192.168.1.21", "192.168.1.23", "10.168.7.121"]
+    sales = [f"192.168.3.{20 + i}" for i in range(12)]
+    route = "GET oa.corp /docs"
+    m = PT.PTreeModel("oa")
+    tr = m.tree(EV.KIND_TXN, T0, create=True)
+    sp = tr.split(tr.root, "http.route", 0, [[route]], T0)
+    node, root = tr.nodes[sp.children[0]], tr.nodes[tr.root]
+    grp = dict({ip: "G10" for ip in ga[1:]}, **{ga[0]: "G22"}, **{ip: "G12" for ip in sales})
+    ws = WG.WGState()
+    t = T0
+    for d in range(10):
+        day0 = T0 + d * 86400.0
+        seq = [(ip, 1) for ip in ga] + [(ip, 3) for ip in sales]     # GA first: evicted by the heavy sales IPs
+        k = 0
+        for ip, n in seq:
+            for _ in range(n):
+                t = day0 + (10 * 60 + k) * 60.0
+                k += 1
+                p = ip.split(".")
+                keys = [ip, ".".join(p[:3]) + ".0/24", ".".join(p[:2]) + ".0.0/16", f"grp:{grp[ip]}", "reg:∅"]
+                for nd in (root, node):
+                    nd.update_core(t, 1.0, 1.0, keys, ip, 0, (t + 8 * 3600) % 86400 / 60.0,
+                                   int((t + 8 * 3600) // 86400))
+                ws.sigs.add(ip, f"oa|{route}", t, 1.0, 1.0, int((t + 8 * 3600) // 86400))
+    for nd in (root, node):
+        nd.state = "confirmed"
+    m.t_last = t
+    seen = {str(ip) for ip, *_ in node.who.levels[0].items(t)}
+    assert not set(ga) <= seen                  # the precondition: the heavy-hitter summary lost 综合部
+    st = make_store()
+    st.put_model("oa", SYSTEM_ENTITY, MP.PTREE, m, version=1)
+    st.put_model(ORG, ORG, CF.WG_STATE, ws)
+    st.put_model(ORG, ORG, MP.WHO_GROUPS, {
+        "groups": {"G10": {"id": "G10", "name": "综合部", "dept": "综合部", "members": ga[1:]},
+                   "G22": {"id": "G22", "name": "综合部·oa GET /approval/list", "dept": "综合部",
+                           "members": ga[:1]},
+                   "G12": {"id": "G12", "name": "销售部", "dept": "销售部", "members": sales}},
+        "ip2g": grp, "mode": {"oa": {"mode": "ip"}}})
+    v = VW.system_view(st, "oa", {"progressive": {"enabled": True}, "tz": "Asia/Shanghai"}, t + 3600.0)
+    parts = [s for s in v["statements"] if (s["evidence"].get("who") or {}).get("part_of")]
+    ga_part = [s for s in parts if set(s["evidence"]["who"]["members"]) & set(ga)]
+    assert len(ga_part) == 1
+    who = ga_part[0]["evidence"]["who"]
+    assert set(who["members"]) == set(ga)
+    assert sorted(who["items"]) == ["grp:G10", "grp:G22"] and who["name"] == "综合部"
+    assert ga_part[0]["text_zh"].count("综合部（") == 1
+    sales_part = [s for s in parts if set(s["evidence"]["who"]["members"]) & set(sales)]
+    assert len(sales_part) == 1 and set(sales_part[0]["evidence"]["who"]["members"]) == set(sales)
+
+
+def test_no_group_parts_where_p12_measures_no_behaviour_gain_of_the_groups():
+    """'某类人' parts are stated only where P12 measured that the learned group
+    predicts behaviour (held-out gain of who level grp > 0): on pack O's
+    public portal (gain -2.2 bits/event) every part named one returning
+    visitor ('G263（10.60.103.206）访问 POST /login'), against PG3's portal
+    login who in {prefix, reg, any}. Unmeasured: parts as before."""
+    ga = ["192.168.1.21", "192.168.1.23", "10.168.7.121"]
+    fin = ["192.168.2.10", "192.168.2.11"]
+    m = PT.PTreeModel("oa")
+    tr = m.tree(EV.KIND_TXN, T0, create=True)
+    sp = tr.split(tr.root, "http.route", 0, [["GET oa.corp /docs"]], T0)
+    node, root = tr.nodes[sp.children[0]], tr.nodes[tr.root]
+    t = T0
+    for d in range(21):
+        day0 = T0 + d * 86400.0
+        for k, (ip, g) in enumerate([(x, "G1") for x in ga] + [(x, "G2") for x in fin]):
+            t = day0 + (10 * 60 + 7 * k) * 60.0
+            p = ip.split(".")
+            keys = [ip, ".".join(p[:3]) + ".0/24", ".".join(p[:2]) + ".0.0/16", f"grp:{g}", "reg:∅"]
+            for nd in (root, node):
+                nd.update_core(t, 1.0, 1.0, keys, ip, 0, (t + 8 * 3600) % 86400 / 60.0, int((t + 8 * 3600) // 86400))
+    for nd in (root, node):
+        nd.state = "confirmed"
+    m.t_last = t
+
+    def parts(sysprof):
+        st = make_store()
+        st.put_model("oa", SYSTEM_ENTITY, MP.PTREE, m, version=1)
+        if sysprof is not None:
+            st.put_model("oa", SYSTEM_ENTITY, MP.SYSPROF, sysprof)
+        st.put_model(ORG, ORG, MP.WHO_GROUPS, {
+            "groups": {"G1": {"id": "G1", "name": "综合部", "members": ga},
+                       "G2": {"id": "G2", "name": "财务部", "members": fin}},
+            "ip2g": dict({ip: "G1" for ip in ga}, **{ip: "G2" for ip in fin}),
+            "mode": {"oa": {"mode": "prefix"}}})
+        v = VW.system_view(st, "oa", {"progressive": {"enabled": True}, "tz": "Asia/Shanghai"}, t + 3600.0)
+        return [s for s in v["statements"] if (s["evidence"].get("who") or {}).get("part_of")]
+
+    meas = lambda g: {"measurements": {"who_pred": [-2.4, 1.28, 0.36, g, 0.33], "who_pred_n": 2000.0}}
+    assert len(parts(None)) == 2
+    assert len(parts(meas(0.63))) == 2
+    assert parts(meas(-2.2)) == []
+    assert len(parts({"measurements": {"who_pred": [0, 0, 0, -2.2, 0], "who_pred_n": 50.0}})) == 2   # too young
+
+
+def test_who_of_a_region_arm_system_is_stated_by_its_configured_region():
+    """A system whose who arm is the region (P12 'reg', e.g. a DHCP pool whose
+    users re-address daily) states its who by the configured region, not by
+    the /24s the pool happens to span (pack O: '来自 10.50.0.0/24、10.50.1.0/24、
+    10.50.2.0/24、10.50.3.0/24' for 研发's pool 10.50.0.0/22)."""
+    from app.engines.behavior.lib import pnode as PN
+    w = PN.WhoSummary()
+    t = T0
+    for d in range(10):
+        for k in range(40):
+            ip = f"10.50.{k % 4}.{(7 * k + 13 * d) % 250 + 1}"
+            t = T0 + d * 86400.0 + 600.0 * k
+            p = ip.split(".")
+            w.update([ip, ".".join(p[:3]) + ".0/24", ".".join(p[:2]) + ".0.0/16", "grp:∅", "reg:dev_pool"],
+                     ip, t, 1.0, 1.0)
+    ev, zh, en, _ = PR.who_block(w, t, 10, {}, {}, {"dev_pool"}, "reg")
+    assert ev["level"] == "reg" and ev["items"] == ["reg:dev_pool"], ev
+    ev2, *_ = PR.who_block(w, t, 10, {}, {}, {"dev_pool"}, "prefix")
+    assert ev2["level"] == "prefix" and len(ev2["items"]) == 4
+
+
+def test_department_part_includes_its_configured_addresses_that_p11_left_ungrouped():
+    """A configured department's part lists its configured addresses that P11
+    has put in no group when they use the node (pack O: the finance approver
+    192.168.2.10 had no learned group, so 财务部's part of GET /docs read
+    {192.168.2.11, 192.168.2.12}); an address P11 grouped elsewhere is not
+    taken."""
+    ga = ["192.168.1.21", "192.168.1.23", "10.168.7.121"]
+    fin = ["192.168.2.10", "192.168.2.11", "192.168.2.12"]
+    m = PT.PTreeModel("oa")
+    tr = m.tree(EV.KIND_TXN, T0, create=True)
+    sp = tr.split(tr.root, "http.route", 0, [["GET oa.corp /docs"]], T0)
+    node, root = tr.nodes[sp.children[0]], tr.nodes[tr.root]
+    grp = {ip: "G1" for ip in ga}
+    grp.update({"192.168.2.11": "G9", "192.168.2.12": "G9"})
+    t = T0
+    for d in range(10):
+        for k, ip in enumerate(ga + fin):
+            t = T0 + d * 86400.0 + (10 * 60 + 7 * k) * 60.0
+            p = ip.split(".")
+            keys = [ip, ".".join(p[:3]) + ".0/24", ".".join(p[:2]) + ".0.0/16", f"grp:{grp.get(ip, '∅')}", "reg:∅"]
+            for nd in (root, node):
+                nd.update_core(t, 1.0, 1.0, keys, ip, 0, (t + 8 * 3600) % 86400 / 60.0, int((t + 8 * 3600) // 86400))
+    for nd in (root, node):
+        nd.state = "confirmed"
+    m.t_last = t
+    st = make_store()
+    st.put_model("oa", SYSTEM_ENTITY, MP.PTREE, m, version=1)
+    st.put_model(ORG, ORG, MP.WHO_GROUPS, {
+        "groups": {"G1": {"id": "G1", "name": "综合部", "dept": "综合部", "members": ga},
+                   "G9": {"id": "G9", "name": "财务部", "dept": "财务部", "members": fin[1:]}},
+        "ip2g": grp, "mode": {"oa": {"mode": "prefix"}}})
+    cfg = {"progressive": {"enabled": True}, "tz": "Asia/Shanghai",
+           "who_group_names": [{"name": "综合部", "ips": ga}, {"name": "财务部", "ips": fin + ["192.168.1.23"]}]}
+    v = VW.system_view(st, "oa", cfg, t + 3600.0)
+    parts = {s["evidence"]["who"]["name"]: set(s["evidence"]["who"]["members"]) for s in v["statements"]
+             if (s["evidence"].get("who") or {}).get("part_of")}
+    assert parts["财务部"] == set(fin)                 # .10 added; .23 (grouped in 综合部) not taken
+    assert parts["综合部"] == set(ga)

@@ -46,6 +46,7 @@ text_en, pattern_id. Minutes are local minutes of day, sizes bytes.
 from __future__ import annotations
 
 import copy
+import datetime as _dt
 import ipaddress
 import json
 import math
@@ -529,6 +530,25 @@ class PTruth:
         self.systems = self.raw.get("system_truth") or {}
         self.attrs = list(self.raw.get("attr_truth") or [])
         self.who_log = self.raw.get("who_log") or {}
+        self.act_log = self.raw.get("act_log") or {}
+
+    def org_sources(self) -> Set[str]:
+        """Every address the truth names as a member of an org group."""
+        if getattr(self, "_org_src", None) is None:
+            out: Set[str] = set()
+            for g in (self.raw.get("group_truth") or {}).values():
+                for m in (g or {}).get("members") or []:
+                    ip = m.get("ip") if isinstance(m, Mapping) else m
+                    if ip:
+                        out.add(str(ip))
+            self._org_src = out
+        return self._org_src
+
+    def others_of(self, truth_who: Mapping[str, Any]) -> Optional[Set[str]]:
+        """The org's sources outside a grp truth's members (None otherwise)."""
+        if truth_who.get("level") != "grp":
+            return None
+        return self.org_sources() - {str(m) for m in truth_who.get("members") or []}
 
     def day_end(self, d: int) -> float:
         return self.day_start[d] if d < len(self.day_start) else math.inf
@@ -586,14 +606,20 @@ def _route_of(row: Mapping[str, Any]) -> Tuple[str, str]:
 # --------------------------------------------------------------------------- #
 # PG1 component checks
 # --------------------------------------------------------------------------- #
-def who_compatible(truth_who: Mapping[str, Any], w: Who) -> bool:
+def who_compatible(truth_who: Mapping[str, Any], w: Who,
+                   others: Optional[Set[str]] = None) -> bool:
+    """`others`: the org's known sources outside the truth group (a learned
+    prefix statement is the group's who when its prefixes hold every member
+    and none of them: the same partition of the org's sources, §12 PG8)."""
     lvl = truth_who.get("level")
     if lvl == "ip":
         truth = set(truth_who.get("value") or [])
         return jaccard(w.ipset(), truth) >= 0.8
     if lvl == "grp":
         truth = set(truth_who.get("members") or [])
-        return jaccard(w.ipset(), truth) >= 0.8
+        if jaccard(w.ipset(), truth) >= 0.8:
+            return True
+        return others is not None and same_partition(truth, w, others)
     if lvl in ("prefix", "reg"):
         truth = [(_net(c), float(s)) for c, s in truth_who.get("value") or []]
         truth = [(n, s) for n, s in truth if n is not None]
@@ -606,6 +632,20 @@ def who_compatible(truth_who: Mapping[str, Any], w: Who) -> bool:
     if lvl == "any":
         return w.any or len(w.regions) >= 3 or len(w.prefixes) >= 3
     return False
+
+
+def same_partition(members: Set[str], w: Who, others: Set[str]) -> bool:
+    """A prefix-level who (no listed IPs) that induces the truth group's
+    partition of the org's sources: every member inside its prefixes, no other
+    known source of the org inside. PG8 (A1) settled that two who levels which
+    partition a system's sources identically ('every department in its own
+    /24s') are equally right; PG1 asked a grp truth for listed members only,
+    so '来自 192.168.3.0/24 访问 /crm/visit' - exactly 销售部 - failed recall."""
+    if not members or not w.prefixes or w.ips or w.members or w.any:
+        return False
+    inside = lambda ip: (lambda a: a is not None and any(a.version == p.version and a in p
+                                                         for p in w.prefixes))(_ip(ip))
+    return all(inside(m) for m in members) and not any(inside(o) for o in others)
 
 
 def prefix_cover_ok(truth: List[Tuple[Any, float]], learned: List[Any],
@@ -680,11 +720,16 @@ def content_matches(row: Mapping[str, Any], s: LStmt, r: np.random.Generator,
         lc = s.content.get(attr)
         ok = lc is not None
         if ok and "band90" in tc:
-            b = lc.get("band90")
+            # the FITTED band and observed range (band90_raw / range_raw), not their
+            # display rounding: the 1-2-5 display grid may move an endpoint by up
+            # to a grid step while keeping the band's coverage (pack O portal
+            # login: fitted 330-790 B, displayed '200-800 B'), and a display
+            # endpoint is presentation, not the learned constraint
+            b = lc.get("band90_raw") or lc.get("band90")
             ok = bool(b) and _rel_ok(_f(b[0]), tc["band90"][0], 0.2) and \
                 _rel_ok(_f(b[1]), tc["band90"][1], 0.2)
-            if ok and "range" in tc and lc.get("range"):
-                rg = lc["range"]
+            if ok and "range" in tc and (lc.get("range_raw") or lc.get("range")):
+                rg = lc.get("range_raw") or lc["range"]
                 ok = _rel_ok(_f(rg[0]), tc["range"][0], 0.25) and \
                     _rel_ok(_f(rg[1]), tc["range"][1], 0.25)
             elif ok and "range" in tc:
@@ -756,7 +801,7 @@ def recover(row: Mapping[str, Any], stmts: Sequence[LStmt], edges: Sequence, pt:
         comp["workflow"] = wf_ok
     best = None
     for s in cands:
-        w = who_compatible(row["who"], s.who)
+        w = who_compatible(row["who"], s.who, pt.others_of(row["who"]))
         t = when_compatible(row, s)
         c, _ = content_matches(row, s, r)
         b, _, _ = bindings_match(row, s)
@@ -1696,6 +1741,88 @@ def who_code_lengths(who_log: Mapping[str, Mapping[str, int]], groups: Mapping[s
     return out
 
 
+def who_arm_utilities(act_log: Mapping[str, Mapping[str, int]], groups: Mapping[str, str],
+                      group_size: Mapping[str, int], regions: Mapping[str, Any],
+                      workday: Optional[Mapping[str, bool]] = None) -> Dict[str, Any]:
+    """Offline value of the who arms on the generator's events of one system
+    (the oracle of PG8's third clause): the same utility P12 measures online
+    (lib/pstrategy.who_utilities), with exact groups and unbounded state.
+
+    Per level l (ip, /24, /16, grp, reg): the held-out behaviour gain
+    G_l = (L(b) - L(b | item_l)) / n, b = (action, workday, local hour),
+    L(b) the prequential code under p_m(b) = (n_b + 1/NB) / (M + 1) and
+    L(b | g) under (n_gb + p_m(b)) / (n_g + 1); and the level's address code
+    (who_code_lengths). Evidence units as P12: the c events of one (ip, b) on
+    one day count H(c). Returns {'gain': {level: G}, 'bits': {level: bits/event},
+    'U': {arm: utility}} with arm prefix = the better of /24 and /16."""
+    from ..engines.behavior.lib import pstrategy as PSt
+    nets = [(n, name) for name, n in regions.items()]
+    NB = 65536.0
+
+    def item(level: str, ip: str) -> str:
+        if level == "ip":
+            return ip
+        if level == "/24":
+            return str(ipaddress.ip_network(f"{ip}/24", strict=False))
+        if level == "/16":
+            return str(ipaddress.ip_network(f"{ip}/16", strict=False))
+        if level == "grp":
+            return groups.get(ip) or "grp:0"
+        a = ipaddress.ip_address(ip)
+        for n, name in nets:
+            if a in n:
+                return name
+        return "reg:0"
+    levels = ("ip", "/24", "/16", "grp", "reg")
+    days = sorted(act_log)
+    rows: List[Tuple[str, Tuple[str, bool, int], float]] = []
+    who_log: Dict[str, Dict[str, int]] = {}
+    for iso in days:
+        wd = True if workday is None else bool(workday.get(iso, True))
+        per = act_log[iso]
+        wl = who_log.setdefault(iso, {})
+        for k in sorted(per):
+            ip, act, hh = k.split("\t")
+            if _ip(ip) is None:
+                continue
+            c0 = int(per[k])
+            wl[ip] = wl.get(ip, 0) + c0
+            rows.append((ip, (act, wd, int(hh)), _harmonic(c0)))
+    n = float(sum(c for _, _, c in rows))
+    if n <= 0:
+        return {"gain": {}, "bits": {}, "U": {}}
+    marg = 0.0
+    cond = {lv: 0.0 for lv in levels}
+    mc: Dict[Any, float] = {}
+    M = 0.0
+    pair = {lv: {} for lv in levels}
+    tot = {lv: {} for lv in levels}
+    for ip, b, c in rows:
+        pm = (mc.get(b, 0.0) + 1.0 / NB) / (M + 1.0)
+        marg += -c * math.log2(pm)
+        for lv in levels:
+            g = item(lv, ip)
+            ng = tot[lv].get(g, 0.0)
+            ngb = pair[lv].get((g, b), 0.0)
+            cond[lv] += -c * math.log2((ngb + pm) / (ng + 1.0))
+            pair[lv][(g, b)] = ngb + c
+            tot[lv][g] = ng + c
+        mc[b] = mc.get(b, 0.0) + c
+        M += c
+    gain = {lv: (marg - cond[lv]) / n for lv in levels}
+    cl = who_code_lengths(who_log, groups, group_size, regions)
+    ev = float(sum(_harmonic(int(c)) for per in who_log.values() for c in per.values())) or 1.0
+    bits = {lv: cl[lv] / ev for lv in levels if lv in cl}
+    U = PSt.who_utilities([bits.get(lv, math.inf) for lv in levels],
+                          [gain[lv] for lv in levels])
+    # the arm's precondition as P12 applies it (§6.18.2): grp only where groups
+    # cover >= 50 % of the system's events
+    cover = sum(c for ip, _, c in rows if groups.get(ip)) / n
+    if cover < PSt.GRP_COVER_MIN:
+        U.pop("grp", None)
+    return {"gain": gain, "bits": bits, "U": U, "grp_cover": cover}
+
+
 def pg8_adaptation(run: Any, pt: PTruth, day: int = 14) -> Dict[str, Any]:
     snaps = getattr(run, "psnaps", None) or {}
     if not snaps or not pt.strategy:
@@ -1730,27 +1857,64 @@ def pg8_adaptation(run: Any, pt: PTruth, day: int = 14) -> Dict[str, Any]:
             continue
         ok = all(ch.get(dim) in allowed for dim, allowed in arms.items() if dim in ch)
         oks.append(ok)
+        # switches of the strategy ARMS the truth names (who, P07, P08, P10): a
+        # probe day (P12 runs an 'off' fitter for one day in 14 to measure it,
+        # sysprof['probe']) is exploration, not a switch, and P15's tier /
+        # e_max are resource allocations, not strategies
         hist = []
         for x in sorted(snaps):
             if x > 7:
-                c = _chosen((snaps[x].get("systems") or {}).get(s, {}).get("model.sysprof"))
+                sp = (snaps[x].get("systems") or {}).get(s, {}).get("model.sysprof")
+                c = _chosen(sp)
                 if c:
-                    hist.append(c)
+                    probe = set((sp or {}).get("probe") or ()) if isinstance(sp, Mapping) else set()
+                    cur = {k: c.get(k) for k in arms}
+                    if hist:
+                        for k in probe:
+                            if k in cur:
+                                cur[k] = hist[-1].get(k)
+                    hist.append(cur)
         switches = sum(1 for a, b in zip(hist, hist[1:]) if a != b)
         cl = who_code_lengths(pt.who_log.get(s) or {}, groups, gsize, regions)
-        lv = {"ip": "ip", "grp": "grp", "prefix": "/24", "reg": "reg", "none": "none"}.get(
-            ch.get("who", ""), None)
-        best = min(cl.values()) if cl else None
-        chosen_len = cl.get(lv) if lv else None
-        if ch.get("who") == "prefix":
-            chosen_len = min(cl.get("/24", math.inf), cl.get("/16", math.inf))
-        per_sys[s] = {"chosen": ch, "ok": ok, "switches_after_7": switches, "code_bits": cl,
-                      "who_within_5pct": (chosen_len <= 1.05 * best)
-                      if (best and chosen_len is not None and math.isfinite(chosen_len)) else None}
+        rec = {"chosen": ch, "ok": ok, "switches_after_7": switches, "code_bits": cl}
+        al = pt.act_log.get(s) or {}
+        if al:
+            # third clause: the chosen who arm's utility (held-out behaviour gain
+            # + address tie-break, the quantity P12 maximises) within 5 % of the
+            # best arm's, measured offline on the same events with exact groups;
+            # + 0.01 bits/event: a percentage of a utility near 0 (a system no
+            # who level predicts) is below any measurement's noise
+            wu = who_arm_utilities(al, groups, gsize, regions, _workdays(pt))
+            U = wu["U"]
+            best_arm = max(U, key=U.get) if U else None
+            cu = U.get(ch.get("who", ""))
+            rec.update({"who_U": U, "who_gain": wu["gain"], "who_best": best_arm,
+                        "who_within_5pct": (cu >= U[best_arm] - 0.05 * abs(U[best_arm]) - 0.01)
+                        if (best_arm is not None and cu is not None) else None})
+        else:                                   # truth without act_log (older runs): address code
+            lv = {"ip": "ip", "grp": "grp", "prefix": "/24", "reg": "reg", "none": "none"}.get(
+                ch.get("who", ""), None)
+            best = min(cl.values()) if cl else None
+            chosen_len = cl.get(lv) if lv else None
+            if ch.get("who") == "prefix":
+                chosen_len = min(cl.get("/24", math.inf), cl.get("/16", math.inf))
+            rec["who_within_5pct"] = (chosen_len <= 1.05 * best) \
+                if (best and chosen_len is not None and math.isfinite(chosen_len)) else None
+        per_sys[s] = rec
     return {"arms_ok_share": float(np.mean(oks)) if oks else None,
             "max_switches": max([v.get("switches_after_7", 0) for v in per_sys.values()] or [0]),
             "who_within_5pct": _allv(v.get("who_within_5pct") for v in per_sys.values()),
             "systems": per_sys}
+
+
+def _workdays(pt: PTruth) -> Optional[Dict[str, bool]]:
+    d = pt.raw.get("days") or {}
+    try:
+        start = _dt.date.fromisoformat(str(d["start"]))
+        return {(start + _dt.timedelta(days=i)).isoformat(): bool(w)
+                for i, w in enumerate(d.get("workday") or [])}
+    except (KeyError, ValueError, TypeError):
+        return None
 
 
 def _allv(xs: Iterable[Optional[bool]]) -> Optional[bool]:

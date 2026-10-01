@@ -154,3 +154,25 @@ def test_dirty_rule():
     mark = PB.fit_mark(nd, T0 + 120)
     nd.state = "confirmed"
     assert PB.is_dirty(mark, nd, T0 + 130)                    # state change
+
+
+def test_positive_lower_edge_of_a_wide_band_is_not_displayed_as_zero():
+    """A heavy-tailed size (mail uploads 1.1 KB - 230 KB, git pushes up to
+    2 MB) has a 90 % band whose width is set by its upper edge: rounded on a
+    grid that coarse, the lower edge read '0' ('0-200 KB'), a band that
+    states no lower bound (pack O: every mail / code statement failed PG1's
+    band endpoints check for the lower edge only). The lower edge is rounded
+    on its own grid under the same coverage check, and an observed range
+    keeps a positive minimum."""
+    import numpy as np
+    from app.engines.behavior.lib import pbounds as PB
+    xs = np.sort(np.exp(np.random.default_rng(0).uniform(np.log(800), np.log(300000), 5000)))
+    cdf = lambda v: float(np.searchsorted(xs, v) / len(xs))
+    lo, hi = (float(x) for x in np.quantile(xs, [0.05, 0.95]))
+    d = PB.round_band(lo, hi, cdf, "B", n=1000)
+    assert d["lo"] > 0 and abs(d["lo"] - lo) <= 0.2 * lo, d
+    assert 0.85 <= d["coverage"] <= 0.95 and abs(d["hi"] - hi) <= 0.2 * hi
+    assert not d["text"].startswith("0–")
+    r = PB.round_range(800.0, 300000.0, "B")
+    assert 0 < r["lo"] <= 800.0 and r["hi"] >= 300000.0 and r["lo"] >= 0.5 * 800.0
+    assert PB.round_range(530.0, 3050.0, "B")["text"] == "0.5–3 KB"          # narrow ranges unchanged

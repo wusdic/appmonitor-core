@@ -840,3 +840,240 @@ def test_new_lease_of_a_configured_dhcp_pool_is_not_an_unknown_source(monkeypatc
     fx.score("oa", [(t + 60, "10.77.1.19", {"http.route": LOGIN, "http.method": "POST"})])
     assert [e for e in fx.violations("10.77.1.19") if e.extra["type"] == "who"
             and CF.SEV_RANK[e.severity] >= CF.SEV_RANK[Severity.MEDIUM]]
+
+
+def test_colleague_rule_scales_to_a_two_member_group():
+    """The node is a pattern of a P11 group when GROUP_MIN_MEMBERS other members
+    have standing there - but never more than the group HAS: in a two-member
+    group the one colleague is enough. Pack O: 综合部's report writers
+    {192.168.1.23, 10.168.7.121} were one group; at the 综合部 login node .23
+    had standing, so .121 needed 2 colleagues it could never have, was flagged
+    outsider_group, damped 0.1 and untrusted by B28 from day 8 and dropped out
+    of the login statement. A colleague's habit in a larger group is still not
+    a group pattern (A1, test_one_members_habit_is_not_a_pattern_of_the_group)."""
+    m = PT.PTreeModel("oa")
+    tr = m.tree(EV.KIND_TXN, T0, create=True)
+    nd = tr.nodes[tr.root]
+
+    def keys(ip, g):
+        p = ip.split(".")
+        return [ip, ".".join(p[:3]) + ".0/24", ".".join(p[:2]) + ".0.0/16", f"grp:{g}", "reg:∅"]
+    t = T0
+    for d in range(10):
+        t = T0 + d * DAY + 36000.0
+        for k in range(3):
+            nd.update_core(t + 400 * k, 1.0, 1.0, keys("192.168.1.23", "G10"), "192.168.1.23", 0, 600.0,
+                           int((t + 8 * 3600) // DAY))
+    ip2g = {"192.168.1.23": "G10", "10.168.7.121": "G10"}
+    groups = {"G10": {"members": ["10.168.7.121", "192.168.1.23", "10.168.7.0/24"]}}
+    assert CF.group_need("G10", "10.168.7.121", groups) == 1
+    assert not CF.group_outsider(nd, "G10", "10.168.7.121", t, ip2g, groups)
+    # a four-member group still needs two colleagues there
+    ip2g4 = dict(ip2g, **{"192.168.1.21": "G10", "192.168.1.30": "G10"})
+    groups4 = {"G10": {"members": sorted(ip2g4)}}
+    assert CF.group_need("G10", "10.168.7.121", groups4) == 2
+    assert CF.group_outsider(nd, "G10", "10.168.7.121", t, ip2g4, groups4)
+
+
+def test_hour_count_far_beyond_the_node_maximum_is_resolved_below_the_rank_floor():
+    """The conformal rank of an hour count cannot go below 1 / (W + 1): on a
+    portal login node with ~2 500 IP-hours, 400 logins in one hour (pack O seed
+    1, A7) had p 4e-4 like a count of 17 - LOW, no incident. The node's own
+    count moments (Cantelli) resolve the magnitude; a count just above the
+    maximum keeps its rank p, and a node whose IP-hours routinely reach
+    hundreds (crawler-like) does not make 400 extreme."""
+    rng = np.random.default_rng(0)
+    t = T0
+    rt = CF.RateTally()
+    counts = np.minimum(1 + rng.geometric(0.6, 2500) - 1, 12)
+    counts[:3] = 12
+    rt.close_hour("portal", [(EV.KIND_TXN, 7, f"10.0.{i // 250}.{i % 250}", float(c))
+                             for i, c in enumerate(counts)], t)
+    W = 2500.0
+    p17 = rt.p("portal", EV.KIND_TXN, 7, 17.0, t)      # the first bin above the maximum's
+    assert p17 == pytest.approx(1.0 / (W + 1.0), rel=1e-6)          # just above the maximum: the rank
+    assert rt.p("portal", EV.KIND_TXN, 7, 400.0, t) <= 1e-4          # far beyond it: resolved
+    assert rt.p("portal", EV.KIND_TXN, 7, 2.0, t) > 0.05
+    ones = CF.RateTally()                                            # every IP-hour a single login
+    ones.close_hour("portal", [(EV.KIND_TXN, 7, f"10.1.0.{i % 250}", 1.0) for i in range(300)], t)
+    assert ones.p("portal", EV.KIND_TXN, 7, 3.0, t) == pytest.approx(1 / 301.0)  # the rank, not 1e-9
+    assert ones.p("portal", EV.KIND_TXN, 7, 30.0, t) > 1e-3           # no finding
+    crawl = CF.RateTally()
+    cc = np.concatenate([np.ones(2300), rng.integers(50, 300, 200)])
+    crawl.close_hour("portal", [(EV.KIND_TXN, 7, f"10.0.{i // 250}.{i % 250}", float(c))
+                                for i, c in enumerate(cc)], t)
+    assert crawl.p("portal", EV.KIND_TXN, 7, 400.0, t) == pytest.approx(1.0 / (W + 1.0), rel=1e-6)
+
+
+def test_address_with_standing_stays_a_member_when_its_group_id_changes():
+    """A node closed at the GROUP level (18 users: the IP level is not a who
+    constraint) keeps its members when P11 re-forms a group under a new id: the
+    address's own recurring use of the action (its P11 signature) makes it a
+    member, and it is not new to the system. Pack O seed 0: 192.168.1.21's group became G22 (new id) on day
+    15; its daily mail use was 'outsider_group, system_new' from then on (a HIGH
+    incident on a clean day, B28 trust 0, nothing of it learned any more)."""
+    fx, _ = finance_fixture(days=10)
+    far = [f"10.{k}.0.5" for k in range(12)]                    # 12 /16s: no prefix level closes
+    wg = dict(fx.st.get_model(ORG, ORG, MP.WHO_GROUPS))
+    wg["groups"] = dict(wg["groups"], G3={"id": "G3", "name": "G3", "members": far})
+    wg["ip2g"] = dict(wg["ip2g"], **{ip: "G3" for ip in far})
+    fx.st.put_model(ORG, ORG, MP.WHO_GROUPS, wg)
+    MAIL = "GET oa /docs"
+    for d in workdays(10):
+        for ip in GA + FIN + far:
+            for k in range(2):
+                fx.learn("oa", MAIL, ip, d + (10 * 60 + 13 * k) * 60.0)
+    nd = fx.node("oa", MAIL)
+    t = workdays(11)[-1] + 10.5 * 3600
+    lvl, mem, U = CF._who_closed(nd, t)
+    assert lvl == CF.GRP_LEVEL and "grp:G1" in mem
+    # P11's own signature of the address: this action on 10 days (the node's
+    # IP-level summary keeps only WHO_K = 8 heavy hitters of its 18 sources)
+    from app.engines.behavior import who_groups as WG
+    ws = WG.WGState()
+    route = CF._route_key(lambda a: {"http.route": MAIL, "http.method": "GET"}.get(a, EV.ABSENT))
+    for k, d in enumerate(workdays(10)):
+        ws.sigs.add("192.168.1.21", f"{MP.tree_key(fx.st, 'oa')}|{route}", d + 36000, 2.0, 1.0, k)
+        ws.sigs.add("192.168.1.21", "mail|TLS mail", d + 36000, 2.0, 1.0, k)
+    fx.st.put_model(ORG, ORG, CF.WG_STATE, ws)
+    wg = dict(fx.st.get_model(ORG, ORG, MP.WHO_GROUPS))
+    wg["groups"] = dict(wg["groups"], G22={"id": "G22", "name": "G22", "members": ["192.168.1.21"]})
+    wg["ip2g"] = dict(wg["ip2g"], **{"192.168.1.21": "G22"})
+    fx.st.put_model(ORG, ORG, MP.WHO_GROUPS, wg)
+    _, asg = fx.score("oa", [(t, "192.168.1.21", {"http.route": MAIL, "http.method": "GET"})])
+    assert float(asg.dense("p_who", 1.0)[0]) == 1.0
+    assert not [e for e in fx.violations("192.168.1.21") if e.extra["type"] == "who"]
+    # a stranger in the same new situation is still foreign
+    wg["groups"]["G23"] = {"id": "G23", "name": "G23", "members": ["192.168.9.9"]}
+    wg["ip2g"]["192.168.9.9"] = "G23"
+    fx.st.put_model(ORG, ORG, MP.WHO_GROUPS, wg)
+    fx.score("oa", [(t + 600, "192.168.9.9", {"http.route": MAIL, "http.method": "GET"})])
+    w = [e for e in fx.violations("192.168.9.9") if e.extra["type"] == "who"]
+    assert w and {"outsider_group", "system_new"} <= set(w[0].extra["flags"])
+
+
+def test_colleague_using_the_action_counts_though_the_node_summary_cannot_show_it():
+    """group_members_at reads the node's IP-level summary (WHO_K = 8 heavy
+    hitters) AND the members' own signatures: at a login node shared by 30
+    sources the colleague 192.168.1.23 is not among the 8, yet it logs in daily -
+    10.168.7.121 is its colleague there, not 'outsider_group' (pack O seed 0:
+    damped and untrusted from day 9, out of the 综合部 login statement). A
+    member whose signature does not hold the action gives no standing."""
+    m = PT.PTreeModel("oa")
+    tr = m.tree(EV.KIND_TXN, T0, create=True)
+    nd = tr.nodes[tr.root]
+
+    def keys(ip, g):
+        p = ip.split(".")
+        return [ip, ".".join(p[:3]) + ".0/24", ".".join(p[:2]) + ".0.0/16", f"grp:{g}", "reg:∅"]
+    t = T0
+    big = [f"192.168.3.{i}" for i in range(20, 50)]
+    for d in range(10):
+        t = T0 + d * DAY + 36000.0
+        for ip in big:
+            for k in range(3):
+                nd.update_core(t + 60 * k, 1.0, 1.0, keys(ip, "G12"), ip, 0, 600.0, int((t + 8 * 3600) // DAY))
+        nd.update_core(t - 900, 1.0, 1.0, keys("192.168.1.23", "G10"), "192.168.1.23", 0, 600.0,
+                       int((t + 8 * 3600) // DAY))
+    lv0 = nd.who.levels[0]
+    assert "192.168.1.23" not in lv0 or lv0.evidence("192.168.1.23", t) < CF.MEMBER_EV
+    ip2g = {"192.168.1.23": "G10", "10.168.7.121": "G10"}
+    groups = {"G10": {"members": ["10.168.7.121", "192.168.1.23"]}}
+    assert CF.group_outsider(nd, "G10", "10.168.7.121", t, ip2g, groups)              # summary only
+    assert not CF.group_outsider(nd, "G10", "10.168.7.121", t, ip2g, groups,
+                                 uses=lambda mm: mm == "192.168.1.23")
+    assert CF.group_outsider(nd, "G10", "10.168.7.121", t, ip2g, groups, uses=lambda mm: False)
+
+
+def test_value_inside_the_observed_range_is_never_below_its_rank():
+    """A value inside the node's observed clean range has p >= 2 / (n_rng + 1),
+    whatever the tail model says: a bounded GPD fitted to integer packet
+    counts put the observed minimum (pack O: net.pkts_down = 6, range 6-14) at
+    p = 1e-9 - an outlier damping of a clean member (192.168.1.21)."""
+    rec = {"kind": "num", "range": [6.0, 14.0], "n_rng": 199.0}
+    assert CF._in_range_floor(rec, 6.0, 1e-9) == pytest.approx(2.0 / 200.0)
+    assert CF._in_range_floor(rec, 14.0, 0.5) == 0.5
+    assert CF._in_range_floor(rec, 5.0, 1e-9) == pytest.approx(1.0 / 200.0)   # one integer step: a new extreme
+    assert CF._in_range_floor(rec, 4.0, 1e-9) == 1e-9               # further out: the model stands
+    # the stated extremes are inverse transforms (exp(log 460) = 460.0000000000001)
+    lg = {"kind": "num", "range": [460.0000000000001, 520.0], "n_rng": 99.0}
+    assert CF._in_range_floor(lg, 460.0, 1e-9) == pytest.approx(2.0 / 100.0)
+    # a hair beyond the observed maximum is a new extreme (rank 1 / (n + 1)), not 1e-9
+    dur = {"kind": "num", "range": [0.0, 336.5], "n_rng": 999.0}
+    assert CF._in_range_floor(dur, 336.98, 1e-9) == pytest.approx(1.0 / 1000.0)
+    assert CF._in_range_floor(dur, 400.0, 1e-9) == 1e-9
+    byt = {"kind": "num", "range": [460.0, 515.0], "n_rng": 499.0}           # integer data
+    assert CF._in_range_floor(byt, 516.0, 1e-9) == pytest.approx(1.0 / 500.0)
+    assert CF._in_range_floor(byt, 517.0, 1e-9) == 1e-9
+    assert CF._in_range_floor({"kind": "num"}, 6.0, 1e-9) == 1e-9
+    # through the scoring path
+    rng = np.random.default_rng(3)
+    num = PN.NumSummary(log=False)
+    for i in range(400):
+        num.update(float(rng.integers(6, 15)), T0 + i * 60, 1.0, 1.0, day=int(i // 40))
+    fit = PB.fit_numeric(num, T0 + 36000, 10, n_c=400.0, n_eff=300.0)
+    lo = fit["range"][0]
+    p_fast, _ = CF._check("num", CF._NumFast(fit), lo, None)
+    p_slow, _ = CF._check("num", fit, lo, None)
+    assert p_fast >= 2.0 / (fit["n_rng"] + 1.0) - 1e-12 and p_slow >= 2.0 / (fit["n_rng"] + 1.0) - 1e-12
+
+
+def test_cross_binding_reads_the_sources_binding_credibility_up_the_path():
+    """A who split restarts the child's binding table: on pack O the 综合部 login
+    node (split on day 10) held 192.168.1.21 -> jack at LB 0.7 on day 17 while
+    its parent - every login of .21 since day 1 - held it at 0.95. A2 (rose's
+    credential used from .21) is credential-grade at once (MEDIUM), not two days
+    later (max_ttd 1 h)."""
+    fx = Fx()
+    users = dict(zip(GA, ["jack", "rose", "mike"]))
+    for d in workdays(15):
+        for k, ip in enumerate(GA):
+            fx.learn("oa", LOGIN, ip, d + (9 * 60 + 3 * k) * 60.0)
+    tr = fx.tree("oa", [LOGIN])
+    par = fx.node("oa", LOGIN)
+    sp = tr.split(par.id, "net.src", 1, [["192.168.1.0/24", "10.168.7.0/24"]], T0 + 10 * DAY)
+    child = tr.nodes[sp.children[0]]
+    hier = MP.hierarchies(fx.st, "oa", CFG)
+    for d in workdays(15)[-5:]:
+        for k, ip in enumerate(GA):
+            ts = d + (9 * 60 + 3 * k) * 60.0
+            keys = [hier.gen("net.src", l, ip) for l in range(PN.WHO_LEVELS)]
+            child.update_core(ts, 1.0, 1.0, keys, ip, 0, local_minute(ts), int((ts + 8 * 3600) // DAY))
+    child.state = "confirmed"
+
+    def pairs(lb):
+        table = {ip: {"n": 15.0, "top": u, "k": 15.0, "bound": True, "LB": lb, "p_viol": 0.02}
+                 for ip, u in users.items()}
+        return {"net.src->body.kv.username": {
+            "x": "net.src", "y": "body.kv.username", "dir": "fwd", "fd": {"g3": 0.0, "holds": True},
+            "table": table, "bound_values": {u: [ip] for ip, u in users.items()}}}
+    fx.put("oa", MP.PBIND, par.id, pairs=pairs(0.95))
+    m = fx.st.get_model("oa", SYSTEM_ENTITY, MP.PBIND)
+    m["nodes"][0][child.id] = {"status": "fitted", "pairs": pairs(0.7)}
+    fx.st.put_model("oa", SYSTEM_ENTITY, MP.PBIND, m)
+    t = workdays(16)[-1] + 9 * 3600 + 600
+    _, asg = fx.score("oa", [(t, "192.168.1.21", {"http.route": LOGIN, "body.kv.username": "rose"})])
+    assert int(asg.dense("conf", -1)[0]) == child.id
+    v = [e for e in fx.violations("192.168.1.21") if e.extra["type"] == "content"]
+    assert v and "cross_binding" in v[0].extra["flags"] and v[0].severity == Severity.MEDIUM
+    assert asg.get("damp", 0) == pytest.approx(0.1)
+
+
+def test_single_address_group_is_judged_by_its_own_recurring_use():
+    """A P11 group whose only address is the source (its other sources are
+    prefix-mode pools) has no colleague to judge by: its own recurring use of
+    the action (P11 signature) is the group's standing there, else it is an
+    outsider (pack O seed 0: 192.168.1.21, alone in its group after the split
+    of 综合部 by activity, was 'outsider_group' and damped on its daily mail)."""
+    m = PT.PTreeModel("mail")
+    tr = m.tree(EV.KIND_TXN, T0, create=True)
+    nd = tr.nodes[tr.root]
+    for d in range(10):
+        ts = T0 + d * DAY + 36000.0
+        nd.update_core(ts, 1.0, 1.0, ["192.168.2.11", "192.168.2.0/24", "192.168.0.0/16", "grp:G9", "reg:∅"],
+                       "192.168.2.11", 0, 600.0, int((ts + 8 * 3600) // DAY))
+    ip2g = {"192.168.1.21": "G22"}
+    groups = {"G22": {"members": ["192.168.1.21"], "pools": ["192.168.1.0/24"]}}
+    t = T0 + 10 * DAY
+    assert not CF.group_outsider(nd, "G22", "192.168.1.21", t, ip2g, groups, uses=lambda mm: True)
+    assert CF.group_outsider(nd, "G22", "192.168.1.21", t, ip2g, groups, uses=lambda mm: False)

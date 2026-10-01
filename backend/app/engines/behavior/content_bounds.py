@@ -21,13 +21,18 @@ Writes  model.pbounds@(tree key, '__system__'):
         lattice never made the login body size a target (P05 gives it the split
         role only), so "90 % of submissions are 1-2 KB" could not be fitted.
 Hygiene Every tick the numeric values of rows P03 judged violations (any typed
-        p <= 1e-3, damped, or a content flag; pat.assign) go to a FIFO ledger
+        p <= 1e-3, damped, or an injection shape; pat.assign) go to a FIFO ledger
         (model.pbounds_state, <= 1024 rows per tree); the hard range of a node
         is read from its daily ring without them (lib/pbounds.clean_range): a
         day whose extreme is a violating value takes its next extreme from the
-        exceedance reservoirs, or leaves the range with its observations.
+        exceedance reservoirs, or that side of the day leaves the range (its
+        other extreme is clean and stays; n_rng = the smaller side's sample).
         (2026-10-01: A3's undamped 12 KB injection login was the OA login
-        node's stated maximum, "0-12 KB".)
+        node's stated maximum, "0-12 KB".) The informational flags
+        above_range / below_range / grammar / length are NOT violations: a
+        value outside the observed range is how the range grows (rank bound
+        2 / (n + 1)); counting them froze young nodes' ranges at their first
+        extremes and flooded the ledger (pack O GA login: 1-1.8 KB vs 0.5-3 KB).
 Cadence 1 h per tree (entity_due); a tree that learned nothing since the last
         run is skipped, and inside a tree only dirty nodes are refitted (evidence
         grew >= 10 % or >= 20 units, or version / cver / state changed, §6.20), so
@@ -52,7 +57,11 @@ from .lib import pnode as PN
 RATE_ATTR = "rate.ip_h"
 STATE = "model.pbounds_state"
 LEDGER_MAX = 1024               # violating rows remembered per tree (FIFO, <= RING_DAYS old)
-VIOL_FLAGS = frozenset({"above_range", "below_range", "injection_shape", "grammar", "length"})
+# Content flags that make a row a violation on their own (structural attack
+# signatures). 'above_range' / 'below_range' / 'grammar' / 'length' only say
+# that a value lies outside what the node has observed so far; their
+# significance is in the typed p-value (vtype), not in the flag.
+VIOL_FLAGS = frozenset({"injection_shape"})
 NUM_TYPES = ("numeric",)
 pins_for, chosen_arm, local_day, empty_model = PB.pins_for, PB.chosen_arm, PB.local_day, PB.empty_model
 CPINS = PB.CPINS
@@ -110,7 +119,9 @@ class ContentBoundsEngine(Engine):
         from (pack O, A3: the 12 KB injection login on day 18 became the OA
         login node's stated maximum, 0-12 KB). A row counts as a violation
         when any typed p-value is <= 1e-3 (P03's `vtype` mask), when it was
-        damped, or when it carries a content flag. Every tick, O(rows of the
+        damped, or when it carries an injection shape (VIOL_FLAGS; a value
+        merely outside the node's observed range at an ordinary p is the
+        evidence that widens the range, not a violation). Every tick, O(rows of the
         tick) over the scored batches; FIFO of LEDGER_MAX rows per tree."""
         store = ctx.store
         key = MP.tree_key(store, s)
@@ -129,7 +140,7 @@ class ContentBoundsEngine(Engine):
             cols = [a for a in attrs if b.has(a)]
             if not cols:
                 continue
-            # violating rows, vectorised: any typed p <= 1e-3, damped, or a content flag
+            # violating rows, vectorised: any typed p <= 1e-3, damped, or an injection shape
             mask = np.zeros(b.n, dtype=bool)
             if asg.has("vtype"):
                 vt = np.asarray(asg.dense("vtype", 0.0), dtype=np.float64)

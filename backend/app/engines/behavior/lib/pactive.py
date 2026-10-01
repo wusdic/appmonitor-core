@@ -183,3 +183,42 @@ def e_max(store: Any, s: str, default: int = 32) -> int:
         return int(rec.get("e_max", default))
     except (TypeError, ValueError):
         return default
+
+
+# ------------------------------------------------- pooled decision-chain state
+POOL_ENTITY = "__pool__"        # pseudo entity prefix of a class's pooled B24 rings
+
+
+def pool_of(store: Any, s: str, e: str, class_key: Optional[str] = None) -> str:
+    """The pseudo entity that holds the pooled decision-chain state an UNEARNED
+    IP shares with its class (§10.2-§10.3: per-entity rings for earned IPs,
+    class rings for the others): its B02 class key when it has one, else its
+    P11 group (model.who_groups ip2g), else the system pool. Keys are pseudo
+    entities ('__pool__...'), so no engine iterates them as IPs."""
+    if class_key:
+        return f"{POOL_ENTITY}{class_key}"
+    wg = store.get_model(ORG, ORG, "model.who_groups")
+    g = ((wg or {}).get("ip2g") or {}).get(e) if isinstance(wg, Mapping) else None
+    if g is not None:
+        return f"{POOL_ENTITY}grp:{g}"
+    return f"{POOL_ENTITY}*"
+
+
+def pooled(store: Any, s: str, e: str, config: Optional[Mapping[str, Any]]) -> bool:
+    """True when e's decision-chain state is pooled: bounded mode with
+    lib3.pool_unearned (default OFF), P15's sets published, e a real IP outside
+    E_t(s). Full mode: never.
+
+    Default off (measured, progressive.md §16.2 A5): calibrating an unearned
+    IP's detector scores against its class's pooled null cost power - pack E
+    seed 0, T5' (oa-portal 10.30.2.22, unearned) fell from CRITICAL (own rings)
+    to LOW (class pool), pack A seed 0 gained a MEDIUM false alarm; members'
+    score nulls differ even when their feature models do not beat the class.
+    The bounded chain therefore keeps per-IP rings for ACTIVE IPs and releases
+    them after 7 idle days (P15 `_release_idle`): state O(|E_t| + |A_7d|)."""
+    if not bounded(config) or not e or e.startswith(("class:", "__")):
+        return False
+    if not ((config or {}).get("lib3") or {}).get("pool_unearned"):
+        return False
+    ee = earned_entities(store, s, config)
+    return ee is not None and e not in ee

@@ -255,13 +255,12 @@ def test_suspect_record_is_bounded_and_merges():
 
 
 # --------------------------------------- M30: calibrated statement confidence
-def test_hold_record_is_calibrated_and_rises_with_evidence():
-    """HoldRecord.p_hold is the posterior probability that a constraint's
-    coverage on new data is >= nominal - eps. Under its own prior (coverage
-    uniform) it is calibrated: among constraints given p in a bin, the share
-    that truly holds matches p (ECE <= 0.05 over 4 000 simulated constraints
-    with 5-200 held-out checks each). For a constraint that keeps holding it
-    rises with the checks; for one that keeps failing it falls to ~0."""
+def test_hold_record_constraint_posteriors_are_calibrated():
+    """HoldRecord.p_constraints (the M30 confidence, kept for diagnosis) is the
+    posterior probability that a constraint's coverage on new data is >=
+    nominal - eps. Under its own prior (coverage uniform) it is calibrated:
+    among constraints given p in a bin, the share that truly holds matches p
+    (ECE <= 0.05 over 4 000 simulated constraints with 5-200 checks each)."""
     rng = np.random.default_rng(12)
     ps, ok = [], []
     for _ in range(4000):
@@ -271,27 +270,68 @@ def test_hold_record_is_calibrated_and_rises_with_evidence():
         hr = PN.HoldRecord()
         for k, h in enumerate(hits):
             hr.add("band", bool(h), 0.9, MON + k * 600.0)
-        ps.append(hr.p_hold(MON + n * 600.0))
+        ps.append(hr.p_constraints(MON + n * 600.0))
         ok.append(theta >= 0.9 - PN.hold_eps(0.9))
     ps, ok = np.asarray(ps), np.asarray(ok, dtype=float)
     bins = np.minimum((ps * 10).astype(int), 9)
     ece = sum(abs(ps[bins == b].mean() - ok[bins == b].mean()) * (bins == b).mean()
               for b in range(10) if (bins == b).any())
     assert ece <= 0.05, ece
+    hr = PN.HoldRecord()
+    hr.add("who", True, 0.95, MON)
+    hr.add("band", True, 0.9, MON)
+    hr.drop(["band"])
+    assert set(hr.counts(MON).keys()) == {"who"}
+
+
+# ----------------------- M46: the confidence is a held-out test frequency
+def test_statement_confidence_is_the_frequency_of_held_out_tests_passing():
+    """M46: the checks of a statement are grouped into held-out tests (batches
+    of >= 100 checked events or a week); a test passes when every constraint
+    holds within its 3-sigma tolerance on the batch, and the stated confidence
+    is the predictive probability that the next test passes. Calibrated: over
+    many statements whose tests pass with probability q (uniform), the stated
+    value matches the frequency of the next test passing (ECE <= 0.05). It
+    rises with every test a stable statement passes and falls for one that keeps
+    failing. Before M46 the confidence was the product over 10-20 constraints of
+    their posterior tails: ~0 for nearly every statement on pack O (median
+    0.005, ECE 0.37-0.41) although 35-45 % of them held on held-out data."""
+    rng = np.random.default_rng(46)
+    ps, nxt = [], []
+    for _ in range(3000):
+        q = rng.uniform()
+        k = int(rng.integers(1, 12))
+        hr = PN.HoldRecord()
+        t = MON
+        for j in range(k + 1):                       # k tests, then the next one
+            good = rng.random() < q
+            for e in range(int(PN.HOLD_BATCH_N)):
+                t += 60.0
+                hr.add("band", bool(good or e % 2), 0.9, t)
+            if j == k - 1:
+                t += 60.0
+                hr.add("band", True, 0.9, t)           # closes test k
+                ps.append(hr.p_hold(t))
+                nxt.append(float(rng.random() < q))
+                break
+    ps, nxt = np.asarray(ps), np.asarray(nxt)
+    bins = np.minimum((ps * 10).astype(int), 9)
+    ece = sum(abs(ps[bins == b].mean() - nxt[bins == b].mean()) * (bins == b).mean()
+              for b in range(10) if (bins == b).any())
+    assert ece <= 0.05, ece
     good, bad = PN.HoldRecord(), PN.HoldRecord()
     trace = []
-    for k in range(400):
-        t = MON + k * 3600.0
+    t = MON
+    for k in range(1200):
+        t += 600.0
         good.add("who", True, 0.95, t)
         good.add("band", rng.random() < 0.93, 0.9, t)
         bad.add("band", rng.random() < 0.6, 0.9, t)
-        if k % 50 == 49:
+        if k % 200 == 199:
             trace.append(good.p_hold(t))
-    assert all(b >= a - 0.02 for a, b in zip(trace, trace[1:])), trace
-    assert trace[-1] > 0.95 and trace[0] < trace[-1]
-    assert bad.p_hold(MON + 400 * 3600.0) < 0.01
-    good.drop(["band"])
-    assert set(good.counts(MON).keys()) == {"who"}
+    assert all(b >= a - 1e-9 for a, b in zip(trace, trace[1:])), trace
+    assert trace[-1] > 0.85 and trace[0] < trace[-1]
+    assert bad.p_hold(t) < 0.15
 
 
 def test_node_confidence_is_prequential_and_grows_on_a_stable_pattern():
@@ -322,8 +362,8 @@ def test_node_confidence_is_prequential_and_grows_on_a_stable_pattern():
         p = nd.p_hold(sim.now)
         if p is not None:
             seen.append(p)
-    assert len(seen) >= 8, seen
-    assert np.median(seen[-5:]) > 10 * np.median(seen[:3]), seen     # rises with the evidence
+    assert len(seen) >= 5, seen
+    assert seen[-1] > seen[0] and max(seen) >= 0.7, seen               # rises with the evidence
     plain = sim.tree().nodes[sim.top()].to_plain()
     # what the node STATES is checked: its closed who and its arrival window
     # (no content fitter runs in this simulation, so no content constraint)
@@ -339,7 +379,9 @@ def test_body_size_is_not_paid_for_by_its_own_fields():
     assert SEL.same_source("body.kv.viewstate.len", "body.len")
     assert SEL.same_source("body.len", "body.keys")
     assert not SEL.same_source("body.kv.username", "body.kv.password")
-    assert not SEL.same_source("net.bytes_up", "body.kv.viewstate.len")
+    # (M40: the upstream byte count is the same size measured by the transport)
+    assert SEL.same_source("net.bytes_up", "body.kv.viewstate.len")
+    assert not SEL.same_source("net.bytes_up", "body.kv.username")
 
 
 # --------------------------------------------- M31: bounded pair sketches
@@ -507,3 +549,243 @@ def test_who_level_gets_the_split_role_when_groups_differ_only_in_time():
     # M36 only /32 was offered, chosen for predicting each source's own window
     # class (a source property)
     assert ("net.src", 1) in [tuple(x) for x in sel["split_cands"][0]], sel["split_cands"]
+
+
+# ------------------------------ M37: constancy is judged over a whole local day
+def test_candidate_constant_in_the_first_hour_is_not_dropped():
+    """Opaque traffic (mail): the departments differ only in WHEN they come,
+    and the stream is time ordered, so a check's first n_g units all come from
+    the department that comes first (销售部 09:00-09:30, 80 mails). Before M37
+    a candidate with one occupied value slot after n_g units was 'constant at
+    this leaf' and yielded its slot until the R_learn restart (2 000 units,
+    ~10 days on pack O's mail): the who level that tells the departments apart
+    was dropped on the first morning and the mail node never split in 21 days.
+    A candidate is constant only after units of two local days."""
+    sales = [f"192.168.3.{i}" for i in range(20, 40)]
+    fin = [f"192.168.2.{i}" for i in range(10, 16)]
+    dev = [f"10.50.0.{i}" for i in range(10, 30)]
+    sel = {"targets_sys": {0: ["net.bytes_up"]}, "split_cands": {0: [("net.src", 1)]}, "roles": {}}
+    sim = Sim(sel=sel)
+
+    def day(d, t0, rng):
+        if not is_workday(t0):
+            return []
+        ev = []
+        for ips, h0 in ((fin, 9.0), (dev, 10.5), (sales, 14.5)):
+            for ip in ips:
+                for _ in range(4):
+                    ev.append((t0 + (h0 + rng.uniform(0, 0.5)) * 3600, "mail", ip,
+                               {"http.route": "TLS mail", "net.bytes_up": float(rng.lognormal(8, 1.0))}))
+        return ev
+    sim.add(daily(day, 7, seed=37))
+    sim.run_until(MON + 7 * DAY)
+    sp = sim.splits("mail")
+    assert sp and sp[0][5].get("attr") == "net.src", [x[5] for x in sp]
+
+
+# ------------------------------------------ M38: the who facet is a ladder
+def test_who_ladder_reaches_the_department_below_a_coarse_split():
+    """P05 proposes the who level it ranks best on the whole system's probe
+    (here /16: the dev pool against the offices). Below that split the /16 is
+    spent, and the departments inside 192.168/16 differ in their hours: the
+    finer /24 level must be offered there. Before M38 only P05's levels were
+    candidates, so the offices' node never split again (pack O's mail: reg and
+    /16 proposed, /24 never offered at any node)."""
+    sales = [f"192.168.3.{i}" for i in range(20, 40)]
+    fin = [f"192.168.2.{i}" for i in range(10, 16)]
+    dev = [f"10.50.0.{i}" for i in range(10, 30)]
+    sel = {"targets_sys": {0: ["net.bytes_up"]}, "split_cands": {0: [("net.src", 2)]}, "roles": {}}
+    sim = Sim(sel=sel)
+
+    def day(d, t0, rng):
+        if not is_workday(t0):
+            return []
+        ev = []
+        for ips, h0 in ((fin, 9.0), (dev, 10.5), (sales, 14.5)):
+            for ip in ips:
+                for _ in range(4):
+                    ev.append((t0 + (h0 + rng.uniform(0, 0.5)) * 3600, "mail", ip,
+                               {"http.route": "TLS mail", "net.bytes_up": float(rng.lognormal(8, 1.0))}))
+        return ev
+    sim.add(daily(day, 10, seed=38))
+    sim.run_until(MON + 10 * DAY)
+    from app.engines.behavior.lib import m_ptree as MP
+    tr = sim.tree("mail")
+    hier = MP.hierarchies(sim.st, "mail", sim.cfg)
+
+    def leaf(ip):
+        return tr.route(lambda a: {"http.route": "TLS mail", "net.src": ip}.get(a, EV.ABSENT), hier)[-1]
+    fin_l = {leaf(ip) for ip in fin}
+    assert len(fin_l) == 1, fin_l
+    assert not fin_l & {leaf(ip) for ip in sales + dev}, [x[5] for x in sim.splits("mail")]
+
+
+# ------------------------------------------- M39: the time is coded once
+def test_time_of_day_is_coded_once_in_the_split_statistics():
+    """P05 lists the time of day (ctx.tod_min) among the behaviour targets
+    (M36) and P09 requests it; the coder already codes the minute as its @when
+    pseudo-target. Coded twice, every candidate was paid twice for the same
+    minute (pack O mail: 43 + 40 bits), doubling the evidence rule (V) tests:
+    a split's e-value must not count one observation twice."""
+    sel = {"targets_sys": {0: ["net.bytes_up", "ctx.tod_min"]}, "split_cands": {0: [("net.src", 1)]}, "roles": {}}
+    sim = Sim(sel=sel)
+    ips = [f"192.168.{g}.{i}" for g in (2, 3) for i in range(10, 20)]
+
+    def day(d, t0, rng):
+        if not is_workday(t0):
+            return []
+        return [_ev(t0 + rng.uniform(9 * 60, 17 * 60) * 60, ip, rng.uniform(600, 1400)) for ip in ips for _ in range(3)]
+    sim.add(daily(day, 4, seed=39))
+    sim.run_until(MON + 4 * DAY)
+    nd = sim.tree().nodes[sim.top()]
+    co = nd.meta.get("C")
+    assert co is not None and "@when" in co.targets
+    assert "ctx.tod_min" not in co.targets, co.targets
+
+
+# ----------------------------- M40: a transport measure of the payload's size
+def test_packet_count_is_not_paid_for_by_the_body_size():
+    """The upstream packet count of a login is the body's size in MTU units:
+    one quantity measured twice. A split on the packet-count bin 'predicts'
+    the body length trivially and says nothing about who does what. Before
+    M40 the 研发 login node of pack O split on net.pkts_up, paid only by
+    body.len and body.kv.viewstate.len."""
+    sel = {"targets_sys": {0: ["body.len", "net.dur_ms"]}, "split_cands": {0: [("net.pkts_up", 0)]}, "roles": {}}
+    sim = Sim(sel=sel)
+    ips = [f"10.50.0.{i}" for i in range(10, 40)]
+
+    def day(d, t0, rng):
+        if not is_workday(t0):
+            return []
+        ev = []
+        for ip in ips:
+            for _ in range(2):
+                size = float(rng.choice([700.0, 2600.0, 4200.0]) + rng.uniform(0, 300))
+                ev.append(_ev(t0 + rng.uniform(9 * 60, 17 * 60) * 60, ip, size,
+                              **{"body.len": size, "net.pkts_up": float(1 + int(size // 1460)),
+                                 "net.dur_ms": float(rng.uniform(10, 90))}))
+        return ev
+    sim.add(daily(day, 10, seed=40))
+    sim.run_until(MON + 10 * DAY)
+    assert not sim.splits(), [x[5] for x in sim.splits()]
+    assert SEL.same_source("net.pkts_up", "body.kv.viewstate.len")
+    assert not SEL.same_source("net.pkts_up", "net.dur_ms")
+
+
+# ------------------------- M41: a damped row's source is suspect only for WHO
+def test_member_damped_for_its_time_or_a_credential_stays_in_the_who():
+    """A member's rows can be damped by P03 for other reasons than its source:
+    a new login minute (综合部 moved 09:00 -> 08:30 on day 12) or a borrowed
+    credential (A2). Its p_who may be < 1 at the same time (light in an
+    ancestor's heavy set: 2U). Such a source is not foreign: it must stay in
+    the node's who. Before M41 any damped row with p_who < 1 made the source
+    suspect, and - P03 then seeing a non-member of the next reference - the
+    flag renewed itself every day: the 综合部 login statement named .23 only.
+    A row damped as foreign (the who is the least likely part) still is."""
+    sel = {"targets_sys": {0: ["net.dur_ms"]}, "split_cands": {0: []}, "roles": {}}
+    sim = Sim(sel=sel)
+    a, b_, c, f = "192.168.1.21", "192.168.1.23", "10.168.7.121", "192.168.3.33"
+
+    def hook(s):
+        bt = s.st.batch_at("oa", EV.EVT_BATCH, s.now)
+        if bt is None:
+            return
+        rows = []
+        for i in range(bt.n):
+            ip = bt.ip_of(i)
+            d = int((bt.ts[i] - MON) // DAY)
+            if ip == a and d in (7, 8):          # time outlier, light at an ancestor
+                rows.append({"damp": 0.1, "p_who": 0.06, "p_when": 1e-6, "p_content": 1.0})
+            elif ip == c and d == 8:             # borrowed credential
+                rows.append({"damp": 0.1, "p_who": 0.04, "p_when": 1.0, "p_content": 1.0})
+            elif ip == f:                        # foreign source
+                rows.append({"damp": 0.1, "p_who": 0.03, "p_when": 0.5, "p_content": 1.0})
+            else:
+                rows.append({"damp": 1.0, "p_who": 1.0, "p_when": 1.0, "p_content": 1.0})
+        cols = EV.cols_from_rows(bt.n, rows)
+        fl = {i: "cross_binding" for i in range(bt.n) if bt.ip_of(i) == c and int((bt.ts[i] - MON) // DAY) == 8}
+        if fl:
+            ks = sorted(fl)
+            cols["flags"] = EV.Col(np.asarray(ks, dtype=np.int32), np.asarray([fl[k] for k in ks], dtype=object))
+        s.st.add_batch("oa", EV.PAT_ASSIGN, s.now, bt.aligned(cols))
+    sim.hooks.append(hook)
+
+    def day(d, t0, rng):
+        if not is_workday(t0):
+            return []
+        ev = [(t0 + (9 * 60 + rng.uniform(0, 21)) * 60, "oa", ip,
+               {"http.route": "POST oa /login", "net.dur_ms": float(rng.uniform(20, 60))}) for ip in (a, b_, c)]
+        if d >= 6:
+            ev.append((t0 + 9.2 * 3600, "oa", f, {"http.route": "POST oa /login", "net.dur_ms": 30.0}))
+        return ev
+    sim.add(daily(day, 18, seed=41))
+    sim.run_until(MON + 18 * DAY)
+    nd = sim.tree().nodes[sim.top()]
+    at = sim.now
+    assert not nd.who.is_suspect(a, at) and not nd.who.is_suspect(c, at)
+    assert nd.who.is_suspect(f, at)
+    heavy, _ = nd.who.heavy_set(0, at)
+    assert set(heavy) == {a, b_, c}, heavy
+
+
+# ----------------------- M43: the hold record checks every stated constraint
+def test_hold_constraints_cover_every_part_of_the_statement():
+    """The calibrated confidence is the probability that the STATEMENT holds:
+    every part the statement states is checked on new events - P06's band and
+    hard range, P07's grammar, required keys and closed sets, P08's bound
+    pairs. Before M43 only bands and closed sets were checked, so a statement
+    whose user-name grammar or 'jack -> .21' binding failed on new data kept
+    the confidence of its bands."""
+    from app.engines.behavior import pattern_tree as PTE
+    from app.engines.behavior.lib import m_ptree as MP
+    nd = PN.Node(1, None, 1, 0, (), 0.0)
+    fit = {MP.PBOUNDS: {"attrs": {"body.len": {"band90": [1024.0, 2048.0], "coverage": 0.9,
+                                               "range": [512.0, 3072.0], "cover": 0.01}}},
+           MP.PGRAMMAR: {"attrs": {"body.kv.username": {"kind": "text", "grammar": "[a-z]{3,8}", "c_g": 1.0, "U_s": 0.0},
+                                   "body.keys": {"kind": "set", "required": ["username", "password"]}}},
+           MP.PBIND: {"pairs": {"net.src->body.kv.username": {
+               "fd": {"holds": True}, "table": {"192.168.1.21": {"bound": True, "top": "jack", "LB": 0.95}}}}}}
+    cons = PTE._hold_constraints(nd, 0.0, {}, fit)
+    assert {"body.len", "body.len#range", "body.kv.username#grammar", "body.keys",
+            "bind:body.kv.username:192.168.1.21"} <= set(cons), sorted(cons)
+    nd.ref = {"hold": cons}
+    ev = {"body.len": 1500.0, "body.kv.username": "Jack_01", "body.keys": ["username", "csrf"],
+          "net.src": "192.168.1.21"}
+    PTE.PatternTreeEngine._hold_check(None, nd, lambda a: ev.get(a, EV.ABSENT), [], 0, 540.0, 100.0, 1.0)
+    c = nd.meta["hold"].counts(100.0)
+    assert c["body.len"][1] == 1 and c["body.len#range"][1] == 1          # inside band and range
+    assert c["body.kv.username#grammar"][1] == 0                         # grammar violated
+    assert c["body.keys"][1] == 0                                        # a required key missing
+    assert c["bind:body.kv.username:192.168.1.21"][1] == 0               # bound to jack, saw Jack_01
+
+
+
+# ------------- M45: the hold record is about the statement it checked
+def test_hold_record_restarts_when_the_stated_constraint_changes():
+    """A young node states a narrow window from its first days; new events
+    fall outside it half of the time. Once the node states the right window
+    the old failures say nothing about the new statement: that constraint's
+    record restarts, and the confidence rises with the events that keep
+    holding. Before M45 the old failures stayed for the record's 30-day half
+    life and the stated confidence FELL with time (pack O median 0.35 ->
+    0.005). A small move of a constraint keeps its record."""
+    from app.engines.behavior import pattern_tree as PTE
+    nd = PN.Node(1, None, 1, 0, (), 0.0)
+    nd.state = "confirmed"
+    narrow = {"when": ("win", {0: ((540.0, 560.0),)}, 1.0)}
+    wide = {"when": ("win", {0: ((540.0, 620.0),)}, 1.0)}
+    rng = np.random.default_rng(45)
+    t = 0.0
+    nd.ref = {"hold": narrow}
+    for _ in range(40):
+        t += 600.0
+        PTE.PatternTreeEngine._hold_check(None, nd, lambda a: EV.ABSENT, [], 0, float(rng.uniform(540, 600)), t, 1.0)
+    p_old = nd.meta["hold"].p_constraints(t, keys=["when"])
+    nd.ref = {"hold": wide}
+    for _ in range(60):
+        t += 600.0
+        PTE.PatternTreeEngine._hold_check(None, nd, lambda a: EV.ABSENT, [], 0, float(rng.uniform(540, 600)), t, 1.0)
+    p_new = nd.meta["hold"].p_constraints(t, keys=["when"])
+    assert p_old < 0.05 and p_new > 0.5, (p_old, p_new)
+    assert not PTE._hold_material(("num", 100.0, 200.0, 0.9), ("num", 102.0, 205.0, 0.9))
+    assert PTE._hold_material(("num", 100.0, 200.0, 0.9), ("num", 100.0, 400.0, 0.9))

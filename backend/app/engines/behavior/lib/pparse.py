@@ -68,6 +68,10 @@ class ValuePolicy:
         self.random_len = int(c.get("random_len", 16))
         self.key = str(c.get("hmac_key", "appmon-default-deployment-key"))
         self._memo: Dict[str, str] = {}
+        # (name, value) -> (stored, mode): apply() is a pure function of both
+        # (and of this policy), and payload values repeat (form keys, user
+        # names, header values); the randomness test alone cost ~35 us a value
+        self._vmemo: Dict[Tuple[str, Any], Tuple[Any, str]] = {}
 
     def mode_for(self, name: str) -> str:
         """Configured mode for an attribute name (before value tests)."""
@@ -105,10 +109,25 @@ class ValuePolicy:
         return len(v) >= self.random_len and _entropy_bits(v) >= self.random_bits \
             and _looks_random(v)
 
+    VMEMO_MAX = 65536
+    VMEMO_LEN = 256                 # values longer than this are not memoised
+
     def apply(self, name: str, value: Any) -> Tuple[Any, str]:
         """(stored value, mode). Non-payload names and non-string values pass."""
         if not name.startswith(PAYLOAD_NS):
             return value, "clear"
+        if isinstance(value, str) and len(value) <= self.VMEMO_LEN:
+            k = (name, value)
+            hit = self._vmemo.get(k)
+            if hit is None:
+                hit = self._apply(name, value)
+                if len(self._vmemo) >= self.VMEMO_MAX:
+                    self._vmemo.clear()
+                self._vmemo[k] = hit
+            return hit
+        return self._apply(name, value)
+
+    def _apply(self, name: str, value: Any) -> Tuple[Any, str]:
         mode = self.mode_for(name)
         if isinstance(value, frozenset):
             if mode == "shape":
@@ -134,7 +153,10 @@ class ValuePolicy:
         """Apply the policy to every attribute in place; long clear values
         replaced by shape also keep '<name>.len'. modes collects non-clear modes."""
         extra: Dict[str, Any] = {}
+        ns = PAYLOAD_NS
         for nm in list(attrs.keys()):
+            if not nm.startswith(ns):
+                continue                         # apply() passes it unchanged ('clear')
             v = attrs[nm]
             nv, mode = self.apply(nm, v)
             if mode != "clear":

@@ -149,8 +149,31 @@ def round_band(lo: float, hi: float, cdf, unit: str = "",
             break
     if best is None:
         best = {"lo": float(lo), "hi": float(hi), "coverage": float(cdf(hi) - cdf(lo)), "grid": None}
+    elif lo > 0 and best["lo"] <= 0 and best.get("grid") is not None:
+        # a positive lower edge never reads 0: on a grid as coarse as the upper
+        # edge's, a wide band of a heavy-tailed size ('1.1 KB - 230 KB' mail
+        # uploads, '0.8 KB - 1.6 MB' git pushes) rendered '0-200 KB', which
+        # states no lower bound at all; the lower edge is rounded on its own
+        # 1-2-5 grid (coarsest step <= the edge) under the same coverage check
+        for g2 in _lo_steps(lo, best["hi"], unit):
+            for a2 in (round(lo / g2) * g2, math.floor(lo / g2 + 1e-9) * g2):
+                if a2 <= 0 or a2 >= best["hi"]:
+                    continue
+                c = float(cdf(best["hi"]) - cdf(a2))
+                if c_lo - 1e-9 <= c <= c_hi + 1e-9:
+                    best = dict(best, lo=float(a2), coverage=c, grid_lo=float(g2))
+                    break
+            if best["lo"] > 0:
+                break
     best["text"] = _text(best["lo"], best["hi"], unit)
     return best
+
+
+def _lo_steps(lo: float, hi: float, unit: str) -> List[float]:
+    """1-2-5 steps not coarser than a positive lower edge, in the unit the
+    band is displayed in (KB steps when the upper edge reads in KB)."""
+    scale = max(lo, KB) if (unit == "B" and hi >= KB) else lo
+    return [g for g in grid_steps(scale, unit) if g <= lo * 1.0001]
 
 
 def round_range(lo: float, hi: float, unit: str = "") -> Dict[str, Any]:
@@ -167,6 +190,12 @@ def round_range(lo: float, hi: float, unit: str = "") -> Dict[str, Any]:
             b = math.ceil(hi / g - 1e-9) * g
             if lo >= 0:
                 a = max(a, 0.0)
+            if lo > 0 and a <= 0:
+                # a positive observed minimum never reads 0 (see round_band): it is
+                # floored on its own 1-2-5 grid ('800 B - 293 KB' read '0-300 KB')
+                g2 = next(iter(_lo_steps(lo, b, unit)), None)
+                if g2 is not None:
+                    a = math.floor(lo / g2 + 1e-9) * g2
             return {"lo": float(a), "hi": float(b), "grid": float(g), "text": _text(a, b, unit)}
     return {"lo": lo, "hi": hi, "text": _text(lo, hi, unit)}
 
@@ -175,6 +204,10 @@ def _text(lo: float, hi: float, unit: str) -> str:
     if unit == "B" and _fin(hi):
         # render both ends in the unit of the upper end
         f, u = (KB * KB, "MB") if abs(hi) >= KB * KB else (KB, "KB") if abs(hi) >= KB else (1.0, "B")
+        if _fin(lo) and 0 < abs(lo) < 0.1 * f:
+            # a lower edge far below the upper one reads in its own unit ('0.5 KB–2 MB')
+            a, ua = fmt_num(lo, unit)
+            return f"{a} {ua}–{_trim(hi / f)} {u}"
         return f"{_trim(lo / f)}–{_trim(hi / f)} {u}"
     a, _ = fmt_num(lo, unit)
     b, _ = fmt_num(hi, unit)
@@ -196,8 +229,16 @@ def clean_range(num: Any, day_now: int, excl: Optional[Mapping[int, Sequence[flo
     scale). A day whose extreme is such a value takes its next extreme from
     the exceedance reservoirs (values beyond the running Q(0.10) / Q(0.90),
     with their timestamps; day_of(ts) -> local day); when they hold none for
-    that day the whole day leaves the range and its observations leave n_rng,
-    so the rank bound 2 / (n_rng + 1) stays about the days it was taken over."""
+    that day, that SIDE of the day leaves the range (its other extreme is a
+    clean observation and stays). The minimum and the maximum may then be
+    taken over different days: n_rng is the smaller of the two samples
+    (Σ n_obs over the days each side was taken from, a day whose excluded
+    maximum lies below the stated maximum counting for that side too, since
+    all its clean rows do; the excluded rows leave n_obs), so the rank bound
+    2 / (n_rng + 1) >= 1 / (n_lo + 1) + 1 / (n_hi + 1) stays conservative.
+    (2026-10-01: dropping the whole day lost 7 of 10 days of pack O's GA
+    login node, whose daily maximum was often a damped row: n_rng = 3.)
+    Days dropped = days that lost both sides."""
     if not excl:
         lo, hi, n = num.observed_range(int(day_now))
         return lo, hi, n, 0
@@ -208,32 +249,50 @@ def clean_range(num: Any, day_now: int, excl: Optional[Mapping[int, Sequence[flo
     if not ok.any():
         return NAN, NAN, 0.0, 0
     res_hi = res_lo = None
-    los, his, ns, dropped = [], [], [], 0
+    los, his, n_lo, n_hi, dropped = [], [], 0.0, 0.0, 0
+    lo_out, hi_out = [], []                 # (excluded extreme, n) of sides that left the range
     for row in r[ok]:
         d, lo, hi, n = int(row[0]), float(row[1]), float(row[2]), float(row[3])
         bad = [float(y) for y in (excl.get(d) or ())]
+        bad_lo = bad_hi = NAN
         if bad:
             if any(_close(hi, y) for y in bad):
+                bad_hi = hi
                 if res_hi is None:
                     res_hi = [(float(y), float(t)) for y, _w, t in num.hi_res.items()]
                 c = [y for y, t in res_hi if day_of is not None and day_of(t) == d and y < hi
                      and not any(_close(y, b) for b in bad)]
                 hi = max(c) if c else NAN
             if any(_close(lo, y) for y in bad):
+                bad_lo = lo
                 if res_lo is None:
                     res_lo = [(float(y), float(t)) for y, _w, t in num.lo_res.items()]
                 c = [y for y, t in res_lo if day_of is not None and day_of(t) == d and y > lo
                      and not any(_close(y, b) for b in bad)]
                 lo = min(c) if c else NAN
-            if not (_fin(lo) and _fin(hi)):
-                dropped += 1
-                continue
-        los.append(lo)
-        his.append(hi)
-        ns.append(n)
-    if not los:
+            # the excluded extremes were rows of the ring's count: they leave it
+            n = max(0.0, n - float(_fin(bad_hi)) - float(_fin(bad_lo) and not _close(bad_lo, bad_hi)))
+        if not (_fin(lo) or _fin(hi)):
+            dropped += 1
+        if _fin(lo):
+            los.append(lo)
+            n_lo += n
+        elif _fin(bad_lo):
+            lo_out.append((bad_lo, n))
+        if _fin(hi):
+            his.append(hi)
+            n_hi += n
+        elif _fin(bad_hi):
+            hi_out.append((bad_hi, n))
+    if not los or not his:
         return NAN, NAN, 0.0, dropped
-    return float(min(los)), float(max(his)), float(sum(ns)), dropped
+    ymin, ymax = float(min(los)), float(max(his))
+    # a day whose maximum left the range still lies wholly below the stated
+    # maximum when its excluded value does: its clean rows are part of the
+    # sample the maximum was taken over (and symmetrically for the minimum)
+    n_hi += sum(n for v, n in hi_out if v <= ymax)
+    n_lo += sum(n for v, n in lo_out if v >= ymin)
+    return ymin, ymax, float(min(n_lo, n_hi)), dropped
 
 
 def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float = NAN,

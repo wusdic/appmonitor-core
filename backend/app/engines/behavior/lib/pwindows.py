@@ -435,6 +435,8 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
     if minute_mode:
         inside = np.asarray([in_windows(m, windows) for m in mins], dtype=np.float64)
         cov = float(np.sum(inside * wts) / max(float(wts.sum()), 1e-12))
+        if not info.get("all_day"):
+            cov = predictive_coverage(cov, float(np.sum(wts >= CLEAN_W)), len(windows))
     else:
         tot = h.sum()
         mids = np.arange(SLOTS) * SLOT_MIN + SLOT_MIN / 2.0
@@ -535,6 +537,26 @@ def regime_cut(points: Sequence[Sequence[Any]], hist: np.ndarray, tz_offset_s: f
     return {"since": float(int(ud[k]) * 86400.0 - tz_offset_s), "p": float(pa), "D": float(D),
             "dates_after": n_after, "sources_after": len(srcs),
             "accepted": bool(len(srcs) >= 2 or n_after >= REGIME_SINGLE_DATES)}
+
+
+def predictive_coverage(cov_in: float, n: float, n_windows: int) -> float:
+    """The probability that the NEXT arrival falls inside the windows, from
+    their in-sample coverage `cov_in` over n reservoir arrivals: in minute mode
+    each window's two edges are snapped to arrivals (order statistics of the
+    sample), so - the rank bound P06/P07 use for ranges and lengths - a new
+    arrival lands beyond a window's edges with probability 2/(n+1) even when
+    every sampled arrival is inside: P(inside) = 1 - (n (1 - cov_in) +
+    2 n_windows) / (n + 1), never above cov_in.
+
+    Measured on pack O (round 2): statements said '覆盖 100 %' while 5-20 % of
+    the held-out arrivals of their truth windows fell outside the learned
+    edges; 'when' was the constraint that failed most often in PG1 precision
+    (24 of 36 failing statements at day 14, seed 0), and P04's hold records,
+    which test the windows at the stated coverage, failed with it."""
+    if n <= 0:
+        return float(cov_in)
+    out = n * (1.0 - float(cov_in)) + 2.0 * max(0, int(n_windows))
+    return float(max(0.0, min(float(cov_in), 1.0 - out / (n + 1.0))))
 
 
 def confidence(rec: Mapping[str, Any]) -> float:

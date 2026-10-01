@@ -213,6 +213,11 @@ SNAPSHOT_HOUR = 4
 ORDINAL0 = 719163              # date(1970, 1, 1).toordinal()
 WHO_LEVEL = {"ip": 0, "prefix": 1, "grp": 3, "reg": 4}
 PSEUDO_SOURCE = {"@who": "net.src", "@when": "ctx.when"}
+# P03 components that, when less likely than the who, make a damped row an
+# outlier of its time / content / sequence rather than a foreign source (M41)
+HOLD_BIND_MAX = 16             # bound sources checked per node (M43)
+SUS_OTHER_P = ("p_when", "p_content", "p_seq", "p_novel")
+SUS_BIND_FLAGS = frozenset({"cross_binding", "concurrent_use", "readdress_candidate"})
 FITTERS = (MP.PBOUNDS, MP.PGRAMMAR, MP.PBIND, MP.PWIN)
 EVENT_KINDS = ("pattern_confirmed", "pattern_retired", "pattern_replaced", "pattern_drift",
                "pattern_absent", "pattern_revived")
@@ -617,10 +622,15 @@ class PatternTreeEngine(Engine):
         asg = lc.store.batch_at(s, EV.PAT_ASSIGN, ts_b)
         damp_col = None
         pwho_col = None
+        pother: List[np.ndarray] = []
+        flag_col = None
         if asg is not None and asg.n == b.n and asg.has("damp"):
             damp_col = asg.dense("damp", 1.0)
             if asg.has("p_who"):
                 pwho_col = asg.dense("p_who", 1.0)
+            pother = [np.asarray(asg.dense(c, np.nan), dtype=float) for c in SUS_OTHER_P if asg.has(c)]
+            if asg.has("flags"):
+                flag_col = asg
         mass = b.mass()
         n = 0
         aux = self.aux(m)
@@ -650,6 +660,20 @@ class PatternTreeEngine(Engine):
             # source is suspect at the nodes of the row's path (pnode.update_core)
             pw = float(pwho_col[i]) if pwho_col is not None else 1.0
             sus = damp < 1.0 and pw == pw and pw < 1.0
+            if sus:
+                # (M41) ... and the WHO is why it was damped: no other component
+                # of the row is less likely, and it is not a credential-binding
+                # damping. Measured on pack O: 综合部's .21 / .121 login rows were
+                # damped for their new login minute (day 12, 09:00 -> 08:30) while
+                # light in an ancestor's heavy set (p_who = 2U < 1): they became
+                # suspect at the 综合部 login node, never entered its who again
+                # (P03 then saw them as non-members of the stale reference, which
+                # renewed the flag every day) and the statement named .23 alone.
+                others = [float(c[i]) for c in pother if c[i] == c[i]]
+                fl = flag_col.get("flags", i, "") if flag_col is not None else ""
+                fl = set(str(fl).split(",")) if isinstance(fl, str) and fl else set()
+                if (others and min(others) < pw) or (fl & SUS_BIND_FLAGS):
+                    sus = False
             sess = b.get("sess.key", i, "∅")
             if ip in aux.get("watch", ()):                  # heavy sources of confident nodes only
                 aux["seen"].put(ip, ts)
@@ -716,7 +740,11 @@ class PatternTreeEngine(Engine):
                         self._rev_update(lc, tr, nd, path[d + 1], get, ip, ts, omega, day, kind)
                     continue
             self._update_targets(lc, tr, nd, kind, sel, get, ts, mass / rho, omega, day)
-            if nd.ref is not None and nd.state in PN.CONFIDENT_STATES and not suspicious:
+            # (M45) rows P03 / B28 learned damped (outliers, low trust) are not
+            # checks of the statement: it states the pattern, not its outliers
+            # (the held-out data of the requirement is the pattern's own events)
+            if nd.ref is not None and nd.state in PN.CONFIDENT_STATES and not suspicious \
+                    and factor >= 1.0 - 1e-9:
                 self._hold_check(lc, nd, get, keys, daytype, minute, ts, omega)
             if d < nlast and nd.meta.get("R") is not None:
                 self._rev_update(lc, tr, nd, path[d + 1], get, ip, ts, omega, day, kind)
@@ -747,6 +775,26 @@ class PatternTreeEngine(Engine):
         hr = nd.meta.get("hold")
         if hr is None:
             hr = nd.meta["hold"] = PN.HoldRecord()
+        # (M45) the record is about the statement it checked: a constraint the
+        # node now states materially differently (a window widened, a band or
+        # a closed set moved, another heavy set) starts its record again. Before,
+        # the checks of every earlier reference stayed in the record for its
+        # 30-day half-life: the narrow windows of a young node's first refs
+        # failed on most events, and the confidence of the (by then right)
+        # statement fell with time (pack O, median 0.35 -> 0.005 by day 21)
+        seen = nd.meta.get("hold_fp")
+        rid = (id(nd.ref), nd.ref.get("t"))         # re-compared when unsure: idempotent
+        if seen is None or seen.get("_ref") != rid:
+            seen = seen if seen is not None else {}
+            for k, c in cons.items():
+                old = seen.get(k)
+                if old is not None and _hold_material(old, c):
+                    hr.drop([k])
+                seen[k] = c                     # the reference's own tuple (shared, not copied)
+            for k in [k for k in seen if k != "_ref" and k not in cons]:
+                del seen[k]
+            seen["_ref"] = rid
+            nd.meta["hold_fp"] = seen
         w = cons.get("who")
         if w is not None:
             lvl, items, nom = w
@@ -765,7 +813,10 @@ class PatternTreeEngine(Engine):
         for a, c in cons.items():
             if a in ("who", "when"):
                 continue
-            v = get(a)
+            # keys: an attribute, `attr#range` / `attr#grammar`, or `bind:Y:x`
+            v = None if c[0] == "bind" else get(a.split("#", 1)[0])
+            if c[0] == "range":
+                c = ("num",) + tuple(c[1:4])
             if v is EV.ABSENT:
                 continue
             if c[0] == "num":
@@ -775,6 +826,22 @@ class PatternTreeEngine(Engine):
                     continue
                 if x == x:
                     hr.add(a, c[1] <= x <= c[2], c[3], ts, omega)
+            elif c[0] == "rx":
+                rx = _rx(c[1])
+                if rx is not None:
+                    hr.add(a, bool(rx.fullmatch(str(v))), c[2], ts, omega)
+            elif c[0] == "req":
+                ks = v if isinstance(v, (list, tuple, set, frozenset)) else str(v).split(",")
+                have = {str(k)[:-2] if str(k).endswith("[]") else str(k) for k in ks}
+                hr.add(a, c[1] <= have, c[2], ts, omega)
+            elif c[0] == "bind":
+                # c = ("bind", X attribute, x value, y attribute, bound y, nominal LB_x)
+                xv = get(c[1])
+                if xv is EV.ABSENT or str(xv) != c[2]:
+                    continue
+                yv = get(c[3])
+                if yv is not EV.ABSENT:
+                    hr.add(a, str(yv) == c[4], c[5], ts, omega)
             else:
                 hr.add(a, str(v) in c[1], c[2], ts, omega)
 
@@ -1023,7 +1090,13 @@ class PatternTreeEngine(Engine):
         return Coder(targets, seeds, self._hver(lc, targets), self._when_div(src))
 
     def _coder_targets(self, lc: _LC, tr: PT.Tree, nd: PN.Node, kind: int, sel: Mapping[str, Any]) -> List[str]:
-        tg = [a for a in self._targets_of(lc, tr, nd, kind, sel) if lc.kind_of(a)[0] != "?"][:M_T]
+        # the time of day is coded once, by the @when pseudo-target (M39): P05
+        # lists ctx.tod_min among the behaviour targets (M36) and P09 requests it,
+        # and coded twice every split candidate was paid twice for the same
+        # minute (pack O mail, day 7: ctx.tod_min 43 bits + @when 40 bits on the
+        # /24 candidate), doubling the evidence rule (V) tests
+        tg = [a for a in self._targets_of(lc, tr, nd, kind, sel) if lc.kind_of(a)[0] != "?"
+              and not SEL.same_source(PSEUDO_SOURCE["@when"], a)][:M_T]
         if lc.who_level is not None:
             tg.append("@who")
         tg.append("@when")
@@ -1081,14 +1154,28 @@ class PatternTreeEngine(Engine):
         # slots are reserved by facet (§7.1 C = 6: who x2, when x2, route or content
         # x2): P05 ranks by system-wide U_s, where the many near-duplicate client /
         # content attributes would otherwise crowd out the who and when levels
-        who = [(a, l) for a, l in sc if a in SEL.WHO_ATTRS][:2]
+        # The who facet is a ladder (M38): P05's levels (chosen on the whole
+        # system's probe) first, then the finer department-scale levels below
+        # each of them - /16 -> /24, grp / reg -> /24 (and reg -> grp) - which
+        # take a slot when a coarser level is constrained in the context or
+        # constant at this leaf. Measured on pack O's mail: P05 proposed reg and
+        # /16 (system-wide, the dev pool against the rest), both constant or
+        # spent below the first split, and /24 - the departments - was never
+        # offered at any node.
+        who_p = [(a, l) for a, l in sc if a in SEL.WHO_ATTRS]
+        ladder: List[Tuple[str, int]] = list(who_p)
+        for a, l in who_p:
+            if hier.kind(a) != "ip":
+                continue
+            fin = [x for x in range(l - 1, 0, -1)] if l <= 2 else ([3, 1] if l == 4 else [1])
+            ladder += [(a, x) for x in fin if (a, x) not in ladder]
         when = [(a, l) for a, l in sc if a in SEL.WHEN_ATTRS][:2]
         # one slot is the route facet's (§7.1: "route or content x2"): ranked by
         # system-wide U_s the route family came third behind a size bin and a
         # user-agent shape on pack O's OA, so no tree ever split on the action
         # and every pattern mixed login, documents and approvals
         route = [(a, l) for a, l in sc if a in ROUTE_ATTRS or hier.kind(a) in ("route", "path")][:1]
-        rest = [(a, l) for a, l in sc if (a, l) not in set(who) | set(when) | set(route)]
+        rest = [(a, l) for a, l in sc if (a, l) not in set(ladder) | set(when) | set(route)]
         # who first: a source property (P05's who_proxies: a department's client
         # stack, TCP window class, user agent) is a function of the source, so the
         # who hierarchy (/32 at the finest) explains at least as much behaviour as
@@ -1108,10 +1195,13 @@ class PatternTreeEngine(Engine):
         routed = any(ca == RPART_ATTR and cl == 0 and not neg and len(vals) == 1
                      for ca, cl, vals, neg in nd.ctx)
         seen: Set[Tuple[str, int]] = set()
-        for a, l in finer + who + when + route + rest:
+        n_who = 0
+        for a, l in finer + ladder + when + route + rest:
             if (a, l) in seen:
                 continue
             seen.add((a, l))
+            if a in SEL.WHO_ATTRS and n_who >= 2:
+                continue                        # two who slots (§7.1)
             if routed and SEL.same_source(RPART_ATTR, a):
                 continue
             if a in lc.gone or a in nd.inv or (a, l) in const:
@@ -1139,6 +1229,8 @@ class PatternTreeEngine(Engine):
                 ss = nd.who.levels[l]
                 if ss.total_evidence(t) >= 5 and len(ss) == 1:
                     continue                    # constant at this leaf
+            if a in SEL.WHO_ATTRS:
+                n_who += 1
             out.append((a, l))
         if sel.get("who_mode", "ip") != "none" or any(a in SEL.WHO_ATTRS for a, _ in out):
             out = [(a, l) for a, l in out if a not in prox]
@@ -1366,9 +1458,17 @@ class PatternTreeEngine(Engine):
         # n_g units: e.g. a daypart level when the leaf's events all fall in one
         # daypart, a size bin that holds every login) can never split it; it
         # yields its slot to the next ranked candidate until the next restart
+        # Judged over a whole local day of the candidate's units (M37): the stream
+        # is time ordered, so a check's first n_g units are one slice of the day -
+        # on pack O's mail (opaque TLS, the departments differ only in when they
+        # come) all from the department that comes first, and the who level that
+        # tells them apart was dropped on the first morning and not offered again
+        # before the R_learn restart (no mail split in 21 days).
         const = leaf.meta.setdefault("const", set())
+        today = _local_day(ts, lc.off)
         for i in ss.active():
-            if ss.n[i] >= N_G and sum(1 for v in ss.slot_val[i] if v is not None) <= 1:
+            if ss.n[i] >= N_G and 0 <= ss.day0[i] <= today - 2 \
+                    and sum(1 for v in ss.slot_val[i] if v is not None) <= 1:
                 const.add(tuple(ss.keys[i]))
         # candidate re-ranking with hysteresis: a tracked candidate keeps its
         # statistics while P05 still proposes it (order changes are ignored); one
@@ -2952,6 +3052,8 @@ def _node_jsd(a: PN.Node, b: PN.Node, t: float, who_level: Optional[int]) -> flo
     return float(np.mean([pmdl.jsd(p, q) for p, q in pairs]))
 
 
+HOLD_SAME = 0.8               # a re-stated constraint overlapping its predecessor this much keeps its record (M45)
+HOLD_NOM_MOVE = 0.05           # ... and a nominal coverage moved by at most this
 HOLD_WHEN_COVER = 0.9          # the arrival slots stated as the node's window cover 90 % of its mass
 HOLD_BAND = (1, 3)             # numeric band of the hold check: the q05 - q95 entries of _compact's q
 HOLD_CAT_OTHER = 0.05          # a categorical target is a closed set when its `other` share is <= 5 %
@@ -3017,15 +3119,120 @@ def _hold_constraints(nd: PN.Node, t: float, targets: Mapping[str, Any],
                 continue
             if lo == lo and hi == hi and nom == nom:
                 out[a] = ("num", lo, hi, min(1.0, max(0.0, nom)))
+            # the hard range the statement adds ("all within ...", nominal 1 - cover)
+            rg, cv = e.get("range"), e.get("cover")
+            try:
+                rlo, rhi, cvf = float(rg[0]), float(rg[1]), float(cv)
+            except (TypeError, ValueError, IndexError):
+                rlo = rhi = cvf = float("nan")
+            if rlo == rlo and rhi == rhi and cvf == cvf:
+                out[a + "#range"] = ("range", rlo, rhi, min(1.0, max(0.0, 1.0 - cvf)))
     pg = fit.get(MP.PGRAMMAR)
     for a, e in ((pg or {}).get("attrs") or {}).items() if isinstance(pg, Mapping) else ():
-        if isinstance(e, Mapping) and e.get("closed") and a not in out and a not in ("who", "when"):
+        if not isinstance(e, Mapping) or a in ("who", "when"):
+            continue
+        # (M43) every part the statement states is checked: P07's grammar
+        # (nominal c_g (1 - U_s)), required keys (0.99) and closed sets (1 - U)
+        if e.get("kind") == "set":
+            req = frozenset(str(k)[:-2] if str(k).endswith("[]") else str(k) for k in e.get("required") or ())
+            if req and a not in out:
+                out[a] = ("req", req, 0.99)
+            continue
+        if e.get("grammar") and _rx(str(e["grammar"])) is not None:
+            try:
+                nom = float(e.get("c_g", 1.0)) * (1.0 - float(e.get("U_s", 0.0)))
+            except (TypeError, ValueError):
+                nom = float("nan")
+            if nom == nom:
+                out[a + "#grammar"] = ("rx", str(e["grammar"]), min(1.0, max(0.0, nom)))
+        if e.get("closed") and a not in out:
             try:
                 U = float(e.get("U", 0.0))
             except (TypeError, ValueError):
                 continue
             out[a] = ("cat", frozenset(str(v) for v in e["closed"]), min(1.0, max(0.0, 1.0 - U)))
+    # P08's bound pairs x -> y (nominal LB_x), at most HOLD_BIND_MAX per node
+    pb8 = fit.get(MP.PBIND)
+    nb = 0
+    for pk, rec in ((pb8 or {}).get("pairs") or {}).items() if isinstance(pb8, Mapping) else ():
+        if not isinstance(rec, Mapping) or rec.get("dir") == "rev" or not (rec.get("fd") or {}).get("holds"):
+            continue
+        X, Y = rec.get("x"), rec.get("y")
+        if not X or not Y:
+            X, _, Y = str(pk).partition("->")
+        for x, ent in (rec.get("table") or {}).items():
+            if nb >= HOLD_BIND_MAX or not isinstance(ent, Mapping) or not ent.get("bound"):
+                continue
+            try:
+                lb = float(ent.get("LB"))
+            except (TypeError, ValueError):
+                continue
+            if lb == lb and ent.get("top") is not None:
+                out[f"bind:{Y}:{x}"] = ("bind", str(X), str(x), str(Y), str(ent["top"]), min(1.0, max(0.0, lb)))
+                nb += 1
     return out
+
+
+def _iv_iou(a: Sequence[Tuple[float, float]], b: Sequence[Tuple[float, float]]) -> float:
+    """Intersection over union of two unions of disjoint intervals."""
+    def tot(x: Sequence[Tuple[float, float]]) -> float:
+        return float(sum(max(0.0, hi - lo) for lo, hi in x))
+    inter = 0.0
+    for lo1, hi1 in a:
+        for lo2, hi2 in b:
+            inter += max(0.0, min(hi1, hi2) - max(lo1, lo2))
+    union = tot(a) + tot(b) - inter
+    return inter / union if union > 0 else 1.0
+
+
+def _jacc(a: Iterable[Any], b: Iterable[Any]) -> float:
+    a, b = set(a), set(b)
+    return len(a & b) / len(a | b) if (a or b) else 1.0
+
+
+def _hold_material(old: Tuple, new: Tuple) -> bool:
+    """Whether a stated constraint changed enough that checks of the old one
+    say nothing about the new one (M45): another kind or a nominal moved by
+    > HOLD_NOM_MOVE, or an overlap (intervals: IoU; sets: Jaccard) below
+    HOLD_SAME."""
+    if isinstance(old[0], str) != isinstance(new[0], str) or (isinstance(new[0], str) and old[0] != new[0]):
+        return True
+    k = new[0]
+    if isinstance(k, int):                          # who: (level, items, nominal)
+        return old[0] != new[0] or _jacc(old[1], new[1]) < HOLD_SAME or abs(old[2] - new[2]) > HOLD_NOM_MOVE
+    if k == "win":
+        if abs(old[2] - new[2]) > HOLD_NOM_MOVE:
+            return True
+        return any(_iv_iou(old[1].get(dt, ()), new[1].get(dt, ())) < HOLD_SAME for dt in set(old[1]) | set(new[1]))
+    if k == "slots":
+        return _jacc(old[1], new[1]) < HOLD_SAME or abs(old[2] - new[2]) > HOLD_NOM_MOVE
+    if k in ("num", "range"):
+        return _iv_iou([(old[1], old[2])], [(new[1], new[2])]) < HOLD_SAME or abs(old[3] - new[3]) > HOLD_NOM_MOVE
+    if k == "cat":
+        return _jacc(old[1], new[1]) < HOLD_SAME or abs(old[2] - new[2]) > HOLD_NOM_MOVE
+    if k in ("rx", "req"):
+        return old[1] != new[1] or abs(old[2] - new[2]) > HOLD_NOM_MOVE
+    if k == "bind":
+        return old[4] != new[4] or abs(old[5] - new[5]) > HOLD_NOM_MOVE
+    return old != new
+
+
+_RX_CACHE: Dict[str, Any] = {}
+
+
+def _rx(pat: str) -> Any:
+    """Compiled statement grammar (None when it does not compile); bounded cache."""
+    r = _RX_CACHE.get(pat, False)
+    if r is False:
+        import re
+        try:
+            r = re.compile(pat)
+        except (re.error, TypeError):
+            r = None
+        if len(_RX_CACHE) > 4096:
+            _RX_CACHE.clear()
+        _RX_CACHE[pat] = r
+    return r
 
 
 def _compact(sm: Any, t: float) -> Dict[str, Any]:

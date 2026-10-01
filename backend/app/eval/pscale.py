@@ -24,7 +24,7 @@ real P engines unchanged once they exist.
 from __future__ import annotations
 
 import sys
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -101,7 +101,14 @@ def pcore_memory(store: MetricStore, model_names: Sequence[str] = P_MODELS) -> D
 
 
 def pcore_cpu(timings: Mapping[str, Any], events_per_tick: Sequence[float],
-              engines: Sequence[str] = P_ENGINES) -> Dict[str, Any]:
+              engines: Sequence[str] = P_ENGINES,
+              batch_per_tick: Optional[Sequence[Tuple[float, float]]] = None) -> Dict[str, Any]:
+    """CPU of the P engines. us_per_event: all P engines over the generator's
+    events. The per-event p95s follow §12 PG4's units: scoring (P03) per
+    SCORED event (the rows of P00's batches: P03 scores every row) and
+    learning (P04) per LEARNED event (P00's learning sample, §6.2.2); with no
+    batch tap (batch_per_tick None) both fall back to the generator's events,
+    which understates the learning cost by the sampling ratio."""
     names = list(timings.get("engine_names") or [])
     ms = np.asarray(timings.get("engine_ms"), dtype=float)
     if ms.ndim != 2 or not names:
@@ -113,17 +120,59 @@ def pcore_cpu(timings: Mapping[str, Any], events_per_tick: Sequence[float],
     tot_ev = float(ev.sum())
     by = {names[i]: float(ms[:, i].sum()) for i in idx}
     total = float(sum(by.values()))
+    scored, learned = ev, ev
+    if batch_per_tick is not None and len(batch_per_tick) >= k:
+        bt = np.asarray(batch_per_tick, dtype=float)[:k]
+        scored, learned = bt[:, 0], bt[:, 1]
 
-    def p95(name: str) -> Optional[float]:
+    def p95(name: str, per: np.ndarray) -> Optional[float]:
         if name not in names:
             return None
         col = ms[:, names.index(name)]
-        m = ev > 0
-        return float(np.quantile(col[m] * 1000.0 / ev[m], 0.95)) if m.any() else None
-    return {"ms_total": total, "events": tot_ev,
-            "us_per_event": total * 1000.0 / tot_ev if tot_ev else None,
-            "scoring_p95_us": p95(SCORING_ENGINE), "learning_p95_us": p95(LEARNING_ENGINE),
-            "by_engine": by}
+        m = per > 0
+        return float(np.quantile(col[m] * 1000.0 / per[m], 0.95)) if m.any() else None
+    out = {"ms_total": total, "events": tot_ev,
+           "us_per_event": total * 1000.0 / tot_ev if tot_ev else None,
+           "scoring_p95_us": p95(SCORING_ENGINE, scored), "learning_p95_us": p95(LEARNING_ENGINE, learned),
+           "by_engine": by}
+    if batch_per_tick is not None and len(batch_per_tick) >= k:
+        out.update({"scored_events": float(scored.sum()), "learned_events": float(learned.sum()),
+                    "scoring_us_per_event": (by.get(SCORING_ENGINE, 0.0) * 1000.0 / float(scored.sum())
+                                             if scored.sum() else None),
+                    "learning_us_per_learned_event": (by.get(LEARNING_ENGINE, 0.0) * 1000.0
+                                                      / float(learned.sum()) if learned.sum() else None),
+                    "units": "scoring per scored (batch) event, learning per learned event"})
+    else:
+        out["units"] = "per generator event (no batch tap)"
+    return out
+
+
+class _BatchTap:
+    """Records P00's (batch rows, learned rows) at every tick by wrapping the
+    raw.event engine's run (its last_stats), so PG4's per-event costs use the
+    units of §12: scored events for P03, learned events for P04."""
+
+    def __init__(self) -> None:
+        self.rows: List[Tuple[float, float]] = []
+
+    def factory(self, base: Optional[Callable] = None) -> Callable:
+        from .runner import _call_with_supported, default_registry_factory
+
+        def make(pack: Any = None, config: Any = None, seed: int = 0) -> Any:
+            reg = _call_with_supported(base or default_registry_factory, pack=pack, config=config,
+                                       seed=seed)
+            for eng in reg.ordered():
+                if eng.name == "raw.event":
+                    run0 = eng.run
+
+                    def run(ctx: Any, observations: Any = None, _run0=run0, _eng=eng) -> Any:
+                        out = _run0(ctx, observations)
+                        st = getattr(_eng, "last_stats", None) or {}
+                        self.rows.append((float(st.get("events", 0) or 0), float(st.get("learned", 0) or 0)))
+                        return out
+                    eng.run = run
+            return reg
+        return make
 
 
 class _CountingGen:
@@ -161,10 +210,12 @@ def run_point(pack: Any, seed: int = 0, registry_factory: Optional[Callable] = N
         holder["g"] = g
         return g
 
-    res = run_pack(p, seed, registry_factory=registry_factory, generator_factory=gen_factory,
+    tap = _BatchTap()
+    res = run_pack(p, seed, registry_factory=tap.factory(registry_factory), generator_factory=gen_factory,
                    keep_store=True, record_series=False, **run_kw)
     mem = pcore_memory(res.store, model_names)
-    cpu = pcore_cpu(res.timings, holder["g"].per_tick if "g" in holder else [], engines)
+    cpu = pcore_cpu(res.timings, holder["g"].per_tick if "g" in holder else [], engines,
+                    batch_per_tick=tap.rows if tap.rows else None)
     org = getattr(p, "org", None)
     n_meta = sum(1 for a in (getattr(org, "attr_schedule", None) or [])
                  if a.name.startswith("f"))

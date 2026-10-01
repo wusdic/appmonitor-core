@@ -16,6 +16,11 @@ same learned patterns are projected into
       who-closed write nodes the group never reached, "综合部在财务系统中从未执行写
       操作（21 天、0 次）" — the fact that makes "综合部去财务系统审批" a who
       violation (P03), readable before it ever happens;
+  * the DEPARTMENT view model.pviews@('__org__', 'class:grp:dept:<name>'): a
+      configured department (who_group_names) that P11 learned as several
+      groups (its roles, rec 'dept'), composed from their group views: "综合部
+      访问 oa：登录、文档、审批[192.168.1.21]、提交报告[192.168.1.23、10.168.7.121]",
+      and a negative statement where every role never wrote (dept_view);
   * the IP view (on read, `ip_view`): the IP's group view plus its exception
       statements and the bindings whose source is the IP.
 Each statement is rendered in zh and en (lib/prender) and carries the
@@ -56,6 +61,7 @@ from .lib import psketch as PS
 from .lib import prender as PR
 from .lib import pwindows as PW
 from .lib.phier import GRP_NONE
+from . import conformity as CF
 
 def _route_key(get: Callable[[str], Any]) -> Optional[str]:
     """lib/pdfg.route_key with absent attributes read as None (pdfg tests
@@ -246,6 +252,9 @@ class _Ctx:
         self.wg = MP.who_groups(store)
         self.ip2g = self.wg.get("ip2g") or {}
         self.groups = self.wg.get("groups") or {}
+        ws = store.get_model(ORG, ORG, CF.WG_STATE)
+        self.sigs = getattr(ws, "sigs", None)          # P11's per-address signatures (group parts)
+        self.grp_gain = _grp_gain(MP.get_model(store, key, MP.SYSPROF))
         self.regions = _config_regions(config)
         self.labels = _labels(config)
         self.tz = PW.tz_offset(config, now)
@@ -297,13 +306,14 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     who_ev, who_zh, who_en, who_c = PR.who_block(nd.who, t, nd.n_days(), c.ip2g, c.groups,
                                                  c.regions, c.mode)
     if part is not None:
-        g, mem, gname, share = part
+        g, mem, gname, share = part[:4]
         restrict = set(mem)
         lst_zh, lst_en = PR.join_zh(mem), PR.join_en(mem)
         if len(mem) > PR.MEMBERS_LISTED:
             lst_zh, lst_en = f"{len(mem)} 个 IP", f"{len(mem)} IPs"
         who_zh, who_en = f"{gname}（{lst_zh}）", f"{gname} ({lst_en})"
-        who_ev = {"level": "grp", "items": [f"grp:{g}"], "members": sorted(mem), "group": g,
+        gids = list(part[4]) if len(part) > 4 else [g]
+        who_ev = {"level": "grp", "items": [f"grp:{x}" for x in gids], "members": sorted(mem), "group": g,
                   "name": gname, "share": round(float(share), 4), "closed": False,
                   "U": who_ev.get("U"), "confidence": who_c, "part_of": pid}
     elif restrict is not None:
@@ -314,6 +324,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
             who_ev = dict(who_ev, items=items, members=items)
             who_zh, who_en = PR.join_zh(items), PR.join_en(items)
     wentry = PW.lookup(c.pwin, kind, nd.id)
+    own_when = False
     if part is not None:
         # the group's own arrival windows when the node's minute reservoir holds
         # enough of its arrivals, else the node's windows
@@ -321,6 +332,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         if pw is not None:
             by = pw.pop("by_daytype", None)
             wentry = {"status": "fitted", "when": pw, "by_daytype": by}
+            own_when = True
     when_ev, when_zh, when_en, when_c = PR.when_block(wentry)
     skip = [a for a in list(((PB.lookup(c.pb, kind, nd.id) or {}).get("attrs") or {}))
             + list(((PB.lookup(c.pg, kind, nd.id) or {}).get("attrs") or {}))
@@ -363,7 +375,12 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     # (PG2 ECE 0.36-0.43)
     ph = getattr(nd, "p_hold", None)
     ph = ph(t) if callable(ph) else None
-    if ph is not None and math.isfinite(float(ph)) and part is None and restrict is None:
+    # A group's part of the node (or a group view's restriction of it) states the
+    # node's own constraints for a subset of its sources, so the node's held-out
+    # hold rate is its confidence too - unless the part states its own windows
+    # (pack O: parts stated the min-of-parts 0.09 where their held-out hold was
+    # 1.0, ptree open issue 2)
+    if ph is not None and math.isfinite(float(ph)) and not own_when:
         conf = float(ph)
     sys_label = c.key
     addr = ""
@@ -385,7 +402,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         facets.append("sequential")
     ctx_ev = [[a, int(l), sorted(str(v) for v in vals), bool(neg)] for a, l, vals, neg in nd.ctx]
     if part is not None:
-        ctx_ev.append(["net.src", 3, [f"grp:{part[0]}"], False])
+        ctx_ev.append(["net.src", 3, [f"grp:{x}" for x in (part[4] if len(part) > 4 else [part[0]])], False])
         pid = f"{pid}|grp:{part[0]}"
     ev: Dict[str, Any] = {
         "route": route, "system": c.key, "kind": kind, "node": nd.id,
@@ -417,11 +434,40 @@ def _impurity(d: Optional[Mapping[str, Any]], route: str) -> float:
     return 0.0 if tm <= 0 else max(0.0, 1.0 - vals.get(route, 0.0) / tm)
 
 
-def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0) -> List[Tuple[str, List[str], str, float]]:
+def _configured_ips(config: Mapping[str, Any]) -> Dict[str, List[str]]:
+    """Configured department names -> their listed addresses (who_group_names
+    [{name, ips}]; CIDR-defined names have no enumerable members)."""
+    out: Dict[str, List[str]] = {}
+    for it in (config or {}).get("who_group_names") or []:
+        if isinstance(it, Mapping) and it.get("name") and it.get("ips"):
+            out.setdefault(str(it["name"]), []).extend(str(x) for x in it["ips"])
+    return out
+
+
+GRP_GAIN_N = 200.0               # behaviour evidence units before P12's group gain is believed
+
+
+def _grp_gain(sp: Any) -> Optional[float]:
+    """P12's held-out behaviour gain (bits/event) of conditioning on the P11
+    group (who level 3, system_profile measurements 'who_pred'); None while
+    unmeasured."""
+    try:
+        meas = (sp or {}).get("measurements") or {}
+        wp = meas.get("who_pred")
+        if wp is None or len(wp) < 4 or float(meas.get("who_pred_n") or 0.0) < GRP_GAIN_N:
+            return None
+        g = float(wp[3])
+        return g if math.isfinite(g) else None
+    except Exception:                               # pragma: no cover
+        return None
+
+
+def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0, route: Optional[str] = None
+                ) -> List[Tuple[Any, ...]]:
     """The learned groups (P11) that make up a node's sources: [(g, members
-    seen at the node, name, share of the node's mass)], largest first, when
-    the node's sources span >= 2 groups (a node of one group is already
-    stated about that group).
+    seen at the node, name, share of the node's mass[, group ids])], largest
+    first, when the node's sources span >= 2 groups (a node of one group is
+    already stated about that group).
 
     Why: the requirement's system view is "OA 服务器的某类人会在哪个时间段访问
     我什么页面干什么事". Where several departments do the same thing (GET /docs
@@ -435,8 +481,33 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0) -> List[Tuple[s
     summary (never from the population). `impure` = the node's mass share on
     other routes (a route-dominant but mixed node): a group's share must exceed
     PART_SHARE + impure, else the whole part could be traffic of those other
-    routes (pack O: '销售部（19 个 IP）访问 GET /fin/approval/list')."""
+    routes (pack O: '销售部（19 个 IP）访问 GET /fin/approval/list').
+
+    Members: a group member is part of the node when the node's IP-level
+    summary shows it OR - at a node without an address context, given the
+    action `route` - its own P11 signature holds the action as a recurring use
+    (conformity.signature_share >= SIG_STANDING, P03's colleague rule): the
+    IP-level summary keeps WHO_K = 8 heavy hitters, and at the 25-source
+    GET /docs node of pack O the 综合部 part listed 192.168.1.23 alone and the
+    财务部 part 192.168.2.11 alone (PG1 who). Bounded: <= MEMBERS_CHECKED
+    members per group.
+
+    Departments: groups P11 names as roles of ONE configured department (rec
+    'dept', e.g. its approver and its report writers) are stated as one part
+    of that department - the "某类人" an operator configured - with the roles'
+    group ids; groups without a configured department stay one part each
+    (pack O seed 0: GET /docs had parts {192.168.1.23} and {192.168.1.21}
+    for 综合部's two roles, neither of them the department)."""
     if not c.ip2g or c.mode == "none":
+        return []
+    gg = getattr(c, "grp_gain", None)
+    if gg is not None and gg <= 0.0:
+        # the system's learned groups carry no behavioural information (P12's
+        # held-out gain of conditioning on the group <= 0): a "某类人" part would
+        # name a group that does not predict what its members do. Pack O's
+        # public portal (gain -2.2 bits/event): parts of one returning visitor
+        # each ('G263（10.60.103.206）访问 POST /login'), against PG3's portal
+        # login who in {prefix, reg, any}
         return []
     lv3 = nd.who.levels[3] if len(nd.who.levels) > 3 else None
     if lv3 is None:
@@ -449,26 +520,58 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0) -> List[Tuple[s
         k = str(key)
         if not k.startswith("grp:") or k == GRP_NONE:
             continue
-        share = float(cnt) / tot
-        if share < PART_SHARE + impure:
-            continue
-        parts.append((k[4:], share))
-    if len(parts) < 2:
-        return []
+        parts.append((k[4:], float(cnt) / tot))
     lv0 = nd.who.levels[0]
     seen = {str(ip) for ip, *_ in lv0.items(t)}
-    out = []
-    for g, share in sorted(parts, key=lambda x: -x[1])[:PART_MAX]:
+    sigs = getattr(c, "sigs", None)
+    use_sig = route is not None and sigs is not None and \
+        not any(a == "net.src" and not neg for a, l, vals, neg in getattr(nd, "ctx", ()))
+    # merge the roles of a configured department
+    units: Dict[str, Dict[str, Any]] = {}
+    for g, share in parts:
         gr = c.groups.get(g) or {}
-        allm = [str(m) for m in gr.get("members") or []]
-        # the members SEEN at the node; none seen -> no part (the group key can
-        # outlive its membership: an address that left the group, or a heavy-
-        # hitter cut; listing the whole group then claimed 19 sales IPs read
-        # finance's approval list on pack O)
-        mem = [m for m in allm if m in seen]
+        dept = gr.get("dept")
+        uk = f"dept:{dept}" if dept else g
+        u = units.setdefault(uk, {"gids": [], "share": 0.0,
+                                  "name": str(dept) if dept else str(gr.get("name") or g)})
+        u["gids"].append(g)
+        u["share"] += share
+    if len(units) < 2:
+        return []
+    out = []
+    for uk, u in sorted(units.items(), key=lambda kv: -kv[1]["share"]):
+        if u["share"] < PART_SHARE + impure:
+            continue
+        mem: List[str] = []
+        for g in u["gids"]:
+            allm = [str(m) for m in (c.groups.get(g) or {}).get("members") or [] if "/" not in str(m)]
+            for i, m in enumerate(allm):
+                # the members SEEN at the node; none seen -> no part (the group key can
+                # outlive its membership: an address that left the group, or a heavy-
+                # hitter cut; listing the whole group then claimed 19 sales IPs read
+                # finance's approval list on pack O)
+                if m in seen or (use_sig and i < CF.MEMBERS_CHECKED
+                                 and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING):
+                    mem.append(m)
+        if uk.startswith("dept:"):
+            # the department's configured addresses that P11 has not put in any
+            # group (pack O: the finance approver 192.168.2.10 had no group, so
+            # 财务部's part of GET /docs listed .11 and .12 only)
+            for m in _configured_ips(getattr(c, "config", None) or {}).get(uk[5:], ()):
+                if m in mem or m in c.ip2g:
+                    continue
+                if m in seen or (use_sig and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING):
+                    mem.append(m)
         if not mem:
             continue
-        out.append((g, sorted(mem, key=PR._ip_sort), str(gr.get("name") or g), share))
+        name = u["name"] if len(u["gids"]) > 1 or not uk.startswith("dept:") else \
+            str((c.groups.get(u["gids"][0]) or {}).get("name") or u["gids"][0])
+        if len(u["gids"]) > 1:
+            out.append((uk, sorted(set(mem), key=PR._ip_sort), name, u["share"], tuple(u["gids"])))
+        else:
+            out.append((u["gids"][0], sorted(set(mem), key=PR._ip_sort), name, u["share"]))
+        if len(out) >= PART_MAX:
+            break
     return out if len(out) >= 2 else []
 
 
@@ -522,7 +625,7 @@ def system_view(store: Any, key: str, config: Mapping[str, Any], now: float,
                 a["mass"] = st["mass"]
             # the "某类人" parts of a node shared by several learned groups
             if nd.split is None or nd.id == act:
-                for part in group_parts(c, nd, now, _impurity(rd.get(nd.id) if rd else None, route)):
+                for part in group_parts(c, nd, now, _impurity(rd.get(nd.id) if rd else None, route), route):
                     ps = node_statement(c, kind, nd, route, part=part)
                     if ps is None:
                         continue
@@ -747,6 +850,9 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
                           "facets": ["relational", "risk"],
                           "evidence": {"negative": True, "target_system": key, "system": key,
                                        "routes": routes, "group": g, "foreign_attempts": sus,
+                                       "n_days": n_days,
+                                       "closed_zh": [x[0] for x in names][:6],
+                                       "closed_en": [x[1] for x in names][:6],
                                        "who": {"level": "grp", "items": [f"grp:{g}"],
                                                "members": sorted(members)}}})
     zh = f"{name}（{len(members)} 个 IP）使用 {PR.join_zh(used) or '（尚无系统）'}"
@@ -756,6 +862,109 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
             "header": {"text_zh": zh, "text_en": en, "members": sorted(members),
                        "covers": gr.get("covers") or [], "labels": gr.get("labels") or [],
                        "systems": gr.get("systems") or {}},
+            "statements": stmts[:S_MAX]}
+
+
+def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str, Mapping[str, Any]],
+              config: Mapping[str, Any], now: float) -> Optional[Dict[str, Any]]:
+    """The user view of a configured department whose members P11 learned as
+    several groups (its roles): "综合部 访问 oa：登录、文档、审批[192.168.1.21]、
+    提交报告[192.168.1.23、10.168.7.121]；在 finance 中从未执行写操作".
+
+    Composed from the rendered views of its groups (no model is read again):
+    per system the union of the groups' action mixes - an action's members are
+    the members of the groups that do it (or the members listed by P11), its
+    share the groups' shares weighted by their sizes; a negative statement only
+    for a system where EVERY group's negative statement holds; the groups'
+    node statements as they are. Pack O: 综合部's approver and its report
+    writers are two learned groups, so neither group view alone stated what
+    the requirement asks for (the department's systems and actions)."""
+    gids = [str(v.get("group")) for v in views]
+    if len(gids) < 2:
+        return None
+    members: Set[str] = set()
+    for g in gids:
+        members |= {str(m) for m in (groups.get(g) or {}).get("members") or [] if "/" not in str(m)}
+    if not members:
+        return None
+    subject = f"{GROUP_PREFIX}dept:{name}"
+    n_tot = float(sum(len((groups.get(g) or {}).get("members") or []) for g in gids)) or 1.0
+    acts: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    sys_share: Dict[str, float] = {}
+    for g in gids:
+        gr = groups.get(g) or {}
+        gm = [str(m) for m in gr.get("members") or [] if "/" not in str(m)]
+        wg = len(gm) / n_tot
+        for key, sh in (gr.get("systems") or {}).items():
+            sys_share[key] = sys_share.get(key, 0.0) + wg * float(sh)
+        for key, lst in (gr.get("actions") or {}).items():
+            for a in lst:
+                r = acts.setdefault(key, {}).setdefault(str(a.get("action")),
+                                                        {"action": a.get("action"), "share": 0.0, "members": set()})
+                r["share"] += wg * float(a.get("share") or 0.0)
+                r["members"] |= set(str(m) for m in (a.get("members") or gm) if "/" not in str(m))
+    stmts: List[Dict[str, Any]] = []
+    used = []
+    for key in sorted(acts):
+        if sys_share.get(key, 0.0) < GROUP_SYS_SHARE:
+            continue
+        used.append(key)
+        rows = []
+        for r in sorted(acts[key].values(), key=lambda x: (-x["share"], str(x["action"]))):
+            mem = sorted(r["members"], key=PR._ip_sort)
+            rows.append({"action": r["action"], "share": round(r["share"], 4),
+                         "members": mem if set(mem) != members else [],
+                         "support": round(len(mem) / len(members), 3)})
+        st = activity_statement(f"dept:{name}", name, key, rows[:2 * 8], sys_share[key], members,
+                                subject, config)
+        if st is not None:
+            stmts.append(st)
+    negs: Dict[str, List[Mapping[str, Any]]] = {}
+    for v in views:
+        for st in v.get("statements") or []:
+            ev = st.get("evidence") or {}
+            if ev.get("negative"):
+                negs.setdefault(str(ev.get("target_system")), []).append(st)
+    for key, lst in sorted(negs.items()):
+        if len(lst) < len(views):
+            continue                       # some role of the department did write there
+        evs = [st.get("evidence") or {} for st in lst]
+        n_days = max(int(e.get("n_days") or 0) for e in evs)
+        zh, en = PR.negative_sentence(name, key, n_days)
+        routes = sorted({r for e in evs for r in e.get("routes") or []})
+        cz = sorted({x for e in evs for x in e.get("closed_zh") or []})
+        ce = sorted({x for e in evs for x in e.get("closed_en") or []})
+        if cz:
+            zh += "（封闭的写操作：" + PR.join_zh(cz[:6]) + "）"
+            en += " (closed write actions: " + PR.join_en(ce[:6]) + ")"
+        sus = sorted({ip for e in evs for ip in e.get("foreign_attempts") or []}, key=PR._ip_sort)
+        if sus:
+            zh += f"；{PR.join_zh(sus)} 的尝试被判定为越权（未学习）"
+            en += f"; attempts by {PR.join_en(sus)} were judged foreign (not learned)"
+        stmts.append({"id": f"neg:dept:{name}:{key}", "pattern_id": f"neg:dept:{name}:{key}", "view": "group",
+                      "subject": subject, "text_zh": zh, "text_en": en,
+                      "support": float(sum(float(st.get("support") or 0.0) for st in lst)),
+                      "confidence": float(min(float(st.get("confidence") or 0.0) for st in lst)),
+                      "state": "confirmed", "version": 1, "cver": 0, "facets": ["relational", "risk"],
+                      "evidence": {"negative": True, "target_system": key, "system": key, "routes": routes,
+                                   "group": f"dept:{name}", "groups": gids, "foreign_attempts": sus,
+                                   "who": {"level": "grp", "items": [f"grp:{g}" for g in gids],
+                                           "members": sorted(members, key=PR._ip_sort)}}})
+    seen = {st["id"] for st in stmts}
+    for v in views:
+        for st in v.get("statements") or []:
+            ev = st.get("evidence") or {}
+            if ev.get("activity") or ev.get("negative") or st.get("id") in seen:
+                continue
+            seen.add(st["id"])
+            stmts.append(st)
+    zh = f"{name}（{len(members)} 个 IP，{len(gids)} 个行为群组）使用 {PR.join_zh(used) or '（尚无系统）'}"
+    en = f"{name} ({len(members)} IPs, {len(gids)} behavioural groups) uses {PR.join_en(used) or '(no system yet)'}"
+    return {"fmt": 1, "view": "group", "subject": subject, "group": f"dept:{name}", "groups": gids,
+            "name": name, "name_source": "config", "updated": now,
+            "header": {"text_zh": zh, "text_en": en, "members": sorted(members, key=PR._ip_sort),
+                       "covers": sorted({c for g in gids for c in (groups.get(g) or {}).get("covers") or []}),
+                       "systems": {k: round(v, 4) for k, v in sorted(sys_share.items())}},
             "statements": stmts[:S_MAX]}
 
 
@@ -826,7 +1035,9 @@ class ViewsEngine(Engine):
             n += 1
             stats[key] = {"statements": len(v["statements"]), "ms": v["ms"]}
         wg = MP.who_groups(store)
-        for g, gr in sorted((wg.get("groups") or {}).items()):
+        groups = wg.get("groups") or {}
+        by_dept: Dict[str, List[Dict[str, Any]]] = {}
+        for g, gr in sorted(groups.items()):
             if not gr.get("materialise", True):
                 continue
             if not self.entity_due(("p14g", g), now, self.view_period_s):
@@ -836,6 +1047,27 @@ class ViewsEngine(Engine):
                 continue
             self._put(store, ORG, f"{GROUP_PREFIX}{g}", gv, now)
             n += 1
+            if gr.get("dept"):
+                by_dept.setdefault(str(gr["dept"]), [])
+        # a configured department learned as several groups (its roles): one
+        # department view composed from its groups' current views
+        for name in sorted(by_dept):
+            gvs = []
+            for g, gr in sorted(groups.items()):
+                if str(gr.get("dept") or "") != name:
+                    continue
+                v = store.get_model(ORG, f"{GROUP_PREFIX}{g}", MP.PVIEWS)
+                if isinstance(v, Mapping) and v.get("group") == g:
+                    gvs.append(v)
+            dv = dept_view(name, gvs, groups, ctx.config, now)
+            if dv is None and isinstance(store.get_model(ORG, f"{GROUP_PREFIX}dept:{name}", MP.PVIEWS), Mapping):
+                # the department is one learned group again: retire its composed view
+                dv = {"fmt": 1, "view": "group", "subject": f"{GROUP_PREFIX}dept:{name}",
+                      "group": f"dept:{name}", "name": name, "retired": True, "updated": now,
+                      "statements": []}
+            if dv is not None:
+                self._put(store, ORG, f"{GROUP_PREFIX}dept:{name}", dv, now)
+                n += 1
         self.last_stats = stats
         return n
 

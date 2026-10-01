@@ -95,3 +95,17 @@ def test_runner_progressive_snapshots_and_truth():
     sc = score_prun(res, precision_n=20)
     assert sc["core_active"] and sc["n_snapshots"] == 2 and sc["pg1"]["2"]["n_stmt"] == 1
     assert compute_pgates([sc])["PG1"]["name"].startswith("PG1")
+
+
+def test_pcore_cpu_units_scored_and_learned_events():
+    """§12 PG4: scoring p95 per SCORED event, learning p95 per LEARNED event.
+    10 ms of P04 per tick over 1 000 generated, 1 000 scored and 100 learned
+    events is 100 us per learned event (10 us per generated event before)."""
+    t = {"engine_names": ["behavior.conformity", "behavior.pattern_tree"],
+         "engine_ms": [[5.0, 10.0]] * 4}
+    old = S.pcore_cpu(t, [1000.0] * 4)
+    new = S.pcore_cpu(t, [1000.0] * 4, batch_per_tick=[(1000.0, 100.0)] * 4)
+    assert old["learning_p95_us"] == pytest.approx(10.0)
+    assert new["learning_p95_us"] == pytest.approx(100.0)
+    assert new["scoring_p95_us"] == pytest.approx(5.0)
+    assert new["learning_us_per_learned_event"] == pytest.approx(100.0)

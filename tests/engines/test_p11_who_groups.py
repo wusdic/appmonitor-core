@@ -466,3 +466,71 @@ def test_group_record_states_what_the_group_does_per_system(org7):
                             items)
     appr = next(a for a in out["oa"] if a["action"] == "POST oa /approval/{num}")
     assert appr["members"] == ["192.168.1.21"] and appr["support"] == pytest.approx(1 / 3, abs=1e-3)
+
+
+def _role_org(seed: int = 0) -> Tuple[Dict[str, Any], Any]:
+    """Signatures of pack O's shape: 综合部's approver (.21) and its two report
+    writers (.23, .121) behave differently; prefix-mode pool sources (one-shot
+    addresses pooled per /24) behave like them; 财务部 is elsewhere."""
+    rng = np.random.default_rng(seed)
+    st = WG.WGState()
+    eng = WG.WhoGroupsEngine()
+    store = make_store()
+    prog = {"appr": {"oa|POST oa /login": 5, "oa|GET oa /docs": 10, "oa|GET oa /approval/list": 15,
+                     "oa|POST oa /approval/{num}/approve": 15},
+            "rep": {"oa|POST oa /login": 5, "oa|GET oa /docs": 10, "oa|GET oa /report/form": 12,
+                    "oa|POST oa /report/generate": 12, "mail|TLS mail": 8},
+            "fin": {"finance|POST fin /fin/login": 5, "finance|GET fin /fin/ledger": 20,
+                    "finance|POST fin /fin/voucher": 10, "mail|TLS mail": 8}}
+    who = {"192.168.1.21": "appr", "192.168.1.0/24": "appr",
+           "192.168.1.23": "rep", "10.168.7.121": "rep", "10.168.7.0/24": "rep", "192.168.2.0/24": "rep",
+           "192.168.2.10": "fin", "192.168.2.11": "fin", "192.168.2.12": "fin"}
+    for d in range(10):
+        t = T0 + d * DAY + 36000
+        for src, p in who.items():
+            for it, m in prog[p].items():
+                st.sigs.add(src, it, t, m * (1 + 0.1 * rng.standard_normal()), 3.0, d)
+    cfg = {"progressive": {"enabled": True},
+           "who_group_names": [{"name": "综合部", "ips": dept_ips()["GA"]},
+                               {"name": "财务部", "ips": dept_ips()["FIN"]}]}
+    model = WG.empty_model()
+    now = T0 + 10 * DAY
+    eng._cluster(ctx(store, now, config=cfg), st, model, now)
+    return model, st
+
+
+def test_department_names_are_matched_on_addresses_and_roles_are_named():
+    """Configured names are matched on the groups' ADDRESSES (pool sources are
+    not people of the department), pool sources are published apart from the
+    members and cover a group only where its addresses are the pool's recurring
+    population, and a learned role inside a configured department is named
+    '<department>·<its top action>' (pack O: 综合部's report writers carried two
+    pool sources, Jaccard 2/5 < 0.5, and stayed 'G10·…'; 192.168.2.0/24 - 财务部's
+    subnet - was rendered as a member of 综合部's login statement)."""
+    model, st = _role_org()
+    ip2g = model["ip2g"]
+    g_rep, g_appr = ip2g["192.168.1.23"], ip2g["192.168.1.21"]
+    assert ip2g["10.168.7.121"] == g_rep and g_appr != g_rep
+    rep, appr = model["groups"][g_rep], model["groups"][g_appr]
+    assert rep["name"] == "综合部" and rep["name_source"] == "config" and rep["dept"] == "综合部"
+    assert set(rep["members"]) == {"192.168.1.23", "10.168.7.121"}
+    assert set(rep["pools"]) == {"10.168.7.0/24", "192.168.2.0/24"}
+    assert "192.168.2.0/24" not in rep["covers"] and "10.168.7.0/24" in rep["covers"]
+    assert appr["name"].startswith("综合部·") and appr["dept"] == "综合部"
+    assert appr["members"] == ["192.168.1.21"]
+    fin = model["groups"][ip2g["192.168.2.10"]]
+    assert fin["name"] == "财务部" and fin["dept"] == "财务部"
+    # what the group does is stated over its addresses: an action all of them do
+    # lists no members, never a pool source
+    for lst in rep["actions"].values():
+        for a in lst:
+            assert not any("/" in m for m in a["members"])
+    gen = next(a for a in rep["actions"]["oa"] if a["action"] == "POST oa /report/generate")
+    assert gen["members"] == [] and gen["support"] == 1.0
+    items = MH.ItemDict()
+    i_login, i_rep = items.id_of("oa|POST oa /login"), items.id_of("oa|POST oa /report/generate")
+    prof = [{i_login: 1.0, i_rep: 1.0}, {i_login: 1.0}, {i_login: 1.0, i_rep: 1.0}]
+    out = WG._group_actions({i_login: 3.0, i_rep: 2.0}, 5.0, [0, 1, 2], prof,
+                            ["192.168.1.23", "10.168.7.121", "192.168.2.0/24"], items)
+    rp = next(a for a in out["oa"] if a["action"] == "POST oa /report/generate")
+    assert rp["members"] == ["192.168.1.23"] and rp["support"] == pytest.approx(0.5)

@@ -75,6 +75,7 @@ from ...models.schema import ORG, SYSTEM_ENTITY, BehaviorEvent, Severity
 from .lib import detectors as DET
 from .lib import m_ptree as MP
 from .lib import pevent as EV
+from .lib import pdfg as PD
 from .lib import pfamily as PF
 from .lib import psketch as PS
 from .lib import pstrategy as PSt
@@ -140,6 +141,17 @@ class WhoCode:
 
     K = (128, 128, 64, 64, 32)
     ALPHA = 1.0
+    # behaviour given who (held-out gain of each level, the who utility of
+    # lib/pstrategy.who_utilities): the same pair budget at every level, so a
+    # level whose (item, behaviour) statistics do not fit is charged by its
+    # evictions (gains compared at equal memory)
+    KB_PAIR = 256
+    KB_ITEM = 128
+    KB_MARG = 256
+    BEH_TICK = 384             # distinct (ip, behaviour) pairs coded per tick (bottom-k by IP hash)
+    BDAY_MAX = 4096
+    BETA = 1.0                 # prior weight of the marginal in p(b | item)
+    NB_ESC = 65536.0           # alphabet size of an unseen behaviour (escape)
 
     def __init__(self) -> None:
         self.ss = [PS.DecayedSpaceSaving(k, [PS.H_L], [PS.H_L], 0) for k in self.K]
@@ -148,17 +160,126 @@ class WhoCode:
         self.cur = np.zeros(5)
         self.cur_ev = 0.0
         self.ring: List[Tuple[int, List[float], float]] = []
+        self._beh_init()
+
+    def _beh_init(self) -> None:
+        self.bp = [PS.DecayedSpaceSaving(self.KB_PAIR, [PS.H_L], [], 0) for _ in range(5)]
+        self.bi = [PS.DecayedSpaceSaving(self.KB_ITEM, [PS.H_L], [], 0) for _ in range(5)]
+        self.bm = PS.DecayedSpaceSaving(self.KB_MARG, [PS.H_L], [], 0)
+        self.bday: Dict[Tuple[str, Any], float] = {}
+        self.cur_b = np.zeros(5)          # bits of behaviour coded given each level's item
+        self.cur_bm = 0.0                 # bits of behaviour coded by the marginal
+        self.cur_bev = 0.0
+        self.bring: List[Tuple[int, List[float], float, float]] = []
 
     def roll(self, day: int) -> None:
+        if not hasattr(self, "bp"):
+            self._beh_init()                      # a tracker pickled before the behaviour code
         if self.day is None:
             self.day = day
         if day > self.day:
             self.ring.append((self.day, [float(x) for x in self.cur], float(self.cur_ev)))
             self.ring = self.ring[-7:]
+            self.bring.append((self.day, [float(x) for x in self.cur_b], float(self.cur_bm),
+                               float(self.cur_bev)))
+            self.bring = self.bring[-7:]
             self.cur = np.zeros(5)
             self.cur_ev = 0.0
+            self.cur_b = np.zeros(5)
+            self.cur_bm = 0.0
+            self.cur_bev = 0.0
             self.day_counts = {}
+            self.bday = {}
             self.day = day
+
+    @staticmethod
+    def items(ip: str, ip2g: Mapping[str, Any], gsize: Mapping[Any, int], regions: Any
+              ) -> Tuple[str, str, str, str, str]:
+        """The who item of an address at each level (/32, /24, /16, grp, reg)."""
+        g = ip2g.get(ip)
+        return (ip, ip_prefix(ip, 1), ip_prefix(ip, 2), GRP_NONE if g is None else f"grp:{g}",
+                regions.of(ip) if len(regions) else REG_NONE)
+
+    def observe_beh(self, counts: Mapping[Tuple[str, Any], float], t: float, day: int,
+                    ip2g: Mapping[str, Any], gsize: Mapping[Any, int], regions: Any,
+                    rsize: Mapping[str, float]) -> None:
+        """Prequential code of the behaviour b = (action, local hour) of learned
+        events, by the marginal predictive and given the who item at each level:
+
+            p_m(b)     = (n_b + alpha / NB_ESC) / (M + alpha)
+            p(b | g_l) = (n_{g,b} + BETA p_m(b)) / (n_g + BETA)
+
+        every block coded BEFORE it is learned (held out by construction); an
+        (ip, b) pair's c events of a day count H(c) evidence units (harmonic, as
+        the who code). n_{g,b} is the Space-Saving guaranteed count (an evicted
+        or new pair falls back to the marginal: no gain, no loss). Gain of level
+        l = (bits_marginal - bits_l) / evidence."""
+        self.roll(day)
+        a, beta = self.ALPHA, self.BETA
+        Mt = self.bm.total(t)
+        ln2 = math.log(2.0)
+        keys = sorted(counts, key=lambda x: (_iphash(x[0]), x[0], str(x[1])))
+        if len(keys) > self.BEH_TICK:
+            # bottom-k by a hash of the SOURCE: a sampled address is sampled with
+            # all its behaviours and, under a steady load, at every tick (its
+            # per-item statistics are learned, not fragments of them); the gain
+            # is a per-event average, which a source sample estimates unbiasedly
+            keys = keys[: self.BEH_TICK]
+        for (ip, bk) in keys:
+            c0 = float(counts[(ip, bk)])
+            n0 = self.bday.get((ip, bk), 0.0)
+            n1 = n0 + c0
+            if len(self.bday) < self.BDAY_MAX or (ip, bk) in self.bday:
+                self.bday[(ip, bk)] = n1
+            c = _harm(n1) - _harm(n0)
+            if c <= 0:
+                continue
+            pm = (self.bm.guaranteed(bk, t) + a / self.NB_ESC) / (Mt + a)
+            self.cur_bm += -c * math.log(pm) / ln2
+            its = self.items(ip, ip2g, gsize, regions)
+            for l in range(5):
+                g = its[l]
+                ng = self.bi[l].count(g, t) if g in self.bi[l] else 0.0
+                ngb = min(ng, self.bp[l].guaranteed((g, bk), t)) if ng > 0 else 0.0
+                p = (ngb + beta * pm) / (ng + beta)
+                self.cur_b[l] += -c * math.log(p) / ln2
+                self.bp[l].add((g, bk), t, c)
+                self.bi[l].add(g, t, c)
+            self.bm.add(bk, t, c)
+            Mt += c
+            self.cur_bev += c
+
+    def day_values(self) -> Optional[Tuple[List[float], float, Optional[List[float]], float]]:
+        """The last COMPLETED day's (who bits/event, evidence, behaviour gain
+        per level, behaviour evidence): one non-overlapping round for Hedge
+        (the 7-day sums re-count each day seven times). None before a day ended."""
+        if not self.ring:
+            return None
+        d, b, e = self.ring[-1]
+        if e <= 0:
+            return None
+        bits = [float(x) / e for x in b]
+        gain, bev = None, 0.0
+        if getattr(self, "bring", None):
+            dd, cb, cm, ce = self.bring[-1]
+            if dd == d and ce > 0:
+                gain, bev = [float((cm - x) / ce) for x in cb], float(ce)
+        return bits, float(e), gain, bev
+
+    def beh_gain(self) -> Tuple[Optional[List[float]], float]:
+        """Held-out behaviour gain per level (bits/event) over the last 7 days + today."""
+        if not hasattr(self, "bp"):
+            return None, 0.0
+        tot = self.cur_b.copy()
+        m = float(self.cur_bm)
+        ev = float(self.cur_bev)
+        for _, b, bm, e in self.bring:
+            tot += np.asarray(b)
+            m += bm
+            ev += e
+        if ev <= 0:
+            return None, 0.0
+        return [float((m - x) / ev) for x in tot], float(ev)
 
     def observe(self, counts: Mapping[str, float], t: float, day: int, ip2g: Mapping[str, Any],
                 gsize: Mapping[Any, int], regions: Any, rsize: Mapping[str, float]) -> None:
@@ -221,7 +342,78 @@ class WhoCode:
         return [float(x) for x in tot / ev], float(ev)
 
     def nbytes(self) -> int:
-        return int(sum(x.nbytes() for x in self.ss) + 24 * len(self.day_counts) + 400)
+        n = int(sum(x.nbytes() for x in self.ss) + 24 * len(self.day_counts) + 400)
+        if hasattr(self, "bp"):
+            n += int(sum(x.nbytes() for x in self.bp) + sum(x.nbytes() for x in self.bi)
+                     + self.bm.nbytes() + 48 * len(self.bday))
+        return n
+
+
+def _iphash(ip: str) -> int:
+    return zlib.crc32(ip.encode("utf-8"))
+
+
+def _action_of(col: str, v: Any) -> Optional[str]:
+    if col == "http.route":
+        return str(v)
+    if col == "tls.sni":
+        h = PD.host_key(v)
+        return ("TLS " + h) if h else None
+    if col == "dns.qname":
+        h = PD.host_key(v)
+        return ("DNS " + h) if h else None
+    return "DST " + str(v)
+
+
+def behaviour_counts(b: EV.EventBatch, cb: Optional[EV.EventBatch]) -> Dict[Tuple[str, Any], float]:
+    """(source IP, behaviour) counts of the batch's learned rows, behaviour =
+    (action, workday?, local hour): the action as P10 names it (route template,
+    else TLS / DNS host key, else destination), the hour and day type from P01's
+    context batch. O(learned rows); the action is resolved per distinct value."""
+    lr = b.learned_rows()
+    if not len(lr):
+        return {}
+    n = int(b.n)
+    act = np.full(n, None, dtype=object)
+    for col in ("http.route", "tls.sni", "dns.qname", "net.dst"):
+        c = b.cols.get(col)
+        if c is None or not len(c.rows):
+            continue
+        free = act[c.rows] == None   # noqa: E711  (object array compare)
+        if not free.any():
+            continue
+        rows = c.rows[free]
+        vals = c.vals[free]
+        memo: Dict[Any, Optional[str]] = {}
+        out = np.empty(len(rows), dtype=object)
+        for i, v in enumerate(vals.tolist()):
+            if v is EV.ABSENT or v == EV.ABSENT:
+                out[i] = None
+                continue
+            a = memo.get(v, memo)
+            if a is memo:
+                a = memo[v] = _action_of(col, v)
+            out[i] = a
+        act[rows] = out
+    hour = np.full(n, -1, dtype=np.int64)
+    wd = np.full(n, "", dtype=object)
+    if cb is not None and cb.n == n:
+        if cb.has("ctx.tod_min"):
+            tm = cb.dense("ctx.tod_min", fill=np.nan)
+            tm = np.asarray([x if isinstance(x, (int, float)) else np.nan for x in tm.tolist()],
+                            dtype=np.float64)
+            ok = np.isfinite(tm)
+            hour[ok] = (tm[ok] // 60.0).astype(np.int64)
+        if cb.has("ctx.daytype"):
+            wd = cb.dense("ctx.daytype")
+    out: Counter = Counter()
+    ipi, ips = b.ip, b.ips
+    for i in lr.tolist():
+        a = act[i]
+        if a is None:
+            continue
+        out[(ips[int(ipi[i])], (a, str(wd[i]) == "workday", int(hour[i])))] += 1.0
+    return dict(out)
 
 
 def _harm(n: float) -> float:
@@ -328,6 +520,9 @@ class SysTracker:
             cnt = np.bincount(b.ip, minlength=len(b.ips))
             self.who.observe({b.ips[j]: float(cnt[j]) for j in np.flatnonzero(cnt > 0).tolist()},
                              float(now), day, *who_ctx)
+            bc = behaviour_counts(b, cb)
+            if bc:
+                self.who.observe_beh(bc, float(now), day, *who_ctx)
         for ip in b.ips:
             self.hll_day.add(ip)
         w = np.asarray(b.w, dtype=np.float64)
@@ -665,6 +860,7 @@ class SystemProfileEngine(Engine):
         store, cfg = ctx.store, ctx.config
         trs = [t for t in (store.get_model(s, SYSTEM_ENTITY, STATE) for s in members)
                if isinstance(t, SysTracker)]
+        days_seen = max([int(t.days_seen) for t in trs] or [0])
         reg = MP.get_registry(store, key)
         sel = MP.get_model(store, key, MP.ATTRSEL) or {}
         ptm = MP.get_ptree(store, key)
@@ -811,6 +1007,7 @@ class SystemProfileEngine(Engine):
                 meas["who_tree"], meas["who_tree_n"] = bits, n
         trs = [t for t in (store.get_model(s, SYSTEM_ENTITY, STATE) for s in members)
                if isinstance(t, SysTracker)]
+        days_seen = max([int(t.days_seen) for t in trs] or [0])
         tot, ev = np.zeros(5), 0.0
         for t in trs:
             b, e = t.who.bits()
@@ -819,6 +1016,31 @@ class SystemProfileEngine(Engine):
                 ev += e
         if ev > 0:
             meas["who"], meas["who_n"] = [float(x) for x in tot / ev], float(ev)
+        # held-out behaviour gain of each who level (evidence-weighted over members)
+        gtot, gev = np.zeros(5), 0.0
+        for t in trs:
+            g, e = t.who.beh_gain()
+            if g is not None:
+                gtot += np.asarray(g) * e
+                gev += e
+        if gev > 0:
+            meas["who_pred"], meas["who_pred_n"] = [float(x) for x in gtot / gev], float(gev)
+        # the last completed day alone (one Hedge round, evidence-weighted over members)
+        db, dg, dbe, dge = np.zeros(5), np.zeros(5), 0.0, 0.0
+        for t in trs:
+            dv = t.who.day_values()
+            if dv is None:
+                continue
+            bits, e, gain, ge = dv
+            db += np.asarray(bits) * e
+            dbe += e
+            if gain is not None and ge > 0:
+                dg += np.asarray(gain) * ge
+                dge += ge
+        if dbe > 0:
+            meas["who_day"], meas["who_day_n"] = [float(x) for x in db / dbe], float(dbe)
+        if dge > 0:
+            meas["who_pred_day"], meas["who_pred_day_n"] = [float(x) for x in dg / dge], float(dge)
         vol = ch.get("volume") or {}
         ev_day = float(vol.get("events_day", 0.0) or 0.0)
         ld = float(vol.get("learned_day", 0.0) or 0.0)
@@ -839,8 +1061,18 @@ class SystemProfileEngine(Engine):
             ts = [float(x) for x in ts if isinstance(x, (int, float))]
             if not ts or now - max(ts) > FRESH_S:
                 continue                                  # not run lately (arm off): unmeasured
-            gain = fitted_gain(m, ptm, now) if dim in NODE_GAIN else None
-            if gain is None:
+            if dim in NODE_GAIN and ptm is not None:
+                # per-node records only: the fitter's own figure is 0 whenever no
+                # node was refitted. Nothing judged YET is not a gain of 0 while the
+                # system is young (JUDGE_WAIT_DAYS: a daily user needs ~5 workdays for
+                # the n_bind events of a binding); after that, nothing judged means
+                # nothing to bind (a portal of one-off visitors) and the gain is 0
+                gain = fitted_gain(m, ptm, now)
+                if gain is None:
+                    if days_seen < JUDGE_WAIT_DAYS:
+                        continue
+                    gain = 0.0
+            else:                                         # no tree: the fitter's own figure
                 gain = float(g["bits_per_event"])
             cost = eng_cost.get(ENGINE_OF[dim])
             if cost is None:
@@ -1065,6 +1297,7 @@ def _cover(ss: Any, level: int, tot0: float, t: float) -> float:
 
 
 NODE_GAIN = ("P06", "P07", "P08")
+JUDGE_WAIT_DAYS = 7                        # fitter records unjudged this long: nothing to fit (gain 0)
 ENGINE_OF = {"P06": "behavior.content_bounds", "P07": "behavior.payload_grammar",
              "P08": "behavior.binding", "P09": "behavior.time_window", "P10": "behavior.workflow"}
 
@@ -1075,12 +1308,13 @@ def fitted_gain(model: Mapping[str, Any], ptm: Any, t: float) -> Optional[float]
     prequential saving at its node): sum over the deepest fitted node of every
     path of mass(node) x node gain, over the root's mass. (The fitters' own
     'gain' covers only the nodes refitted in their last run, 0 when none was
-    dirty, which is not a measurement of the arm.)"""
+    dirty, which is not a measurement of the arm.) None when no record could be
+    judged yet (no node fitted, or bindings without a source of n_bind events)."""
     if ptm is None or not isinstance(model, Mapping):
         return None
     nodes = model.get("nodes") or {}
     num = den = 0.0
-    any_fit = False
+    any_fit = any_rec = False
     for kind, tree in getattr(ptm, "kinds", {}).items():
         ents = nodes.get(kind) or nodes.get(str(kind)) or {}
         if not ents:
@@ -1094,8 +1328,15 @@ def fitted_gain(model: Mapping[str, Any], ptm: Any, t: float) -> Optional[float]
             nid = int(nid)
             if nid not in tree.nodes or not isinstance(ent, Mapping):
                 continue
-            recs = list((ent.get("attrs") or {}).values()) + list((ent.get("pairs") or {}).values())
-            g = sum(max(0.0, float(r.get("gain") or 0.0)) for r in recs if isinstance(r, Mapping))
+            # a binding record is a measurement once it judged a source (n_x >=
+            # n_bind): before that its gain is 0 for lack of evidence, not of value
+            recs = list((ent.get("attrs") or {}).values()) + \
+                [r for r in (ent.get("pairs") or {}).values()
+                 if isinstance(r, Mapping) and int(((r.get("fd") or {}).get("judged", 1)) or 0) > 0]
+            recs = [r for r in recs if isinstance(r, Mapping)]
+            if recs:
+                any_rec = True
+            g = sum(max(0.0, float(r.get("gain") or 0.0)) for r in recs)
             if g > 0:
                 gains[nid] = g
         covered = set()
@@ -1108,8 +1349,8 @@ def fitted_gain(model: Mapping[str, Any], ptm: Any, t: float) -> Optional[float]
             if nid not in covered:
                 num += tree.nodes[nid].mass_at(t) * g
                 any_fit = True
-    if den <= 0:
-        return None
+    if den <= 0 or not any_rec:
+        return None                     # nothing judged yet: unmeasured
     return float(num / den) if any_fit else 0.0
 
 

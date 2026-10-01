@@ -238,7 +238,12 @@ def build_registry(sig_store: Optional[SignatureStore] = None, composite_rules=N
             SessionEngine(),                                           # D2
             *([EventContextEngine()] if prog else []))                 # P01
     # behaviour (行为库), B01 .. B30 in contract order
-    reg.add(*([ResourceGovernorEngine()] if prog else []),   # P15 (reads engine costs of t-1)
+    # P15 also when lib3.resource_mode = 'bounded' (progressive.md §10.1): the
+    # active / earned sets it publishes are what the bounded B-engines iterate;
+    # without it pactive falls back to the full entity list and 'bounded' was
+    # silently identical to 'full' on the default registry
+    bounded = ((config or {}).get("lib3") or {}).get("resource_mode") == "bounded"
+    reg.add(*([ResourceGovernorEngine()] if (prog or bounded) else []),   # P15 (reads engine costs of t-1)
             FeatureVectorEngine(),          # B01
             PeerGroupEngine(),              # B02 (own 16-tick / 6 h refit stride)
             BaselineEngine(),               # B03 (interval 1: commits row t-D)

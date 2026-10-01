@@ -326,3 +326,125 @@ def test_no_engine_mentions_synthetic_attributes():
                     if pat.search(fh.read()):
                         hits.append(f)
     assert not hits
+
+
+def _oracle_ctx(pack, pt):
+    groups = {m["ip"]: code for code, rec in pt.groups.items()
+              if rec.get("kind") in ("static", "service", "shared", "automation", "nat", "pool")
+              for m in rec.get("members") or []}
+    gsize = {code: (len({m["ip"] for m in rec.get("members") or []}) if rec.get("kind") != "pool"
+                    else M._net(rec["cidr"]).num_addresses) for code, rec in pt.groups.items()}
+    regions = {f"reg:{n}:{c}": M._net(c) for n, cs in M.ip_classes_of(pack.config).items() for c in cs}
+    return groups, gsize, regions
+
+
+def test_who_arm_oracle_agrees_with_the_strategy_truth(org_run):
+    """PG8 truth semantics (progressive.md §16.2 A1): the who arms listed in
+    the generator's strategy truth are exactly the arms the offline utility
+    (held-out behaviour gain given who + address tie-break, exact groups)
+    puts within 5 % + 0.01 bits/event of the best, and the best is listed."""
+    pack, g, pt = org_run
+    groups, gsize, regions = _oracle_ctx(pack, pt)
+    wd = M._workdays(pt)
+    for s, arms in pt.strategy.items():
+        w = M.who_arm_utilities(pt.act_log[s], groups, gsize, regions, wd)
+        U = w["U"]
+        best = max(U, key=U.get)
+        within = {a for a in U if U[a] >= U[best] - 0.05 * abs(U[best]) - 0.01}
+        assert best in arms["who"], (s, U)
+        assert set(arms["who"]) <= within, (s, U, arms["who"])
+    # OA: the departments, not their addresses, predict behaviour (研发's pool
+    # users re-address daily); finance: per IP (approver vs bookkeepers)
+    oa = M.who_arm_utilities(pt.act_log["oa"], groups, gsize, regions, wd)
+    assert oa["gain"]["grp"] > oa["gain"]["ip"] + 0.5
+    fin = M.who_arm_utilities(pt.act_log["finance"], groups, gsize, regions, wd)
+    assert fin["gain"]["ip"] > fin["gain"]["grp"]
+
+
+def test_who_arm_oracle_on_synthetic_logs():
+    """Three departments with their own actions in their own /24s, members
+    re-leased daily: /24 (= department) predicts behaviour, per IP must
+    relearn; returning public visitors doing the same things: no level
+    predicts and per-IP conditioning loses."""
+    r = np.random.default_rng(1)
+    log, pub = {}, {}
+    for d in range(1, 15):
+        iso = f"2025-03-{d:02d}"
+        per, pp = {}, {}
+        for k in (1, 2, 3):
+            for ip in r.choice(200, 10, replace=False):
+                for j in range(3):
+                    key = f"10.0.{k}.{int(ip)}\tPOST /d{k}/a{j}\t{9 + k}"
+                    per[key] = per.get(key, 0) + int(r.integers(1, 3))
+        for _ in range(200):
+            k = int(r.integers(0, 300))                  # 300 returning visitors in 4 /16s
+            ip = f"203.{k % 4}.{k // 4}.{k % 7 + 1}"
+            key = f"{ip}\tGET /p{int(r.integers(0, 4))}\t{int(r.integers(8, 20))}"
+            pp[key] = pp.get(key, 0) + 1
+        log[iso], pub[iso] = per, pp
+    w = M.who_arm_utilities(log, {}, {}, {})
+    assert w["gain"]["/24"] > 1.0 and w["gain"]["/24"] > w["gain"]["ip"] + 0.3
+    assert max(w["U"], key=w["U"].get) == "prefix"
+    wp = M.who_arm_utilities(pub, {}, {}, {})
+    assert wp["gain"]["ip"] < 0 and max(wp["U"], key=wp["U"].get) != "ip"
+
+
+def test_pg8_switches_ignore_probe_days_and_resource_dims(org_run):
+    """A P08 probe day (P12 runs an 'off' fitter for one day in 14 to measure
+    it) and P15's tier changes are not strategy switches (pack O seed 0:
+    finance counted 4 'switches', 3 of them its P08 probe and back)."""
+    pack, g, pt = org_run
+    base = {s: {k: v[0] for k, v in arms.items()} for s, arms in pt.strategy.items()}
+    snaps = {}
+    for d in (7, 10, 14, 15, 16, 21):
+        ch = {s: dict(c, tier="S" if d != 14 else "XS") for s, c in base.items()}
+        probe = []
+        if d == 15:
+            ch["finance"]["P08"] = "off" if base["finance"]["P08"] == "on" else "on"
+            probe = ["P08"]
+        snaps[d] = {"systems": {s: {"model.sysprof": {"chosen": c, "probe": probe if s == "finance" else []}}
+                                for s, c in ch.items()}}
+    out = M.pg8_adaptation(_fake_run(pack, g, snaps), pt)
+    assert out["max_switches"] == 0, {s: v["switches_after_7"] for s, v in out["systems"].items()}
+
+
+def test_grp_truth_accepts_a_prefix_who_with_the_same_partition_of_sources():
+    """A grp truth (销售部 opens the CRM) is recovered by a prefix statement
+    whose prefixes hold every member and no other org source (the same
+    partition, PG8's settled semantics, §16.9 A1) - not by one that also
+    holds another department's address or misses a member."""
+    from app.eval import pmetrics as PMx
+    sales = [f"192.168.3.{20 + i}" for i in range(20)]
+    truth = {"level": "grp", "value": "SALES", "members": sales}
+    others = {"192.168.2.10", "192.168.1.21", "10.50.0.7"}
+    exact = PMx.Who({"level": "prefix", "items": ["192.168.3.0/24"]}, {})
+    wide = PMx.Who({"level": "prefix", "items": ["192.168.0.0/16"]}, {})
+    part = PMx.Who({"level": "prefix", "items": ["192.168.3.0/28"]}, {})
+    assert PMx.who_compatible(truth, exact, others)
+    assert not PMx.who_compatible(truth, exact)                 # without the org's sources: unchanged
+    assert not PMx.who_compatible(truth, wide, others)          # holds 财务部 and 综合部 too
+    assert not PMx.who_compatible(truth, part, others)          # misses members .32-.39
+    pt = PMx.PTruth({"group_truth": {"SALES": {"members": [{"ip": ip} for ip in sales]},
+                                     "FIN": {"members": [{"ip": "192.168.2.10"}]}}})
+    assert pt.others_of(truth) == {"192.168.2.10"}
+    assert pt.others_of({"level": "ip", "value": sales}) is None
+
+
+def test_pg1_content_compares_the_fitted_band_not_its_display_rounding():
+    """PG1's band check reads the fitted band (band90_raw) and observed range
+    (range_raw): the display grid may round '332-794 B' to '200-800 B' while
+    keeping the band's coverage, which failed the +-20 % endpoint check on a
+    correctly learned band (pack O portal login)."""
+    from app.eval import pmetrics as PMx
+    row = {"content": {"body.len": {"band90": [332.8, 793.6], "range": [307.2, 819.2], "core": True}}}
+    raw = {"evidence": {"route": "POST portal /login", "content": {"body.len": {
+        "band90": [200.0, 800.0], "band90_raw": [340.0, 780.0],
+        "range": [300.0, 900.0], "range_raw": [310.0, 830.0]}}}}
+    s = PMx.LStmt(raw, "portal", {})
+    assert PMx.content_matches(row, s, np.random.default_rng(0))[0]
+    off = {"evidence": {"route": "POST portal /login", "content": {"body.len": {
+        "band90": [200.0, 800.0], "band90_raw": [200.0, 780.0], "range": [300.0, 900.0]}}}}
+    assert not PMx.content_matches(row, PMx.LStmt(off, "portal", {}), np.random.default_rng(0))[0]
+    old = {"evidence": {"route": "POST portal /login", "content": {"body.len": {
+        "band90": [340.0, 780.0], "range": [310.0, 830.0]}}}}           # no raw keys: display values
+    assert PMx.content_matches(row, PMx.LStmt(old, "portal", {}), np.random.default_rng(0))[0]

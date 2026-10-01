@@ -159,3 +159,30 @@ def test_fit_cost_is_bounded():
         W.fit_daytype(hist(m), 300, pts(m, 3600.0))
     minute = (time.perf_counter() - t0) / 10
     assert slot < 0.02 and minute < 0.06, (slot, minute)
+
+
+def test_stated_coverage_is_the_held_out_coverage_of_the_next_arrival():
+    """The coverage a window states is P(next arrival inside), not the
+    in-sample share: edges snapped to the sample's extreme arrivals contain
+    every sampled arrival (in-sample 100 %) but a new one lands outside with
+    probability ~2/(n+1). Averaged over seeds the stated coverage is a lower
+    bound of the held-out one, loose by at most the minute rounding of the
+    edges (pack O: '覆盖 100 %' statements
+    whose held-out arrivals fell outside 5-20 % of the time)."""
+    for n in (20, 60):
+        stated, held = [], []
+        for seed in range(300):
+            r = np.random.default_rng(seed)
+            m = r.uniform(540, 561, n)
+            f = W.fit_daytype(hist(m), n, pts(m))
+            if f is None or f["res"] != "minute" or len(f["windows"]) != 1:
+                continue
+            stated.append(f["coverage"])
+            new = r.uniform(540, 561, 200)
+            held.append(float(np.mean([W.in_windows(x, f["windows"]) for x in new])))
+        assert len(stated) >= 250
+        gap = np.mean(held) - np.mean(stated)
+        # a rank bound: never above the held-out coverage, and not loose by more
+        # than the minute rounding of the edges allows (~1 min of a 21-min window)
+        assert 0.0 <= gap <= 2.5 / (n + 1) + 0.01, (n, np.mean(stated), np.mean(held))
+        assert max(stated) < 1.0

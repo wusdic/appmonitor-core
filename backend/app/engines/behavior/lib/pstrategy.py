@@ -90,6 +90,9 @@ STACK_VIS_MIN = 0.2
 VETO_FP_MIN = 5
 VETO_PREC_MAX = 0.2
 MIN_WHO_EVIDENCE = 30.0          # evidence units before the who dimension is decided
+TIE_W = 0.05                     # bits/event: weight of the address code in the who utility
+STATE_COST = 1e-3                # bits/event: who state is not free (an exact tie goes to the cheaper arm)
+WHO_STRUCT_MIN = 1.0             # bits/event an address code must save before 'none' is ruled out
 
 BC_BIMODAL = 0.555               # bimodality coefficient of a uniform distribution
 
@@ -133,11 +136,72 @@ def who_arm_bits(level_bits: Sequence[float]) -> Dict[str, float]:
     return out
 
 
-def who_utilities(level_bits: Sequence[float]) -> Dict[str, float]:
-    """U(arm) = bits(none) - bits(arm): the gain of modelling who at that level
-    over not modelling it (who summaries are always kept, so cost = 0)."""
+def who_pred_arms(level_gain: Sequence[float]) -> Dict[str, float]:
+    """Held-out behaviour gain (bits/event) of each who arm from the per-level
+    gains (/32, /24, /16, grp, reg): prefix takes the better of /24 and /16,
+    none is 0 by definition (no who item to condition on)."""
+    lg = [float(x) if x is not None and math.isfinite(float(x)) else -math.inf for x in level_gain]
+    while len(lg) < 5:
+        lg.append(-math.inf)
+    return {"ip": lg[0], "prefix": max(lg[1], lg[2]), "grp": lg[3], "reg": lg[4], "none": 0.0}
+
+
+def who_utilities(level_bits: Sequence[float],
+                  pred_gain: Optional[Sequence[float]] = None) -> Dict[str, float]:
+    """Utility of each who arm (bits/event).
+
+    The arm decides at which granularity behaviour is conditioned on who (P04's
+    @who coding target, P11's signature level, P08's screened levels); the who
+    summaries themselves are kept at every level whatever the arm (§5.5.3), so
+    the arms differ by what conditioning on who BUYS: the held-out (prequential)
+    gain in coding the event's behaviour (action, local hour) when the who item
+    at that level is known, against not knowing it (WhoCode.beh, bounded state:
+    a level whose (item, behaviour) statistics do not fit the same k slots as
+    the others pays for it in evictions, so the gains compare arms at equal
+    memory cost). By the chain rule it equals the information the level shares
+    with behaviour, I(who_l; behaviour), estimated out of sample.
+
+        U(arm) = G_beh(arm) + TIE_W * clip(bits(none) - bits(arm), 0, 32) / 32 - STATE_COST
+
+    The second term is the address code of the level (how compactly the
+    population is stated there, the PREVIOUS utility), scaled to at most
+    TIE_W = 0.05 bits/event (the spec's switching margin): it decides only
+    between levels whose behaviour gains are within the noise floor, e.g. on a
+    system used by one department, where every level carries no behaviour
+    information and the level that states the population most compactly is
+    the natural statement of its who. A level whose conditioning loses
+    (a per-IP model of a public portal's returning visitors codes their
+    addresses well but predicts their behaviour worse than the marginal:
+    G_beh(ip) = -1.7 bits/event on pack O) is not chosen over a coarser one.
+
+    'none' ("the address is not a feature": no @who target, no signatures, no
+    who statements) has U = 0 only while the population has no address
+    structure at any level (no level's held-out address code beats the 32-bit
+    unmodelled address by WHO_STRUCT_MIN bits/event: random sources, one
+    translating proxy); otherwise U(none) = -U_CLIP: a closed population
+    (a department using a system the same way as everyone else) has no
+    behaviour to condition, but who uses the system is itself the pattern,
+    and 'none' would discard it.
+
+    Without a behaviour measurement (pred_gain None: the tracker of an older
+    state) U(arm) = bits(none) - bits(arm), the address code alone."""
     b = who_arm_bits(level_bits)
-    return {a: (BITS_NONE - v) if math.isfinite(v) else -U_CLIP for a, v in b.items()}
+    if pred_gain is None:
+        return {a: (BITS_NONE - v) if math.isfinite(v) else -U_CLIP for a, v in b.items()}
+    g = who_pred_arms(pred_gain)
+    out: Dict[str, float] = {}
+    struct = max([BITS_NONE - v for a, v in b.items() if a != "none" and math.isfinite(v)] or [0.0])
+    for a, v in b.items():
+        if a == "none":
+            out[a] = 0.0 if struct <= WHO_STRUCT_MIN else -U_CLIP
+            continue
+        ga = g.get(a, -math.inf)
+        if not math.isfinite(ga):
+            out[a] = -U_CLIP
+            continue
+        wg = (BITS_NONE - v) if math.isfinite(v) else 0.0
+        out[a] = float(ga + TIE_W * min(BITS_NONE, max(0.0, wg)) / BITS_NONE - STATE_COST)
+    return out
 
 
 def who_preconditions(ch: Mapping[str, Any]) -> Dict[str, Tuple[bool, str]]:
@@ -330,16 +394,24 @@ class BudgetedUCB:
 # ============================================================ hysteresis
 def switch_margin(u_cur: Sequence[float], u_new: Sequence[float]) -> float:
     """Margin a challenger must beat the incumbent by: 0.05 bits/event (the spec
-    value) until both arms have >= 5 daily utilities, then 2 x the standard
-    deviation of the daily difference, sqrt(var_cur + var_new) from the last
-    DIFF_HISTORY days of each arm (never below 0.002): a steady cost-only
+    value) until both arms have >= 5 daily utilities, then 2 x the noise of
+    the daily difference (challenger - incumbent over the last DIFF_HISTORY
+    days), detrended: SD(day-to-day change of the difference) / sqrt 2 (never
+    below 0.002): a steady cost-only
     difference switches at a small margin, a noisy one only beyond its noise
     (module docstring)."""
     a = [float(x) for x in u_cur if x is not None and math.isfinite(float(x))]
     b = [float(x) for x in u_new if x is not None and math.isfinite(float(x))]
     if len(a) < MARGIN_MIN_N or len(b) < MARGIN_MIN_N:
         return SWITCH_MARGIN
-    sd = math.sqrt(float(np.var(a, ddof=1)) + float(np.var(b, ddof=1)))
+    k = min(len(a), len(b))
+    d = np.asarray(b[-k:]) - np.asarray(a[-k:])
+    # the noise of the DIFFERENCE, detrended: SD of its day-to-day changes / sqrt 2.
+    # The variance of each arm's level counted the trend both arms share while a
+    # system's models are being learnt as noise (pack O seed 0, finance: margin
+    # 1.5 bits/event against a 0.17 difference on day 14, the per-IP arm won
+    # from day 11 and was adopted on day 20)
+    sd = float(np.std(np.diff(d), ddof=1)) / math.sqrt(2.0) if k >= 3 else float(np.std(d, ddof=1))
     return float(max(SWITCH_MARGIN_MIN, 2.0 * sd))
 
 
@@ -568,6 +640,8 @@ def decide(state: Dict[str, Any], ch: Mapping[str, Any], meas: Mapping[str, Any]
 
     ch    characteristics (engine-measured, see system_profile.py)
     meas  {'who': [bits/event per level] | None, 'who_n': evidence,
+           'who_pred': [held-out behaviour gain bits/event per level] | None, 'who_pred_n',
+           'who_day' / 'who_pred_day' (+ _n): the last completed day's figures (Hedge rounds),
            'P07'|'P08'|'P10'|'P06': {'gain': bits/event, 'cost': µs/event} | None,
            'n_nodes', 'ev_day', 'n_earned'}
     Returns {'chosen': {dim: arm}, 'arms': {dim: {arm: {gain, cost, U, weight}}},
@@ -587,12 +661,35 @@ def decide(state: Dict[str, Any], ch: Mapping[str, Any], meas: Mapping[str, Any]
     allowed = [a for a in WHO_ARMS if pre[a][0]]
     lb = meas.get("who")
     U_who: Dict[str, Optional[float]] = {a: None for a in WHO_ARMS}
-    if lb is not None and float(meas.get("who_n", 0.0) or 0.0) >= MIN_WHO_EVIDENCE:
-        U_who = dict(who_utilities(lb))
+    pg = meas.get("who_pred")
+    if pg is not None and float(meas.get("who_pred_n", 0.0) or 0.0) < MIN_WHO_EVIDENCE:
+        pg = None
+    # Hedge and the switch rule take one round per day: the last completed
+    # day's utilities (who_day / who_pred_day) when that day had enough
+    # evidence, else the 7-day figures. Feeding the 7-day sums every day
+    # counted each day's evidence seven times, so the leader followed a
+    # change of the best level a week late (pack O seed 2, finance: the
+    # per-IP arm led the day's gains from day 10, Hedge's leader turned on
+    # day 13 and the switch landed on day 15)
+    # each component takes its own day figure when that day had enough evidence
+    # for it (a department of a few addresses has < 30 address units a day but
+    # hundreds of behaviour units: pack O finance, 9-21 vs 114-173)
+    lbd, pgd = meas.get("who_day"), meas.get("who_pred_day")
+    day_b = lbd is not None and float(meas.get("who_day_n", 0.0) or 0.0) >= MIN_WHO_EVIDENCE
+    day_g = pgd is not None and pg is not None and \
+        float(meas.get("who_pred_day_n", 0.0) or 0.0) >= MIN_WHO_EVIDENCE
+    lb_h = lbd if day_b else lb
+    pg_h = pgd if day_g else pg
+    n_h = float(meas.get("who_n", 0.0) or 0.0)
+    if lb_h is not None and n_h >= MIN_WHO_EVIDENCE:
+        U_who = dict(who_utilities(lb_h, pg_h))
         hed.update(U_who)
-    bits = who_arm_bits(lb) if lb is not None else {}
+    bits = who_arm_bits(lb_h) if lb_h is not None else {}
+    pga = who_pred_arms(pg_h) if pg_h is not None else {}
     probs = hed.probs(WHO_ARMS)
-    arms["who"] = {a: {"gain": U_who.get(a), "cost": 0.0, "U": U_who.get(a), "bits": bits.get(a),
+    fin = lambda v: v if v is not None and math.isfinite(v) else None   # noqa: E731
+    arms["who"] = {a: {"gain": fin(pga.get(a)) if pg_h is not None else U_who.get(a), "cost": 0.0,
+                       "U": U_who.get(a), "bits": bits.get(a),
                        "weight": probs.get(a), "allowed": pre[a][0], "why": pre[a][1]}
                    for a in WHO_ARMS}
     if hed.n > 0 or sw.cur is not None or not pre["ip"][0]:

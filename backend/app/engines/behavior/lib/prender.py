@@ -190,8 +190,11 @@ def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
             ev = {"level": "grp", "items": [f"grp:{g}"], "members": mem, "U": U3, "closed": closed,
                   "confidence": 1.0 - U3 if closed else 0.0, "distinct": distinct}
             return ev, zh, en, (1.0 - U3) if closed else 1.0
-    # <= 4 prefixes or regions covering >= 90 %
-    for l in (1, 2, 4):
+    # <= 4 prefixes or regions covering >= 90 %; a system whose who arm is the
+    # region (P12 'reg': a DHCP pool whose users re-address daily) is stated by
+    # its region first - pack O's 研发 pool 10.50.0.0/22 read as its four /24s,
+    # against PG3's DEV who in {grp, 10.50.0.0/22}
+    for l in ((4, 1, 2) if mode == "reg" else (1, 2, 4)):
         if l >= len(who.levels) or who.levels[l].total(t) <= 0:
             continue
         hp, cp = who.heavy_set(l, t, PREFIX_COVER)

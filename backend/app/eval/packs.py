@@ -818,10 +818,16 @@ SCALE_ATTRS = (0, 60, 300)
 
 
 def _org_pack(name: str, spec: Any, description: str, phases: Optional[List] = None,
-              registry_mode: str = "full+progressive",
+              registry_mode: str = "progressive_decision",
               full_days: Optional[Sequence[int]] = None) -> Pack:
     """A pack whose whole timeline is the scenario phase (no warm-up: the
-    progressive core learns from day 1 and PG2 measures exactly that)."""
+    progressive core learns from day 1 and PG2 measures exactly that).
+
+    Registry: `progressive_decision` (P00-P15 + the decision spine B24-B29),
+    not `full+progressive` - the B-library's per-entity state over pack O's
+    ~700 sources held 2.26 GB by day 4 and two runs were OOM-killed at 7.1 GB
+    (progressive.md §16.2 M25); every measured pack-O run passed --registry
+    progressive_decision, so the pack's own default could not be run."""
     clock = Clock(spec.tz, spec.calendar)
     start = clock.epoch(spec.start_date, 0.0)
     ph = phases or _phases((int(spec.n_days) * 96, 900.0))

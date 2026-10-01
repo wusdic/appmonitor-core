@@ -137,3 +137,34 @@ def test_workday_only_attribute_is_not_gone_on_a_weekend():
     sim.run_until(MON + 16 * DAY + 2 * 3600)                    # Mon 14 without bodies
     gone = [e.extra["attribute"] for e in sim.events("attribute_gone")]
     assert "body.kv.username" in gone and "net.bytes_down" not in gone
+
+
+# ------------------------------------- M42: a dropped attribute's HLL is small
+def test_hll_fold_is_exact_and_dropped_records_keep_a_small_distinct_count():
+    """HLL.fold(q) gives the registers a precision-q HLL would have built from
+    the same items; a dropped (registry-only) attribute keeps its distinct
+    count at 2^6 registers instead of 2 x 2^10 (PG4 attribute axis: an empty
+    registry record was ~7 KB, 2.5 KB of it the HLL), and an attribute given
+    a role again returns to full precision at the next epochs."""
+    import numpy as _np
+    from app.engines.behavior.lib import pregistry as PR
+    from app.engines.behavior.lib import psketch as PSK
+    for n in (3, 200, 5000):
+        a, b = PSK.HLL(10), PSK.HLL(6)
+        for i in range(n):
+            a.add(f"v{i}")
+            b.add(f"v{i}")
+        assert (a.fold(6).reg == b.reg).all()
+    reg = PR.AttrRegistry("oa")
+    t0 = 1_790_000_000.0
+    for k in range(40):
+        reg.observe("meta.f001", [f"x{k}-{j}" for j in range(10)], t0 + k * 60.0)
+    before = reg.records["meta.f001"].card.count()
+    reg.set_role("meta.f001", "dropped")
+    rec = reg.records["meta.f001"]
+    assert rec.card.cur.p == PR.HLL_P_DROPPED and rec.card.prev.p == PR.HLL_P_DROPPED
+    assert abs(rec.card.count() - 400) < 0.3 * 400 and abs(before - 400) < 0.1 * 400
+    reg.set_role("meta.f001", "target")
+    reg.observe("meta.f001", ["y"], t0 + 8 * 86400.0)       # next epoch: full precision again
+    assert rec.card.cur.p == PR.HLL_P
+    assert _np.isfinite(rec.card.count())

@@ -162,6 +162,7 @@ lib/m_calib.py, the accessor module consumers use.
 """
 from __future__ import annotations
 
+import copy
 import math
 import weakref
 import zlib
@@ -188,6 +189,7 @@ REGIME = "behavior.regime"
 CALIB_HEALTH = "behavior.calib_health"
 BASELINE = "model.baseline"
 LEARNER = "calibration"
+POOLED = "pooled"                       # bounded mode: the pool key whose rings this model uses
 
 SMALL_N = calib.SMALL_N                 # 64
 GPD_REFIT_TICKS = calib.GPD_REFIT_TICKS  # 16
@@ -512,13 +514,19 @@ class _PoolCache:
         mem = self._members.get(ck)
         if mem is None:
             mem = self._members[ck] = m_class.class_members(self.store, self.s, ck)
+        own = self.store.get_model(self.s, e, MODEL)
+        own = (own.get(RINGS) or {}).get(key) if isinstance(own, Mapping) else None
+        seen = {id(own)} if own is not None else set()
         for m in mem:
             if m == e:
                 continue
             model = self.store.get_model(self.s, m, MODEL)
             if isinstance(model, Mapping):
                 r = (model.get(RINGS) or {}).get(key)
-                if r is not None:
+                # bounded mode: unearned members share their class's pooled
+                # rings (one object) - count a ring once, never e's own
+                if r is not None and id(r) not in seen:
+                    seen.add(id(r))
                     yield r
 
 
@@ -738,6 +746,8 @@ class CalibrationEngine(Engine):
 
     def _merge(self, own: Dict[str, Any], other: Dict[str, Any], w: float) -> Dict[str, Any]:
         """Link seeding: own ring += the other's most recent M*w entries per key."""
+        if own.get(POOLED):
+            return own                      # bounded mode: a pooled IP has no rings of its own
         for key, ro in m_calib.rings(other).items():
             nr = calib.seed_ring(own[RINGS].get(key) or calib.Ring(), ro, frac=w)
             own[RINGS][key] = nr
@@ -809,6 +819,7 @@ class CalibrationEngine(Engine):
         if model is None and row is None:
             return 0                        # never scored: nothing to learn or calibrate
         model = _ensure_layout(model)
+        self._bounded_rings(store, s, e, model, pool, now)
         gate = model["gate"]
         # the gate's own version (as B25 does): applied['version'] is not
         # recorded while model.control's version equals the default 0, so a
@@ -842,6 +853,38 @@ class CalibrationEngine(Engine):
         model["dt"] = dt
         store.put_model(s, e, MODEL, model, version=model["version"], ts=now)
         return n_out
+
+    # ------------------------------------------------------ bounded mode
+    def _bounded_rings(self, store, s: str, e: str, model: Dict[str, Any], pool: _PoolCache,
+                       now: float) -> None:
+        """lib3.resource_mode = bounded with lib3.pool_unearned (opt-in; off by
+        default, measured in pactive.pooled): per-entity rings only for EARNED
+        IPs (P15's E_t). An unearned IP keeps its small
+        per-entity bookkeeping (gate journal, pending strata, maturity counts)
+        but its rings ARE its class's pooled rings (one dict at the pseudo
+        entity pactive.pool_of: B02 class, else P11 group, else the system):
+        its null scores are admitted there and its p-values are computed there
+        - the class's null instead of its own, which an IP whose own model
+        does not beat its class by tau_earn has no better. A promoted IP
+        starts its own rings from a copy of the pool (warm start, §10.2); a
+        demoted one drops its rings for the pool's. A rollback of a pooled IP
+        deletes the pool's entries after its onset (rings carry no entity id:
+        conservative, the pool refills). Full mode: never called with effect."""
+        if PA.pooled(store, s, e, self._config):
+            pk = PA.pool_of(store, s, e, pool.class_key(e))
+            pm = store.get_model(s, pk, MODEL)
+            if not isinstance(pm, dict):
+                pm = {"layout": m_calib.LAYOUT, RINGS: {}, "refit": {}, "pool": True}
+                store.put_model(s, pk, MODEL, pm, ts=now)
+            if model.get(RINGS) is not pm[RINGS]:
+                model[RINGS] = pm[RINGS]
+                model["refit"] = pm["refit"]
+            model[POOLED] = pk
+        elif model.get(POOLED):
+            # promotion: own rings from the pool's (Rings are copy-on-write)
+            model[RINGS] = {k: copy.copy(r) for k, r in model[RINGS].items()}
+            model["refit"] = dict(model["refit"])
+            del model[POOLED]
 
     def _other(self, store, s: str, src: str) -> Optional[Dict[str, Any]]:
         m = store.get_model(s, src, MODEL)

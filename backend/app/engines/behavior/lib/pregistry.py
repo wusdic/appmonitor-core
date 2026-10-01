@@ -48,6 +48,8 @@ PAYLOAD_TEXT_NS = ("body", "q", "hdr")        # string payload values are text (
 TYPES = ("categorical", "numeric", "ordinal", "ip", "time", "set", "text", "unknown")
 A_MAX = 512
 TOP_K = 32
+HLL_P = 10                 # distinct-count precision of an attribute's HLL (sigma ~ 3 %)
+HLL_P_DROPPED = 6          # ... of a dropped (registry-only) attribute (sigma ~ 13 %)
 TOP_K_DROPPED = 8          # a dropped attribute is registry-only (§6.4): presence, HLL, a small top
 DAY = PS.DAY
 UNSEEN_EVICT_S = 30 * DAY
@@ -117,7 +119,7 @@ class AttrRecord:
         self.policy = "clear"
         self.pres = PS.DecayedVector(PS.HALF_LIVES)          # present mass (H_s, H_m, H_l)
         self.approx = PS.DecayedVector([PS.H_M])             # approx-flagged mass
-        self.card = PS.EpochHLL(p=10)
+        self.card = PS.EpochHLL(p=HLL_P)
         self.top = PS.DecayedSpaceSaving(TOP_K)
         self.elem: Optional[PS.DecayedSpaceSaving] = None    # set elements (set type)
         self.num: Optional[PS.TDigest] = None
@@ -558,8 +560,13 @@ class AttrRegistry:
             rec.num = None
             rec.mom = None
             rec.elem = None
+            # the distinct count at registry precision (M42): the HLL folds
+            # exactly to 2^HLL_P_DROPPED registers (sigma ~ 13 %), 2 KB -> 0.1 KB
+            # per attribute; the epochs started after a re-promotion are full size
+            rec.card.set_precision(HLL_P_DROPPED)
         elif old == "dropped" and role != "dropped":
             rec.top = PS.DecayedSpaceSaving(TOP_K)
+            rec.card.set_precision(HLL_P)
 
     # ------------------------------------------------------- schema change
     def check_gone(self, t: float, normal_day: bool = True, daytype: Optional[int] = None) -> List[str]:

@@ -1162,3 +1162,60 @@ This section summarises what changed in the integrated system and where the evid
 Not run: five seeds, O-red, O-real (PG11), O60, PG9, the 300-system and 7-day scaling points, pack O with
 `full+progressive`. Open issues ordered by impact: design doc §3.11.1 and `progressive.md` §16.6.
 
+## 14. Progressive profile core, round 2 (2026-10-01)
+
+Full record: `progressive.md` §16.9 (scenario adaptation, bounded decision chain, cost; A1–A11) and §16.10
+(results on the final code; deviations M26–M46, H1–H6, G1–G7, C1–C2, E1–E11; the requirement's example
+verbatim in both views); Chinese narrative: design doc §3.0 (status per requirement sentence), §3.3 (the
+algorithm changes in place), §3.8.0–§3.8.0c, §3.11.1. Four owners worked concurrently with strict file
+ownership (P04 / P05 / P02; P03 / P11 / P14; P06–P10; P12 / P15 / P00 / eval), the round-2 checkpoint is
+commit 53cd151, and the evaluator measured one final code state (53cd151 + the owners' working-tree changes
++ E1–E11).
+
+### 14.1 What changed in the integrated system
+
+- **Registry.** Organisation packs (O, O60, O-red, O-real) default to `progressive_decision` (E10); in
+  `lib3.resource_mode = 'bounded'` the default registry also registers P15 (45 engines), which publishes the
+  active / earned sets the bounded B engines read (A4; before, bounded silently equalled full).
+- **Decision chain.** The per-IP state of B24 (rings), B25 (meta rings, CUSUM) and B28 exists only for
+  earned and active IPs; P15 releases it after 7 idle days from an LRU of the tick's sources (A5). Pack O
+  seed 0: identical gates, chain CPU 903 s → 335 s. Class-pooled rings for unearned IPs are implemented but
+  off (`lib3.pool_unearned`): they lost pack E's T5' and added a MEDIUM false alarm on pack A.
+- **Profile core.** Splits paid only by behaviour (M26, M36), who-first ladder (M27, M38), constancy over two
+  days (M37), seeded children (M33), suspect sources (M29, M41), calibrated statement confidence from
+  held-out tests (M30, M43, M45, M46), P06–P10 learning hygiene (H1–H6, C1–C2), P03 colleagues from their own
+  signatures (G1–G4), department naming and views (G5, G6, E1, E2, E9), P12's who arm by held-out behaviour
+  gain (A1, A3, A9, A11).
+- **Evaluation.** Cost per scored / learned event (A6), the report label from the runs (A7), PG8's settled
+  truth and switch count (A1, A10), PG1 who / content scoring corrections (E5, E6); the round-1 runs are kept
+  in `reports/progressive/round1/runs/`.
+
+### 14.2 Results (all measured; `reports/progressive/`)
+
+- Pack O, seeds 0–4 (0–1 development, 2–4 held out), 21 days, `progressive_decision`: PG1 recall @ 14
+  0.58 [0.53–0.58] (round 1: 0.21), precision 0.53 [0.52–0.57] (0.34), recall @ 21 0.60; components who 0.87
+  / when 0.84 / content 0.61 / bindings 0.67 / workflow 0.92; anomalies 48 / 50 (19 / 30), FAR incidents
+  ≥ LOW 0.005, ≥ MEDIUM 0.004 per entity-day (0.031 / 0.029); ECE @ 14 0.30 (0.39); ARI 0.974 (0.86);
+  PG7 type 1.0 (0.67); PG8 0.83 [0.67–0.83] (0.50). Example: 综合部 login = the 3 IPs with 3 bindings 4/5,
+  finance approval = 192.168.2.10 only 5/5, negative statement "综合部 在 finance 中从未执行写操作" 5/5,
+  "all logins 0.5–3 KB" 1/5. Per run 29–31 min, peak RSS 1.26–1.30 GB.
+- O-red seed 0 (never tuned on): recall @ 14 0.41, anomalies 7/10, false splits 0. O60 seed 0: day-8 recall
+  0.26 vs pack O's 0.21. O-real not run (35 days, over the per-run time budget).
+- Scaling, 7-day points (`reports/progressive/scale7/`): memory slope vs IPs 0.036, vs attributes 0.147
+  (round 1: 0.23), CPU / event vs IPs −0.06 — pass; CPU / event vs attributes 0.236, scoring p95 0.42–0.70 ms
+  per scored event, learning p95 1.8–2.7 ms per learned event — fail.
+- PG9 (packs A, E seed 0, full vs bounded): detections unchanged, A +5 LOW (one seed), latency 63–87 % of
+  full (target ≤ 50 %).
+- Non-regression: packs A and E seed 0 with the default registry are identical, key for key apart from
+  timings, to `reports/round4/runs/{A,E}_0_full.json`; `reports/eval_report.json` (round 4) stands.
+- Tests: 2 881 passed, 4 skipped (21 min) on the final tree.
+
+### 14.3 Open (ordered by impact; details in design doc §3.11.1 and `progressive.md` §16.10.8–§16.10.9)
+
+Pattern recall 0.58 (mail split by time only, closed sets capped at `TEXT_VALUES_K` = 16, required keys not
+requested, daily two-person actions confirm late); statement confidence neither rises with time nor is
+calibrated (ECE 0.30; the truth's step windows are the activity's); a split child starts with empty numeric
+summaries (the "0.5–3 KB" clause); P03's time p-value floor on young nodes (A4); D3 route renames never
+adopted; suspect sources never cleared (M29 by design — needs a lead decision); B28 trust 0 while any
+incident is open; DEV pool not one group; per-event cost of P03 / P04; O-real, PG9 on B–D and seeds 1–4, the
+20 000-IP and 300-system points, and pack O with `full+progressive` not run.

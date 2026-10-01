@@ -129,7 +129,28 @@ def same_source(a: str, b: str) -> bool:
         # login children split on body.len paid by body.kv.viewstate.len)
         if x.endswith(".len") and (y.startswith(x[:-4] + ".kv.") or y == x[:-4] + ".keys"):
             return True
+    # transport measures of a payload (M40): the bytes / packets a flow carries
+    # upstream are the request body's size plus framing, downstream the
+    # response's - one quantity measured twice. Measured on pack O: the 研发
+    # login node split on the upstream packet-count bin, paid only by
+    # body.len and body.kv.viewstate.len (log2 e 29.5, 0 from anything else)
+    sa, sb = _size_side(a), _size_side(b)
+    if sa is not None and sa == sb:
+        return True
     return False
+
+
+_UP_SIZE = frozenset({"net.bytes_up", "net.pkts_up", "body.len"})
+_DOWN_SIZE = frozenset({"net.bytes_down", "net.pkts_down", "resp.len"})
+
+
+def _size_side(x: str) -> Optional[str]:
+    """'up' / 'down' when x measures the request / response payload's size."""
+    if x in _UP_SIZE or (x.startswith("body.kv.") and x.endswith(".len")):
+        return "up"
+    if x in _DOWN_SIZE or (x.startswith("resp.kv.") and x.endswith(".len")):
+        return "down"
+    return None
 
 
 def targetable(a: str) -> bool:

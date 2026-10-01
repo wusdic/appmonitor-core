@@ -666,6 +666,30 @@ class HLL:
     def copy(self) -> "HLL":
         return HLL(self.p, self.reg)
 
+    def fold(self, q: int) -> "HLL":
+        """The same sketch at precision q <= p, exactly as if it had been built
+        at q from the start: the k = p - q low index bits move to the front of
+        the rank bits (rank' = k - bitlen(b) + 1 when they are not all zero,
+        else k + rank). Used to keep a registry-only attribute's HLL small
+        (§6.4, PG4 attribute axis)."""
+        q = int(q)
+        if q >= self.p:
+            return self.copy()
+        if q < 4:
+            raise ValueError("HLL.fold: q must be >= 4")
+        k = self.p - q
+        reg = self.reg.astype(np.int64)
+        idx = np.arange(reg.size, dtype=np.int64)
+        b = idx & ((1 << k) - 1)
+        bl = np.zeros_like(b)
+        nz = b > 0
+        bl[nz] = np.floor(np.log2(b[nz])).astype(np.int64) + 1
+        r2 = np.where(nz, k - bl + 1, k + reg)
+        r2 = np.where(reg > 0, r2, 0)
+        out = np.zeros(1 << q, dtype=np.int64)
+        np.maximum.at(out, idx >> k, r2)
+        return HLL(q, np.minimum(out, 255).astype(np.uint8))
+
     def to_dict(self) -> Dict[str, Any]:
         return {"p": self.p, "reg": self.reg.tobytes()}
 
@@ -681,13 +705,28 @@ class EpochHLL:
     """Distinct count over roughly the last one to two epochs: two HLLs
     (current, previous) rotated every `epoch_s` (default 7 d, §6.1). No decay."""
 
-    __slots__ = ("epoch_s", "start", "cur", "prev")
+    __slots__ = ("epoch_s", "start", "cur", "prev", "pt")
 
     def __init__(self, p: int = 10, epoch_s: float = 7 * DAY) -> None:
         self.epoch_s = float(epoch_s)
         self.start: Optional[float] = None
         self.cur = HLL(p)
         self.prev = HLL(p)
+        self.pt = int(p)                       # precision of the HLLs started at rotation
+
+    def _p(self) -> int:
+        return int(getattr(self, "pt", None) or self.cur.p)
+
+    def set_precision(self, p: int) -> None:
+        """Lower: both HLLs are folded now (exact, HLL.fold). Raise: the HLLs
+        started at the next rotations use p (a fold cannot be undone); counts
+        merge the two epochs at the smaller precision meanwhile."""
+        p = int(p)
+        self.pt = p
+        if p < self.cur.p:
+            self.cur = self.cur.fold(p)
+        if p < self.prev.p:
+            self.prev = self.prev.fold(p)
 
     def _rotate(self, t: float) -> None:
         if self.start is None:
@@ -695,12 +734,12 @@ class EpochHLL:
             return
         k = math.floor((t - self.start) / self.epoch_s)
         if k >= 2:
-            self.prev = HLL(self.cur.p)
-            self.cur = HLL(self.cur.p)
+            self.prev = HLL(self._p())
+            self.cur = HLL(self._p())
             self.start += k * self.epoch_s
         elif k == 1:
             self.prev = self.cur
-            self.cur = HLL(self.prev.p)
+            self.cur = HLL(self._p())
             self.start += self.epoch_s
 
     def add(self, item: Any, t: float) -> None:
@@ -710,18 +749,25 @@ class EpochHLL:
     def count(self, t: Optional[float] = None) -> float:
         if t is not None:
             self._rotate(float(t))
+        if self.cur.p != self.prev.p:
+            q = min(self.cur.p, self.prev.p)
+            return self.cur.fold(q).merge(self.prev.fold(q)).count()
         return self.cur.copy().merge(self.prev).count()
 
     def merge(self, other: "EpochHLL") -> "EpochHLL":
-        self.cur.merge(other.cur)
-        self.prev.merge(other.prev)
+        for a in ("cur", "prev"):
+            x, y = getattr(self, a), getattr(other, a)
+            if x.p != y.p:
+                q = min(x.p, y.p)
+                x, y = x.fold(q), y.fold(q)
+            setattr(self, a, x.merge(y))
         if self.start is None:
             self.start = other.start
         return self
 
     def to_dict(self) -> Dict[str, Any]:
         return {"epoch_s": self.epoch_s, "start": self.start, "cur": self.cur.to_dict(),
-                "prev": self.prev.to_dict()}
+                "prev": self.prev.to_dict(), "pt": self._p()}
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "EpochHLL":
@@ -729,6 +775,7 @@ class EpochHLL:
         e.start = d.get("start")
         e.cur = HLL.from_dict(d["cur"])
         e.prev = HLL.from_dict(d["prev"])
+        e.pt = int(d.get("pt", e.cur.p))
         return e
 
     def nbytes(self) -> int:

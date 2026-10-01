@@ -20,13 +20,13 @@
 ## 现状（2026-10-01）
 
 - 60 个引擎已实现；默认注册表 `full` 注册 44 个（不含渐进内核），`full+progressive` 注册全部 60 个。严格模式下 0 异常。
-- **渐进画像内核**（组织包 O，21 天、种子 0–2，`reports/progressive/`）：已端到端运行并学到路由级动作、执行者、时间窗、大小区间、
-  载荷语法、流程、行为群组与否定陈述；需求示例中的审批与 17 点报告在三个种子上都还原。但验收**未通过**：第 14 天模式召回 0.18–0.21（目标 0.90），
-  需求示例异常 19/30 检出（目标 0.95），≥ MEDIUM 误报 0.025–0.029/实体·日（目标 0.02），陈述置信度未随时间上升且未校准；
-  内存对 IP 数、服务器数次线性（达标），每事件耗时超目标 10–20 倍。
+- **渐进画像内核**（组织包 O，21 天、种子 0–4，第二轮最终代码，`reports/progressive/`）：需求示例在 4/5 个种子上还原到“综合部 3 个 IP 的登录节点 +
+  `username=` 语法（种子 0 另有取值封闭集）+ 3 条 IP→用户名绑定”，5/5 个种子还原 .21 的审批、17 点报告、“财务审批只有 192.168.2.10”与用户视角“综合部在财务系统中从未执行写操作”；
+  示例异常 48/50 检出，≥ MEDIUM 误报 0.004/实体·日（达标）；内存对 IP 数、属性数次线性（达标）。但验收**未通过**：第 14 天模式召回 0.58（第一轮 0.21，目标 0.90），
+  “全部在 0.5–3 KB”只有 1/5，陈述置信度不随时间上升、ECE 0.30，场景策略 0.83，每事件耗时仍超目标数倍，真实扰动包 O-real 未运行。
 - **统计引擎库**（A–E 包第四轮，`reports/eval_report.json`）：15 项门限中第 15 项（鲁棒性）通过，第 12、13 项 n/a，其余未通过；
   期限内威胁召回 0.71（目标 0.95），对照实体 FAR ≥ LOW 0.156、≥ MEDIUM 0.042（均达标），单包墙钟与实时 p95 远超 360 s / 80 ms 目标。
-- 结果、原因与未决问题见设计文档库三 §3.8、§3.10、§3.11 与 `docs/lib3/progressive.md` §16。
+- 结果、原因与未决问题见设计文档库三 §3.0（逐句需求状态）、§3.8.0（第二轮实测与逐字学到的画像）、§3.10、§3.11 与 `docs/lib3/progressive.md` §3.1、§16.9–§16.10。
 
 ## 架构一览
 
@@ -44,7 +44,8 @@
 | 特征 `signature/` | rule_match · correlation |
 
 注册模式（`backend/app/pipeline/build.py::build_registry(progressive=…)`）：`full`（默认，44 个，后端服务与 A–E 包使用）、
-`full+progressive`（60 个）、`progressive_only`（18 个，伸缩实验）、`progressive_decision`（24 个 = 渐进内核 + B24–B29 决策链，包 O 实测使用）。
+`full+progressive`（60 个）、`progressive_only`（18 个，伸缩实验）、`progressive_decision`（24 个 = 渐进内核 + B24–B29 决策链，组织包 O/O60/O-red/O-real 的默认与全部实测）；
+`lib3.resource_mode = bounded` 时 `full` 另注册 P15（45 个）。
 后端服务（下文）默认运行 `full`；设置 `APPMON_PROGRESSIVE=decision` 时在组织包 O 上运行渐进内核，其视图经 API v3 与前端“画像模式”页展示。
 P2 引擎 B19 mixture、B20 session_profile、B22 action_embedding 有规格但未实现、未注册（B21 cross_system 已在第四轮实现）。
 
@@ -120,18 +121,23 @@ OMP_NUM_THREADS=1 ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8099
 ## 渐进画像内核：组织包 O 评估与伸缩实验
 
 ```bash
-# 包 O（需求中的组织：综合部/财务部/销售部/研发池、OA 与财务等 6 个系统、21 天、900 s 拍），种子 0–2，三进程并行
-.venv/bin/python scripts/progressive_report.py --seeds 0,1,2 --workers 3 --registry progressive_decision --no-series --out reports/progressive
+# 包 O（需求中的组织：综合部/财务部/销售部/研发池、OA 与财务等 6 个系统、21 天、900 s 拍），种子 0–4，三进程并行（每个约 30 分钟）
+.venv/bin/python scripts/progressive_report.py --seeds 0,1,2,3,4 --workers 3 --no-series --out reports/progressive
+# 变体（红队 O-red、60 秒事件模式 O60），写 runs/<包>_<种子>.json（也会覆盖 progressive_report.json，最后用 --assemble 重建）
+.venv/bin/python scripts/progressive_report.py --pack O-red --seeds 0 --no-series --out reports/progressive
+.venv/bin/python scripts/progressive_report.py --pack O60 --seeds 0 --no-series --out reports/progressive
+# 不重跑，只把已保存的运行（含变体）汇总成报告
+.venv/bin/python scripts/progressive_report.py --assemble --seeds 0,1,2,3,4 --variants O-red,O60 --scale reports/progressive/scale7 --out reports/progressive
 # 只根据已保存的 JSON 重新生成 HTML
 .venv/bin/python scripts/progressive_report.py --render reports/progressive
-# PG4 伸缩实验（IP 数、属性数、服务器数；--days 缩短天数）
-.venv/bin/python scripts/progressive_scale.py --days 3 --workers 2 --out reports/progressive/scale
+# PG4 伸缩实验（IP 数、属性数、服务器数；--days 指定天数，规格为 7 天）
+.venv/bin/python scripts/progressive_scale.py --days 7 --workers 2 --out reports/progressive/scale7
 ```
 
 - `progressive_report.py` 用 `backend/app/eval/pmetrics.py` 评分（门限 PG1–PG11，`docs/lib3/progressive.md` §12），并从每天的快照中抽取需求示例的
   系统视角与群组视角陈述、逐条核对真值，写 `progressive_report.{json,html}` 与每个种子的 `runs/O_<种子>.json`。
-- 包 O 的默认注册模式是 `full+progressive`，但它在约 700 个来源上需要每进程 7 GB 以上内存，因此实测使用 `--registry progressive_decision`
-  （每次运行约 28 分钟、峰值约 1.4 GB）。其它参数：`--bounded`（统计引擎库有界模式）、`--keep-res`/`--rescore`（保存/重评运行结果）、`--assemble`、`--skip-existing`。
+- 组织包的默认注册模式是 `progressive_decision`（`full+progressive` 在约 700 个来源上需要每进程 7 GB 以上内存；`--registry` 可覆盖）；
+  每次运行约 29–31 分钟、峰值约 1.3 GB。第一轮（提交 6001027）的运行保存在 `reports/progressive/round1/runs/`。其它参数：`--bounded`（统计引擎库有界模式）、`--keep-res`/`--rescore`（保存/重评运行结果）、`--assemble`、`--skip-existing`。
 - 生成器 `backend/app/pipeline/orggen.py`，评估包 `backend/app/eval/packs.py`（O、O60、O-real、O-red、O-servers、O-scale）。
 
 ## 测试
@@ -140,7 +146,7 @@ OMP_NUM_THREADS=1 ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8099
 OMP_NUM_THREADS=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests
 ```
 
-- 全套约 16 分钟；渐进内核集成后为 `2769 passed, 4 skipped`（983 s）。
+- 全套约 21 分钟；渐进内核第二轮最终代码上为 `2881 passed, 4 skipped`。
 - 目录：`tests/engines/`（逐引擎规格测试，渐进内核为 `test_p00_*` … `test_p15_*` 与 `test_progressive_integration_fixes.py`）、`tests/lib/`、`tests/core/`、`tests/eval/`（含包 O 生成器、PG 指标与收敛实验）、`tests/api/`（API v2），
   以及顶层的流水线端到端、tick 模式黄金、节拍不变性等测试。
 - 引擎/库/核心单元测试通过各目录的 `conftest.py` 以 v2 的 `tick` 模式运行；流水线、Runtime、评估与脚本默认 `canonical`（双粒度）模式。

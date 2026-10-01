@@ -569,28 +569,44 @@ def hold_eps(nominal: float) -> float:
     return max(HOLD_EPS_MIN, 3.0 * math.sqrt(max(nom * (1.0 - nom), 1e-4) / HOLD_N_REF))
 
 
+HOLD_BATCH_N = 100.0               # a held-out test is a batch of >= 100 checked events ...
+HOLD_BATCH_S = 7 * DAY             # ... or of a week, whichever comes first (M46)
+HOLD_TEST_HALF_DAYS = 14.0         # the test record forgets at two weeks
+
+
 class HoldRecord:
-    """Prequential record of how a node's stated constraints held on NEW data
-    (§6.9.4, the statement's confidence): every learned event of a confident
-    node is checked against the node's reference snapshot (§6.8.3) of the
-    previous day - built only from earlier data, so each check is held-out -
-    per constraint key (`who`, `when`, a target attribute) with its nominal
-    coverage, weighted by the event's evidence unit and forgotten at H_l.
+    """Prequential record of how a node's statement held on NEW data (§6.9.4,
+    the statement's confidence). Every learned, undamped event of a confident
+    node is checked against the node's reference statement of the previous day
+    (built from earlier data only, so every check is held-out), per constraint
+    key (`who`, `when`, a band, a closed set, a grammar, a binding) with the
+    nominal coverage the statement gives it.
 
-    p_hold() is the posterior probability that EVERY constraint holds, i.e.
-    that its true coverage on new data is >= nominal - HOLD_EPS:
-    prod_c P(theta_c >= nom_c - eps_c | Beta(hits_c + 1, misses_c + 1)) with
-    eps_c = hold_eps(nom_c). It is a
-    probability about the statement, not the smallest nominal coverage of its
-    parts; it rises with the evidence of a pattern that keeps holding (each
-    tail tends to 1) and falls when one constraint keeps failing on new data.
-    Forward-decayed counts (landmark L): O(constraints) floats per node."""
+    The checks are grouped into held-out TESTS (M46): a batch of >= HOLD_BATCH_N
+    checked events, or a week of them. A test passes when every constraint
+    checked in it holds - its coverage on the batch is >= nominal - hold_eps
+    (3 sigma of the check a reader would make on 300 fresh events). The
+    stated confidence p_hold() is the predictive probability that the next test
+    passes, (passes + 1) / (tests + 2) over the tests of the last weeks
+    (forward-decayed at HOLD_TEST_HALF_DAYS): a frequency of the statement
+    holding on held-out data - calibrated by construction (Beta-Bernoulli
+    predictive), rising with every test that passes, falling with every one
+    that fails. Before M46 p_hold was the product over the constraints of each
+    one's posterior tail P(theta_c >= nom_c - eps): with 10-20 constraints the
+    product was ~0 for nearly every statement (pack O median 0.005 on day 21,
+    ECE 0.37-0.41) although 35-45 % of them held; that product is kept as
+    p_constraints() (diagnosis). O(constraints) floats per node."""
 
-    __slots__ = ("c", "L")
+    __slots__ = ("c", "L", "b", "bt0", "bn", "blast", "T")
 
     def __init__(self) -> None:
         self.c: Dict[str, List[float]] = {}          # key -> [n, hits, nominal] (forward-decayed)
         self.L: Optional[float] = None
+        self.b: Dict[str, List[float]] = {}          # current batch: key -> [n, hits, nominal]
+        self.bt0: Optional[float] = None             # batch start
+        self.bn = 0.0                                # evidence units checked in the batch
+        self.blast: Optional[float] = None           # time of the batch's last event
+        self.T = [0.0, 0.0]                          # [passes, tests] (forward-decayed, landmark L)
 
     def _f(self, t: float) -> float:
         if self.L is None:
@@ -601,11 +617,43 @@ class HoldRecord:
             for v in self.c.values():
                 v[0] *= g
                 v[1] *= g
+            gt = 2.0 ** (-(float(t) - self.L) / (HOLD_TEST_HALF_DAYS * DAY))
+            T = self._T()
+            T[0] *= gt
+            T[1] *= gt
             self.L = float(t)
             x = 0.0
         return 2.0 ** x
 
+    def _T(self) -> List[float]:
+        T = getattr(self, "T", None)
+        if T is None:
+            T = self.T = [0.0, 0.0]
+            self.b, self.bt0, self.bn, self.blast = {}, None, 0.0, None
+        return T
+
+    def _close(self) -> None:
+        """Close the current batch: one held-out test of the statement."""
+        T = self._T()
+        if self.b and self.bn > 0 and self.blast is not None:
+            # the batch's coverage against the threshold of a HOLD_N_REF-event check
+            # (the evaluator's / a reader's test): a lenient small-batch tolerance
+            # would make the many small tests of a rare pattern pass by default
+            ok = all(h / n >= nom - hold_eps(nom) for n, h, nom in self.b.values() if n > 0)
+            g = 2.0 ** ((self.blast - (self.L if self.L is not None else self.blast)) / (HOLD_TEST_HALF_DAYS * DAY))
+            T[1] += g
+            if ok:
+                T[0] += g
+        self.b, self.bt0, self.bn, self.blast = {}, None, 0.0, None
+
     def add(self, key: str, hit: bool, nominal: float, t: float, w: float = 1.0) -> None:
+        t = float(t)
+        self._T()
+        # a new event (later time) may close the batch first: the keys checked on
+        # one event always belong to one test
+        if self.bt0 is not None and self.blast is not None and t > self.blast and (
+                self.bn >= HOLD_BATCH_N or t - self.bt0 >= HOLD_BATCH_S):
+            self._close()
         f = self._f(t) * float(w)
         v = self.c.get(key)
         if v is None:
@@ -614,6 +662,18 @@ class HoldRecord:
         if hit:
             v[1] += f
         v[2] = float(nominal)
+        if self.bt0 is None:
+            self.bt0 = t
+        if self.blast is None or t > self.blast:
+            self.bn += float(w)                       # one unit per event, not per key
+            self.blast = t
+        bv = self.b.get(key)
+        if bv is None:
+            bv = self.b[key] = [0.0, 0.0, float(nominal)]
+        bv[0] += float(w)
+        if hit:
+            bv[1] += float(w)
+        bv[2] = float(nominal)
 
     def counts(self, t: float) -> Dict[str, Tuple[float, float, float]]:
         if self.L is None:
@@ -621,9 +681,26 @@ class HoldRecord:
         g = 2.0 ** (-(float(t) - self.L) / (HOLD_HALF_DAYS * DAY))
         return {k: (v[0] * g, v[1] * g, v[2]) for k, v in self.c.items()}
 
-    def p_hold(self, t: float, eps: Optional[float] = None, keys: Optional[Iterable[str]] = None) -> float:
-        """P(every constraint's coverage on new data >= nominal - eps) (eps per
-        constraint: hold_eps(nominal) unless given); NaN before any check."""
+    def tests(self, t: float) -> Tuple[float, float]:
+        """(passes, tests), decayed to t."""
+        T = self._T()
+        if self.L is None:
+            return 0.0, 0.0
+        g = 2.0 ** (-(float(t) - self.L) / (HOLD_TEST_HALF_DAYS * DAY))
+        return T[0] * g, T[1] * g
+
+    def p_hold(self, t: float) -> float:
+        """Predictive probability that the statement holds on the next held-out
+        test: (passes + 1) / (tests + 2); NaN before the first test."""
+        ps, n = self.tests(t)
+        if n <= 0:
+            return float("nan")
+        return float((ps + 1.0) / (n + 2.0))
+
+    def p_constraints(self, t: float, eps: Optional[float] = None, keys: Optional[Iterable[str]] = None) -> float:
+        """P(every constraint's coverage on new data >= nominal - eps) under
+        independent Beta posteriors (eps per constraint: hold_eps(nominal));
+        NaN before any check. The M30 confidence, kept for diagnosis."""
         from scipy.special import betainc
         cs = self.counts(t)
         if keys is not None:
@@ -640,16 +717,22 @@ class HoldRecord:
 
     def drop(self, keys: Optional[Iterable[str]] = None) -> None:
         """Forget the record (all of it, or the given constraints): an accepted
-        change (§6.9.2) or a structural change starts a new confidence segment."""
+        change (§6.9.2) or a structural change starts a new confidence segment
+        (all of it: the tests too); a re-stated constraint (M45) restarts its
+        own counts and leaves the current batch's test."""
         if keys is None:
             self.c.clear()
             self.L = None
+            self.b, self.bt0, self.bn, self.blast = {}, None, 0.0, None
+            self.T = [0.0, 0.0]
             return
+        self._T()
         for k in keys:
             self.c.pop(k, None)
+            self.b.pop(k, None)
 
     def nbytes(self) -> int:
-        return int(64 + 80 * len(self.c))
+        return int(64 + 80 * len(self.c) + 80 * len(getattr(self, "b", None) or ()) + 64)
 
 
 # ============================================================ bindings
@@ -789,7 +872,9 @@ class Node:
                 "alt": self.alt, "p_hold": self.p_hold(),
                 "hold": {k: [round(n, 2), round(h, 2), round(nom, 4)]
                          for k, (n, h, nom) in (self.hold.counts(self.last_seen or self.created).items()
-                                                if self.hold is not None else ())}}
+                                                if self.hold is not None else ())},
+                "hold_tests": ([round(x, 2) for x in self.hold.tests(self.last_seen or self.created)]
+                               if self.hold is not None else None)}
 
     # ------------------------------------------------------- confidence
     @property

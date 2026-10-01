@@ -223,7 +223,12 @@ def ring(model: Optional[Mapping], detector: str, stratum: str) -> Optional[cali
     if not isinstance(model, Mapping):
         return None
     key = calib.ring_key(detector, stratum)
-    for holder in (model.get(RINGS), model.get(META), model):
+    meta = model.get(META)
+    # bounded mode: an unearned IP's meta rings are its class pool's (B25
+    # fusion._bounded_meta keeps a reference in meta['state']['pool_ref'])
+    pr = ((meta.get("state") or {}).get("pool_ref") if isinstance(meta, Mapping) else None)
+    pool = pr.get("rings") if isinstance(pr, Mapping) else None
+    for holder in (model.get(RINGS), meta, pool, model):
         if isinstance(holder, Mapping) and key in holder:
             return as_ring(holder[key])
     return None

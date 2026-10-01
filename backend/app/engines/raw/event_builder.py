@@ -48,7 +48,6 @@ from ..behavior.lib import m_ptree as MP
 from ..behavior.lib import m_template as MT
 from ..behavior.lib import pevent as EV
 from ..behavior.lib import pparse as PP
-from ..behavior.lib.combine import seeded_uniform
 from ..behavior.lib.stack import stack_token
 from ..behavior.lib.template import mask_segment, status_class
 
@@ -115,6 +114,59 @@ def channel(o: Observation) -> str:
     return "l4"
 
 
+def learning_strata(batch: EV.EventBatch, root_attr: Optional[Tuple[str, int]], hier: Any) -> List[Any]:
+    """Stratum of every row (§6.2.2), column-wise: (ev.ch, repr(level value of
+    the root's split attribute)) once the root has split, else the bootstrap
+    stratum (ev.ch, route | sni | qname | dst). Identical to the per-row
+    batch.get / EV.bootstrap_stratum form (test); the generalisation is
+    computed once per distinct value."""
+    n = int(batch.n)
+    ch = [str(x) for x in batch.dense("ev.ch", "").tolist()] if batch.has("ev.ch") else [""] * n
+    if root_attr is not None:
+        a, lvl = root_attr
+        vals = batch.dense(a).tolist()
+        memo: Dict[Any, str] = {}
+        out = []
+        for i in range(n):
+            v = vals[i]
+            if isinstance(v, np.floating):
+                v = float(v)
+            try:
+                g = memo.get(v)
+                if g is None:
+                    g = memo[v] = repr(hier.gen(a, lvl, v))
+            except TypeError:                         # unhashable value
+                g = repr(hier.gen(a, lvl, v))
+            out.append((ch[i], g))
+        return out
+    key = [""] * n
+    done = np.zeros(n, dtype=bool)
+    for nm in ("http.route", "tls.sni", "dns.qname", "net.dst"):
+        c = batch.cols.get(nm)
+        if c is None or not len(c.rows):
+            continue
+        keep = ~done[c.rows]
+        rows = c.rows[keep].tolist()
+        vals = c.vals[keep].tolist()
+        for r, v in zip(rows, vals):
+            key[r] = str(v)
+        done[c.rows[keep]] = True
+    return list(zip(ch, key))
+
+
+def seeded_uniforms(system: str, t1: float, n: int) -> List[float]:
+    """[combine.seeded_uniform(system, t1, i) for i in range(n)] with the
+    message prefix built once (same bytes, same digests: test)."""
+    import hashlib
+    from ..behavior.lib.combine import _u_from_int
+    pre = f"{system!r}|{float(t1)!r}|".encode("utf-8")
+    out = []
+    for i in range(int(n)):
+        h = int.from_bytes(hashlib.blake2b(pre + str(i).encode("ascii"), digest_size=8).digest(), "big")
+        out.append(_u_from_int(h))
+    return out
+
+
 class EventBuilderEngine(Engine):
     name = "raw.event"
     layer = "raw"
@@ -128,6 +180,15 @@ class EventBuilderEngine(Engine):
         self.last_stats: Dict[str, Any] = {}
 
     # ------------------------------------------------------------ helpers
+    def _policy(self, cfg: Mapping[str, Any]) -> PP.ValuePolicy:
+        """The value policy, kept across ticks while its configuration is
+        unchanged (its (name, value) memo then spans ticks)."""
+        key = repr(sorted((str(k), repr(v)) for k, v in (cfg or {}).items()))
+        hit = getattr(self, "_vp", None)
+        if hit is None or hit[0] != key:
+            hit = self._vp = (key, PP.ValuePolicy(cfg))
+        return hit[1]
+
     def _base(self, o: Observation, count: float, trusted: PP.TrustedNets,
               who_headers: Tuple[str, ...], headers: Optional[Mapping[str, Any]],
               tpl: Any) -> Dict[str, Any]:
@@ -186,7 +247,7 @@ class EventBuilderEngine(Engine):
             return 0
         pc = EV.pconfig(ctx.config)
         dflt = pc["defaults"]
-        vp = PP.ValuePolicy(pc["value_policy"])
+        vp = self._policy(pc["value_policy"])
         trusted = PP.TrustedNets(pc.get("trusted_proxies") or ())
         who_headers = tuple(pc.get("client_ip_headers") or ())
         cookies = tuple(pc.get("session_cookies") or ())
@@ -321,13 +382,6 @@ class EventBuilderEngine(Engine):
             if sp is not None:
                 root_attr = (sp.attr, sp.level)
                 hier = MP.hierarchies(store, key, ctx.config)
-        strata = []
-        for i in range(batch.n):
-            if root_attr is not None:
-                strata.append((batch.get("ev.ch", i, ""),
-                               repr(hier.gen(root_attr[0], root_attr[1],
-                                             batch.get(root_attr[0], i)))))
-            else:
-                strata.append(EV.bootstrap_stratum(batch, i))
-        u = [seeded_uniform(batch.system, batch.t1, int(i)) for i in range(batch.n)]
+        strata = learning_strata(batch, root_attr, hier)
+        u = seeded_uniforms(batch.system, batch.t1, batch.n)
         EV.select_learning_sample(batch, strata, e_learn, u)

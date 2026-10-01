@@ -177,6 +177,7 @@ same dict), pipeline_degraded events.
 """
 from __future__ import annotations
 
+import copy
 import math
 import weakref
 import zlib
@@ -187,7 +188,7 @@ import numpy as np
 
 from ...core.engine import Context, Engine
 from ...models.schema import BehaviorEvent, DerivedMetric, MetricKind, Severity
-from .lib import calib, combine, emit, gating, m_calib, m_feedback, seq, timebins
+from .lib import calib, combine, emit, gating, m_calib, m_class, m_feedback, seq, timebins
 from .lib import pactive as PA
 from .lib import grains as GR
 from .lib.classkeys import CLASS_PREFIX, SYSTEM_KEY
@@ -845,6 +846,20 @@ def _remove_after(meta: Dict[str, Any], tau: float) -> int:
     return removed
 
 
+POOL_REF = "pool_ref"     # meta[STATE]: bounded mode, the class pool's meta-ring holder (in memory)
+POOL_META = "meta_pool"   # model.calib@(s, '__pool__...')[POOL_META] = {'rings': {...}, 'refit': {...}}
+
+
+def _mr(meta: Mapping[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """(holder of the meta rings, its refit counters): the entity's own meta
+    dict, or - bounded mode, unearned IP - its class pool's (progressive.md
+    §10.3: 'unearned: class meta rings')."""
+    pr = meta[STATE].get(POOL_REF)
+    if isinstance(pr, dict):
+        return pr["rings"], pr["refit"]
+    return meta, meta[STATE]["refit"]
+
+
 class _MRow(NamedTuple):
     s: str
     e: str
@@ -986,7 +1001,7 @@ class FusionEngine(Engine):
         if not admit:
             return meta
         st = meta[STATE]
-        refit = st["refit"]
+        rings, refit = _mr(meta)
         if row.grain is not None:
             s_h, st_all, st_t, st_h = row.grain
             items = ((META_INST_T, row.s_inst, st_t), (META_ALL, row.s_all, st_all),
@@ -999,7 +1014,7 @@ class FusionEngine(Engine):
             if not x == x or stratum is None:
                 continue
             key = self._ring_key(kind, stratum)
-            r = meta.get(key)
+            r = rings.get(key)
             if row.grain is not None and _T_TAG in stratum and dt == dt:
                 # round 4: per-tick-type strata ('t', only at dt < 900): learn
                 # the raw-p transfer while young (meta_xfer_v) and admit one
@@ -1017,7 +1032,7 @@ class FusionEngine(Engine):
                     if not lo <= slot < lo + int(round(dt)):
                         continue
             if r is None:
-                r = meta[key] = calib.Ring()
+                r = rings[key] = calib.Ring()
                 refit[key] = meta_phase(row.e, key)
             refit[key] = meta_add(r, x, row.ts, refit.get(key, 0))
         st["n_admit"] = int(st.get("n_admit", 0)) + 1
@@ -1030,6 +1045,8 @@ class FusionEngine(Engine):
 
     def _merge(self, own: Dict[str, Any], other: Dict[str, Any], w: float) -> Dict[str, Any]:
         """Link seeding: own meta ring += the other's most recent M*w entries per key."""
+        if isinstance(own[STATE].get(POOL_REF), dict):
+            return own                       # bounded mode: a pooled IP has no meta rings of its own
         refit = own[STATE]["refit"]
         for key, ro in meta_rings(other).items():
             nr = calib.seed_ring(own.get(key) or calib.Ring(), ro, frac=w)
@@ -1038,6 +1055,37 @@ class FusionEngine(Engine):
             own[key] = nr
             refit[key] = 0
         return own
+
+    def _bounded_meta(self, store, s: str, e: str, meta: Dict[str, Any], now: float,
+                      config: Optional[Mapping[str, Any]]) -> None:
+        """lib3.resource_mode = bounded with lib3.pool_unearned (opt-in, off by
+        default: pactive.pooled; progressive.md §10.3): an UNEARNED IP's
+        meta rings are its class pool's (the pseudo entity pactive.pool_of,
+        shared with B24's pooled rings); its CUSUM, ACI and gate bookkeeping
+        stay its own (small) and are released by P15 after 7 idle days. A
+        promoted IP starts its own meta rings from a copy of the pool; a
+        rollback of a pooled IP leaves the pool's rings (its quarantined
+        periods were never admitted: period trust). Full mode: no effect."""
+        st = meta[STATE]
+        if PA.pooled(store, s, e, config):
+            ck = m_class.class_key(store, s, e)
+            pk = PA.pool_of(store, s, e, ck)
+            pm = store.get_model(s, pk, MODEL)
+            if not isinstance(pm, dict):
+                pm = {"layout": m_calib.LAYOUT, "rings": {}, "refit": {}, "pool": True}
+                store.put_model(s, pk, MODEL, pm, ts=now)
+            holder = pm.get(POOL_META)
+            if not isinstance(holder, dict):
+                holder = pm[POOL_META] = {"rings": {}, "refit": {}}
+            if st.get(POOL_REF) is not holder:
+                for k in list(meta_rings(meta)):     # demotion: own meta rings are dropped
+                    del meta[k]
+                st[POOL_REF] = holder
+        elif isinstance(st.get(POOL_REF), dict):
+            pr = st.pop(POOL_REF)
+            for k, r in pr["rings"].items():           # promotion: warm start from the pool
+                meta[k] = copy.copy(r)
+            st["refit"] = dict(pr["refit"])
 
     def _other_meta(self, store, s: str, src: str) -> Optional[Dict[str, Any]]:
         m = store.get_model(s, src, MODEL)
@@ -1129,6 +1177,7 @@ class FusionEngine(Engine):
         elif not isinstance(model, dict):
             raise TypeError(f"model.calib must be a dict, got {type(model).__name__}")
         meta = _ensure_meta(model)
+        self._bounded_meta(store, s, e, meta, now, ctx.config)
         st = meta[STATE]
         # --- learn: commit row t - D into the meta rings (contract H)
         gate = st["gate"]
@@ -1180,9 +1229,10 @@ class FusionEngine(Engine):
         stratum = self._stratum(dp, cc)
         s_inst = meta_score(fz.p_inst)
         s_all = meta_score(fz.p_all)
-        q_inst = meta_q(meta.get(self._ring_key(META_INST, stratum)), s_inst,
+        mrings = _mr(meta)[0]
+        q_inst = meta_q(mrings.get(self._ring_key(META_INST, stratum)), s_inst,
                         m_calib.uniform(s, e, META_INST, now), fz.p_inst)
-        q_all = meta_q(meta.get(self._ring_key(META_ALL, stratum)), s_all,
+        q_all = meta_q(mrings.get(self._ring_key(META_ALL, stratum)), s_all,
                        m_calib.uniform(s, e, META_ALL, now), fz.p_all)
         e_raw = combine.e_day(q_all, dt)
         akey = aci_key(None, cc)
@@ -1279,12 +1329,13 @@ class FusionEngine(Engine):
         p_t = _stream_p(rowl, _INST_T_IDX, sc.fw, wm)
         p_h = _stream_p(rowl, _INST_H_IDX, sc.fw, wm) if gx["h_due"] else _NAN
         s_t, s_h, s_all = meta_score(p_t), meta_score(p_h), meta_score(fz.p_all)
-        r_t = meta.get(self._ring_key(META_INST_T, st_t))
+        mrings = _mr(meta)[0]
+        r_t = mrings.get(self._ring_key(META_INST_T, st_t))
         q_t = meta_q(r_t, s_t, m_calib.uniform(s, e, META_INST, now),
                      self._t_prior(st, META_INST_T, st_t, r_t, p_t))
-        q_h = meta_q(meta.get(self._ring_key(META_INST_H, st_h)), s_h,
+        q_h = meta_q(mrings.get(self._ring_key(META_INST_H, st_h)), s_h,
                      m_calib.uniform(s, e, META_INST_H, now), p_h)
-        r_all = meta.get(self._ring_key(META_ALL, st_all))
+        r_all = mrings.get(self._ring_key(META_ALL, st_all))
         q_all = meta_q(r_all, s_all, m_calib.uniform(s, e, META_ALL, now),
                        self._t_prior(st, META_ALL, st_all, r_all, fz.p_all))
         e_raw = q_all * gx["mult"] if q_all == q_all else _NAN

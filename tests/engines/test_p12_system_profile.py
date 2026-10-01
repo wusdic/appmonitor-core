@@ -87,7 +87,11 @@ def run(events, days, p12=None, dt=3600.0, config=None, daily=None):
     return sim, eng
 
 
-EXPECTED = {"oa": {"who": ("ip", "grp"), "P07": ("on",), "P08": ("on",), "P10": ("on",)},
+# the synthetic OA's five users do the same pages at the same time: no who
+# level predicts their behaviour, so the who arm (chosen by held-out behaviour
+# gain, pstrategy.who_utilities) may be any level that states the closed
+# population - never 'none'
+EXPECTED = {"oa": {"who": ("ip", "grp", "prefix"), "P07": ("on",), "P08": ("on",), "P10": ("on",)},
             "portal": {"who": ("prefix", "reg", "none")},
             "mail": {"P07": ("off",), "P08": ("off",), "content": ("off",)},
             "hr": {"who": ("none",)}}
@@ -123,7 +127,7 @@ def test_scenarios_get_the_expected_strategies():
     for p in (oa, portal, mail, hr):
         assert p is not None and p["chosen"]
     # departmental OA: stable IPs, forms, sessions -> who at a fine level, content and workflow on
-    assert oa["chosen"]["who"] in ("ip", "grp"), oa["reasons"]
+    assert oa["chosen"]["who"] in ("ip", "grp", "prefix"), oa["reasons"]
     assert oa["chosen"]["P07"] == "on" and oa["chosen"]["P08"] == "on" and oa["chosen"]["P10"] == "on"
     assert oa["characteristics"]["snat"] is False
     # random-IP portal: churn blocks per-IP who

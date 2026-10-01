@@ -385,3 +385,27 @@ def test_attribute_appears_is_first_observable_time():
     for a in g.ptruth["attr_truth"]:
         if a["name"] in first:
             assert a["appears"] == pytest.approx(first[a["name"]], abs=1e-6), a["name"]
+
+
+def test_payload_string_attributes_are_typed_text_in_the_truth():
+    """PG7 truth semantics (progressive.md §5.4.5, §16.2 A2): a string value in
+    a payload namespace (hdr.*) is `text` (shape hierarchy, P07 grammar and
+    closed set); a categorical truth for a 2-valued header contradicted the
+    hierarchy the spec assigns to it."""
+    from app.pipeline.orggen import build_org
+    spec = build_org("O")
+    for a in spec.attr_schedule:
+        if a.where == "headers":
+            assert a.type == "text", (a.name, a.type)
+
+
+def test_org_packs_default_to_a_registry_that_fits_in_memory():
+    """Pack O's own default must be runnable: `full+progressive` (B01-B30 +
+    P-core) held 2.26 GB by day 4 and was OOM-killed at 7.1 GB per run
+    (progressive.md §16.2 M25), so every measured run had to override it with
+    --registry progressive_decision. The org packs now default to it; the
+    scaling / server packs keep progressive_only."""
+    for n in ("O", "O60", "O-red", "O-real", "O-real-R3"):
+        assert P.get_pack(n).registry_mode == "progressive_decision", n
+    assert P.get_pack("O-servers-20").registry_mode == "progressive_only"
+    assert P.get_pack("O-scale-500-0").registry_mode == "progressive_only"

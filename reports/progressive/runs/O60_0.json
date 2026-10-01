@@ -1,0 +1,3249 @@
+{
+ "seed": 0,
+ "score": {
+  "pack": "O60",
+  "seed": 0,
+  "variant": "O60",
+  "aborted": null,
+  "n_snapshots": 8,
+  "pg1": {
+   "1": {
+    "day": 1,
+    "n_truth": 0,
+    "n_stmt": 0,
+    "n_confirmed": 0,
+    "recall": null,
+    "components": {
+     "who": null,
+     "when": null,
+     "content": null,
+     "bindings": null,
+     "workflow": null
+    },
+    "recall_by_period": {
+     "daily": null,
+     "weekly": null,
+     "continuous": null,
+     "sporadic": null,
+     "monthly": null
+    },
+    "precision": null,
+    "n_precision": 0,
+    "n_unjudged": 0,
+    "ece": null,
+    "mean_depth": null,
+    "per_pattern": {}
+   },
+   "2": {
+    "day": 2,
+    "n_truth": 0,
+    "n_stmt": 0,
+    "n_confirmed": 0,
+    "recall": null,
+    "components": {
+     "who": null,
+     "when": null,
+     "content": null,
+     "bindings": null,
+     "workflow": null
+    },
+    "recall_by_period": {
+     "daily": null,
+     "weekly": null,
+     "continuous": null,
+     "sporadic": null,
+     "monthly": null
+    },
+    "precision": null,
+    "n_precision": 0,
+    "n_unjudged": 0,
+    "ece": null,
+    "mean_depth": null,
+    "per_pattern": {}
+   },
+   "3": {
+    "day": 3,
+    "n_truth": 26,
+    "n_stmt": 0,
+    "n_confirmed": 0,
+    "recall": 0.0,
+    "components": {
+     "who": 0.0,
+     "when": 0.0,
+     "content": 0.0,
+     "bindings": 0.0,
+     "workflow": 0.0
+    },
+    "recall_by_period": {
+     "daily": 0.0,
+     "weekly": null,
+     "continuous": 0.0,
+     "sporadic": 0.0,
+     "monthly": null
+    },
+    "precision": null,
+    "n_precision": 0,
+    "n_unjudged": 0,
+    "ece": null,
+    "mean_depth": null,
+    "per_pattern": {
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#3": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     }
+    }
+   },
+   "4": {
+    "day": 4,
+    "n_truth": 31,
+    "n_stmt": 3,
+    "n_confirmed": 3,
+    "recall": 0.0,
+    "components": {
+     "who": 0.06451612903225806,
+     "when": 0.03225806451612903,
+     "content": 0.03225806451612903,
+     "bindings": 0.0,
+     "workflow": 0.0
+    },
+    "recall_by_period": {
+     "daily": 0.0,
+     "weekly": null,
+     "continuous": 0.0,
+     "sporadic": 0.0,
+     "monthly": null
+    },
+    "precision": 0.6666666666666666,
+    "n_precision": 3,
+    "n_unjudged": 0,
+    "ece": 0.6443639160873396,
+    "mean_depth": 0.3333333333333333,
+    "per_pattern": {
+     "GA.oa.approvals#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#3": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     }
+    }
+   },
+   "5": {
+    "day": 5,
+    "n_truth": 31,
+    "n_stmt": 32,
+    "n_confirmed": 32,
+    "recall": 0.2903225806451613,
+    "components": {
+     "who": 0.6451612903225806,
+     "when": 0.6451612903225806,
+     "content": 0.5806451612903226,
+     "bindings": 0.0,
+     "workflow": 0.8181818181818182
+    },
+    "recall_by_period": {
+     "daily": 0.19230769230769232,
+     "weekly": null,
+     "continuous": 1.0,
+     "sporadic": 0.5,
+     "monthly": null
+    },
+    "precision": 0.5,
+    "n_precision": 30,
+    "n_unjudged": 2,
+    "ece": 0.41678081725662874,
+    "mean_depth": 1.28125,
+    "per_pattern": {
+     "GA.oa.approvals#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:5@1.0"
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:7@1.0"
+     },
+     "FIN.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:oa:0:17@1.0"
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:1@1.0"
+     },
+     "SALES.crm#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "sporadic",
+      "stmt": "p:oa:0:16@1.0"
+     },
+     "DEV.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:5@1.0"
+     },
+     "PUB.portal.visit#3": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:oa:0:1@1.0"
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:finance:0:1@1.0"
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:portal:0:1@1.0"
+     }
+    }
+   },
+   "6": {
+    "day": 6,
+    "n_truth": 32,
+    "n_stmt": 36,
+    "n_confirmed": 36,
+    "recall": 0.28125,
+    "components": {
+     "who": 0.53125,
+     "when": 0.75,
+     "content": 0.625,
+     "bindings": 0.0,
+     "workflow": 0.8181818181818182
+    },
+    "recall_by_period": {
+     "daily": 0.18518518518518517,
+     "weekly": null,
+     "continuous": 1.0,
+     "sporadic": 0.5,
+     "monthly": null
+    },
+    "precision": 0.5666666666666667,
+    "n_precision": 30,
+    "n_unjudged": 6,
+    "ece": 0.4357544233183125,
+    "mean_depth": 1.3611111111111112,
+    "per_pattern": {
+     "GA.oa.approvals#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:5@1.0"
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:6@1.0"
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:7@1.0"
+     },
+     "FIN.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:1@1.0"
+     },
+     "SALES.crm#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "sporadic",
+      "stmt": "p:oa:0:16@1.0"
+     },
+     "DEV.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:7@1.0"
+     },
+     "PUB.portal.visit#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#2": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#3": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:oa:0:1@1.0"
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:finance:0:1@1.0"
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:portal:0:1@1.0"
+     }
+    }
+   },
+   "7": {
+    "day": 7,
+    "n_truth": 32,
+    "n_stmt": 38,
+    "n_confirmed": 38,
+    "recall": 0.25,
+    "components": {
+     "who": 0.53125,
+     "when": 0.71875,
+     "content": 0.59375,
+     "bindings": 0.0,
+     "workflow": 0.8181818181818182
+    },
+    "recall_by_period": {
+     "daily": 0.18518518518518517,
+     "weekly": null,
+     "continuous": 0.6666666666666666,
+     "sporadic": 0.5,
+     "monthly": null
+    },
+    "precision": 0.4666666666666667,
+    "n_precision": 30,
+    "n_unjudged": 8,
+    "ece": 0.4551593840213497,
+    "mean_depth": 1.4473684210526316,
+    "per_pattern": {
+     "GA.oa.approvals#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:5@1.0"
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:6@1.0"
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:7@1.0"
+     },
+     "FIN.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:1@1.0"
+     },
+     "SALES.crm#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "sporadic",
+      "stmt": "p:oa:0:16@1.0"
+     },
+     "DEV.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:3@2.0"
+     },
+     "PUB.portal.visit#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#2": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#3": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:finance:0:1@1.0"
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:portal:0:1@1.0"
+     }
+    }
+   },
+   "8": {
+    "day": 8,
+    "n_truth": 34,
+    "n_stmt": 38,
+    "n_confirmed": 38,
+    "recall": 0.2647058823529412,
+    "components": {
+     "who": 0.5294117647058824,
+     "when": 0.7352941176470589,
+     "content": 0.5588235294117647,
+     "bindings": 0.0,
+     "workflow": 0.75
+    },
+    "recall_by_period": {
+     "daily": 0.20689655172413793,
+     "weekly": null,
+     "continuous": 0.6666666666666666,
+     "sporadic": 0.5,
+     "monthly": null
+    },
+    "precision": 0.4,
+    "n_precision": 30,
+    "n_unjudged": 8,
+    "ece": 0.3615269281366211,
+    "mean_depth": 1.4473684210526316,
+    "per_pattern": {
+     "GA.oa.approvals#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.approval#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.approval#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:5@1.0"
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:6@1.0"
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:7@1.0"
+     },
+     "FIN.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:1@1.0"
+     },
+     "SALES.crm#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "sporadic",
+      "stmt": "p:oa:0:16@1.0"
+     },
+     "DEV.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:3@2.0"
+     },
+     "PUB.portal.visit#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:5@1.0"
+     },
+     "PUB.portal.visit#3": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:finance:0:1@1.0"
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:portal:0:1@1.0"
+     }
+    }
+   }
+  },
+  "pg1_day14": {
+   "day": 8,
+   "n_truth": 34,
+   "n_stmt": 38,
+   "n_confirmed": 38,
+   "recall": 0.2647058823529412,
+   "components": {
+    "who": 0.5294117647058824,
+    "when": 0.7352941176470589,
+    "content": 0.5588235294117647,
+    "bindings": 0.0,
+    "workflow": 0.75
+   },
+   "recall_by_period": {
+    "daily": 0.20689655172413793,
+    "weekly": null,
+    "continuous": 0.6666666666666666,
+    "sporadic": 0.5,
+    "monthly": null
+   },
+   "precision": 0.4,
+   "n_precision": 30,
+   "n_unjudged": 8,
+   "ece": 0.3615269281366211,
+   "mean_depth": 1.4473684210526316
+  },
+  "pg1_last_by_system": {
+   "code": {
+    "recall": 0.0
+   },
+   "crm": {
+    "recall": 0.5
+   },
+   "finance": {
+    "recall": 0.6666666666666666
+   },
+   "mail": {
+    "recall": 0.0
+   },
+   "oa": {
+    "recall": 0.0625
+   },
+   "portal": {
+    "recall": 0.6
+   }
+  },
+  "bindings_ga_fin_day14": [
+   0,
+   6
+  ],
+  "pg2": {
+   "recall": {
+    "1": null,
+    "2": null,
+    "3": 0.0,
+    "4": 0.0,
+    "5": 0.2903225806451613,
+    "6": 0.28125,
+    "7": 0.25,
+    "8": 0.2647058823529412
+   },
+   "precision": {
+    "1": null,
+    "2": null,
+    "3": null,
+    "4": 0.6666666666666666,
+    "5": 0.5,
+    "6": 0.5666666666666667,
+    "7": 0.4666666666666667,
+    "8": 0.4
+   },
+   "recall_violations": [],
+   "recall_monotone": true,
+   "days_to_80": {
+    "daily": null,
+    "weekly": null
+   },
+   "depth_nondecreasing": true,
+   "median_conf": [
+    [
+     5,
+     0.781869361596912
+    ],
+    [
+     6,
+     0.3384
+    ],
+    [
+     7,
+     0.507
+    ],
+    [
+     8,
+     0.3968
+    ]
+   ],
+   "conf_nondecreasing": false,
+   "median_U": [
+    [
+     5,
+     0.000992890160640112
+    ],
+    [
+     6,
+     0.0010018963355169414
+    ],
+    [
+     7,
+     0.0008691237839679906
+    ],
+    [
+     8,
+     0.0009529210616734496
+    ]
+   ],
+   "U_nonincreasing": false,
+   "ece": 0.3615269281366211
+  },
+  "false_splits": {
+   "n": null,
+   "per_system_month": null
+  },
+  "pg3": {
+   "ga_login_who": false,
+   "ga_bindings": null,
+   "fin_approval_who": false,
+   "portal_login_level": true,
+   "portal_bindings": 0,
+   "portal_exception_share": 0.0,
+   "dev_single_ip_patterns": 0,
+   "dev_who_ok": true,
+   "ari": 0.9744275710126682,
+   "dev_pool_grouped": true
+  },
+  "pg5": {},
+  "pg6": {
+   "anomalies": {},
+   "far": {
+    "entity_days": 2869,
+    "inc_low": 20,
+    "inc_medium": 18,
+    "pv_low": 41,
+    "far_low": 0.006971070059254096,
+    "far_medium": 0.006273963053328686,
+    "pv_far_low": 0.014290693621470896,
+    "ks_conf": null
+   }
+  },
+  "pg7": {
+   "registered_first_tick": 0.3333333333333333,
+   "type_correct": 1.0,
+   "role_within_24h": 0.0,
+   "informative_kept": 1.0,
+   "noise_dropped": null,
+   "constants_invariant": null
+  },
+  "pg8": {
+   "arms_ok_share": 0.6666666666666666,
+   "max_switches": 0,
+   "who_within_5pct": false,
+   "systems": {
+    "oa": {
+     "chosen": {
+      "who": "prefix",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "on",
+      "P08": "on",
+      "P10": "on",
+      "content": "on",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "on",
+      "p07": "on",
+      "p08": "on",
+      "p09": "on",
+      "p10": "on"
+     },
+     "ok": true,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 9347.621879406846,
+      "/24": 7497.645501480773,
+      "/16": 11712.635036922793,
+      "grp": 5009.111988261417,
+      "reg": 17796.07116630315,
+      "none": 21863.68955906299
+     },
+     "who_U": {
+      "ip": -0.6287020220600765,
+      "prefix": 0.30274951963503594,
+      "grp": 0.3614605327859966,
+      "reg": -0.5542089225530111,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": -0.6563157661981358,
+      "/24": 0.27090324783729086,
+      "/16": -0.5649513188154119,
+      "grp": 0.3239207899513058,
+      "reg": -0.562493611620471
+     },
+     "who_best": "grp",
+     "who_within_5pct": false
+    },
+    "finance": {
+     "chosen": {
+      "who": "prefix",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "on",
+      "P08": "on",
+      "P10": "on",
+      "content": "on",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "on",
+      "p07": "on",
+      "p08": "on",
+      "p09": "on",
+      "p10": "on"
+     },
+     "ok": false,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 439.80954027944796,
+      "/24": 1267.4005490282923,
+      "/16": 2176.645790987215,
+      "grp": 319.70197817670294,
+      "reg": 4316.540993373239,
+      "none": 4314.219065278352
+     },
+     "who_U": {
+      "ip": -0.8718131612333757,
+      "prefix": -0.8665485757494669,
+      "grp": -0.855547109231413,
+      "reg": -1.701726118667374,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": -0.9157075822227867,
+      "/24": -0.900835812499683,
+      "/16": -1.700726118667374,
+      "grp": -0.900835812499683,
+      "reg": -1.700726118667374
+     },
+     "who_best": "grp",
+     "who_within_5pct": true
+    },
+    "crm": {
+     "chosen": {
+      "who": "prefix",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "on",
+      "P08": "on",
+      "P10": "off",
+      "content": "on",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "on",
+      "p07": "on",
+      "p08": "on",
+      "p09": "on",
+      "p10": "off"
+     },
+     "ok": true,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 2202.5944974615936,
+      "/24": 2887.854729870911,
+      "/16": 5735.229995094171,
+      "grp": 1553.6552496752322,
+      "reg": 11432.302453635557,
+      "none": 11429.98052554067
+     },
+     "who_U": {
+      "ip": -1.3647786634426071,
+      "prefix": -0.07754425571083529,
+      "grp": -0.07170351957167775,
+      "reg": -0.11490207008884701,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": -1.4041363472281334,
+      "/24": -0.11390207008884701,
+      "/16": -0.11390207008884701,
+      "grp": -0.11390207008884701,
+      "reg": -0.11390207008884701
+     },
+     "who_best": "grp",
+     "who_within_5pct": true
+    },
+    "code": {
+     "chosen": {
+      "who": "reg",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "off",
+      "P08": "off",
+      "P10": "off",
+      "content": "off",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "class",
+      "p07": "off",
+      "p08": "off",
+      "p09": "on",
+      "p10": "off"
+     },
+     "ok": true,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 25935.699789047612,
+      "/24": 19812.225072357716,
+      "/16": 31554.474647603558,
+      "grp": 19718.235738956162,
+      "reg": 19717.972704550328,
+      "none": 63066.004970665104
+     },
+     "who_U": {
+      "ip": -2.620516169202929,
+      "prefix": 0.002310750783017624,
+      "grp": 0.0023852803548223703,
+      "reg": 0.002385488929997099,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": -2.648950254648819,
+      "/24": -0.15435609351018928,
+      "/16": -0.030978991491954058,
+      "grp": -0.030978991491954058,
+      "reg": -0.030978991491954058
+     },
+     "who_best": "reg",
+     "who_within_5pct": true
+    },
+    "mail": {
+     "chosen": {
+      "who": "reg",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "off",
+      "P08": "off",
+      "P10": "off",
+      "content": "off",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "class",
+      "p07": "off",
+      "p08": "off",
+      "p09": "on",
+      "p10": "off"
+     },
+     "ok": true,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 19557.656881130977,
+      "/24": 12269.003006634177,
+      "/16": 19313.510265713783,
+      "grp": 10597.923753625344,
+      "reg": 19772.987800299412,
+      "none": 36360.321103119
+     },
+     "who_U": {
+      "ip": 0.28813567929725065,
+      "prefix": 0.8613950825460542,
+      "grp": 0.8453000173346926,
+      "reg": 0.8692983878937631,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": 0.2660374188386473,
+      "/24": 0.7665685188562057,
+      "/16": 0.8292712106693327,
+      "grp": 0.8108775603518561,
+      "reg": 0.8474963171238268
+     },
+     "who_best": "reg",
+     "who_within_5pct": true
+    },
+    "portal": {
+     "chosen": {
+      "who": "prefix",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "on",
+      "P08": "on",
+      "P10": "on",
+      "content": "on",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "on",
+      "p07": "on",
+      "p08": "on",
+      "p09": "on",
+      "p10": "on"
+     },
+     "ok": false,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 56105.9259995897,
+      "/24": 83625.25554500242,
+      "/16": 80609.46420451078,
+      "grp": 144897.04310563847,
+      "reg": 81559.54696069089,
+      "none": 146358.5386297612
+     },
+     "who_U": {
+      "ip": -2.33092408912993,
+      "prefix": -0.1965646313198905,
+      "reg": -0.19688923202363268,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": -2.360755208371798,
+      "/24": -2.497788896567739,
+      "/16": -0.21802398958225166,
+      "grp": 0.027300530469085572,
+      "reg": -0.21802398958225166
+     },
+     "who_best": "prefix",
+     "who_within_5pct": true
+    }
+   }
+  },
+  "pg10": {
+   "day11": null,
+   "day8": false,
+   "finance_single_ip": false,
+   "ga_negative_finance": true
+  },
+  "pg11": {},
+  "gen_stats": {
+   "events": 110522,
+   "records": 39269,
+   "benign": 110522,
+   "anomalous": 0,
+   "dropped": 0
+  },
+  "core_active": true,
+  "exceptions": 0,
+  "exception_samples": []
+ },
+ "example": {
+  "days": {
+   "7": {
+    "oa_statements": [],
+    "finance_statements": [],
+    "group_views": [
+     {
+      "group": "G13",
+      "name": "综合部",
+      "name_source": "config",
+      "members": [
+       "10.168.7.121",
+       "192.168.1.23"
+      ],
+      "header_zh": "综合部（2 个 IP）使用 mail、oa",
+      "header_en": "综合部 (2 IPs) uses mail, oa",
+      "statements": [
+       {
+        "text_zh": "综合部 访问 mail（占其活动 5 %）：邮件（TLS mail.corp.local）",
+        "text_en": "综合部 uses mail (5 % of its activity): mail (TLS mail.corp.local)",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs/{num}）、文档（GET /docs）、文档（POST /docs/{num}/comment）、GET /home、登录（POST /login）、提交报告（POST /report/generate）、查看报告（GET /report/form）",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs/{num}), documents (GET /docs), documents (POST /docs/{num}/comment), GET /home, log in (POST /login), submit reports (POST /report/generate), view report (GET /report/form)",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 在 portal 中从未执行写操作（7 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））",
+        "text_en": "综合部 has never performed a write action on portal (7 days, 0 times) (closed write actions: log in (POST /login), comments (POST /comment))",
+        "negative": true
+       }
+      ]
+     },
+     {
+      "group": "G33",
+      "name": "综合部·oa GET /approval/list",
+      "name_source": "config",
+      "members": [
+       "192.168.1.21"
+      ],
+      "header_zh": "综合部·oa GET /approval/list（1 个 IP）使用 oa",
+      "header_en": "综合部·oa GET /approval/list (1 IPs) uses oa",
+      "statements": [
+       {
+        "text_zh": "综合部·oa GET /approval/list 访问 oa（占其活动 97 %）：文档（GET /docs/{num}）、文档（GET /docs）、审批（POST /approval/{num}/approve）、查看审批（GET /approval/{num}）、查看审批（GET /approval/list）、文档（POST /docs/{num}/comment）、GET /home、登录（POST /login）",
+        "text_en": "综合部·oa GET /approval/list uses oa (97 % of its activity): documents (GET /docs/{num}), documents (GET /docs), approve (POST /approval/{num}/approve), view approve (GET /approval/{num}), view approve (GET /approval/list), documents (POST /docs/{num}/comment), GET /home, log in (POST /login)",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部·oa GET /approval/list 在 portal 中从未执行写操作（7 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））",
+        "text_en": "综合部·oa GET /approval/list has never performed a write action on portal (7 days, 0 times) (closed write actions: log in (POST /login), comments (POST /comment))",
+        "negative": true
+       }
+      ]
+     }
+    ],
+    "dept_views": [
+     {
+      "view": "class:grp:dept:综合部",
+      "name": "综合部",
+      "groups": [
+       "G13",
+       "G33"
+      ],
+      "members": [
+       "10.168.7.121",
+       "192.168.1.21",
+       "192.168.1.23"
+      ],
+      "header_zh": "综合部（3 个 IP，2 个行为群组）使用 oa",
+      "header_en": "综合部 (3 IPs, 2 behavioural groups) uses oa",
+      "statements": [
+       {
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs）、文档（GET /docs/{num}）、文档（POST /docs/{num}/comment）、GET /home、登录（POST /login）、查看报告（GET /report/form）[10.168.7.121、192.168.1.23]、提交报告（POST /report/generate）[10.168.7.121、192.168.1.23]、查看审批（GET /approval/list）[192.168.1.21]、查看审批（GET /approval/{num}）[192.168.1.21]、审批（POST /approval/{num}/approve）[192.168.1.21]",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs), documents (GET /docs/{num}), documents (POST /docs/{num}/comment), GET /home, log in (POST /login), view report (GET /report/form) [10.168.7.121, 192.168.1.23], submit reports (POST /report/generate) [10.168.7.121, 192.168.1.23], view approve (GET /approval/list) [192.168.1.21], view approve (GET /approval/{num}) [192.168.1.21], approve (POST /approval/{num}/approve) [192.168.1.21]",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 在 portal 中从未执行写操作（7 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））",
+        "text_en": "综合部 has never performed a write action on portal (7 days, 0 times) (closed write actions: comments (POST /comment), log in (POST /login))",
+        "negative": true
+       }
+      ]
+     }
+    ],
+    "ga_groups": {
+     "192.168.1.21": "G33",
+     "192.168.1.23": "G13",
+     "10.168.7.121": "G13"
+    }
+   },
+   "8": {
+    "oa_statements": [],
+    "finance_statements": [],
+    "group_views": [
+     {
+      "group": "G13",
+      "name": "综合部",
+      "name_source": "config",
+      "members": [
+       "10.168.7.121",
+       "192.168.1.23"
+      ],
+      "header_zh": "综合部（2 个 IP）使用 mail、oa",
+      "header_en": "综合部 (2 IPs) uses mail, oa",
+      "statements": [
+       {
+        "text_zh": "综合部 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））",
+        "text_en": "综合部 has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit))",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 在 finance 中从未执行写操作（8 天、0 次）（封闭的写操作：凭证（POST /fin/voucher/create））",
+        "text_en": "综合部 has never performed a write action on finance (8 days, 0 times) (closed write actions: vouchers (POST /fin/voucher/create))",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 访问 mail（占其活动 5 %）：邮件（TLS mail.corp.local）",
+        "text_en": "综合部 uses mail (5 % of its activity): mail (TLS mail.corp.local)",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs/{num}）、文档（GET /docs）、文档（POST /docs/{num}/comment）、GET /home、登录（POST /login）、提交报告（POST /report/generate）、查看报告（GET /report/form）",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs/{num}), documents (GET /docs), documents (POST /docs/{num}/comment), GET /home, log in (POST /login), submit reports (POST /report/generate), view report (GET /report/form)",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 在 portal 中从未执行写操作（8 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））",
+        "text_en": "综合部 has never performed a write action on portal (8 days, 0 times) (closed write actions: log in (POST /login), comments (POST /comment))",
+        "negative": true
+       }
+      ]
+     },
+     {
+      "group": "G33",
+      "name": "综合部·oa GET /approval/list",
+      "name_source": "config",
+      "members": [
+       "192.168.1.21"
+      ],
+      "header_zh": "综合部·oa GET /approval/list（1 个 IP）使用 oa",
+      "header_en": "综合部·oa GET /approval/list (1 IPs) uses oa",
+      "statements": [
+       {
+        "text_zh": "综合部·oa GET /approval/list 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））",
+        "text_en": "综合部·oa GET /approval/list has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit))",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部·oa GET /approval/list 在 finance 中从未执行写操作（8 天、0 次）（封闭的写操作：凭证（POST /fin/voucher/create））",
+        "text_en": "综合部·oa GET /approval/list has never performed a write action on finance (8 days, 0 times) (closed write actions: vouchers (POST /fin/voucher/create))",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部·oa GET /approval/list 访问 oa（占其活动 97 %）：文档（GET /docs/{num}）、文档（GET /docs）、审批（POST /approval/{num}/approve）、查看审批（GET /approval/{num}）、查看审批（GET /approval/list）、文档（POST /docs/{num}/comment）、GET /home、登录（POST /login）",
+        "text_en": "综合部·oa GET /approval/list uses oa (97 % of its activity): documents (GET /docs/{num}), documents (GET /docs), approve (POST /approval/{num}/approve), view approve (GET /approval/{num}), view approve (GET /approval/list), documents (POST /docs/{num}/comment), GET /home, log in (POST /login)",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部·oa GET /approval/list 在 portal 中从未执行写操作（8 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））",
+        "text_en": "综合部·oa GET /approval/list has never performed a write action on portal (8 days, 0 times) (closed write actions: log in (POST /login), comments (POST /comment))",
+        "negative": true
+       }
+      ]
+     }
+    ],
+    "dept_views": [
+     {
+      "view": "class:grp:dept:综合部",
+      "name": "综合部",
+      "groups": [
+       "G13",
+       "G33"
+      ],
+      "members": [
+       "10.168.7.121",
+       "192.168.1.21",
+       "192.168.1.23"
+      ],
+      "header_zh": "综合部（3 个 IP，2 个行为群组）使用 oa",
+      "header_en": "综合部 (3 IPs, 2 behavioural groups) uses oa",
+      "statements": [
+       {
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs）、文档（GET /docs/{num}）、文档（POST /docs/{num}/comment）、GET /home、登录（POST /login）、查看报告（GET /report/form）[10.168.7.121、192.168.1.23]、提交报告（POST /report/generate）[10.168.7.121、192.168.1.23]、查看审批（GET /approval/list）[192.168.1.21]、查看审批（GET /approval/{num}）[192.168.1.21]、审批（POST /approval/{num}/approve）[192.168.1.21]",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs), documents (GET /docs/{num}), documents (POST /docs/{num}/comment), GET /home, log in (POST /login), view report (GET /report/form) [10.168.7.121, 192.168.1.23], submit reports (POST /report/generate) [10.168.7.121, 192.168.1.23], view approve (GET /approval/list) [192.168.1.21], view approve (GET /approval/{num}) [192.168.1.21], approve (POST /approval/{num}/approve) [192.168.1.21]",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））",
+        "text_en": "综合部 has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit))",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 在 finance 中从未执行写操作（8 天、0 次）（封闭的写操作：凭证（POST /fin/voucher/create））",
+        "text_en": "综合部 has never performed a write action on finance (8 days, 0 times) (closed write actions: vouchers (POST /fin/voucher/create))",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 在 portal 中从未执行写操作（8 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））",
+        "text_en": "综合部 has never performed a write action on portal (8 days, 0 times) (closed write actions: comments (POST /comment), log in (POST /login))",
+        "negative": true
+       }
+      ]
+     }
+    ],
+    "ga_groups": {
+     "192.168.1.21": "G33",
+     "192.168.1.23": "G13",
+     "10.168.7.121": "G13"
+    }
+   }
+  },
+  "checklist": [
+   {
+    "clause": "综合部 3 个 IP 登录 OA（who = 192.168.1.21、192.168.1.23、10.168.7.121）",
+    "measured": "who Jaccard 0.00",
+    "pass": false,
+    "statement": null
+   },
+   {
+    "clause": "工作日登录时间窗 09:00–09:21",
+    "measured": "IoU 0.00",
+    "pass": false
+   },
+   {
+    "clause": "提交数据量 90 % 在 1–2 KB",
+    "measured": "band None",
+    "pass": false
+   },
+   {
+    "clause": "100 % 在 0.5–3 KB",
+    "measured": "range None",
+    "pass": false
+   },
+   {
+    "clause": "提交内容含 username=，取值不超过 10 个字符",
+    "measured": "grammar None",
+    "pass": false
+   },
+   {
+    "clause": "绑定 10.168.7.121→mike、192.168.1.21→jack、192.168.1.23→rose",
+    "measured": "0/3",
+    "pass": false
+   },
+   {
+    "clause": "192.168.1.21 访问业务审批页面",
+    "measured": "who Jaccard 0.00",
+    "pass": false,
+    "statement": null
+   },
+   {
+    "clause": "下午 5 点提交报告（.23、.121）",
+    "measured": "who Jaccard 0.00",
+    "pass": false,
+    "statement": null
+   },
+   {
+    "clause": "财务系统审批只有财务部 192.168.2.10 访问",
+    "measured": "who Jaccard 0.00",
+    "pass": false,
+    "statement": null
+   },
+   {
+    "clause": "用户视角：综合部在财务系统中从未执行写操作（否定陈述）",
+    "measured": "present",
+    "pass": true
+   }
+  ]
+ },
+ "anomalies": {},
+ "engine_s": {
+  "raw.action_token": 17.2,
+  "raw.client_stack": 1.2,
+  "raw.event": 9.1,
+  "derived.event_context": 5.9,
+  "behavior.resource_governor": 9.8,
+  "behavior.attr_registry": 61.9,
+  "behavior.attr_select": 72.2,
+  "behavior.conformity": 31.7,
+  "behavior.pattern_tree": 91.9,
+  "behavior.content_bounds": 12.1,
+  "behavior.payload_grammar": 1.3,
+  "behavior.binding": 16.5,
+  "behavior.time_window": 4.1,
+  "behavior.workflow": 7.0,
+  "behavior.who_groups": 3.6,
+  "behavior.system_profile": 10.7,
+  "behavior.calibration": 72.2,
+  "behavior.fusion": 225.6,
+  "behavior.risk": 111.4,
+  "behavior.incident": 10.9,
+  "behavior.governor": 195.5,
+  "behavior.explain": 0.2,
+  "behavior.facets": 2.4,
+  "behavior.views": 7.1
+ },
+ "wall_s": 1004.7113706740056,
+ "registry": "progressive_decision",
+ "resource_mode": "full",
+ "incidents": 20,
+ "events": 1727,
+ "job_s": 1013.9071309470019,
+ "peak_rss_mb": 1074.4
+}

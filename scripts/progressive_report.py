@@ -1,8 +1,10 @@
 """Progressive-core evaluation report (docs/lib3/progressive.md §12, §16).
 
-Runs pack O (the requirement's organisation) for the given seeds through the
-production registry (build.build_registry; the pack asks for
-'full+progressive': B01-B30 + P00-P15 + lib-4), scores every run with
+Runs pack O (the requirement's organisation) for the given seeds through
+build.build_registry (the pack's default is 'full+progressive': B01-B30 +
+P00-P15 + lib-4, which does not fit in memory on pack O, progressive.md §16.2
+M25; the measured runs pass --registry progressive_decision, and the report's
+registry label is what the runs recorded), scores every run with
 eval/pmetrics (PG1-PG11), and extracts the requirement's example in BOTH views
 from the day snapshots:
 
@@ -112,9 +114,20 @@ def example_views(res: Any) -> Dict[str, Any]:
                                            "negative": bool((s.get("evidence") or {}).get("negative")
                                                             or "从未" in str(s.get("text_zh")))}
                                           for s in gv.get("statements") or []]})
+        dviews = []
+        for k, gv in sorted((snap.get("group_views") or {}).items()):
+            hdr = gv.get("header") or {}
+            if not str(k).startswith("class:grp:dept:") or not set(hdr.get("members") or []) & set(GA_IPS):
+                continue
+            dviews.append({"view": k, "name": gv.get("name"), "groups": gv.get("groups"),
+                           "members": hdr.get("members"), "header_zh": hdr.get("text_zh"),
+                           "header_en": hdr.get("text_en"),
+                           "statements": [{"text_zh": s.get("text_zh"), "text_en": s.get("text_en"),
+                                           "negative": bool((s.get("evidence") or {}).get("negative"))}
+                                          for s in gv.get("statements") or []]})
         out["days"][d] = {"oa_statements": [_brief(s) for s in oa],
                           "finance_statements": [_brief(s) for s in fin],
-                          "group_views": gviews,
+                          "group_views": gviews, "dept_views": dviews,
                           "ga_groups": {ip: ip2g.get(ip) for ip in GA_IPS}}
     out["checklist"] = checklist(out["days"].get(days[-1]) or {}, truth, days[-1])
     return out
@@ -197,6 +210,28 @@ def anomaly_table(res: Any, sc: Mapping[str, Any]) -> Dict[str, Any]:
                 "incident": v.get("incident"), "detected": v.get("detected")} for k, v in an.items()}
 
 
+def registry_label(runs: Sequence[Mapping[str, Any]], requested: Optional[str] = None,
+                   bounded: bool = False) -> str:
+    """The report's top-level registry label: the registry the runs were
+    actually made with (each run records it), not the command line of the
+    invocation that assembled them. A report assembled (--assemble/--rescore)
+    from runs made with --registry progressive_decision said 'pack default
+    (full+progressive)' although no run used that registry."""
+    used = sorted({str(r.get("registry")) for r in runs if r.get("registry")})
+    modes = sorted({str(r.get("resource_mode")) for r in runs if r.get("resource_mode")})
+    if used:
+        lab = " + ".join(used) if len(used) > 1 else used[0]
+        if len(used) > 1:
+            lab = "MIXED: " + lab
+    else:
+        lab = requested or "pack default"
+    if modes:
+        lab += ", lib3.resource_mode = " + "/".join(modes)
+    elif bounded:
+        lab += ", lib3.resource_mode = bounded"
+    return lab
+
+
 # ------------------------------------------------------------------ worker
 def _score(res: Any, seed: int, prev: Mapping[str, Any]) -> Dict[str, Any]:
     from app.eval.pmetrics import score_prun
@@ -214,6 +249,7 @@ def _score(res: Any, seed: int, prev: Mapping[str, Any]) -> Dict[str, Any]:
             eng[n] = round(float(em[:, i].sum()) / 1000.0, 1)
     out = {"seed": seed, "score": sc, "example": ex, "anomalies": anomaly_table(res, sc),
            "engine_s": eng, "wall_s": res.wall_s, "registry": prev.get("registry"),
+           "resource_mode": prev.get("resource_mode"),
            "incidents": len(res.incidents), "events": len(res.events)}
     if "job_s" in prev:
         out["job_s"] = prev["job_s"]
@@ -226,7 +262,7 @@ def _job(seed: int, opts: Mapping[str, Any]) -> Dict[str, Any]:
     from app.eval.packs import get_pack
     t0 = time.perf_counter()
     try:
-        pack = get_pack("O")
+        pack = get_pack(opts.get("pack") or "O")
         if opts.get("registry"):
             pack.registry_mode = opts["registry"]
         if opts.get("bounded"):
@@ -236,9 +272,11 @@ def _job(seed: int, opts: Mapping[str, Any]) -> Dict[str, Any]:
             import pickle
             os.makedirs(opts["keep_res"], exist_ok=True)
             res.store = None
-            with open(os.path.join(opts["keep_res"], f"O_{seed}.res.pkl"), "wb") as f:
+            with open(os.path.join(opts["keep_res"], f"{pack.name}_{seed}.res.pkl"), "wb") as f:
                 pickle.dump(res, f, protocol=pickle.HIGHEST_PROTOCOL)
-        out = _score(res, seed, {"registry": pack.registry_mode})
+        out = _score(res, seed, {"registry": pack.registry_mode,
+                                 "resource_mode": ((pack.config or {}).get("lib3") or {}).get("resource_mode")
+                                 or "full"})
     except Exception as exc:
         return {"seed": seed, "error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()[-4000:]}
     out["job_s"] = time.perf_counter() - t0
@@ -342,6 +380,29 @@ def render_html(rep: Mapping[str, Any]) -> str:
                      f"{_fmt(gv.get('members'))}</span></div>")
             for s in (gv.get("statements") or [])[:12]:
                 p.append(f"<div class='stmt'>{_fmt(s.get('text_zh'))}</div>")
+        for dv in dd.get("dept_views") or []:
+            p.append(f"<h3>seed {r['seed']} · 用户视角（配置的部门，由其学习群组组成，day {last}）</h3>")
+            p.append(f"<div class='stmt'><b>{_fmt(dv.get('header_zh'))}</b><br><span class='mut'>groups "
+                     f"{_fmt(dv.get('groups'))} · members {_fmt(dv.get('members'))}</span></div>")
+            for s in (dv.get("statements") or [])[:12]:
+                if s.get("negative") or not str(s.get("text_zh") or "").startswith("【"):
+                    p.append(f"<div class='stmt'>{_fmt(s.get('text_zh'))}</div>")
+    var = rep.get("variants") or []
+    if var:
+        p.append("<h2>Variants (O-red: never tuned on; O60: day 8 in 60-s event mode)</h2><div class='wrap'><table>"
+                 "<tr><th>pack</th><th>seed</th><th>recall@14</th><th>precision@14</th><th>ECE</th>"
+                 "<th>recall by day</th><th>false splits</th><th>anomalies detected</th></tr>")
+        for v in var:
+            sc = v.get("score") or {}
+            d14 = sc.get("pg1_day14") or {}
+            rc = (sc.get("pg2") or {}).get("recall") or {}
+            an = v.get("anomalies") or {}
+            p.append(f"<tr><td>{_fmt(sc.get('pack'))}</td><td>{_fmt(v.get('seed'))}</td><td>{_fmt(d14.get('recall'))}</td>"
+                     f"<td>{_fmt(d14.get('precision'))}</td><td>{_fmt(d14.get('ece'))}</td>"
+                     f"<td>{_fmt(', '.join(f'd{k} {x:.2f}' for k, x in sorted(rc.items(), key=lambda kv: int(kv[0])) if x is not None))}</td>"
+                     f"<td>{_fmt((sc.get('false_splits') or {}).get('per_system_month'))}</td>"
+                     f"<td>{sum(1 for a in an.values() if a.get('detected'))}/{len(an)}</td></tr>")
+        p.append("</table></div>")
     p.append("<h2>Anomalies A1–A10 (PG6)</h2><div class='wrap'><table><tr><th>seed</th>"
              + "".join(f"<th>A{i}</th>" for i in range(1, 11)) + "</tr>")
     for r in rep.get("runs") or []:
@@ -368,6 +429,10 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--out", default="reports/progressive")
     ap.add_argument("--registry", default=None, help="override the pack's registry mode")
+    ap.add_argument("--pack", default="O", help="org pack: O (default), O-red, O60, O-real, O-real-R<k>")
+    ap.add_argument("--variants", default=None,
+                    help="with --assemble: also score <out>/runs/<variant>_<seed>.json of these packs "
+                         "(comma list, e.g. O-red,O60) into the gates (O-red reported separately)")
     ap.add_argument("--bounded", action="store_true", help="lib3.resource_mode = bounded")
     ap.add_argument("--scale", default=None, help="directory with scale_*.json points (pscale.run_point)")
     ap.add_argument("--render", default=None, help="only re-render the HTML of a saved report dir")
@@ -394,16 +459,17 @@ def main() -> None:
     seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
     os.makedirs(os.path.join(args.out, "runs"), exist_ok=True)
     opts = {"registry": args.registry, "bounded": args.bounded, "keep_res": args.keep_res,
-            "no_series": args.no_series}
+            "no_series": args.no_series, "pack": args.pack}
+    tag = "O" if args.pack == "O" else args.pack
     if args.rescore:
         import pickle
         for s in seeds:
-            fn = os.path.join(args.rescore, f"O_{s}.res.pkl")
+            fn = os.path.join(args.rescore, f"{tag}_{s}.res.pkl")
             if not os.path.exists(fn):
                 continue
             with open(fn, "rb") as f:
                 res = pickle.load(f)
-            old_fn = os.path.join(args.out, "runs", f"O_{s}.json")
+            old_fn = os.path.join(args.out, "runs", f"{tag}_{s}.json")
             prev = json.load(open(old_fn, encoding="utf-8")) if os.path.exists(old_fn) else {}
             r = _score(res, s, prev)
             with open(old_fn, "w", encoding="utf-8") as f:
@@ -414,7 +480,7 @@ def main() -> None:
     todo = list(seeds)
     if args.assemble or args.skip_existing:
         for s in seeds:
-            fn = os.path.join(args.out, "runs", f"O_{s}.json")
+            fn = os.path.join(args.out, "runs", f"{tag}_{s}.json")
             if os.path.exists(fn):
                 with open(fn, encoding="utf-8") as f:
                     r = json.load(f)
@@ -430,10 +496,19 @@ def main() -> None:
         for fut in as_completed(futs):
             r = fut.result()
             runs.append(r)
-            with open(os.path.join(args.out, "runs", f"O_{r['seed']}.json"), "w", encoding="utf-8") as f:
+            with open(os.path.join(args.out, "runs", f"{tag}_{r['seed']}.json"), "w", encoding="utf-8") as f:
                 json.dump(r, f, indent=1, ensure_ascii=False)
             print(f"[{time.perf_counter() - t0:7.1f}s] seed {r['seed']}: {r.get('error') or 'ok'}", flush=True)
     runs.sort(key=lambda r: r["seed"])
+    variants: List[Dict[str, Any]] = []
+    for vt in [v.strip() for v in (args.variants or "").split(",") if v.strip()]:
+        rd = os.path.join(args.out, "runs")
+        for fn in sorted(os.listdir(rd)):
+            if fn.startswith(vt + "_") and fn.endswith(".json") and fn[len(vt) + 1:-5].isdigit():
+                with open(os.path.join(rd, fn), encoding="utf-8") as f:
+                    r = json.load(f)
+                if "error" not in r and "score" in r:
+                    variants.append(r)
     scale_pts = []
     if args.scale and os.path.isdir(args.scale):
         for fn in sorted(os.listdir(args.scale)):
@@ -442,12 +517,14 @@ def main() -> None:
                     pt = json.load(f)
                 if "error" not in pt:
                     scale_pts.append(pt)
-    scores = [dict(r["score"], pack="O") for r in runs if "score" in r]
+    scores = [dict(r["score"], pack=r["score"].get("pack") or "O") for r in runs + variants if "score" in r]
     gates = compute_pgates(scores, scale=pg4_summary(scale_pts) if scale_pts else None)
     rep = _clean({"generated": time.strftime("%Y-%m-%d %H:%M:%S"), "seeds": seeds,
-                  "registry": (args.registry or "pack default (full+progressive)")
-                  + (", lib3.resource_mode = bounded" if args.bounded else ""),
+                  "registry": registry_label(runs, args.registry, args.bounded),
                   "gates": gates, "runs": runs,
+                  "variants": [{k: r.get(k) for k in ("seed", "score", "anomalies", "wall_s", "job_s",
+                                                      "peak_rss_mb", "registry", "resource_mode")}
+                               for r in variants] or None,
                   "scale": {"points": scale_pts, "pg4": pg4_summary(scale_pts)} if scale_pts else None})
     with open(os.path.join(args.out, "progressive_report.json"), "w", encoding="utf-8") as f:
         json.dump(rep, f, indent=1, ensure_ascii=False)

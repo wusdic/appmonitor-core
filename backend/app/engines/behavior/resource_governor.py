@@ -69,6 +69,8 @@ STORE_REPORT_S = 6 * 3600.0     # store.memory_report cadence (it is O(stored po
 IDLE_XS_S = DAY                  # no event for a day -> tier XS
 IDLE_EVICT_S = 30 * DAY          # no event for 30 days -> checkpoint and release
 LINGER_S = DAY
+RELEASE_IDLE_S = 7 * DAY         # bounded mode: per-IP decision-chain state of an IP idle this long is released
+RELEASE_MODELS = ("model.calib", "model.governor", "model.control")
 OVER_TICKS = 3
 UNDER_FRAC = 0.7
 UNDER_S = DAY
@@ -123,10 +125,13 @@ class GovState:
         self.earn_day: Dict[str, int] = {}
         self.engine_ms: Dict[str, Deque[Tuple[float, float]]] = {}
         self.regime: Dict[str, Tuple[float, Any]] = {}             # system -> (ts, IPs with a B28 regime event in 7 d)
+        self.keep: Dict[str, "OrderedDict[str, float]"] = {}       # system -> ip -> last ts (7 d, bounded mode)
+        self.released = 0
 
     def nbytes(self) -> int:
         n = 200 + 24 * len(self.cpu) + 64 * len(self.last_event) + 100 * len(self.rate)
         n += sum(80 * len(v) for v in self.linger.values())
+        n += sum(80 * len(v) for v in (getattr(self, "keep", None) or {}).values())
         n += sum(24 * len(v) for v in self.engine_ms.values())
         return int(n)
 
@@ -174,6 +179,7 @@ class ResourceGovernorEngine(Engine):
         evicted = self._evict_idle(store, st, now)
         trees = self._allocate(store, st, bud, now)
         systems = self._sets(store, st, sources, now, cfg) if (PA.bounded(cfg) or EV.enabled(cfg)) else {}
+        released = self._release_idle(store, st, sources, systems, now) if PA.bounded(cfg) else 0
         ladder = self._ladder_flags(st, PA.bounded(cfg))
         old = store.get_model(ORG, ORG, MP.BUDGET)
         version = int((old or {}).get("version", 0)) + 1 if isinstance(old, Mapping) else 1
@@ -188,7 +194,8 @@ class ResourceGovernorEngine(Engine):
         if st.mem_t == now:
             self._ops_budget(store, st, trees, now, dt)
         self.last_stats = {"trees": len(trees), "systems": len(systems), "step": st.step,
-                           "restored": restored, "evicted": evicted, "pcore_cpu_share": cpu_p}
+                           "restored": restored, "evicted": evicted, "pcore_cpu_share": cpu_p,
+                           "released": released}
         return len(trees)
 
     # ---------------------------------------------------------------- costs
@@ -293,6 +300,48 @@ class ResourceGovernorEngine(Engine):
                 if ip in lru:
                     lru.move_to_end(ip)
                 lru[ip] = now
+
+    def _release_idle(self, store: Any, st: GovState, sources: Mapping[str, Set[str]],
+                      systems: Mapping[str, Any], now: float) -> int:
+        """Bounded mode (§10.1-§10.3): the per-IP decision-chain state of an IP
+        that has been idle for RELEASE_IDLE_S (7 d) is released - B24/B25's
+        model.calib (bookkeeping, meta rings, CUSUM), B28's model.governor /
+        model.control - unless the IP is earned, in an open incident or had a
+        B28 regime event within 7 d (P15's active set). The IPs come from a
+        per-system LRU of the sources seen in the last 7 days, updated from the
+        tick's sources, so the work is O(sources of the tick + expiries), never
+        a scan of the known IPs; memory of the chain is O(|E_t| + |A_7d|)
+        instead of O(every IP ever seen). A returning IP starts from its
+        class's pooled rings (B24) and an empty CUSUM, as a new IP does."""
+        if getattr(st, "keep", None) is None:
+            st.keep = {}
+        n = 0
+        for s, ips in sources.items():
+            lru = st.keep.setdefault(s, OrderedDict())
+            for ip in ips:
+                if ip in lru:
+                    lru.move_to_end(ip)
+                lru[ip] = now
+        for s in list(st.keep):
+            lru = st.keep[s]
+            rec = systems.get(s) or {}
+            protect = set(rec.get("earned") or ()) | set(rec.get("active") or ())
+            while lru:
+                ip, ts = next(iter(lru.items()))
+                if ts >= now - RELEASE_IDLE_S:
+                    break
+                lru.popitem(last=False)
+                if ip in protect or is_pseudo_entity(ip):
+                    lru[ip] = now                      # protected: re-examined after another window
+                    continue
+                for name in RELEASE_MODELS:
+                    if store.get_model(s, ip, name) is not None:
+                        store.put_model(s, ip, name, None, ts=now)
+                        n += 1
+            if not lru:
+                st.keep.pop(s, None)
+        st.released = int(getattr(st, "released", 0)) + n
+        return n
 
     def _restore(self, store: Any, st: GovState, sources: Mapping[str, Set[str]], now: float) -> List[str]:
         out = []
