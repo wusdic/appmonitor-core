@@ -3741,7 +3741,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:20@1.0"
+      "stmt": "p:oa:0:19@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -4249,7 +4249,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:20@1.0"
+      "stmt": "p:oa:0:19@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -4757,7 +4757,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:20@1.0"
+      "stmt": "p:oa:0:19@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -5229,7 +5229,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:20@1.0"
+      "stmt": "p:oa:0:19@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -5581,7 +5581,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:oa:0:23@1.0|grp:G9"
+      "stmt": "p:oa:0:22@1.0|grp:G9"
      },
      "SALES.oa.login#1": {
       "recovered": true,
@@ -5701,7 +5701,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:20@1.0"
+      "stmt": "p:oa:0:19@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -5821,10 +5821,10 @@
      "sporadic": 0.5,
      "monthly": null
     },
-    "precision": 0.7230769230769231,
+    "precision": 0.7384615384615385,
     "n_precision": 65,
     "n_unjudged": 4,
-    "ece": 0.35935866460889737,
+    "ece": 0.37474327999351276,
     "mean_depth": 1.5072463768115942,
     "per_pattern": {
      "GA.oa.documents#0": {
@@ -6053,7 +6053,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:oa:0:23@1.0|grp:G9"
+      "stmt": "p:oa:0:22@1.0|grp:G9"
      },
      "SALES.oa.login#1": {
       "recovered": true,
@@ -6173,7 +6173,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:20@1.0"
+      "stmt": "p:oa:0:19@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -6537,7 +6537,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:oa:0:23@1.0|grp:G9"
+      "stmt": "p:oa:0:22@1.0|grp:G9"
      },
      "SALES.oa.login#1": {
       "recovered": true,
@@ -6657,7 +6657,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:20@1.0"
+      "stmt": "p:oa:0:19@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -7045,7 +7045,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:oa:0:23@1.0|grp:G9"
+      "stmt": "p:oa:0:22@1.0|grp:G9"
      },
      "SALES.oa.login#1": {
       "recovered": true,
@@ -7165,7 +7165,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:20@1.0"
+      "stmt": "p:oa:0:19@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -7589,7 +7589,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:oa:0:23@1.0|grp:G9"
+      "stmt": "p:oa:0:22@1.0|grp:G9"
      },
      "SALES.oa.login#1": {
       "recovered": true,
@@ -7709,7 +7709,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:20@1.0"
+      "stmt": "p:oa:0:19@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -8133,7 +8133,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:oa:0:23@1.0|grp:G9"
+      "stmt": "p:oa:0:22@1.0|grp:G9"
      },
      "SALES.oa.login#1": {
       "recovered": true,
@@ -8253,7 +8253,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:20@1.0"
+      "stmt": "p:oa:0:19@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -8689,7 +8689,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:oa:0:23@1.0|grp:G9"
+      "stmt": "p:oa:0:22@1.0|grp:G9"
      },
      "SALES.oa.login#1": {
       "recovered": true,
@@ -8809,7 +8809,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:20@1.0"
+      "stmt": "p:oa:0:19@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -9012,7 +9012,7 @@
     "13": 0.6065573770491803,
     "14": 0.5245901639344263,
     "15": 0.5862068965517241,
-    "16": 0.7230769230769231,
+    "16": 0.7384615384615385,
     "17": 0.6716417910447762,
     "18": 0.7083333333333334,
     "19": 0.7857142857142857,
@@ -12083,36 +12083,35 @@
   }
  },
  "engine_s": {
-  "raw.action_token": 18.0,
-  "raw.client_stack": 1.7,
-  "raw.event": 30.0,
-  "derived.event_context": 10.8,
-  "behavior.resource_governor": 74.7,
-  "behavior.attr_registry": 173.3,
-  "behavior.attr_select": 333.8,
-  "behavior.conformity": 108.6,
-  "behavior.pattern_tree": 319.5,
-  "behavior.content_bounds": 84.9,
-  "behavior.payload_grammar": 2.5,
-  "behavior.binding": 57.9,
-  "behavior.time_window": 17.4,
-  "behavior.workflow": 14.3,
-  "behavior.who_groups": 9.5,
-  "behavior.system_profile": 17.2,
-  "behavior.calibration": 89.4,
-  "behavior.fusion": 289.2,
-  "behavior.risk": 118.0,
-  "behavior.incident": 14.0,
-  "behavior.governor": 237.0,
-  "behavior.explain": 0.8,
-  "behavior.facets": 8.1,
-  "behavior.views": 55.4
+  "raw.action_token": 19.0,
+  "raw.client_stack": 1.9,
+  "raw.event": 31.8,
+  "derived.event_context": 11.2,
+  "behavior.resource_governor": 79.5,
+  "behavior.attr_registry": 180.0,
+  "behavior.attr_select": 352.0,
+  "behavior.conformity": 112.9,
+  "behavior.pattern_tree": 344.1,
+  "behavior.content_bounds": 88.0,
+  "behavior.payload_grammar": 2.6,
+  "behavior.binding": 61.1,
+  "behavior.time_window": 18.1,
+  "behavior.workflow": 14.9,
+  "behavior.who_groups": 10.1,
+  "behavior.system_profile": 17.9,
+  "behavior.calibration": 93.3,
+  "behavior.fusion": 303.3,
+  "behavior.risk": 124.4,
+  "behavior.incident": 14.7,
+  "behavior.governor": 248.9,
+  "behavior.explain": 1.0,
+  "behavior.facets": 8.4,
+  "behavior.views": 59.0
  },
- "wall_s": 2179.6441445409946,
+ "wall_s": 2291.706049950997,
  "registry": "progressive_decision",
  "resource_mode": "full",
  "incidents": 83,
  "events": 2856,
- "job_s": 2452.371464004995,
- "peak_rss_mb": 1529.6
+ "job_s": 2564.5534646249944
 }

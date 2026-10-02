@@ -17,16 +17,18 @@
 > 其中 [`progressive.md`](docs/lib3/progressive.md) 是渐进画像内核的规格与实测，[`summary.md`](docs/lib3/summary.md) 是现状摘要，
 > [`integration.md`](docs/lib3/integration.md) 是集成与各轮评估记录。
 
-## 现状（2026-10-01）
+## 现状（2026-10-02）
 
 - 60 个引擎已实现；默认注册表 `full` 注册 44 个（不含渐进内核），`full+progressive` 注册全部 60 个。严格模式下 0 异常。
-- **渐进画像内核**（组织包 O，21 天、种子 0–4，第二轮最终代码，`reports/progressive/`）：需求示例在 4/5 个种子上还原到“综合部 3 个 IP 的登录节点 +
-  `username=` 语法（种子 0 另有取值封闭集）+ 3 条 IP→用户名绑定”，5/5 个种子还原 .21 的审批、17 点报告、“财务审批只有 192.168.2.10”与用户视角“综合部在财务系统中从未执行写操作”；
-  示例异常 48/50 检出，≥ MEDIUM 误报 0.004/实体·日（达标）；内存对 IP 数、属性数次线性（达标）。但验收**未通过**：第 14 天模式召回 0.58（第一轮 0.21，目标 0.90），
-  “全部在 0.5–3 KB”只有 1/5，陈述置信度不随时间上升、ECE 0.30，场景策略 0.83，每事件耗时仍超目标数倍，真实扰动包 O-real 未运行。
+- **渐进画像内核**（组织包 O，21 天、种子 0–4，第三轮最终代码，`reports/progressive/`）：需求示例逐条核对 50 项中 47 项通过（种子 0、2、4 全对）——
+  5/5 个种子还原“综合部 3 个 IP 的登录节点 + `username=` 语法与封闭集 {jack, mike, mike.w, rose} + 3 条 IP→用户名绑定”、.21 的审批、17 点报告、
+  “财务部（192.168.2.10）”独占财务审批与用户视角“综合部在财务系统中从未执行写操作”，“全部在 0.5–3 KB”4/5。第 14 天模式召回 0.79、精确 0.69
+  （同一评分器下第二轮 0.68 / 0.69），示例异常 50/50，≥ MEDIUM 误报 0.003/实体·日，PG3（具体度）与 PG7 通过，内存与每事件 CPU 对 IP 数、属性数次线性。
+  验收仍**未通过**：召回、精确目标 0.90，陈述置信度偏保守（ECE 0.23），D3–D5 漂移、场景策略 0.83、内存对服务器数 0.45 与每事件耗时未达标；
+  真实扰动包 O-real 只在中间快照上跑过一次，真实日志试点未做。
 - **统计引擎库**（A–E 包第四轮，`reports/eval_report.json`）：15 项门限中第 15 项（鲁棒性）通过，第 12、13 项 n/a，其余未通过；
   期限内威胁召回 0.71（目标 0.95），对照实体 FAR ≥ LOW 0.156、≥ MEDIUM 0.042（均达标），单包墙钟与实时 p95 远超 360 s / 80 ms 目标。
-- 结果、原因与未决问题见设计文档库三 §3.0（逐句需求状态）、§3.8.0（第二轮实测与逐字学到的画像）、§3.10、§3.11 与 `docs/lib3/progressive.md` §3.1、§16.9–§16.10。
+- 结果、原因与未决问题见设计文档库三 §3.0（逐句需求状态）、§3.8.0（第三轮实测）、§3.8.0a（逐字学到的画像，两种视角）、§3.10、§3.11 与 `docs/lib3/progressive.md` §3.1、§16.11。
 
 ## 架构一览
 
@@ -121,13 +123,15 @@ OMP_NUM_THREADS=1 ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8099
 ## 渐进画像内核：组织包 O 评估与伸缩实验
 
 ```bash
-# 包 O（需求中的组织：综合部/财务部/销售部/研发池、OA 与财务等 6 个系统、21 天、900 s 拍），种子 0–4，三进程并行（每个约 30 分钟）
+# 包 O（需求中的组织：综合部/财务部/销售部/研发池、OA 与财务等 6 个系统、21 天、900 s 拍），种子 0–4，三进程并行（每个约 40 分钟）
 .venv/bin/python scripts/progressive_report.py --seeds 0,1,2,3,4 --workers 3 --no-series --out reports/progressive
+# 可续跑：每约 600 s 在日末写检查点，跑满约 2 400 s 后在下一个检查点停下；再次执行同一命令从检查点继续（容器重启后也可）
+.venv/bin/python scripts/progressive_report.py --seeds 0 --workers 1 --no-series --checkpoint /tmp/pckpt --segment-s 600 --stop-after 2400 --out reports/progressive
 # 变体（红队 O-red、60 秒事件模式 O60），写 runs/<包>_<种子>.json（也会覆盖 progressive_report.json，最后用 --assemble 重建）
 .venv/bin/python scripts/progressive_report.py --pack O-red --seeds 0 --no-series --out reports/progressive
 .venv/bin/python scripts/progressive_report.py --pack O60 --seeds 0 --no-series --out reports/progressive
 # 不重跑，只把已保存的运行（含变体）汇总成报告
-.venv/bin/python scripts/progressive_report.py --assemble --seeds 0,1,2,3,4 --variants O-red,O60 --scale reports/progressive/scale7 --out reports/progressive
+.venv/bin/python scripts/progressive_report.py --assemble --seeds 0,1,2,3,4 --variants O-red,O60 --scale reports/progressive/round3_eval/scale7 --out reports/progressive
 # 只根据已保存的 JSON 重新生成 HTML
 .venv/bin/python scripts/progressive_report.py --render reports/progressive
 # PG4 伸缩实验（IP 数、属性数、服务器数；--days 指定天数，规格为 7 天）
@@ -137,7 +141,7 @@ OMP_NUM_THREADS=1 ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8099
 - `progressive_report.py` 用 `backend/app/eval/pmetrics.py` 评分（门限 PG1–PG11，`docs/lib3/progressive.md` §12），并从每天的快照中抽取需求示例的
   系统视角与群组视角陈述、逐条核对真值，写 `progressive_report.{json,html}` 与每个种子的 `runs/O_<种子>.json`。
 - 组织包的默认注册模式是 `progressive_decision`（`full+progressive` 在约 700 个来源上需要每进程 7 GB 以上内存；`--registry` 可覆盖）；
-  每次运行约 29–31 分钟、峰值约 1.3 GB。第一轮（提交 6001027）的运行保存在 `reports/progressive/round1/runs/`。其它参数：`--bounded`（统计引擎库有界模式）、`--keep-res`/`--rescore`（保存/重评运行结果）、`--assemble`、`--skip-existing`。
+  第三轮每次运行约 39–41 分钟（3–4 个并行）、峰值 RSS 1.45–1.94 GB（含检查点序列化）。第一轮（提交 6001027）的运行保存在 `reports/progressive/round1/runs/`，第二轮在 `round2/runs/`（原样）与 `round2/rescored/`（用第三轮的真值与评分器重评），第三轮加 V10 之前的最终运行在 `round3_eval/pre_v10_runs/`，第三轮伸缩点在 `round3_eval/scale7/`。其它参数：`--bounded`（统计引擎库有界模式）、`--keep-res`/`--rescore`（保存/重评运行结果）、`--assemble`、`--skip-existing`、`--checkpoint`/`--segment-s`/`--stop-after`（可续跑，`backend/app/eval/resumable.py`）。
 - 生成器 `backend/app/pipeline/orggen.py`，评估包 `backend/app/eval/packs.py`（O、O60、O-real、O-red、O-servers、O-scale）。
 
 ## 测试
@@ -146,7 +150,7 @@ OMP_NUM_THREADS=1 ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8099
 OMP_NUM_THREADS=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests
 ```
 
-- 全套约 21 分钟；渐进内核第二轮最终代码上为 `2881 passed, 4 skipped`。
+- 全套约 28 分钟；渐进内核第三轮最终代码上为 `2961 passed, 4 skipped`。
 - 目录：`tests/engines/`（逐引擎规格测试，渐进内核为 `test_p00_*` … `test_p15_*` 与 `test_progressive_integration_fixes.py`）、`tests/lib/`、`tests/core/`、`tests/eval/`（含包 O 生成器、PG 指标与收敛实验）、`tests/api/`（API v2），
   以及顶层的流水线端到端、tick 模式黄金、节拍不变性等测试。
 - 引擎/库/核心单元测试通过各目录的 `conftest.py` 以 v2 的 `tick` 模式运行；流水线、Runtime、评估与脚本默认 `canonical`（双粒度）模式。
@@ -225,7 +229,7 @@ backend/app/
   engines/behavior/lib/      行为库共享数学（特征表、检测器注册表、预测分布、校准、融合、序贯阈值、门控、双粒度、模型访问器）
   engines/behavior/lib/p*.py 渐进画像内核共享数学（事件批、泛化层次、草图、e 过程、模式树、打分、语法、函数依赖、时间窗、流程、MinHash/Louvain、策略、侧面、渲染）
   pipeline/                  编排器 · 合成流量源 · 组织生成器 orggen.py · 注册表装配与 Runtime
-  eval/                      评估包、真值、指标、运行器、报告；渐进内核门限 pmetrics.py 与伸缩实验 pscale.py
+  eval/                      评估包、真值、指标、运行器、报告；渐进内核门限 pmetrics.py、伸缩实验 pscale.py 与可续跑运行器 resumable.py
   api/                       FastAPI：routes.py（旧版）、routes_v2.py + views.py（v2）、routes_v3.py + progressive_views.py + progressive_runtime.py（v3 渐进内核）
 data/
   catalog.yaml               指标库目录（原始 55 + 次生 24，含获取方式）

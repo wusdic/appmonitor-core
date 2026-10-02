@@ -1219,3 +1219,85 @@ summaries (the "0.5–3 KB" clause); P03's time p-value floor on young nodes (A4
 adopted; suspect sources never cleared (M29 by design — needs a lead decision); B28 trust 0 while any
 incident is open; DEV pool not one group; per-event cost of P03 / P04; O-real, PG9 on B–D and seeds 1–4, the
 20 000-IP and 300-system points, and pack O with `full+progressive` not run.
+
+## 15. Progressive profile core, round 3 (2026-10-02)
+
+Full record: `progressive.md` §16.11 (results on the final code; deviations R3-1 – R3-14, R1 – R5, G8 – G15,
+E-T1 – E-T3, E-C1 – E-C2, V1 – V10, each with a regression test that fails without it; the requirement's
+example verbatim in both views; diagnosis by engine and open issues); Chinese narrative: design doc §3.0
+(status per requirement sentence), §3.3 (the algorithm changes in place), §3.8.0–§3.8.0c (round 3; round 2
+kept as §3.8.0d), §3.11.1. Four owners worked concurrently with strict file ownership (P04 / P05 / P02;
+P06–P10; P03 / P11 / P14 / B28's trust rule; generator, scorer and cost), on top of commit 2c7d335; the
+working state was checkpointed as commit 11b9e0b after a container restart, and the evaluator measured one
+final code state (the owners' changes + V1 – V10).
+
+### 15.1 What changed in the integrated system
+
+- **Profile core.** Split children are born with their own history (replayed reservoir rows and exact
+  per-value extremes, R3-1 – R3-3), new route nodes get the rows they waited for (R3-4), confirmation counts
+  undecayed observations (R3-5), suspicion is a sequential evidence test cleared only by colleagues (R3-6),
+  the held-out check has three false failures fixed and an empirical-Bayes prior per statement kind
+  (R3-7 – R3-10), constant form key sets are tracked at their action node (R3-11). P07 grows its exact-value
+  capacity for finite populations (R1), P08 pools a source's clean days across the tree (R2), P10 adopts route
+  renames (R3), P09 needs 5 dates for a single-source window at a multi-source node (R4), P06 / P07 content
+  requests skip derived attributes (R5). P03's time p-value backs off to the parent on young nodes (G8) and
+  checks cross-bindings up the ancestors (G14); P11 makes pools one group (G10), one-address role groups (G11),
+  stable ids matched on addresses with a lineage (G12, G15); P14 names the department and the action and
+  states bindings that distinguish their sources (G13). Evaluator engine changes: part confidence (V2),
+  held-out bindings = stated bindings (V3), part members and closed sets (V5), P12 not measuring P08 on
+  constant pairs (V6), no split child named on "not grouped yet" (V10).
+- **Decision chain.** B28 (G9, `governor._incident_trust`): an open incident whose evidence is pattern-scoped
+  (only P03 findings ≤ MEDIUM on one learned pattern, plus conformity-family alarms) no longer sets trust to
+  0; quarantine unchanged. The default registry's packs A and E seed 0 are unchanged by it.
+- **Evaluation.** The generator publishes each workflow step's own arrival law and the emitted per-day
+  extremes; held-out events follow the emitted traffic mix (E-T1, E-T2); TLS truth on the observed bytes
+  (V1); hard ranges, windows and bindings judged against what the data could show and at the coverage stated
+  (V4, V7, V9); the checklist reads the most specific statement (V8). The round-2 runs were re-scored with
+  the new scorer (`reports/progressive/round2/rescored/`) so that before / after compares the engines only.
+  Runs are resumable (`backend/app/eval/resumable.py`; `scripts/progressive_report.py --checkpoint DIR
+  --segment-s S --stop-after S`; identity sentinels restored by reference, a resumed run equals an
+  uninterrupted one apart from wall-clock fields, `tests/eval/test_resumable.py`).
+- **Cost.** P00's hot paths (E-C1, E-C2) with equivalence tests; P00 −21 to −24 %, all P engines ≈ −2 %.
+
+### 15.2 Results (all measured; `reports/progressive/`)
+
+- Pack O, seeds 0–4, 21 days, `progressive_decision` (after vs round 2 re-scored by the same scorer):
+  PG1 recall @ 14 0.789 [0.737–0.816] vs 0.684, precision 0.687 vs 0.690; components who 0.92 / when 0.92 /
+  content 0.84 / bindings 1.00 / workflow 1.00 (0.87 / 0.89 / 0.74 / 0.67 / 0.92); GA + FIN 6 bindings at
+  day 14 on 5/5 seeds; ECE @ 14 0.233 vs 0.344, @ 21 0.344 vs 0.473; anomalies 50 / 50 vs 48 / 50; FAR
+  incidents ≥ LOW 0.005, ≥ MEDIUM 0.003 per entity-day; PG3 passes (GA login = the 3 IPs 5/5, DEV pool one
+  group 5/5); PG5 D1 3/5, D2 5/5, D5 1/5, D3 and D4 0/5; PG8 0.83 [0.67–1.00]; PG10 day 11 1/5, day 21 2/5.
+  The example's checklist: 47 / 50 clauses (round 2 as published: 40 / 50); seeds 0, 2 and 4 hold all ten.
+  Gates passing: PG3, PG7.
+- V10 was found on held-out seed 4 after the first final runs (FAR ≥ MEDIUM 0.0028 → 0.0067 there); all seven
+  runs were repeated on the final code; the pre-V10 runs are kept in `reports/progressive/round3_eval/pre_v10_runs/`.
+- O-red seed 0: recall @ 14 0.59 (round 2: 0.41), anomalies 8/10 (A4, A7 missed), false splits 0. O60 seed 0:
+  day-8 recall 0.50 vs pack O's 0.48. O-real (35 days) once, on the 04:49Z snapshot only: 3 of 12 R items,
+  recall @ 14 0.45, anomalies 4/10 (`reports/progressive/round3_eval/O-real_0.json`).
+- Scaling, 7-day points on the 04:49Z snapshot (`reports/progressive/round3_eval/scale7/`): memory slope vs
+  IPs 0.040 (500 → 20 000 IPs), vs attributes 0.172, CPU / event vs IPs −0.157, vs attributes 0.149 — pass;
+  memory vs systems 0.45 (20 / 100 / 300 systems) and the per-event p95 (max 6.4 ms scoring, 5.6 ms learning)
+  — fail. A 3-day 500-IP sequential run (`round3_eval/perf_3d_{before,after}.json`): 2 166 → 2 117 µs per
+  event, scoring p95 157 → 146 µs, learning p95 1 424 → 1 428 µs.
+- Per run 39–41 min (resumable, 3–4 heavy processes on 4 cores), peak RSS 1.45–1.94 GB including checkpoint
+  serialisation; engine CPU 2 020–2 110 s per run (round 2: 1 730–1 820 s).
+- Non-regression: packs A and E seed 0 with the default registry are identical, key for key apart from
+  timings, to `reports/round4/runs/{A,E}_0_full.json` (run before V10, which changes P04 only);
+  `reports/eval_report.json` (round 4) stands.
+- Tests: 2 961 passed, 4 skipped, 0 failed (28 min) on the final tree. Two existing test files were edited by
+  the views owner: `tests/engines/test_p14_views.py` (golden text now with the action word) and
+  `tests/engines/test_progressive_integration_fixes.py` (its negative-statement check reads only the
+  whole-system sentence, since a per-action "从未执行" statement now exists); `tests/eval/test_content_integration.py`
+  now expects finance's bindings from day 7 (R2).
+
+### 15.3 Open (ordered by impact; details in design doc §3.11.1 and `progressive.md` §16.11.8–§16.11.9)
+
+Recall 0.79 / precision 0.69 against 0.90 (finance's 3-user closed sets need ~20 logins under
+`CLOSED_N` / `CLOSED_U`; finance and sales share one OA login node until ~day 15–16; mail departments differ
+only by short windows; the first day's rows of a new route are still lost); statements under-confident and
+ECE 0.23, with `p_hold` unable to calibrate a group's part; D3 (P03 does not use
+`pdfg.successor_candidate`; the renamed approver is also A2's source), D4 / D5 LOW incidents from GPD tails
+just past an observed maximum; P12's wall-clock arm decisions make identical runs differ; per-event cost
+10–60× the target and the memory slope vs systems 0.45 (a pack / gate definition question); lead decisions
+on G9's trust semantics, the scorer changes, PG2's strict day-to-day checks and PG10's 2-minute window test;
+O-real and the O-servers points not re-run on the final code.

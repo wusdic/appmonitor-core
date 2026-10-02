@@ -804,12 +804,12 @@
    "5": {
     "day": 5,
     "n_truth": 31,
-    "n_stmt": 27,
-    "n_confirmed": 27,
-    "recall": 0.3225806451612903,
+    "n_stmt": 31,
+    "n_confirmed": 31,
+    "recall": 0.3548387096774194,
     "components": {
-     "who": 0.4838709677419355,
-     "when": 0.5483870967741935,
+     "who": 0.5483870967741935,
+     "when": 0.6774193548387096,
      "content": 0.8387096774193549,
      "bindings": 0.0,
      "workflow": 0.8181818181818182
@@ -818,14 +818,14 @@
      "daily": 0.3076923076923077,
      "weekly": null,
      "continuous": 0.6666666666666666,
-     "sporadic": 0.0,
+     "sporadic": 0.5,
      "monthly": null
     },
-    "precision": 0.56,
-    "n_precision": 25,
+    "precision": 0.6206896551724138,
+    "n_precision": 29,
     "n_unjudged": 2,
-    "ece": 0.25369038722174214,
-    "mean_depth": 1.1481481481481481,
+    "ece": 0.2664523016782855,
+    "mean_depth": 1.2580645161290323,
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": false,
@@ -975,7 +975,7 @@
       "recovered": false,
       "components": {
        "who": false,
-       "when": false,
+       "when": true,
        "content": false,
        "bindings": false,
        "workflow": null
@@ -987,7 +987,7 @@
       "recovered": false,
       "components": {
        "who": false,
-       "when": false,
+       "when": true,
        "content": true,
        "bindings": null,
        "workflow": true
@@ -1082,8 +1082,8 @@
      "DEV.oa.login#0": {
       "recovered": false,
       "components": {
-       "who": false,
-       "when": false,
+       "who": true,
+       "when": true,
        "content": false,
        "bindings": null,
        "workflow": null
@@ -1092,16 +1092,16 @@
       "stmt": null
      },
      "DEV.oa.login#1": {
-      "recovered": false,
+      "recovered": true,
       "components": {
-       "who": false,
-       "when": false,
+       "who": true,
+       "when": true,
        "content": true,
        "bindings": null,
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": null
+      "stmt": "p:oa:0:15@1.0"
      },
      "DEV.mail#0": {
       "recovered": false,
@@ -1204,12 +1204,12 @@
    "6": {
     "day": 6,
     "n_truth": 32,
-    "n_stmt": 31,
-    "n_confirmed": 31,
-    "recall": 0.40625,
+    "n_stmt": 35,
+    "n_confirmed": 35,
+    "recall": 0.4375,
     "components": {
-     "who": 0.46875,
-     "when": 0.65625,
+     "who": 0.53125,
+     "when": 0.78125,
      "content": 0.84375,
      "bindings": 0.0,
      "workflow": 0.8181818181818182
@@ -1218,14 +1218,14 @@
      "daily": 0.37037037037037035,
      "weekly": null,
      "continuous": 1.0,
-     "sporadic": 0.0,
+     "sporadic": 0.5,
      "monthly": null
     },
-    "precision": 0.56,
-    "n_precision": 25,
+    "precision": 0.6206896551724138,
+    "n_precision": 29,
     "n_unjudged": 6,
-    "ece": 0.18728400000000003,
-    "mean_depth": 1.2580645161290323,
+    "ece": 0.2442103448275861,
+    "mean_depth": 1.3428571428571427,
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": false,
@@ -1387,7 +1387,7 @@
       "recovered": false,
       "components": {
        "who": false,
-       "when": false,
+       "when": true,
        "content": false,
        "bindings": false,
        "workflow": null
@@ -1399,7 +1399,7 @@
       "recovered": false,
       "components": {
        "who": false,
-       "when": false,
+       "when": true,
        "content": true,
        "bindings": null,
        "workflow": true
@@ -1494,8 +1494,8 @@
      "DEV.oa.login#0": {
       "recovered": false,
       "components": {
-       "who": false,
-       "when": false,
+       "who": true,
+       "when": true,
        "content": false,
        "bindings": null,
        "workflow": null
@@ -1504,16 +1504,16 @@
       "stmt": null
      },
      "DEV.oa.login#1": {
-      "recovered": false,
+      "recovered": true,
       "components": {
-       "who": false,
-       "when": false,
+       "who": true,
+       "when": true,
        "content": true,
        "bindings": null,
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": null
+      "stmt": "p:oa:0:15@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -1636,7 +1636,7 @@
     "precision": 0.5625,
     "n_precision": 32,
     "n_unjudged": 9,
-    "ece": 0.1869666464516066,
+    "ece": 0.19095982623339608,
     "mean_depth": 1.3658536585365855,
     "per_pattern": {
      "GA.oa.approvals#0": {
@@ -1925,7 +1925,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:18@1.0"
+      "stmt": "p:oa:0:15@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -2045,10 +2045,10 @@
      "sporadic": 0.5,
      "monthly": null
     },
-    "precision": 0.6666666666666666,
+    "precision": 0.696969696969697,
     "n_precision": 33,
     "n_unjudged": 9,
-    "ece": 0.34224848484848486,
+    "ece": 0.3272606060606061,
     "mean_depth": 1.380952380952381,
     "per_pattern": {
      "GA.oa.approvals#0": {
@@ -2361,7 +2361,7 @@
        "workflow": true
       },
       "period": "sporadic",
-      "stmt": "p:oa:0:18@1.0"
+      "stmt": "p:oa:0:15@1.0"
      },
      "DEV.mail#0": {
       "recovered": true,
@@ -2482,10 +2482,10 @@
     "sporadic": 0.5,
     "monthly": null
    },
-   "precision": 0.6666666666666666,
+   "precision": 0.696969696969697,
    "n_precision": 33,
    "n_unjudged": 9,
-   "ece": 0.34224848484848486,
+   "ece": 0.3272606060606061,
    "mean_depth": 1.380952380952381
   },
   "pg1_last_by_system": {
@@ -2518,8 +2518,8 @@
     "2": null,
     "3": 0.0,
     "4": 0.1935483870967742,
-    "5": 0.3225806451612903,
-    "6": 0.40625,
+    "5": 0.3548387096774194,
+    "6": 0.4375,
     "7": 0.46875,
     "8": 0.5
    },
@@ -2528,10 +2528,10 @@
     "2": null,
     "3": 1.0,
     "4": 0.6666666666666666,
-    "5": 0.56,
-    "6": 0.56,
+    "5": 0.6206896551724138,
+    "6": 0.6206896551724138,
     "7": 0.5625,
-    "8": 0.6666666666666666
+    "8": 0.696969696969697
    },
    "recall_violations": [],
    "recall_monotone": true,
@@ -2547,15 +2547,15 @@
     ],
     [
      5,
-     0.4146126880789661
+     0.4311
     ],
     [
      6,
-     0.463
+     0.4605
     ],
     [
      7,
-     0.5579
+     0.5547
     ],
     [
      8,
@@ -2582,7 +2582,7 @@
     ]
    ],
    "U_nonincreasing": false,
-   "ece": 0.34224848484848486
+   "ece": 0.3272606060606061
   },
   "false_splits": {
    "n": null,
@@ -2951,7 +2951,7 @@
    "7": {
     "oa_statements": [
      {
-      "pattern_id": "p:oa:0:14@1.0",
+      "pattern_id": "p:oa:0:18@1.0",
       "route": "GET oa.corp.local /docs",
       "state": "confirmed",
       "confidence": 0.45,
@@ -3969,7 +3969,7 @@
    "8": {
     "oa_statements": [
      {
-      "pattern_id": "p:oa:0:14@1.0",
+      "pattern_id": "p:oa:0:18@1.0",
       "route": "GET oa.corp.local /docs",
       "state": "confirmed",
       "confidence": 0.4,
@@ -4502,10 +4502,10 @@
         ]
        },
        "hdr.x-client-ver": {
-        "n": 1.828403702698008,
+        "n": 4.49196111333115,
         "grammar": "[0-9]\\.[0-9]\\.[0-9]",
         "c_g": 1.0,
-        "U_s": 0.014354709153061319,
+        "U_s": 0.36416863825659895,
         "len": [
          5,
          5
@@ -5152,36 +5152,35 @@
  },
  "anomalies": {},
  "engine_s": {
-  "raw.action_token": 22.9,
-  "raw.client_stack": 1.6,
-  "raw.event": 10.2,
-  "derived.event_context": 7.1,
-  "behavior.resource_governor": 21.1,
-  "behavior.attr_registry": 79.4,
-  "behavior.attr_select": 96.0,
-  "behavior.conformity": 45.6,
-  "behavior.pattern_tree": 112.2,
-  "behavior.content_bounds": 14.4,
-  "behavior.payload_grammar": 1.6,
-  "behavior.binding": 24.5,
+  "raw.action_token": 23.4,
+  "raw.client_stack": 1.7,
+  "raw.event": 10.6,
+  "derived.event_context": 7.3,
+  "behavior.resource_governor": 21.3,
+  "behavior.attr_registry": 79.7,
+  "behavior.attr_select": 97.1,
+  "behavior.conformity": 46.2,
+  "behavior.pattern_tree": 114.8,
+  "behavior.content_bounds": 14.7,
+  "behavior.payload_grammar": 1.7,
+  "behavior.binding": 24.1,
   "behavior.time_window": 6.2,
-  "behavior.workflow": 8.7,
-  "behavior.who_groups": 4.8,
-  "behavior.system_profile": 13.7,
-  "behavior.calibration": 90.4,
-  "behavior.fusion": 267.0,
-  "behavior.risk": 133.9,
-  "behavior.incident": 15.0,
-  "behavior.governor": 238.3,
+  "behavior.workflow": 9.0,
+  "behavior.who_groups": 4.9,
+  "behavior.system_profile": 13.9,
+  "behavior.calibration": 92.5,
+  "behavior.fusion": 272.7,
+  "behavior.risk": 136.5,
+  "behavior.incident": 15.3,
+  "behavior.governor": 244.1,
   "behavior.explain": 0.3,
-  "behavior.facets": 3.1,
-  "behavior.views": 12.9
+  "behavior.facets": 3.2,
+  "behavior.views": 13.0
  },
- "wall_s": 1261.5465331180021,
+ "wall_s": 1284.4338251890003,
  "registry": "progressive_decision",
  "resource_mode": "full",
  "incidents": 30,
- "events": 1795,
- "job_s": 1282.8934189099964,
- "peak_rss_mb": 1089.1
+ "events": 1796,
+ "job_s": 1309.2064772799931
 }

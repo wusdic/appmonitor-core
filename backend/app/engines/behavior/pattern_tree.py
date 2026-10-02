@@ -162,7 +162,7 @@ from .lib import pselect as SEL
 from .lib import psketch as PS
 from .lib import ptree as PT
 from .lib.combine import seeded_uniform
-from .lib.phier import STAR, Shaped
+from .lib.phier import GRP_NONE, STAR, Shaped
 
 DAY = PS.DAY
 N_G = 32.0                     # evidence units between split checks
@@ -234,6 +234,26 @@ def _h(v: Any) -> Hashable:
         return v
     except TypeError:
         return repr(v)
+
+
+# Values of a learned coarsening that only say "not assigned yet": P11's
+# ungrouped source (grp:∅). A source leaves it when P11 groups it and a new
+# one enters it, so a child named on it holds whoever was ungrouped at the
+# split and its sources are re-routed to the `other` child as they are
+# grouped. Measured on pack O seed 4 (round 3, evaluator): the OA login and
+# home nodes split on day 3.4 into {grp:∅} (the 研发 leases, then ungrouped)
+# and `other` (the departments); once P11 pooled 研发 (G10, day 5) every
+# re-leased address it had grouped was routed to the departments' node and
+# flagged `outsider_group` (17 MEDIUM / HIGH incidents, FAR >= MEDIUM 0.0028
+# -> 0.0067). Such values are never a named child: they stay in `other`.
+TRANSIENT_VALUES = frozenset({GRP_NONE})
+
+
+def _named_groups(groups: Sequence[Sequence[Any]]) -> List[List[Any]]:
+    """The value groups of a split without the transient values (see
+    TRANSIENT_VALUES); groups left empty are dropped."""
+    out = [[v for v in g if v not in TRANSIENT_VALUES] for g in groups]
+    return [g for g in out if g]
 
 
 def _local_day(ts: float, off: float) -> int:
@@ -1832,6 +1852,14 @@ class PatternTreeEngine(Engine):
         a, l = cand
         groups = [list(g) for gi, g in enumerate(dec.groups) if gi != dec.other_group and g]
         groups = [[v for v in g if v != PE.OTHER] for g in groups]
+        named0 = [g for g in groups if g]
+        groups = _named_groups(groups)
+        if named0 and not groups:
+            # only a transient value (an ungrouped source) was to be named: the
+            # candidate yields its slot until the next restart (by then P11 may
+            # have groups to name), as a constant one does
+            leaf.meta.setdefault("const", set()).add((a, int(l)))
+            return False
         # a named child must recur: at least one of its values was seen on >= 2 local
         # dates (else the "group" is one day, e.g. a day-of-month or a one-off burst,
         # and its events stay in `other`)
@@ -2044,7 +2072,7 @@ class PatternTreeEngine(Engine):
         a, l = R["cands"][best]
         groups, oidx, gev = ss.value_groups(best)
         groups = [[v for v in g if v != PE.OTHER] for gi, g in enumerate(groups) if gi != oidx]
-        groups = [g for g in groups if g]
+        groups = _named_groups(groups)
         if not groups or sum(1 for e in gev if e >= PE.N_CHILD_MIN) < 2:
             return False
         old = {"attr": nd.split.attr, "level": nd.split.level}
