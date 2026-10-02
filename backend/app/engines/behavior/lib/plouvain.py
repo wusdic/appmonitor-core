@@ -259,8 +259,8 @@ def merge_similar(labels: np.ndarray, M: np.ndarray, rho: float,
 
 def merge_local(labels: np.ndarray, M: np.ndarray, sources: Sequence[str], ephemeral: Sequence[bool],
                 active: "ActiveIndex", j_min: float = 0.0, sample: int = 16,
-                min_size: int = 3, max_prefixes: int = 16, min_len: Tuple[int, int] = (16, 48)
-                ) -> np.ndarray:
+                min_size: int = 3, max_prefixes: int = 16, min_len: Tuple[int, int] = (16, 48),
+                nets: Optional[Sequence[Any]] = None) -> np.ndarray:
     """Address-locality merge for re-addressed populations (a DHCP / VPN pool,
     §6.21). A pool whose members get a new address every day produces one-day
     signatures that differ only by which of the pool's actions fell on that
@@ -270,7 +270,16 @@ def merge_local(labels: np.ndarray, M: np.ndarray, sources: Sequence[str], ephem
     active on one day only) are found once, and the ephemeral communities
     inside one such prefix are merged (MinHash agreement >= j_min with the
     growing union; default 0: an address that lives one day shows a random
-    slice of its pool's behaviour, so slices need not overlap)."""
+    slice of its pool's behaviour, so slices need not overlap).
+
+    `nets` (round 3): the pool prefixes when the caller knows them (configured
+    DHCP scopes, prefixes whose judged addresses turn over, who_groups
+    _pool_nets); the purity-over-active-addresses covers are then not
+    computed. Measured on pack O: the 研发 pool's active addresses include its
+    young leases (first seen < 2 days ago, not judged ephemeral yet) and its
+    low-evidence ones, so 10.50.0.0/22 was never "pure" over the union of the
+    ephemeral communities and the pool stayed 5-10 groups (dev_pool_grouped
+    0/5)."""
     lab = np.asarray(labels, dtype=np.int64).copy()
     members: Dict[int, List[int]] = {}
     for i, c in enumerate(lab.tolist()):
@@ -279,15 +288,18 @@ def merge_local(labels: np.ndarray, M: np.ndarray, sources: Sequence[str], ephem
            if len(m) >= min_size and float(np.mean([bool(ephemeral[i]) for i in m])) >= 0.5]
     if len(eph) < 2:
         return lab
-    union = [sources[i] for c in eph for i in members[c]]
-    covers = prefix_covers(union, active, cover=1.0, max_prefixes=max_prefixes, partial=True,
-                           min_len=min_len)
-    nets = []
-    for cv in covers:
-        try:
-            nets.append(ipaddress.ip_network(cv))
-        except ValueError:
-            continue
+    if nets is None:
+        union = [sources[i] for c in eph for i in members[c]]
+        covers = prefix_covers(union, active, cover=1.0, max_prefixes=max_prefixes, partial=True,
+                               min_len=min_len)
+        nets = []
+        for cv in covers:
+            try:
+                nets.append(ipaddress.ip_network(cv))
+            except ValueError:
+                continue
+    else:
+        nets = [n if not isinstance(n, str) else ipaddress.ip_network(n, strict=False) for n in nets]
     remap: Dict[int, int] = {}
     for net in nets:
         inside = []

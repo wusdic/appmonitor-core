@@ -16,6 +16,13 @@ Writes  model.pgrammar@(tree key, '__system__'):
         text attributes P05 found informative that the node does not model (<= 3 per
         node, 32 busiest nodes; lib/pbounds.request_targets), so key sets and value
         grammars exist where the requirement needs them.
+Adaptive value capacity (round 3, lib/pgrammar.adapt_values): a text target's
+        exact-value sketch (pnode.TEXT_VALUES_K = 16) is doubled (<= 64) when the
+        values P07 found tracked at its fits stopped growing while the sketch kept
+        evicting (a finite population larger than the sketch: 销售部's 20
+        usernames), and the closed set is then judged on the arrivals since the
+        growth; random tokens never grow it. The state is kept per node in
+        'vstate' {attr: {'k', 'seg', 'seen' (<= 128 hashes) | 'open', 'ck', 'new'}}.
 Cadence 1 h per tree, dirty nodes only (§6.20).
 Nothing is pre-set: "后边内容不超过 10 个字符" is an output only when observed
 lengths reach 10 (or an operator pins it; pins only widen).
@@ -112,7 +119,9 @@ class PayloadGrammarEngine(Engine):
                     continue
                 entry = self.fit_node(store, key, node, now, reg, ctx.config, closed_n, prev,
                                       closed_u, lambda nd, a, tree=tree, outn=outn:
-                                      _ancestor_grammar(tree, outn, nd, a))
+                                      _ancestor_grammar(tree, outn, nd, a),
+                                      lambda nd, a, tree=tree, outn=outn:
+                                      _ancestor_capacity(tree, outn, nd, a))
                 outn[nid] = entry
                 fits[nid] = PB.fit_mark(node, now)
                 n_fit += 1
@@ -145,14 +154,23 @@ class PayloadGrammarEngine(Engine):
     def fit_node(self, store: Any, key: str, node: Any, now: float, reg: Any,
                  config: Mapping[str, Any], closed_n: float,
                  old: Optional[Mapping[str, Any]], closed_u: float = PG.CLOSED_U,
-                 inherit: Any = None) -> Dict[str, Any]:
+                 inherit: Any = None, capacity_of: Any = None) -> Dict[str, Any]:
         attrs: Dict[str, Any] = {}
         old_attrs = (old or {}).get("attrs") or {}
+        old_vstate = (old or {}).get("vstate") or {}
+        vstate: Dict[str, Any] = {}
         for a, summ in node.targets.items():
             rr = reg.get(a) if reg is not None else None
             if isinstance(summ, PN.TextSummary):
+                # adaptive value capacity (lib/pgrammar.adapt_values): a finite
+                # population of values that outgrew the exact-value sketch grows it
+                # (bounded), the closure is then judged on the arrivals since
+                vcap = PG.adapt_values(summ, now, old_vstate.get(a),
+                                       inherit_k=capacity_of(node, a) if capacity_of else None)
+                if vcap:
+                    vstate[a] = vcap
                 rec = PG.fit_text(summ, now, closed_n=closed_n, closed_u=closed_u,
-                                  pin=PB.pins_for(config, store, key, a))
+                                  pin=PB.pins_for(config, store, key, a), vcap=vcap)
                 if rec is not None:
                     rec["gain"] = PG.shape_gain(summ.shapes, getattr(rr, "top", None), now)
                 elif inherit is not None:
@@ -171,9 +189,12 @@ class PayloadGrammarEngine(Engine):
             cv = int((prev or {}).get("cver", 0))
             rec["cver"] = cv + 1 if prev and PG.material_change(prev, rec) else cv
             attrs[a] = rec
-        return {"status": "fitted" if attrs else "none", "attrs": attrs,
-                "n_c": float(node.n_c(now)), "fit_t": float(now), "state": node.state,
-                "cver": max([r.get("cver", 0) for r in attrs.values()] or [0])}
+        out = {"status": "fitted" if attrs else "none", "attrs": attrs,
+               "n_c": float(node.n_c(now)), "fit_t": float(now), "state": node.state,
+               "cver": max([r.get("cver", 0) for r in attrs.values()] or [0])}
+        if vstate:
+            out["vstate"] = vstate                # adaptive value capacity (lib/pgrammar.adapt_values)
+        return out
 
 
 def _ancestor_grammar(tree: Any, outn: Mapping[int, Any], node: Any, a: str) -> Optional[Dict[str, Any]]:
@@ -187,3 +208,19 @@ def _ancestor_grammar(tree: Any, outn: Mapping[int, Any], node: Any, a: str) -> 
         if rec and rec.get("kind") == "text" and rec.get("grammar") and not rec.get("inherited"):
             return dict(rec, _from=int(cur.id))
     return None
+
+
+def _ancestor_capacity(tree: Any, outn: Mapping[int, Any], node: Any, a: str) -> Optional[int]:
+    """The largest value-sketch capacity P07 gave attribute a at an ancestor
+    of the node (lib/pgrammar.adapt_values inherit_k), None without one."""
+    best = None
+    cur = node
+    while cur.parent is not None:
+        cur = tree.nodes.get(cur.parent)
+        if cur is None:
+            break
+        st = (((outn.get(cur.id) or {}).get("vstate") or {}).get(a)) or {}
+        k = st.get("k")
+        if k is not None and (best is None or int(k) > best):
+            best = int(k)
+    return best

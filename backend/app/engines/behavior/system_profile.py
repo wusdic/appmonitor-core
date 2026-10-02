@@ -1069,7 +1069,7 @@ class SystemProfileEngine(Engine):
                 # nothing to bind (a portal of one-off visitors) and the gain is 0
                 gain = fitted_gain(m, ptm, now)
                 if gain is None:
-                    if days_seen < JUDGE_WAIT_DAYS:
+                    if days_seen < JUDGE_WAIT_DAYS or (dim == "P08" and bindings_pending(m)):
                         continue
                     gain = 0.0
             else:                                         # no tree: the fitter's own figure
@@ -1332,7 +1332,8 @@ def fitted_gain(model: Mapping[str, Any], ptm: Any, t: float) -> Optional[float]
             # n_bind): before that its gain is 0 for lack of evidence, not of value
             recs = list((ent.get("attrs") or {}).values()) + \
                 [r for r in (ent.get("pairs") or {}).values()
-                 if isinstance(r, Mapping) and int(((r.get("fd") or {}).get("judged", 1)) or 0) > 0]
+                 if isinstance(r, Mapping) and int(((r.get("fd") or {}).get("judged", 1)) or 0) > 0
+                 and not _constant_pair(r)]
             recs = [r for r in recs if isinstance(r, Mapping)]
             if recs:
                 any_rec = True
@@ -1352,6 +1353,39 @@ def fitted_gain(model: Mapping[str, Any], ptm: Any, t: float) -> Optional[float]
     if den <= 0 or not any_rec:
         return None                     # nothing judged yet: unmeasured
     return float(num / den) if any_fit else 0.0
+
+
+def _pair_tops(rec: Mapping[str, Any], n_min: float = 0.0) -> List[str]:
+    return [str(e.get("top")) for e in (rec.get("table") or {}).values()
+            if isinstance(e, Mapping) and e.get("top") is not None and float(e.get("n") or 0.0) >= n_min]
+
+
+def _constant_pair(rec: Mapping[str, Any]) -> bool:
+    """A pair whose sources all hold the same value (body format, content
+    type): a constant of the action, which binds nothing - its gain of 0 is
+    no measurement of what bindings are worth (evaluator round 3: finance's
+    'net.src -> body.fmt' record, judged with gain 0, switched P08 off on day
+    10 while the three users' user-name pair was still gathering n_bind)."""
+    tops = _pair_tops(rec)
+    return len(tops) >= 2 and len(set(tops)) == 1
+
+
+def bindings_pending(model: Any) -> bool:
+    """True while a P08 pair that could bind is still gathering evidence: no
+    source judged yet, but >= 2 RECURRING sources (>= 2 events each) holding
+    different values (three users logging in once a day, before their 5th
+    login). One-off visitors (n = 1 each) are not pending: nothing to bind."""
+    if not isinstance(model, Mapping):
+        return False
+    for ents in (model.get("nodes") or {}).values():
+        for ent in (ents or {}).values():
+            for r in ((ent or {}).get("pairs") or {}).values() if isinstance(ent, Mapping) else ():
+                if not isinstance(r, Mapping) or int(((r.get("fd") or {}).get("judged", 1)) or 0) > 0:
+                    continue
+                tops = _pair_tops(r, 2.0)
+                if len(tops) >= 2 and len(set(tops)) >= 2:
+                    return True
+    return False
 
 
 def _engine_costs(store: Any, now: float) -> Dict[str, float]:

@@ -283,7 +283,7 @@ class AttributeSelectionEngine(Engine):
                     # its ancestor's targets for ~11 days, so its username /
                     # opinion fields were fitted from day ~17 (measured on pack O)
                     overrides[kind] = SEL.node_targets_from_probe(
-                        tree, prk, now, hier, tsys, gone, n_min=12, local_pool=local)
+                        tree, prk, now, hier, tsys, gone, n_min=12, local_pool=local, proxies=proxies)
         # daily: categorical value groups (registry level 1)
         if now - self.last_vg.get(key, -math.inf) >= 86400.0 and pr0 is not None and len(pr0):
             self.last_vg[key] = now

@@ -55,6 +55,15 @@ CLOSED_DAYS = 5
 DAY = PS.DAY
 SUS_MAX = 16                       # suspect sources remembered per who summary
 SUS_KEEP_S = 30 * DAY              # a suspect source is forgotten after 30 d without a row
+# sequential test of a suspect source (round 3): log2 likelihood ratio foreign : member
+# of what its rows show. P(row damped as foreign | member) = 0.02, (| foreign) = 0.5;
+# P(row supported by colleagues | member) = 0.5, (| foreign) = 0.02; anything else is
+# equally likely under both (no evidence): persistence alone never clears a source
+SUS_LLR_FOREIGN = math.log2(0.5 / 0.02)     # +4.64 bits per row damped as foreign
+SUS_LLR_SUPPORT = math.log2(0.02 / 0.5)     # -4.64 bits per row of a supported source
+SUS_CLEAR = -2.0                   # cleared when the odds favour a member 4 : 1
+SUS_SUPPORT_EV = 3.0               # colleagues' standing (evidence units, = P03 MEMBER_EV)
+SUS_SUPPORT_LEVELS = (1, 3)        # /24 prefix, learned group
 
 
 def _conf_ss(k: int) -> PS.DecayedSpaceSaving:
@@ -74,38 +83,99 @@ class WhoSummary:
         self.hll = PS.EpochHLL(p=WHO_HLL_P)
         self.code = np.zeros(n_levels)        # prequential code length per level (bits)
         self.code_n = 0.0                     # evidence those code lengths cover
-        # suspect sources: {ip: [last row ts, rows]} - sources P03 learned damped as
-        # foreign here; their rows never enter the levels (mass, evidence, U, heavy
-        # sets, rendering), §6.9.2-§6.9.3
+        # suspect sources: {ip: [last row ts, rows, llr]} - sources P03 learned damped
+        # as foreign here; their rows stay out of the levels (mass, evidence, U, heavy
+        # sets, rendering) until the sequential test clears them, §6.9.2-§6.9.3
         self.sus: Dict[str, List[float]] = {}
 
     # ------------------------------------------------------- suspects
+    # A suspect source is one P03 learned damped as FOREIGN at this node. Its rows
+    # stay out of the levels (mass, evidence, U, heavy sets, rendering) while a
+    # sequential test says so: rec = [last row ts, rows, llr], llr the log2
+    # likelihood ratio foreign : member accumulated over the source's rows (a
+    # row damped as foreign +4.64 bits, a row of a source whose colleagues - its
+    # /24 or its learned group, by other sources' standing at this node - use the
+    # node -4.64 bits, any other row 0). Cleared at llr <= SUS_CLEAR. Before
+    # round 3 the flag was sticky while the source kept sending rows: a member
+    # P03 damped as foreign once (a light source of an ancestor's heavy set, a
+    # young node's narrow who) never re-entered the node's who. A slow poisoner
+    # (M29, pack O's A9: one row a day, damped once, then learned undamped) has
+    # no colleague at the node: its rows carry no member evidence, it stays out.
     def _sus(self) -> Dict[str, List[float]]:
         d = getattr(self, "sus", None)
         if d is None:
             d = self.sus = {}
         return d
 
+    @staticmethod
+    def _llr(r: List[float]) -> float:
+        return r[2] if len(r) > 2 else SUS_LLR_FOREIGN
+
     def is_suspect(self, ip: str, t: float) -> bool:
         r = self._sus().get(ip)
-        return r is not None and float(t) - r[0] <= SUS_KEEP_S
+        return r is not None and float(t) - r[0] <= SUS_KEEP_S and self._llr(r) > SUS_CLEAR
 
-    def mark_suspect(self, ip: str, t: float) -> None:
-        """Record a row of a suspect source (its first damped-as-foreign row, or any
-        later row while it is suspect: persistence alone never makes it a member,
-        §6.9.2). Bounded: the source with the oldest last row is forgotten first."""
+    def mark_suspect(self, ip: str, t: float, llr: float = SUS_LLR_FOREIGN) -> None:
+        """A row damped as foreign (+llr bits). Bounded: the source with the
+        oldest last row is forgotten first."""
         d = self._sus()
         r = d.get(ip)
+        if r is not None and float(t) - r[0] > SUS_KEEP_S:
+            r = None
+            del d[ip]
         if r is None:
             if len(d) >= SUS_MAX:
                 del d[min(d, key=lambda k: d[k][0])]
-            d[ip] = [float(t), 1.0]
+            d[ip] = [float(t), 1.0, max(float(llr), SUS_CLEAR + 1e-9)]
         else:
+            if len(r) < 3:
+                r.append(SUS_LLR_FOREIGN)
             r[0] = max(r[0], float(t))
             r[1] += 1.0
+            r[2] = max(r[2], SUS_CLEAR) + float(llr)
+
+    def support(self, keys: Sequence[Any], ip: str, t: float) -> bool:
+        """The source's colleagues use the node: its /24 or its learned group
+        holds >= SUS_SUPPORT_EV evidence units at this node beyond the
+        source's own (the suspect's rows never enter the levels, so this is
+        other sources' standing)."""
+        own = 0.0
+        l0 = self.levels[0]
+        if ip in l0:
+            own = l0.evidence(ip, t)
+        for l in SUS_SUPPORT_LEVELS:
+            if l >= len(self.levels) or l >= len(keys):
+                continue
+            g = keys[l]
+            if g is None or not isinstance(g, str) or g.endswith("∅") or g == "*":
+                continue                                # no group / prefix: no colleagues
+            ss = self.levels[l]
+            if g in ss and ss.evidence(g, t) - own >= SUS_SUPPORT_EV:
+                return True
+        return False
+
+    def observe_suspect(self, ip: str, t: float, supported: bool) -> bool:
+        """A row of a suspect source that P03 did not damp as foreign: member
+        evidence when supported, none otherwise. True when the test clears
+        the source (this row and later ones enter the levels)."""
+        d = self._sus()
+        r = d.get(ip)
+        if r is None:
+            return True
+        if len(r) < 3:
+            r.append(SUS_LLR_FOREIGN)
+        r[0] = max(r[0], float(t))
+        r[1] += 1.0
+        if supported:
+            r[2] += SUS_LLR_SUPPORT
+        if r[2] <= SUS_CLEAR:
+            del d[ip]
+            return True
+        return False
 
     def suspects(self, t: float) -> List[str]:
-        return [ip for ip, r in self._sus().items() if float(t) - r[0] <= SUS_KEEP_S]
+        return [ip for ip, r in self._sus().items()
+                if float(t) - r[0] <= SUS_KEEP_S and self._llr(r) > SUS_CLEAR]
 
     def code_lengths(self, keys: Sequence[Any], t: float, space_bits: Sequence[float],
                      escape_bits: Sequence[float], alpha: float = 2.0) -> np.ndarray:
@@ -187,8 +257,16 @@ class WhoSummary:
         self.hll.merge(other.hll)
         self.code += other.code
         self.code_n += other.code_n
+        mine = self._sus()
         for ip, r in other._sus().items():
-            self.mark_suspect(ip, r[0])
+            cur = mine.get(ip)
+            if cur is None:
+                self.mark_suspect(ip, r[0], self._llr(r))
+            else:
+                if len(cur) < 3:
+                    cur.append(SUS_LLR_FOREIGN)
+                cur[0] = max(cur[0], r[0])
+                cur[2] = max(cur[2], self._llr(r))
         return self
 
     def reset_confidence(self, t: float) -> None:
@@ -428,6 +506,32 @@ class NumSummary:
     def reset_confidence(self, t: float, day: Optional[int] = None) -> None:
         """New confidence segment: the observed range restarts (§6.10)."""
         self.seg_day = day
+
+    def seed_extreme(self, v: Any, day: int, day_now: int, extend: bool = False) -> None:
+        """An observed extreme value of this node's own history learned before
+        the node existed (a split child's values tracked by its parent,
+        round 3): it enters the daily (min, max) ring at its day without
+        adding observations (n_obs counts what the ring's rank bound may use)."""
+        try:
+            y = self.y(v)
+        except (TypeError, ValueError):
+            return
+        day = int(day)
+        if not math.isfinite(y) or day <= int(day_now) - RING_DAYS or day > int(day_now):
+            return
+        if self.seg_day is not None and day < self.seg_day:
+            if not extend:
+                return                                # before the confidence segment
+            self.seg_day = day                        # a new node: its segment is its history
+        elif self.seg_day is None:
+            self.seg_day = day
+        i = day % RING_DAYS
+        r = self.ring[i]
+        if r[0] == day:
+            r[1] = min(r[1], y)
+            r[2] = max(r[2], y)
+        elif not np.isfinite(r[0]) or r[0] < day:
+            r[:] = [day, y, y, 0.0]
 
     def nbytes(self) -> int:
         return int(self.td.nbytes() + self.mom.nbytes() + self.ring.nbytes
@@ -689,13 +793,17 @@ class HoldRecord:
         g = 2.0 ** (-(float(t) - self.L) / (HOLD_TEST_HALF_DAYS * DAY))
         return T[0] * g, T[1] * g
 
-    def p_hold(self, t: float) -> float:
+    def p_hold(self, t: float, prior: Optional[Tuple[float, float]] = None) -> float:
         """Predictive probability that the statement holds on the next held-out
-        test: (passes + 1) / (tests + 2); NaN before the first test."""
+        test: (passes + a) / (tests + a + b) under the Beta(a, b) prior of its
+        kind (fit_hold_prior: empirical Bayes over the statements of the same
+        kind; Beta(1, 1) without one); the prior mean before the first test
+        when a prior is given, else NaN."""
         ps, n = self.tests(t)
-        if n <= 0:
+        a, b = prior if prior is not None else (1.0, 1.0)
+        if n <= 0 and prior is None:
             return float("nan")
-        return float((ps + 1.0) / (n + 2.0))
+        return float((ps + a) / (n + a + b))
 
     def p_constraints(self, t: float, eps: Optional[float] = None, keys: Optional[Iterable[str]] = None) -> float:
         """P(every constraint's coverage on new data >= nominal - eps) under
@@ -733,6 +841,123 @@ class HoldRecord:
 
     def nbytes(self) -> int:
         return int(64 + 80 * len(self.c) + 80 * len(getattr(self, "b", None) or ()) + 64)
+
+
+# ===================================================== split row reservoir
+SPLIT_ROWS = 128                   # learned rows a learning leaf keeps for its split children
+SPLIT_TEXT_MAX = 256               # longer text values are not kept (learned after the split)
+
+
+class SplitRows:
+    """The learned rows a LEARNING leaf keeps for the children a split of it
+    will create (§6.5.2, the split-inherited statistics of round 3): a
+    time-decayed weighted reservoir (psketch.WeightedReservoir at H_m, weight =
+    the row's evidence units) of R rows, each row the values of the leaf's
+    target attributes and of its split candidates' attributes, with the row's
+    time, source, day type and minute.
+
+    At a split every kept row is routed by the split predicate (the generalised
+    value of the split attribute at the split level, exactly as the split
+    statistics saw it) and REPLAYED into the child it belongs to, at its own
+    time: the child's numeric digest / moments / daily min-max ring, its text,
+    set and categorical summaries, its arrival histogram and - for a split on
+    anything but the source address - its who summary start with the child's
+    own history instead of empty; the routed rows become the child's own
+    reservoir (a later split of the child inherits again). The H_m weighting
+    makes the sample follow the same decay as the summaries it seeds.
+
+    Why: a node created by a split started with empty numeric / content
+    summaries (only categorical coder targets were seeded from the split
+    statistics), so the 综合部 login node created on day 10-15 stated a size
+    range built from its post-split logins only ('100 % in 0.5-3 KB' failed on
+    4 of 5 seeds, §16.10.5). Bounded: R rows per learning leaf (<= L_MAX
+    learning leaves per tree), text values longer than SPLIT_TEXT_MAX are not
+    kept; dropped when the leaf splits or stops learning.
+
+    Row layout: (ts, ip, day, daytype, minute, mass, omega, extreme, suspicious,
+    target values {attr: value}, candidate values {attr: value})."""
+
+    __slots__ = ("res",)
+
+    def __init__(self, R: Optional[int] = None, seed: int = 0) -> None:
+        self.res = PS.WeightedReservoir(int(SPLIT_ROWS if R is None else R), PS.H_M, seed)
+
+    def offer(self, row: Tuple, w: float, t: float, u: Optional[float] = None) -> bool:
+        return self.res.offer(row, max(float(w), 1e-12), float(t), u)
+
+    def offer_lazy(self, make: Any, w: float, t: float) -> bool:
+        """offer() building the row only when it enters the sample."""
+        return self.res.offer_lazy(make, max(float(w), 1e-12), float(t))
+
+    def rows(self) -> List[Tuple]:
+        """The kept rows in time order."""
+        return sorted((it for it, _, _ in self.res.items()), key=lambda r: r[0])
+
+    def __len__(self) -> int:
+        return len(self.res)
+
+    def nbytes(self) -> int:
+        b = 128
+        for it, _, _ in self.res.items():
+            b += 200
+            for d in (it[9], it[10]):
+                for v in d.values():
+                    b += 64 + (len(v) if isinstance(v, str) else 0)
+        return int(b)
+
+
+def keep_value(v: Any) -> bool:
+    """A value SplitRows keeps (long text is not kept: bounded memory)."""
+    return not (isinstance(v, str) and len(v) > SPLIT_TEXT_MAX)
+
+
+# ============================================= empirical-Bayes hold prior
+HOLD_PRIOR_MIN_NODES = 8           # statements with tests a kind needs for its own prior
+HOLD_PRIOR_M = tuple(np.round(np.arange(0.05, 0.96, 0.05), 2))
+HOLD_PRIOR_S = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
+HOLD_KIND_EDGES = (4, 10)          # constraints per statement: <= 3, 4-9, >= 10
+
+
+def hold_kind(n_constraints: int) -> int:
+    """Kind of a statement for pooling its held-out record: the number of
+    constraints it states (every one must hold for a test to pass)."""
+    k = 0
+    for e in HOLD_KIND_EDGES:
+        if int(n_constraints) >= e:
+            k += 1
+    return k
+
+
+def _lbeta(a: float, b: float) -> float:
+    return math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
+
+
+def fit_hold_prior(recs: Sequence[Tuple[float, float]]) -> Optional[Tuple[float, float]]:
+    """Beta(a, b) maximising the beta-binomial marginal likelihood of the
+    statements' (passes, tests) records (fractional, forward-decayed counts;
+    grid over the mean m and the strength s = a + b): the hierarchical prior
+    of a statement's hold probability, pooled over statements of one kind
+    (empirical Bayes). None with fewer than HOLD_PRIOR_MIN_NODES records.
+
+    Why (M47): with Beta(1, 1) every statement with one or two tests stated
+    1/3 - 2/3 whatever statements of its kind do; pack O's statements held on
+    held-out data at 0.52 (seed 0, day 14) while their median stated value
+    was 0.35 (ECE 0.28-0.36): the uniform prior is what most of them stated."""
+    rr = [(float(p), float(n)) for p, n in recs if n > 0]
+    if len(rr) < HOLD_PRIOR_MIN_NODES:
+        return None
+    best, arg = -math.inf, None
+    for m in HOLD_PRIOR_M:
+        for s_ in HOLD_PRIOR_S:
+            a, b = float(m) * s_, (1.0 - float(m)) * s_
+            lb0 = _lbeta(a, b)
+            ll = 0.0
+            for p, n in rr:
+                p = min(max(p, 0.0), n)
+                ll += _lbeta(p + a, n - p + b) - lb0
+            if ll > best:
+                best, arg = ll, (a, b)
+    return arg
 
 
 # ============================================================ bindings
@@ -886,9 +1111,11 @@ class Node:
         the probability that all of its constraints hold on new data; None
         before the first held-out check."""
         hr = self.hold
+        prior = self.meta.get("hold_prior") if self.meta else None
         if hr is None:
-            return None
-        p = hr.p_hold(self.last_seen or self.created if t is None else t)
+            # a stated node without a test yet: the mean of its kind's prior
+            return None if prior is None else round(prior[0] / (prior[0] + prior[1]), 4)
+        p = hr.p_hold(self.last_seen or self.created if t is None else t, prior)
         return None if p != p else round(p, 4)
 
     # ----------------------------------------------------------- updates
@@ -924,17 +1151,20 @@ class Node:
         """Mass, evidence, who, when and dates: every node on the path (§6.5.1).
         A suspicious row (P03 learned it damped as a foreign source), and every
         row of a source already suspect at this node, is kept out of the who
-        summary (mass, evidence, unseen-source estimate, heavy sets): a damped
-        source must not become part of the pattern's who by repetition."""
+        summary (mass, evidence, unseen-source estimate, heavy sets) until
+        its sequential test clears it (WhoSummary.observe_suspect: colleagues'
+        standing is member evidence, repetition alone is none)."""
         t = float(t)
         self.mass.add(t, mass)
         self.n_eff.add(t, evidence)
+        self.add_obs(evidence)
         self.first_seen = t if self.first_seen is None else min(self.first_seen, t)
         self.last_seen = t if self.last_seen is None else max(self.last_seen, t)
-        if suspicious or self.who.is_suspect(ip, t):
-            self.who.mark_suspect(ip, t)
-        else:
-            self.who.update(who_keys, ip, t, mass, evidence, who_code)
+        w = self.who
+        if suspicious:
+            w.mark_suspect(ip, t)
+        elif not w.is_suspect(ip, t) or w.observe_suspect(ip, t, w.support(who_keys, ip, t)):
+            w.update(who_keys, ip, t, mass, evidence, who_code)
         if daytype is not None and minute is not None:
             self.when.update(daytype, minute, t, mass, evidence, u, ip)
         if day is not None:
@@ -965,6 +1195,21 @@ class Node:
         return p
 
     # ------------------------------------------------------------- reads
+    def add_obs(self, units: float) -> None:
+        """Evidence units observed in the current confidence segment, undecayed."""
+        m = self.meta
+        m["n_obs"] = float(m.get("n_obs", 0.0)) + float(units)
+
+    def n_obs(self) -> float:
+        """Number of observations (evidence units) of the current confidence
+        segment, undecayed: what a "20 observations" confirmation rule counts.
+        n_c (the H_l-decayed sum) understates it by the decay: a daily action
+        seen 20 times over two weeks has n_c ~ 17, so the confirmation waited
+        days longer than its own definition (round 3; pack O's 17:00 report
+        confirmed on day 18 although it had 20 observations by day 13).
+        Forgetting is the stale / retire rules' job, not the count's."""
+        return float(self.meta.get("n_obs", 0.0)) if self.meta else 0.0
+
     def n_c(self, t: float) -> float:
         """Evidence on the confidence channel (H_l entry of n_eff)."""
         return self.n_eff.get(PS.CH_L, t)
@@ -992,6 +1237,7 @@ class Node:
         hr = self.hold
         if attrs is None:
             self.n_eff.set_entry(PS.CH_L, self.n_eff.get(PS.CH_M, t), t)
+            self.meta["n_obs"] = float(self.n_eff.get(PS.CH_M, t))   # the new segment's evidence
             self.who.reset_confidence(t)
             self.when.reset_confidence(t)
             self.seg_start = float(t)
@@ -1012,6 +1258,8 @@ class Node:
         """Merge another node's summaries into this one (prune / sibling merge)."""
         self.mass.merge(other.mass)
         self.n_eff.merge(other.n_eff)
+        if other.meta and other.meta.get("n_obs"):
+            self.add_obs(other.meta["n_obs"])
         self.who.merge(other.who)
         self.when.merge(other.when)
         for a, s in other.targets.items():
@@ -1046,6 +1294,12 @@ class Node:
             b += self.rate_iph.nbytes()
         if self.adwin is not None:
             b += self.adwin.nbytes()
+        rres = self.meta.get("rres") if self.meta else None
+        if rres is not None:
+            b += rres.nbytes()
+        rpr = self.meta.get("rpart_rows") if self.meta else None
+        if rpr:
+            b += sum(200 + 64 * len(r[9]) for rows in rpr.values() for r in rows)
         return int(b)
 
 

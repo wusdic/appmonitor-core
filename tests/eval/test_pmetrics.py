@@ -448,3 +448,111 @@ def test_pg1_content_compares_the_fitted_band_not_its_display_rounding():
     old = {"evidence": {"route": "POST portal /login", "content": {"body.len": {
         "band90": [340.0, 780.0], "range": [310.0, 830.0]}}}}           # no raw keys: display values
     assert PMx.content_matches(row, PMx.LStmt(old, "portal", {}), np.random.default_rng(0))[0]
+
+
+def test_holdout_events_follow_the_traffic_mix():
+    """Round 3: held-out events of a statement follow the traffic of its
+    context (rows, day types and member sources in proportion to the events
+    the program emitted), not one equal share per truth row: pack O's mail
+    nodes (four departments, 销售部 + 研发 ~ 90 % of the records) were checked
+    against 25 % per department, so windows fitted on the real mix failed."""
+    base = {"system": "mail", "method": "TLS", "route": "m", "windows": {"workday": [[540, 560]]},
+            "who": {"level": "ip", "value": ["10.0.0.1"]}, "gen": {"members": {"10.0.0.1": 1.0}}}
+    a = dict(base, tid="A#0")
+    b = dict(base, tid="B#0", windows={"workday": [[800, 820]]},
+             gen={"members": {"10.0.0.2": 0.5, "10.0.0.3": 0.5}})
+    traffic = {"A#0": {"workday": {"10.0.0.1": 900}},
+               "B#0": {"workday": {"10.0.0.2": 95, "10.0.0.3": 5}}}
+    r = np.random.default_rng(0)
+    evs = M.holdout_events([a, b], r, 4000, None, traffic)
+    share_a = np.mean([e["tid"] == "A#0" for e in evs])
+    assert abs(share_a - 0.9) < 0.02, share_a
+    eb = [e for e in evs if e["tid"] == "B#0"]
+    assert np.mean([e["ip"] == "10.0.0.2" for e in eb]) > 0.9
+    # without traffic: round-2 equal shares (kept bit-identical for re-scoring)
+    evs0 = M.holdout_events([a, b], np.random.default_rng(0), 4000)
+    assert abs(np.mean([e["tid"] == "A#0" for e in evs0]) - 0.5) < 0.03
+    # PTruth.traffic reads the opportunities per day type
+    # PTruth.traffic reads the opportunities per day type, over the row's
+    # lineage (a segment opened on a weekend has its activity's rate)
+    pt = M.PTruth({"pattern_truth": [dict(a, valid_from_day=1, valid_to_day=6, lineage="A#0"),
+                                     dict(a, tid="A#0@1", valid_from_day=6, valid_to_day=9, lineage="A#0")],
+                   "opportunities": {"A#0": {"2025-09-01": {"10.0.0.1": 3}, "2025-09-05": {"10.0.0.1": 1}},
+                                     "A#0@1": {"2025-09-06": {"10.0.0.1": 2},
+                                               "2025-09-08": {"10.0.0.1": 7}}},
+                   "days": {"start": "2025-09-01", "n_days": 8, "day_start": list(range(9)),
+                            "workday": [True] * 5 + [False, False, True]}})
+    assert pt.traffic(7) == {"A#0@1": {"workday": {"10.0.0.1": 4.0}, "nonworkday": {"10.0.0.1": 2.0}}}
+
+
+def test_pg1_range_is_judged_on_what_the_emitted_data_could_show(org_run):
+    """Evaluator round 3: a content row's hard range is the generator's
+    support; a tail the generator never drew cannot be learned. Pack O seed 0
+    emits 45 综合部 logins, none of the 5 % below 1 KB, so '100 % in
+    0.5-3 KB' was unrecoverable on any engine (example clause, PG10 day 21).
+    PG1 now compares the learned range with the support cut to the emitted
+    extremes; a learned range that misses an emitted extreme still fails."""
+    pack, g, pt = org_run
+    row = next(r for r in pt.rows if r["tid"] == "GA.oa.login#0")
+    lo, hi = pt.data_range(row, "body.len", 21)
+    assert 1024.0 < lo and hi < 3072.0                          # no tail drawn on seed 0
+    obs = pt.observable(row, 21)
+    tc = obs["content"]["body.len"]
+    assert tc["range"] == [max(512.0, lo), min(3072.0, hi)] and tc["range_support"] == [512.0, 3072.0]
+    assert row["content"]["body.len"]["range"] == [512.0, 3072.0]          # the truth itself unchanged
+
+    def stmt(rg):
+        return M.LStmt({"evidence": {"route": "POST oa /login", "content": {"body.len": {
+            "band90": [1024.0, 2048.0], "band90_raw": [1030.0, 2040.0], "range": rg, "range_raw": rg}}}},
+            "oa", {})
+    r = np.random.default_rng(0)
+    learned = stmt([lo, hi])
+    def ok(rw, st):
+        return M.content_matches(rw, st, r)[1]["body.len"]
+    assert ok(obs, learned)
+    assert not ok(row, learned)                                  # the support check could never pass
+    assert not ok(obs, stmt([1.5 * lo, hi]))                     # misses emitted small logins
+    assert ok(obs, stmt([512.0, 3072.0]))                        # the support itself still matches
+    # runs scored before the truth carried extremes are judged as before
+    assert M.PTruth({k: v for k, v in g.ptruth.items() if k != "extremes"}).observable(row, 21) is row
+
+
+def test_pg1_window_is_compared_at_the_coverage_it_states(org_run):
+    """Evaluator round 3: the truth's windows are the central 99 % of a step's
+    arrival law. A statement stating 89 % coverage is compared with the law's
+    central 89 % (pack O portal login, normal law over 07:00-23:00: a correct
+    89 % window [09:32, 20:04] had IoU 0.66 against the 99 % window and failed
+    PG1 'when' on every seed). A misplaced window still fails."""
+    pack, g, pt = org_run
+    row = next(r for r in pt.rows if r["tid"] == "PUB.portal.visit#1")
+
+    def stmt(wins, cov):
+        return M.LStmt({"evidence": {"route": "POST portal /login",
+                                     "when": {"workday": wins, "nonworkday": wins, "coverage": cov}}},
+                       "portal", {})
+    learned = [[572.0, 1204.0]]                                  # pack O seed 0, day 21
+    assert M.window_iou(row["windows"]["workday"], learned) < 0.7
+    w89 = M.law_windows(row, "workday", 0.89)
+    assert len(w89) == 1 and M.window_iou(w89, learned) >= 0.7
+    assert M.when_compatible(row, stmt(learned, 0.89))
+    assert not M.when_compatible(row, stmt(learned, 0.99))       # claims 99 %: judged against 99 %
+    shifted = [[x + 150 for x in learned[0]]]
+    assert not M.when_compatible(row, stmt(shifted, 0.89))
+    # a narrow uniform window (综合部 login) is unaffected
+    login = next(r for r in pt.rows if r["tid"] == "GA.oa.login#0")
+    assert M.when_compatible(login, stmt(login["windows"]["workday"], 0.9))
+
+
+def test_login_bindings_ask_for_what_could_be_learned_by_the_day(org_run):
+    """Evaluator round 3: PG1's 'GA + FIN bindings 6/6 at day 14' asked for
+    D2's renamed user (10.168.7.121 -> mike.w from day 13) one day after the
+    change, which no learner can bind yet (PG5 D2 gives the rename its own
+    latency): 5/6 on every seed. The check now reads the newest segment with
+    PG1's evidence (>= 20 opportunities on >= 3 dates)."""
+    pack, g, pt = org_run
+    ipc = M.ip_classes_of(pack.config)
+    before_d2 = M.truth_as_statements(pt, 11)          # the bindings as they were (… -> mike)
+    assert M.login_bindings(before_d2, pt, ipc, 14) == (6, 6)
+    late = M.truth_as_statements(pt, 21)               # mike.w, learned long after D2
+    assert M.login_bindings(late, pt, ipc, 21) == (6, 6)
+    assert M.login_bindings(before_d2, pt, ipc, 21)[0] < 6   # by day 21 the rename must be learned

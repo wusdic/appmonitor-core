@@ -35,6 +35,7 @@ from __future__ import annotations
 import bisect
 import ipaddress
 import math
+import re
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -171,46 +172,39 @@ def shape(v: str) -> str:
     return _shape(str(v))
 
 
+# One match per maximal alphanumeric stretch (ASCII a-z A-Z 0-9), per run of
+# one repeated kept punctuation character, or per run of other code points (X).
+# A stretch mixing classes and longer than 8 is A<n>; otherwise its class runs.
+# Same output as round 2's per-character _cls loop (tests/lib/
+# test_phier_shape_equivalence.py); P00's value policy shapes every long form
+# padding (viewstate, 0.5-4 KB) with it.
+_PUNCT_RX = "".join("\\" + c if c in "\\]^-[" else c for c in sorted(_PUNCT_KEEP))
+_TOK_RX = re.compile(f"([a-zA-Z0-9]+)|([{_PUNCT_RX}])\\2*|[^a-zA-Z0-9{_PUNCT_RX}]+")
+_CLS_RUN_RX = re.compile("[a-z]+|[A-Z]+|[0-9]+")
+
+
+def _cls_of(c0: str) -> str:
+    return "L" if "a" <= c0 <= "z" else "U" if "A" <= c0 <= "Z" else "D"
+
+
 @lru_cache(maxsize=65536)
 def _shape(s: str) -> str:
     if not s:
         return "E0"
-    runs: List[Tuple[str, int]] = []
-    for ch in s:
-        c = _cls(ch)
-        if runs and runs[-1][0] == c and c in "LUDX":
-            runs[-1] = (c, runs[-1][1] + 1)
-        elif runs and runs[-1][0] == c:
-            runs[-1] = (c, runs[-1][1] + 1)
-        else:
-            runs.append((c, 1))
-    # mixed alphanumeric stretches longer than 8 collapse to A<n>
     out: List[str] = []
-    i = 0
-    while i < len(runs):
-        j = i
-        tot = 0
-        kinds = set()
-        while j < len(runs) and runs[j][0] in "LUD":
-            tot += runs[j][1]
-            kinds.add(runs[j][0])
-            j += 1
-        if j > i and len(kinds) > 1 and tot > 8:
-            out.append(f"A{tot}")
-            i = j
-            continue
-        if j > i:
-            for c, n in runs[i:j]:
-                out.append(f"{c}{n}")
-            i = j
-            continue
-        c, n = runs[i]
-        if c == "X":
-            out.append(f"X{n}")
-        else:
-            lit = "SP" if c == " " else c
+    for m in _TOK_RX.finditer(s):
+        t = m.group()
+        n = len(t)
+        if m.group(1) is not None:                     # alphanumeric stretch
+            if n > 8 and _CLS_RUN_RX.fullmatch(t) is None:
+                out.append(f"A{n}")
+            else:
+                out.extend(f"{_cls_of(r[0])}{len(r)}" for r in _CLS_RUN_RX.findall(t))
+        elif m.group(2) is not None:                   # one kept punctuation character
+            lit = "SP" if t[0] == " " else t[0]
             out.append(lit if n == 1 else f"{lit}{{{n}}}")
-        i += 1
+        else:
+            out.append(f"X{n}")
     return " ".join(out)
 
 

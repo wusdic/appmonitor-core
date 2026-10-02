@@ -150,7 +150,10 @@ class ProbeReservoir:
         self.mass[k].add(t, float(mass))
         self._last_t = max(self._last_t, float(t))
         if len(row) > self.a_row:
-            row = dict(list(row.items())[:self.a_row])
+            # meta columns ('__...', e.g. the clean flag) never take a column slot
+            items = list(row.items())
+            row = dict([kv for kv in items if not str(kv[0]).startswith("__")][:self.a_row])
+            row.update({k: v for k, v in items if str(k).startswith("__")})
         r.offer(dict(row), 1.0, t, u)
         if self.offered % self.REBALANCE_EVERY == 0:
             self.rebalance(self._last_t)
@@ -187,6 +190,12 @@ class ProbeReservoir:
         if with_strata:
             return out, np.asarray(w, dtype=np.float64), sk
         return out, np.asarray(w, dtype=np.float64)
+
+    def timed_rows(self) -> List[Tuple[Dict[str, Any], float]]:
+        """Every kept row with its time, oldest first (seeding a value history)."""
+        out = [(it, float(tt)) for r in self.res.values() for it, _, tt in r.items()]
+        out.sort(key=lambda e: e[1])
+        return out
 
     def n_rows(self) -> int:
         return int(sum(len(r) for r in self.res.values()))
@@ -382,21 +391,66 @@ def pair_counts(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, 
     return out
 
 
+def history_support(hx: Optional[Mapping[str, Any]], exclude: Optional[Mapping[str, Any]] = None
+                    ) -> Optional[Tuple[str, float, float]]:
+    """Source-level evidence of one source x from the tree-level value history
+    (every node the pair is seen at, since the pair was screened, seeded with
+    the probe rows of before): (top value, clean normal days with it, clean
+    normal days with any counted value). Days, not events, are the unit: a
+    binding is a statement about the source's days, and a burst of one
+    session must not count as five confirmations. Values `exclude`d (pending
+    newcomers such as a borrowed credential, superseded old names) never
+    count. None without a counted value."""
+    if not hx or not hx.get("v"):
+        return None
+    ex = set(map(str, (exclude or {}).keys()))
+    days = {y: len(r[3]) for y, r in hx["v"].items() if y not in ex and len(r[3]) > 0}
+    if not days:
+        return None
+    top = max(days, key=lambda y: (days[y], int(hx["v"][y][2]), y))
+    return top, float(days[top]), float(sum(days.values()))
+
+
 def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any]]] = None,
              n_bind: float = N_BIND, lb_bind: float = LB_BIND,
-             exclude: Optional[Mapping[str, Any]] = None) -> Optional[Dict[str, Any]]:
+             exclude: Optional[Mapping[str, Any]] = None,
+             support: Optional[Mapping[str, Tuple[str, float, float]]] = None
+             ) -> Optional[Dict[str, Any]]:
     """Fitted binding of one node pair (§6.12). None without tracked x.
     `exclude` {str(x): {str(y): reason}}: values kept out of x's counts
     (ValueHistory.classify: superseded by a rename, or a minority value still
-    pending confirmation); they are listed on x's table entry."""
+    pending confirmation); they are listed on x's table entry.
+    `support` {str(x): (y, k_days, n_days)} (history_support): the source-level
+    evidence of x pooled over the tree and over the time before this node's
+    sketch existed (hierarchical pooling, deviation): when it names the same
+    top value as the node's own counts and holds more evidence, x is judged on
+    it (k, n) - with the leave-one-out empirical-Bayes prior over the node's
+    other sources as before - so a source seen once a day (财务部's three
+    users) is bound after N_BIND days, not N_BIND days after the node's sketch
+    started. The node's own counts still decide the value: a source whose
+    node value differs from its history's top is judged on the node alone."""
     cnt = pair_counts(ps, t, seg, exclude)
-    heavy = {x: c for x, c in cnt.items() if c["n"] >= 1.0 and c["y"]}
+    sup = {str(k): v for k, v in (support or {}).items() if v}
+    heavy = {}
+    for x, c in cnt.items():
+        if not c["y"]:
+            continue
+        sx = sup.get(_jx(x))
+        if c["n"] >= 1.0 or (sx is not None and c["n"] > 0.0):
+            heavy[x] = c
     if not heavy:
         return None
     tops = {}
+    pooled = set()
     for x, c in heavy.items():
         y, k = max(c["y"].items(), key=lambda kv: (kv[1], str(kv[0])))
         tops[x] = (y, min(k, c["n"]))
+        sx = sup.get(_jx(x))
+        if sx is not None and str(_jv(y)) == str(sx[0]) and float(sx[2]) > float(c["n"]):
+            # the source's tree-level days carry more evidence than the node's sketch
+            heavy[x] = dict(c, n=float(sx[2]))
+            tops[x] = (y, float(min(sx[1], sx[2])))
+            pooled.add(x)
     table: Dict[str, Dict[str, Any]] = {}
     per = [x for x in heavy if not is_shared(x)]
     ks = {x: tops[x][1] for x in per}
@@ -411,6 +465,8 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
         y, k = tops[x]
         n = c["n"]
         ent: Dict[str, Any] = {"n": n, "top": _jv(y), "k": k, "mass": c["mass"]}
+        if x in pooled:
+            ent["pooled"] = True
         ex = (exclude or {}).get(str(x))
         if ex:
             for yy, why in ex.items():
@@ -777,3 +833,41 @@ def classify(hx: Optional[Mapping[str, Any]], values: Iterable[Any], t: float,
         if not ok:
             out[y] = "pending"
     return out
+
+
+def binding_discriminates(rec: Mapping[str, Any]) -> bool:
+    """A binding states something about WHO uses which value when its bound
+    sources hold different values (>= 2 distinct, >= half as many as the
+    sources): 财务部's three users bound to their three addresses. A pair that
+    binds every source to the same value (body format, content type, client
+    version) is a constant of the action, already stated as content. Shared by
+    P14 (which bindings a statement states) and P04 (which bindings the
+    statement's held-out test checks; evaluator round 3: P04 checked
+    a client-version header -> one value 'binding' the views never state)."""
+    vals = []
+    for _x, ent in ((rec or {}).get("table") or {}).items():
+        if isinstance(ent, Mapping) and ent.get("bound") and ent.get("top") is not None:
+            vals.append(str(ent.get("top")))
+    return len(vals) >= 2 and len(set(vals)) >= max(2, 0.5 * len(vals))
+
+
+BIND_MIN_CARD = 8          # distinct payload values system-wide for a binding to be stated
+
+
+def payload_card(reg: Any, rec: Mapping[str, Any]) -> float:
+    """System-wide distinct-value estimate of a pair's payload attribute (the
+    attribute registry, P02); inf when unknown."""
+    X, Y = (rec or {}).get("x"), (rec or {}).get("y")
+    pay = Y if (rec or {}).get("dir") != "rev" else X
+    r = reg.get(str(pay)) if (reg is not None and pay) else None
+    try:
+        return float(r.card_estimate()) if r is not None else math.inf
+    except Exception:
+        return math.inf
+
+
+def binding_stated(rec: Mapping[str, Any], card: float) -> bool:
+    """Whether the views state a bound pair (P14) - and so whether P04's
+    held-out test checks it: an identifier-like payload (>= BIND_MIN_CARD
+    values system-wide) or a pair whose bound sources hold different values."""
+    return card >= BIND_MIN_CARD or binding_discriminates(rec)

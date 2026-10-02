@@ -84,6 +84,13 @@ from . import psketch as PS
 from .pevent import ABSENT as _ABSENT
 
 K_ACT = 4096
+R_LEDGER = 4096                  # routes remembered by the rename ledger (LRU)
+R_SRC = 4                        # sources kept per route
+R_PREV = 4                       # previous routes kept per route
+RENAME_DATES = 2                 # dates the successor replaced the old route (confirmation)
+RENAME_OLD_DATES = 3             # dates the old route was seen on (an established habit)
+RENAME_WINDOW = 21               # days after its first appearance a route may be a successor
+RENAME_GAP = 7                   # the old route was last seen <= 7 days before the new one appeared
 K_EDGE = 4096
 K_PREC = 4096
 TOP_B = 256
@@ -338,9 +345,12 @@ def _ev(ss: PS.DecayedSpaceSaving, key: Hashable, t: float) -> float:
 
 # ======================================================= action dictionary
 class ActionDict:
-    """Action key -> integer id; ids are never reused (§6.14)."""
+    """Action key -> integer id; ids are never reused (§6.14). A renamed route
+    (adopt_renames) keeps its predecessor's id: `alias` maps the new key to the
+    canonical (old) key the counts live under, `display` the id to its
+    current name."""
 
-    __slots__ = ("ss", "k2i", "i2k", "h2i", "next_id", "retired")
+    __slots__ = ("ss", "k2i", "i2k", "h2i", "next_id", "retired", "alias", "display")
 
     def __init__(self, k: int = K_ACT) -> None:
         self.ss = TrackedSS(k)
@@ -349,6 +359,26 @@ class ActionDict:
         self.h2i: Dict[int, int] = {}
         self.next_id = 1
         self.retired = 0
+        self.alias: Dict[str, str] = {}
+        self.display: Dict[int, str] = {}
+
+    def canon(self, key: str) -> str:
+        return self.alias.get(key, key)
+
+    def rename(self, new: str, old: str) -> Optional[int]:
+        """Adopt `new` as the current name of the established action `old`
+        (same id, statistics and dictionary slot); None when `old` has no id
+        or `new` already has one of its own."""
+        i = self.k2i.get(old)
+        if i is None or new in self.k2i or new == old:
+            return None
+        for n in [n for n, o in self.alias.items() if o == old]:
+            self.h2i.pop(h64(n), None)
+            del self.alias[n]
+        self.alias[new] = old
+        self.display[i] = new
+        self.h2i[h64(new)] = i
+        return i
 
     def _assign(self, key: str) -> int:
         i = self.k2i.get(key)
@@ -362,12 +392,14 @@ class ActionDict:
 
     def add(self, key: str, t: float, w: float, ev: float) -> Tuple[int, Optional[int]]:
         """Count an occurrence; returns (id, retired id or None)."""
+        key = self.alias.get(key, key)
         victim = self.ss.add(key, t, max(w, 1e-9), ev)
         gone = self._retire(victim) if victim is not None else None
         return self._assign(key), gone
 
     def ensure(self, key: str, t: float) -> Tuple[int, Optional[int]]:
         """An id for a key seen only as a predecessor (negligible mass)."""
+        key = self.alias.get(key, key)
         if key in self.k2i and key in self.ss:
             return self.k2i[key], None
         return self.add(key, t, 1e-9, 0.0)
@@ -378,17 +410,21 @@ class ActionDict:
             return None
         self.i2k.pop(i, None)
         self.h2i.pop(h64(str(key)), None)
+        for n in [n for n, o in self.alias.items() if o == key]:
+            self.h2i.pop(h64(n), None)
+            del self.alias[n]
+        self.display.pop(i, None)
         self.retired += 1
         return i
 
     def id_of(self, key: str) -> Optional[int]:
-        return self.k2i.get(key)
+        return self.k2i.get(self.alias.get(key, key))
 
     def id_by_hash(self, h: int) -> Optional[int]:
         return self.h2i.get(h)
 
     def key_of(self, i: int) -> Optional[str]:
-        return self.i2k.get(i)
+        return self.display.get(i) or self.i2k.get(i)
 
     def unseen(self, t: float) -> float:
         return self.ss.ss.unseen(t)
@@ -440,6 +476,28 @@ class FlowState:
         self.cost = [0.0, 0.0, 0.0, 0.0]         # seconds / rows of the session pass, of the counting
         self.n_counted = 0
         self.n_quar = 0
+        # route ledger (every event, trusted or not): key -> [first day, last day,
+        # dates, sources (<= R_SRC), {previous route: count} (<= R_PREV)]
+        self.rledger = PS.LRU(R_LEDGER)
+        self.renamed: Dict[str, Dict[str, Any]] = {}    # new route -> {'from', 'day', 'sources'}
+        self.ren_day: Optional[int] = None
+
+    # ----------------------------------------------------------- routes
+    def see_route(self, rk: str, src: str, day: int, prev: Optional[str]) -> None:
+        """Route ledger update of one event (the session pass, O(1))."""
+        e = self.rledger.get(rk)
+        if e is None:
+            e = [day, day, 1, [src], {}]
+            self.rledger.put(rk, e)
+        elif day > int(e[1]):
+            e[1] = day
+            e[2] += 1
+        if src not in e[3] and len(e[3]) < R_SRC:
+            e[3].append(src)
+        if prev is not None and prev != rk:
+            pc = e[4]
+            if prev in pc or len(pc) < R_PREV:
+                pc[prev] = pc.get(prev, 0) + 1
 
     # ----------------------------------------------------------- caps
     def sess_cap(self, budget_cap: Optional[int]) -> int:
@@ -623,6 +681,172 @@ def _rebuild(d: Dict[str, Any], state: FlowState) -> PFlowModel:
     m = PFlowModel(d)
     m.state = state
     return m
+
+
+# =============================================================== renames
+def _route_shape(rk: str) -> Optional[Tuple[str, str, List[str]]]:
+    parts = str(rk).split(" ", 2)
+    if len(parts) < 3 or not parts[2].startswith("/"):
+        return None
+    return parts[0], parts[1], [x for x in parts[2].split("/") if x]
+
+
+def _route_sig(rk: str) -> Optional[Tuple[Any, ...]]:
+    sh = _route_shape(rk)
+    if sh is None:
+        return None
+    return sh[0], sh[1], len(sh[2]), tuple(i for i, x in enumerate(sh[2]) if "{" in x)
+
+
+def rename_shape(old: str, new: str) -> Optional[Tuple[int, str, str]]:
+    """(position, old segment, new segment) when `new` is `old` with exactly one
+    literal path segment replaced (same method, host, length and placeholder
+    positions: '/approval/{num}/approve' -> '/flow/{num}/approve'), else None."""
+    so, sn = _route_shape(old), _route_shape(new)
+    if so is None or sn is None or so[:2] != sn[:2] or len(so[2]) != len(sn[2]) or not so[2]:
+        return None
+    diff = [i for i, (a, b) in enumerate(zip(so[2], sn[2])) if a != b]
+    if len(diff) != 1:
+        return None
+    i = diff[0]
+    a, b = so[2][i], sn[2][i]
+    if "{" in a or "{" in b:
+        return None
+    return i, a, b
+
+
+def detect_renames(st: FlowState, today: int) -> List[Tuple[str, str]]:
+    """Routes renamed under the same sources (D3: the approval pages moved from
+    /approval/ to /flow/ for the one approver). A new route n is the successor
+    of an old route o when, from the route ledger (every event, also the
+    quarantined ones: a renamed page is flagged new by P03 and its source's
+    rows are held, so the learned counts never see it):
+      replacement  o was seen on >= RENAME_OLD_DATES dates and never after n
+                   first appeared (disjoint time); n has been seen on
+                   >= RENAME_DATES dates since (the confirmation: o missed them);
+      same source  n's sources are o's (all of them when o kept < R_SRC);
+      same place   n is o with one literal path segment replaced (rename_shape),
+                   the only such old route, and the workflow position agrees:
+                   n's previous routes, read through the candidate renames,
+                   meet o's (the list page after the home page, the item after
+                   the list ...) or both open their sessions.
+    A probe of a new page while the old one is still used is never a successor
+    (the old route did not stop). Returns [(new, old)], O(ledger)."""
+    ents = dict(st.rledger.items())
+    news = [k for k, e in ents.items() if k not in st.renamed and int(e[2]) >= RENAME_DATES
+            and today - int(e[0]) <= RENAME_WINDOW]
+    if not news:
+        return []
+    last_new = max(int(ents[k][0]) for k in news)
+    # stopped routes only (not seen since the latest new route appeared), indexed
+    # by their shape signature (method, host, length, placeholder positions):
+    # O(ledger) per day however many routes the system has
+    by_sig: Dict[Tuple[Any, ...], List[str]] = {}
+    for k, e in ents.items():
+        if int(e[2]) >= RENAME_OLD_DATES and int(e[1]) <= last_new:
+            sg = _route_sig(k)
+            if sg is not None:
+                by_sig.setdefault(sg, []).append(k)
+    import bisect
+    lasts = {}
+    for sg, ks in by_sig.items():
+        ks.sort(key=lambda k: int(ents[k][1]))
+        lasts[sg] = [int(ents[k][1]) for k in ks]
+    cand: Dict[str, str] = {}
+    for n in news:
+        en = ents[n]
+        sg = _route_sig(n)
+        ks = by_sig.get(sg)
+        if not ks:
+            continue
+        f0 = int(en[0])
+        # the old route stopped when the new one began (last seen within
+        # RENAME_GAP days before it, never after)
+        lo = bisect.bisect_left(lasts[sg], f0 - RENAME_GAP)
+        hi = bisect.bisect_right(lasts[sg], f0)
+        ms = []
+        for o in ks[lo:hi]:
+            if o == n:
+                continue
+            eo = ents[o]
+            if int(eo[0]) >= f0:
+                continue
+            so, sn = set(eo[3]), set(en[3])
+            if not sn or not (sn <= so or (len(eo[3]) >= R_SRC and sn & so)):
+                continue
+            if rename_shape(o, n) is None:
+                continue
+            ms.append(o)
+            if len(ms) > 1:
+                break                                    # ambiguous: no successor
+        if len(ms) == 1:
+            cand[n] = ms[0]
+    out = []
+    for n, o in cand.items():
+        pn = set(sorted(ents[n][4], key=lambda k: -ents[n][4][k])[:2])
+        po = set(sorted(ents[o][4], key=lambda k: -ents[o][4][k])[:2])
+        pm = {cand.get(p, p) for p in pn}
+        if (not pn and not po) or (pm & po):
+            out.append((n, o))
+    return out
+
+
+def successor_candidate(model: Mapping[str, Any], key: str, src: str, today: int) -> Optional[str]:
+    """For P03 (scoring, before any confirmation): the established route that a
+    NEW route of `src` would replace - same shape but one literal segment
+    (rename_shape), used by `src` on >= RENAME_OLD_DATES dates, not used by it
+    today. None otherwise (or when the route is already adopted / known).
+    P03 can report such a first renamed page at a capped severity instead of
+    opening an incident that holds the source (D3: the first /flow/list row
+    was a HIGH incident and quarantined 192.168.1.21 for four days, so P04
+    never learned the renamed pages). O(routes of the same shape)."""
+    st: Optional[FlowState] = getattr(model, "state", None)
+    if st is None or key in st.renamed:
+        return None
+    rk = split_key(key)[0]
+    sg = _route_sig(rk)
+    if sg is None:
+        return None
+    out = None
+    for k, e in st.rledger.items():
+        if k == rk or int(e[2]) < RENAME_OLD_DATES or int(e[1]) >= int(today):
+            continue
+        if src not in e[3] or _route_sig(k) != sg or rename_shape(k, rk) is None:
+            continue
+        if out is not None:
+            return None                                  # ambiguous
+        out = k
+    return out
+
+
+def adopt_renames(st: FlowState, today: int, t: float) -> List[Tuple[str, str]]:
+    """The profile adopts confirmed renames (detect_renames): the new route
+    takes the old action's id, so its dictionary entry, edges, workflows and
+    required predecessors carry over (the published edges read the new names)
+    and P03 no longer scores it as a new action. A few counts the new route
+    gathered under an id of its own before (its first rows, before P03's
+    finding held its source) are retired. Returns the adopted pairs."""
+    done = []
+    for n, o in detect_renames(st, today):
+        oid = st.acts.id_of(o)
+        if oid is None:
+            continue
+        nid = st.acts.k2i.get(n)
+        if nid is not None:
+            if st.acts.ss.ev(n, t) > st.acts.ss.ev(o, t):
+                continue                                 # the new route is the established one
+            st.acts.ss.discard(n)
+            gone = st.acts._retire(n)
+            if gone is not None:
+                st.retire(gone)
+        if st.acts.rename(n, o) is None:
+            continue
+        e = st.rledger.peek(n) or [today, today, 0, [], {}]
+        st.renamed[n] = {"from": o, "day": int(today), "sources": list(e[3])}
+        done.append((n, o))
+    if done:
+        st.marg = None
+    return done
 
 
 # ================================================================ mining

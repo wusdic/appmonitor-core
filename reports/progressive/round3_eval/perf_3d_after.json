@@ -1,0 +1,29 @@
+{
+ "wall": 126.62303348699788,
+ "us_per_event": 2117.4114460327337,
+ "scoring_p95_us": 145.90670359440335,
+ "learning_p95_us": 1427.5557308753691,
+ "events": 55453.0,
+ "scored": 55373.0,
+ "learned": 55373.0,
+ "scoring_mean": 91.87771150104928,
+ "learning_mean": 567.607308734183,
+ "by_engine_s": {
+  "behavior.pattern_tree": 31.43,
+  "behavior.attr_select": 30.74,
+  "behavior.attr_registry": 20.8,
+  "behavior.binding": 6.49,
+  "behavior.conformity": 5.09,
+  "behavior.content_bounds": 4.33,
+  "behavior.system_profile": 3.11,
+  "raw.event": 2.96,
+  "behavior.resource_governor": 2.78,
+  "behavior.workflow": 2.63,
+  "derived.event_context": 2.21,
+  "behavior.time_window": 1.65,
+  "behavior.who_groups": 1.44,
+  "behavior.views": 0.99,
+  "behavior.payload_grammar": 0.4,
+  "behavior.facets": 0.37
+ }
+}

@@ -73,6 +73,7 @@ CR_LOCAL = 0.10           # predictability where present that makes a rare attri
 CR_LOCAL_LO = 0.05
 CLOSED_CARD = 16           # a categorical with <= this many values where present is a closed-set target
 CLOSED_COV_MAX = 0.25      # ... when it is a field of some actions (present on <= 25 % of the events)
+N_CONST = 2                # structural constants a node tracks on top of its m_t targets
 N_LOCAL = 8                # probe rows it must be present in (the penalised gain carries the small-sample cost)
 RED_G3 = 0.01
 RED_HB = 0.1
@@ -1024,13 +1025,24 @@ def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any]
         U_t, U_s = max(st["U_t"], st.get("U_tc", st["U_t"])), st["U_s_max"]
         best_lv = list(st["best_levels"])
         new = None
+        # a structural constant (round 3): a key set (set-typed) with one value
+        # wherever it is present, and present only where the context says (CR:
+        # the action predicts it) - the action's fixed structure, stated and
+        # checked at the action's node as its required keys. Before it was
+        # `redundant` (presence equivalent to the method) or `dropped` (no gain
+        # where present), so P04 never tracked it at the CRM visit node and P07
+        # never stated the visit form's keys (pack O SALES.crm#1)
+        structural = (st.get("kind") == "set" and targetable(a)
+                      and float(st.get("H_p", st["H"])) < INV_H and cov < INV_COV
+                      and int(st.get("n_p", 0)) >= N_LOCAL and float(st.get("CR", 0.0)) >= CR_LOCAL
+                      and st.get("S", 0.0) >= TARGET_STAB)
         # entry / exit band: an attribute enters `invariant` at H <= INV_H and
         # leaves it only above 2 INV_H or below INV_COV_EXIT coverage (a value
         # near the edge flapped between invariant and dropped every hour)
         if (H <= INV_H and cov >= INV_COV) or (old == "invariant" and H <= 2 * INV_H
                                                and cov >= INV_COV_EXIT):
             new = "invariant"
-        elif a in redundant:
+        elif a in redundant and not structural:
             new = "redundant"
         else:
             is_split = bool(best_lv) and U_s >= (U_LO if old == "split" else U_HI)
@@ -1057,7 +1069,7 @@ def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any]
                             and st.get("kind") in ("categorical", "text", "cat"))
             if is_split:
                 new = "split"
-            elif is_target or closed_small:
+            elif is_target or closed_small or structural:
                 new = "target"
             elif st["distinct0"] >= SHAPE_DISTINCT and st["CR0"] < SHAPE_CR:
                 new = "shape"
@@ -1177,7 +1189,8 @@ def summary_entropy(s: Any, t: float, hier: Any = None, attr: Optional[str] = No
 def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: Any,
                             targets_sys: Sequence[str], gone: Iterable[str] = (), m_t: int = M_T,
                             n_min: int = 32, local_pool: Sequence[str] = (),
-                            local_cov: float = LOCAL_TARGET_COV) -> Dict[int, List[str]]:
+                            local_cov: float = LOCAL_TARGET_COV,
+                            proxies: Iterable[str] = ()) -> Dict[int, List[str]]:
     """{nid: [a...]}: the probe rows are routed through the tree (the same
     routing P03 / P04 use); at every node holding >= n_min probe rows the system
     targets are re-ranked by node-local H(a) x cov(a) on those rows (mass-
@@ -1193,7 +1206,15 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
     item 3: content attributes are split candidates and targets). Measured on
     pack O: without it the OA login node's targets were client / size
     attributes only, so no who split could pay for itself by predicting the
-    usernames or the login minute."""
+    usernames or the login minute.
+
+    `proxies`: source properties (who_proxies: client stack, TCP window, TTL,
+    user agent) rank after the attributes of the action itself (round 3): the
+    node describes what the action carries; ranked by entropy alone, a public
+    portal's client noise (random TTL / window / stack: 1-2 bits) took the
+    slots of the comment form's body size (one bin: < 1 bit), so the comment
+    node stated a body size from one observation (pack O PUB.portal.visit#3)."""
+    prox = set(proxies)
     rows, w, _ = probe.rows(t)
     if not rows or not targets_sys:
         return {}
@@ -1217,6 +1238,23 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
     cols: Dict[str, List[Any]] = {a: probe.column(rows, a) for a in pool}
     out: Dict[int, List[str]] = {}
     default = list(targets_sys[:m_t])
+    h_sys: Dict[str, float] = {}
+
+    def sys_entropy(a: str) -> float:
+        # entropy of the attribute over every probe row, absence as one more
+        # value: what knowing the node says about it (bits / event)
+        if a not in h_sys:
+            col = cols[a]
+            rec = np.asarray([v is not MISSING for v in col])
+            pres = np.asarray([v is not ABSENT and v is not MISSING for v in col])
+            if not pres.any():
+                h_sys[a] = 0.0
+            else:
+                _, cc, k = level_codes(hier, a, [v for v, p in zip(col, pres) if p], text_values=True)
+                full = np.full(len(col), int(k), dtype=np.int64)
+                full[pres] = cc
+                h_sys[a], _ = w_plugin(full[rec], w[rec])
+        return h_sys[a]
     for nid, idx in by_node.items():
         if len(idx) < n_min:
             continue
@@ -1224,22 +1262,45 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
         wn = w[ii]
         tot = float(wn.sum()) or 1.0
         scored = []
+        consts = []
+        nd = tree.nodes.get(nid) if hasattr(tree, "nodes") else None
+        ctx_attrs = [c[0] for c in (getattr(nd, "ctx", None) or ())]
         for a in pool:
             col = cols[a]
             vals = [col[i] for i in idx]
-            pres = np.asarray([v is not ABSENT for v in vals])
+            # rows that did not RECORD the attribute (MISSING: not wanted when
+            # probed) say nothing about it: before, their sentinel counted as a
+            # value, so a constant key set looked variable on young probes
+            rec = np.asarray([v is not MISSING for v in vals])
+            pres = np.asarray([v is not ABSENT and v is not MISSING for v in vals])
             if not pres.any():
                 continue
             l, cc, k = level_codes(hier, a, [v for v, p in zip(vals, pres) if p], text_values=True)
             h, _ = w_plugin(cc, wn[pres])
+            cov = float(wn[pres].sum()) / (float(wn[rec].sum()) or tot)
             if h < INV_H:
+                # constant here: a structural constraint of the node (the key set
+                # a form always carries) when the attribute varies
+                # over the system - knowing the node is what fixes it - and is not
+                # constant merely because the node's context fixes it
+                if cov >= local_cov and hier.kind(a) == "set" \
+                        and not any(same_source(c, a) for c in ctx_attrs):
+                    hs = sys_entropy(a)
+                    if hs >= INV_H:
+                        consts.append((hs * cov, a))
                 continue
-            cov = float(wn[pres].sum()) / tot
             if a not in sys_set and cov < local_cov:
                 continue
             scored.append((h * cov, a))
-        scored.sort(key=lambda x: (-x[0], x[1]))
+        scored.sort(key=lambda x: (x[1] in prox, -x[0], x[1]))
         keep = [a for _, a in scored[:m_t]]
+        # (round 3) up to N_CONST structural constants on top of the m_t informative
+        # targets. Before, a constant was skipped as 'a node invariant P04 detects',
+        # but P04 detects invariants of the targets it tracks only: the OA / portal
+        # login and CRM visit nodes never tracked their key set, so P07 never
+        # stated their required form keys (pack O, PG1 content misses)
+        consts.sort(key=lambda x: (-x[0], x[1]))
+        keep += [a for _, a in consts[:N_CONST] if a not in keep]
         if keep and keep != default:
             out[nid] = keep
     return out

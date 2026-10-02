@@ -525,6 +525,7 @@ class PTruth:
         import datetime as _dt
         self.start = _dt.date.fromisoformat(days["start"]) if days.get("start") else None
         self.opp = self.raw.get("opportunities") or {}
+        self.ext = self.raw.get("extremes") or {}
         self.groups = self.raw.get("group_truth") or {}
         self.strategy = self.raw.get("strategy_truth") or {}
         self.systems = self.raw.get("system_truth") or {}
@@ -574,6 +575,80 @@ class PTruth:
                     n += c
                     dates += 1
         return n, dates
+
+    TRAFFIC_DAYS = 14
+
+    def traffic(self, day: int) -> Dict[str, Dict[str, Dict[str, float]]]:
+        """{tid: {daytype: {source: events}}} for the rows valid on `day`: the
+        events the truth program emitted for the row's LINEAGE (all segments of
+        the activity step) over the TRAFFIC_DAYS days up to `day` - the traffic
+        mix held-out events follow (holdout_events). The lineage, not the
+        segment: a segment opened by a drift on a weekend (GA login after D2,
+        days 13-14) has no events of its own yet, but the same rate."""
+        cache = self.__dict__.setdefault("_traffic", {})
+        if day in cache:
+            return cache[day]
+        by_lin: Dict[str, List[str]] = {}
+        for r in self.rows:
+            by_lin.setdefault(str(r.get("lineage") or r["tid"]), []).append(r["tid"])
+        d0 = max(1, int(day) - self.TRAFFIC_DAYS + 1)
+        out: Dict[str, Dict[str, Dict[str, float]]] = {}
+        lin_cache: Dict[str, Dict[str, Dict[str, float]]] = {}
+        for row in self.valid_at_day(day):
+            lin = str(row.get("lineage") or row["tid"])
+            per_dt = lin_cache.get(lin)
+            if per_dt is None:
+                per_dt = lin_cache[lin] = {}
+                for tid in by_lin.get(lin, [row["tid"]]):
+                    for iso, per in (self.opp.get(tid) or {}).items():
+                        di = self.day_index(iso)
+                        if not (d0 <= di <= day) or di < 1 or di - 1 >= len(self.workday):
+                            continue
+                        dt = "workday" if self.workday[di - 1] else "nonworkday"
+                        acc = per_dt.setdefault(dt, {})
+                        for ip, c in per.items():
+                            acc[ip] = acc.get(ip, 0.0) + float(c)
+            out[row["tid"]] = per_dt
+        cache[day] = out
+        return out
+
+    def data_range(self, row: Mapping[str, Any], attr: str, upto_day: int) -> Optional[Tuple[float, float]]:
+        """Smallest / largest value of `attr` the generator emitted for the row's
+        lineage (every segment of the activity step) on days <= upto_day; None
+        when the truth carries no extremes (runs before evaluator round 3)."""
+        lin = str(row.get("lineage") or row["tid"])
+        tids = [r["tid"] for r in self.rows if str(r.get("lineage") or r["tid"]) == lin] or [row["tid"]]
+        lo, hi = math.inf, -math.inf
+        for tid in tids:
+            for iso, mm in ((self.ext.get(tid) or {}).get(attr) or {}).items():
+                if self.day_index(iso) <= upto_day:
+                    lo, hi = min(lo, float(mm[0])), max(hi, float(mm[1]))
+        return (lo, hi) if lo <= hi else None
+
+    def observable(self, row: Mapping[str, Any], upto_day: int) -> Dict[str, Any]:
+        """The row with each content hard range cut to what the emitted data
+        could show by `upto_day`: [max(lo, data min), min(hi, data max)]. The
+        truth's range is the generator's SUPPORT; a tail the generator never
+        drew cannot be learned (pack O seed 0: 45 综合部 logins, none of the 5 %
+        below 1 KB, so '100 % in 0.5-3 KB' was unrecoverable on any engine).
+        A learned range that misses an emitted extreme still fails. The
+        support itself is kept as `range_support`."""
+        c = row.get("content") or {}
+        new = None
+        for a, tc in c.items():
+            if "range" not in tc:
+                continue
+            dr = self.data_range(row, a, upto_day)
+            if dr is None:
+                continue
+            lo, hi = float(tc["range"][0]), float(tc["range"][1])
+            eff = [max(lo, dr[0]), min(hi, dr[1])]
+            if eff[0] > eff[1]:
+                continue
+            if new is None:
+                new = dict(c)
+            new[a] = dict(tc, range=eff, range_support=[lo, hi])
+        return row if new is None else dict(row, content=new)
 
     def lineage_opps(self, row: Mapping[str, Any], upto_day: int) -> Tuple[int, int]:
         return self.opportunities(row["tid"], upto_day, int(row["valid_from_day"]))
@@ -667,9 +742,37 @@ def prefix_cover_ok(truth: List[Tuple[Any, float]], learned: List[Any],
     return covered / tot >= cover and (out_space / all_space if all_space else 1.0) <= outside
 
 
+def law_windows(row: Mapping[str, Any], dt: str, cov: float) -> List[List[float]]:
+    """The truth's windows at coverage `cov`: per window spec of the row's
+    arrival law (`gen.arrival_q`, §11.5) its central `cov` interval. The
+    published `windows` are the central 99 %; a statement that states 89 %
+    coverage is compared with the law's central 89 % (evaluator round 3: a
+    correctly fitted 89 % window of the portal's normal arrival law over
+    07:00-23:00 had IoU 0.62 against the 99 % window and failed)."""
+    out: List[List[float]] = []
+    for comp in ((row.get("gen") or {}).get("arrival_q") or {}).get(dt) or []:
+        try:
+            q = np.asarray(comp[1], dtype=float)
+        except (TypeError, ValueError, IndexError):
+            continue
+        if q.size < 2:
+            continue
+        ps = np.linspace(0.0, 1.0, q.size)
+        lo, hi = np.interp([(1.0 - cov) / 2.0, (1.0 + cov) / 2.0], ps, q)
+        out.append([float(lo), float(hi)])
+    return out
+
+
 def when_compatible(row: Mapping[str, Any], s: LStmt, thr: float = 0.7) -> bool:
+    cov = s.when_cov if math.isfinite(s.when_cov) else None
     for dt in row.get("daytypes") or []:
-        iou = window_iou((row.get("windows") or {}).get(dt) or [], s.when.get(dt) or [])
+        lw = s.when.get(dt) or []
+        iou = window_iou((row.get("windows") or {}).get(dt) or [], lw)
+        if (iou is None or iou < thr) and cov is not None and 0.5 <= cov < 0.99:
+            # or the law's windows at the coverage the statement states
+            lawc = law_windows(row, dt, cov)
+            if lawc:
+                iou = window_iou(lawc, lw)
         if iou is None or iou < thr:
             return False
     return True
@@ -732,6 +835,10 @@ def content_matches(row: Mapping[str, Any], s: LStmt, r: np.random.Generator,
                 rg = lc.get("range_raw") or lc["range"]
                 ok = _rel_ok(_f(rg[0]), tc["range"][0], 0.25) and \
                     _rel_ok(_f(rg[1]), tc["range"][1], 0.25)
+                sup = tc.get("range_support")
+                if not ok and sup:
+                    # or the generator's support itself (PTruth.observable)
+                    ok = _rel_ok(_f(rg[0]), sup[0], 0.25) and _rel_ok(_f(rg[1]), sup[1], 0.25)
             elif ok and "range" in tc:
                 ok = False
         if ok and "required_keys" in tc:
@@ -820,13 +927,18 @@ def recover(row: Mapping[str, Any], stmts: Sequence[LStmt], edges: Sequence, pt:
 # --------------------------------------------------------------------------- #
 # Held-out sampling (PG1 precision, PG2 calibration)
 # --------------------------------------------------------------------------- #
-def _pick_ip(row: Mapping[str, Any], r: np.random.Generator, restrict: Optional[Who]) -> Optional[str]:
+def _pick_ip(row: Mapping[str, Any], r: np.random.Generator, restrict: Optional[Who],
+             counts: Optional[Mapping[str, float]] = None) -> Optional[str]:
     gen = row.get("gen") or {}
     mem = gen.get("members")
     if mem:
         ips = [ip for ip in mem if restrict is None or restrict.contains(ip)]
         if not ips:
             return None
+        if counts:
+            w = np.asarray([float(counts.get(ip, 0.0)) for ip in ips])
+            if w.sum() > 0:
+                return ips[int(r.choice(len(ips), p=w / w.sum()))]
         return ips[int(r.integers(0, len(ips)))]
     cidrs = gen.get("regions") or ([[gen["prefix"], 1.0]] if gen.get("prefix") else [])
     if not cidrs:
@@ -841,56 +953,124 @@ def _pick_ip(row: Mapping[str, Any], r: np.random.Generator, restrict: Optional[
     return None
 
 
+# held-out events follow the generator's traffic mix (rows, day types and
+# member addresses in proportion to the events the truth program emitted up to
+# the scored day); False reproduces round 2 (every row, day type by window
+# length and member drawn with equal weight), for before/after re-scoring only
+HOLDOUT_TRAFFIC = True
+_QGRID: Dict[int, np.ndarray] = {}
+
+
+def _traffic_weight(tr: Optional[Mapping[str, Mapping[str, float]]], row: Mapping[str, Any],
+                    restrict: Optional[Who]) -> Optional[float]:
+    if tr is None:
+        return None
+    mem = (row.get("gen") or {}).get("members")
+    tot = 0.0
+    for per in tr.values():
+        for ip, c in per.items():
+            if restrict is None or not mem or restrict.contains(ip):
+                tot += float(c)
+    return tot
+
+
+def _law_minute(segs: Sequence[Any], r: np.random.Generator) -> float:
+    """A minute from a step's arrival law (orggen.step_arrival_law segments:
+    [[weight, quantile function at equally spaced probabilities]])."""
+    w = np.asarray([float(s[0]) for s in segs])
+    q = segs[int(r.choice(len(segs), p=w / w.sum()))][1] if len(segs) > 1 else segs[0][1]
+    g = _QGRID.get(len(q))
+    if g is None:
+        g = _QGRID[len(q)] = np.linspace(0.0, 1.0, len(q))
+    return float(np.interp(r.random(), g, np.asarray(q, dtype=float)))
+
+
 def holdout_events(rows: Sequence[Mapping[str, Any]], r: np.random.Generator, n: int,
-                   restrict: Optional[Who] = None) -> List[Dict[str, Any]]:
-    """Fresh events from the truth program of `rows` (equal weight per row)."""
+                   restrict: Optional[Who] = None,
+                   traffic: Optional[Mapping[str, Mapping[str, Mapping[str, float]]]] = None
+                   ) -> List[Dict[str, Any]]:
+    """Fresh events from the truth program of `rows`.
+
+    `traffic` ({tid: {daytype: {source: events}}}, PTruth.traffic): rows, day
+    types and member sources are drawn in proportion to the events the program
+    emitted (a statement's held-out events are the events of its context, in
+    the mix the context really has); without it every row has equal weight.
+    A row with the step's arrival law (gen.arrival_q, orggen.step_arrival_law)
+    draws its minute from that law; otherwise uniformly (or the clipped normal)
+    inside its windows."""
     out: List[Dict[str, Any]] = []
     if not rows:
         return out
+    rw = None
+    if traffic is not None:
+        ws = [_traffic_weight(traffic.get(row["tid"]) or {}, row, restrict) or 0.0 for row in rows]
+        if sum(ws) > 0:
+            rw = np.asarray(ws) / sum(ws)
     tries = 0
     while len(out) < n and tries < 4 * n:
         tries += 1
-        row = rows[int(r.integers(0, len(rows)))]
-        ip = _pick_ip(row, r, restrict)
-        if ip is None:
-            continue
+        row = rows[int(r.choice(len(rows), p=rw))] if rw is not None else rows[int(r.integers(0, len(rows)))]
+        tr = (traffic or {}).get(row["tid"]) if rw is not None else None
+        ip = None
+        if not tr:                                   # round-2 draw order (bit-identical without traffic)
+            ip = _pick_ip(row, r, restrict)
+            if ip is None:
+                continue
         wins = row.get("windows") or {}
         dts = [d for d in ("workday", "nonworkday") if wins.get(d)]
         if not dts:
             continue
-        lens = [sum(b - a for a, b in wins[d]) for d in dts]
-        dt = dts[int(r.choice(len(dts), p=np.asarray(lens) / sum(lens)))]
-        iv = wins[dt]
-        L = np.asarray([b - a for a, b in iv], dtype=float)
-        a, b = iv[int(r.choice(len(iv), p=L / L.sum()))]
         gen = row.get("gen") or {}
-        if gen.get("arrival") == "normal":
-            # the generator's law (orggen: N(mid, width / 4) clipped to the window);
-            # uniform draws over a 07:00-23:00 portal window made every learned
-            # window that follows the real arrivals look miscalibrated
-            m = float(np.clip(r.normal(0.5 * (a + b), (b - a) / 4.0), a, b))
+        aq = gen.get("arrival_q") or {}
+        if tr and sum(sum(tr.get(d, {}).values()) for d in dts) > 0:
+            lens = [float(sum(tr.get(d, {}).values())) for d in dts]
+        elif aq and all(aq.get(d) for d in dts):
+            lens = [sum(float(s[0]) for s in aq[d]) for d in dts]
         else:
-            m = float(r.uniform(a, b))
+            lens = [sum(b - a for a, b in wins[d]) for d in dts]
+        dt = dts[int(r.choice(len(dts), p=np.asarray(lens) / sum(lens)))]
+        if ip is None:
+            ip = _pick_ip(row, r, restrict, (tr or {}).get(dt))
+            if ip is None:
+                continue
+        if aq.get(dt):
+            m = _law_minute(aq[dt], r)
+        else:
+            iv = wins[dt]
+            L = np.asarray([b - a for a, b in iv], dtype=float)
+            a, b = iv[int(r.choice(len(iv), p=L / L.sum()))]
+            if gen.get("arrival") == "normal":
+                # the generator's law (orggen: N(mid, width / 4) clipped to the window);
+                # uniform draws over a 07:00-23:00 portal window made every learned
+                # window that follows the real arrivals look miscalibrated
+                m = float(np.clip(r.normal(0.5 * (a + b), (b - a) / 4.0), a, b))
+            else:
+                m = float(r.uniform(a, b))
         ev: Dict[str, Any] = {"ip": ip, "daytype": dt, "minute": m, "tid": row["tid"]}
-        if gen.get("size"):
-            ev["body.len"] = OG.sample_size(gen["size"], r)
-        if gen.get("up"):
-            ev["net.bytes_up"] = OG.sample_size(gen["up"], r) + 300
-        users = gen.get("usernames") or {}
-        uname = users.get(ip)
-        if uname is None and users:
-            vals = list(users.values())
-            uname = vals[int(r.integers(0, len(vals)))]
-        fields = gen.get("fields") or {}
-        keys = set(fields)
-        if gen.get("size") and gen.get("fmt"):
-            keys.add("viewstate" if gen.get("fmt") == "form" else "remark")
-        if fields:
-            ev["body.keys"] = keys
-        for k, spec in fields.items():
-            ev[f"body.kv.{k}"] = str(OG.sample_value(spec, r, {"username": uname or ""}))
-        out.append(ev)
+        out.append(_holdout_content(ev, gen, ip, r))
     return out
+
+
+def _holdout_content(ev: Dict[str, Any], gen: Mapping[str, Any], ip: str,
+                     r: np.random.Generator) -> Dict[str, Any]:
+    if gen.get("size"):
+        ev["body.len"] = OG.sample_size(gen["size"], r)
+    if gen.get("up"):
+        ev["net.bytes_up"] = OG.sample_size(gen["up"], r) + OG.TLS_UP_FRAMING
+    users = gen.get("usernames") or {}
+    uname = users.get(ip)
+    if uname is None and users:
+        vals = list(users.values())
+        uname = vals[int(r.integers(0, len(vals)))]
+    fields = gen.get("fields") or {}
+    keys = set(fields)
+    if gen.get("size") and gen.get("fmt"):
+        keys.add("viewstate" if gen.get("fmt") == "form" else "remark")
+    if fields:
+        ev["body.keys"] = keys
+    for k, spec in fields.items():
+        ev[f"body.kv.{k}"] = str(OG.sample_value(spec, r, {"username": uname or ""}))
+    return ev
 
 
 def _tol(nominal: float, m: int) -> float:
@@ -980,13 +1160,15 @@ def judgeable_context(s: LStmt) -> bool:
 
 
 def holdout_check(s: LStmt, rows_valid: Sequence[Mapping[str, Any]], pt: PTruth,
-                  r: np.random.Generator, n: int = 400) -> Dict[str, Any]:
-    """Every constraint of a statement against held-out events of its context."""
+                  r: np.random.Generator, n: int = 400, day: Optional[int] = None) -> Dict[str, Any]:
+    """Every constraint of a statement against held-out events of its context
+    (in the context's traffic mix up to `day` when HOLDOUT_TRAFFIC)."""
     rows = [row for row in rows_valid if _route_of(row) == (s.method, s.route)
             and _sys_match(s.system, row, pt)]
     ctx_who = any(str(c[0]).startswith("net.src") for c in s.context if isinstance(c, (list, tuple)) and c)
     restrict = s.who if (ctx_who or s.is_exc) and (s.who.ipset() or s.who.prefixes) else None
-    evs = [e for e in holdout_events(rows, r, n, restrict) if _in_time_context(s, e)]
+    traffic = pt.traffic(day) if (HOLDOUT_TRAFFIC and day is not None and pt.opp) else None
+    evs = [e for e in holdout_events(rows, r, n, restrict, traffic) if _in_time_context(s, e)]
     conf = s.confidence if math.isfinite(s.confidence) else 0.9
     res: List[Tuple[str, float, float, bool]] = []
     if not evs:
@@ -1072,7 +1254,7 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
             and (systems is None or row["system"] in systems)]
     per: Dict[str, Any] = {}
     for row in rows:
-        per[row["tid"]] = recover(row, stmts, edges, pt, r)
+        per[row["tid"]] = recover(pt.observable(row, day), stmts, edges, pt, r)
         per[row["tid"]]["period"] = row.get("period")
     comps = {}
     for c in ("who", "when", "content", "bindings", "workflow"):
@@ -1094,7 +1276,7 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
         if not judgeable_context(s):
             unjudged += 1
             continue
-        h = holdout_check(s, valid, pt, rp, precision_n)
+        h = holdout_check(s, valid, pt, rp, precision_n, day)
         prec_hits.append(bool(h["ok"]))           # no held-out event of its context: false
         if math.isfinite(s.confidence):
             conf.append(s.confidence)
@@ -1213,21 +1395,62 @@ def login_bindings(snap: Mapping[str, Any], pt: PTruth, ipc: Mapping[str, List[s
                    ) -> Tuple[int, int]:
     """(matched, total) IP -> username binding pairs of the GA and FIN login
     patterns valid on `day` (PG1 target 'GA and FIN bindings 6/6'), each
-    pattern against its best who-compatible confirmed statement."""
+    pattern against its best who-compatible confirmed statement.
+
+    A pair whose value changed recently is learnable only once the source has
+    used the new value: while it has fewer than REBIND_N events on REBIND_DATES
+    dates under the new value, the previous value is accepted too (evaluator
+    round 3: D2 renames 10.168.7.121's user mike -> mike.w on day 13, and the
+    check asked for mike.w on day 14 - 5/6 on every seed - while PG5 D2 gives
+    the rename its own adoption latency)."""
     stmts = statements(snap, ipc)
     hit = tot = 0
-    for row in pt.valid_at_day(day):
-        if row["activity"] not in activities or row["step"] != 0 or not row.get("bindings"):
+    for act in activities:
+        segs = sorted((r for r in pt.rows if r["activity"] == act and r["step"] == 0
+                       and r.get("bindings") and int(r["valid_from_day"]) <= day),
+                      key=lambda r: int(r["valid_from_day"]))
+        row = next((r for r in reversed(segs) if int(r["valid_to_day"]) > day), None)
+        if row is None:
             continue
-        n = sum(len(t) for t in row["bindings"].values())
+        accept: Dict[Tuple[str, str], Set[str]] = {}
+        for attr, table in row["bindings"].items():
+            for x, y in table.items():
+                acc = set(y) if isinstance(y, list) else {str(y)}
+                since = int(row["valid_from_day"])
+                for prev in reversed([r for r in segs if int(r["valid_from_day"]) < int(row["valid_from_day"])]):
+                    y0 = ((prev.get("bindings") or {}).get(attr) or {}).get(x)
+                    y0s = set(y0) if isinstance(y0, list) else ({str(y0)} if y0 is not None else set())
+                    if y0s == acc:
+                        since = int(prev["valid_from_day"])
+                        continue
+                    n_new, d_new = 0, 0
+                    for iso, per in (pt.opp.get(row["tid"]) or {}).items():
+                        di = pt.day_index(iso)
+                        if since <= di <= day and per.get(x):
+                            n_new += int(per[x])
+                            d_new += 1
+                    if n_new < REBIND_N or d_new < REBIND_DATES:
+                        acc = acc | y0s
+                    break
+                accept[(attr, x)] = acc
+        n = len(accept)
         best = 0
         for s in stmts:
             if s.confirmed and (s.method, s.route) == _route_of(row) and _sys_match(s.system, row, pt) \
                     and who_compatible(row["who"], s.who):
-                best = max(best, bindings_match(row, s)[1])
+                h = 0
+                for (attr, x), acc in accept.items():
+                    lt = s.binding_table(attr).get(x)
+                    if lt is not None and len(lt) == 1 and next(iter(lt)) in acc:
+                        h += 1
+                best = max(best, h)
         hit += best
         tot += n
     return hit, tot
+
+
+REBIND_N = 5           # events of a source under a new value before it is learnable (P08 H1)
+REBIND_DATES = 2
 
 
 # --------------------------------------------------------------------------- #
@@ -1960,7 +2183,10 @@ def pg10_views(run: Any, pt: PTruth, ipc: Mapping[str, List[str]], seed: int = 0
             if not b or not (_rel_ok(_f(b[0]), 1024.0, 0.2) and _rel_ok(_f(b[1]), 2048.0, 0.2)):
                 continue
             rg = c.get("range")
-            if rg is not None and not (_rel_ok(_f(rg[0]), 512.0, 0.25) and _rel_ok(_f(rg[1]), 3072.0, 0.25)):
+            # the truth range as the emitted data could show it (PTruth.observable)
+            t_rg = pt.observable(row, day)["content"]["body.len"]["range"]
+            if rg is not None and not any(_rel_ok(_f(rg[0]), x[0], 0.25) and _rel_ok(_f(rg[1]), x[1], 0.25)
+                                          for x in (t_rg, (512.0, 3072.0))):
                 continue
             if check_bound and (rg is None or c.get("cover") is None):
                 continue

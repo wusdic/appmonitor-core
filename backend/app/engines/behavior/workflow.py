@@ -38,6 +38,16 @@ Per tick (all of it O(events of the tick); nothing iterates over IPs):
             holidays never count), so a renamed step (D3) leaves the view
             within 2 workdays instead of the 7 calendar days of the time rule.
 
+  renames   (round 3, lib/pdfg.detect_renames / adopt_renames) the session pass
+            also feeds a route ledger (every event, trusted or not: first / last
+            day, dates, <= 4 sources, <= 4 previous routes); once a local day, a new
+            route that replaced an established one of the same sources (the old
+            one not used since, one literal path segment changed, the same
+            workflow position, >= 2 dates) takes the old action's id: its edges,
+            workflows and requirements carry over under the new name, P03 no
+            longer scores it as new, and model.pflow['renamed'] lists it (D3:
+            /approval/... -> /flow/... of 192.168.1.21 was flagged new every day
+            and its source held, so the learned counts never saw the new pages).
 Reads   evt.batch (+ evt.ctx for ctx.sid), pat.assign (damp), model.ptree
         (action variants: the node reached through the deepest content split;
         act_node for rendering and P09 anchors), model.who_groups (ip2g),
@@ -160,10 +170,16 @@ class WorkflowEngine(Engine):
                 for ts_b, b in store.batches_since(s, EV.EVT_BATCH, st.last_batch.get(s, -math.inf)):
                     if getattr(b, "kind", EV.KIND_TXN) != EV.KIND_TXN:
                         continue
-                    rows += self._sessions(st, store, s, ts_b, b, router, gap, shared)
+                    rows += self._sessions(st, store, s, ts_b, b, router, gap, shared, off)
                     st.last_batch[s] = ts_b
             tb = time.perf_counter()
             counted = self._count(st, store, now, D, ip2g, off)
+            if st.today is not None and st.ren_day != st.today:
+                # once a local day: confirmed route renames are adopted (lib/pdfg.adopt_renames)
+                st.ren_day = st.today
+                if DF.adopt_renames(st, int(st.today), now):
+                    st.ev_since_mine += 1.0             # re-mine: the edges read the new names
+            model["renamed"] = dict(st.renamed)
             t1 = time.perf_counter()
             st.cost[0] += tb - ta
             st.cost[1] += rows
@@ -237,7 +253,8 @@ class WorkflowEngine(Engine):
 
     # ------------------------------------------------------------- sessions
     def _sessions(self, st: DF.FlowState, store: Any, s: str, ts_b: float, b: Any,
-                  router: Optional[Callable], gap: float, shared: frozenset = frozenset()) -> int:
+                  router: Optional[Callable], gap: float, shared: frozenset = frozenset(),
+                  off: float = 8 * 3600.0) -> int:
         if b.n == 0:
             return 0
         cb = store.batch_at(s, EV.EVT_CTX, ts_b)
@@ -299,6 +316,9 @@ class WorkflowEngine(Engine):
             else:
                 prev, prev2, earlier, bits, start = e[2], e[7], e[3], e[4], False
                 delay = ts - e[1] if ts >= e[1] else None
+            # the route ledger sees every event (rename detection, lib/pdfg.detect_renames)
+            st.see_route(rk, ip, DF.EPOCH_ORD + int((ts + off) // 86400.0),
+                         DF.split_key(prev)[0] if prev else None)
             if learn[i]:
                 pend.append(("row", ts, ip, key, prev, delay, start, earlier, float(mass[i]), int(i),
                              prev2 == key and prev != key))

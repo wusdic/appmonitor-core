@@ -129,11 +129,14 @@ def example_views(res: Any) -> Dict[str, Any]:
                           "finance_statements": [_brief(s) for s in fin],
                           "group_views": gviews, "dept_views": dviews,
                           "ga_groups": {ip: ip2g.get(ip) for ip in GA_IPS}}
-    out["checklist"] = checklist(out["days"].get(days[-1]) or {}, truth, days[-1])
+    from app.eval import pmetrics as PM
+    out["checklist"] = checklist(out["days"].get(days[-1]) or {}, truth, days[-1],
+                                 PM.PTruth(res.ptruth or {}))
     return out
 
 
-def checklist(day: Mapping[str, Any], truth: Sequence[Mapping[str, Any]], d: int) -> List[Dict[str, Any]]:
+def checklist(day: Mapping[str, Any], truth: Sequence[Mapping[str, Any]], d: int,
+              pt: Optional[Any] = None) -> List[Dict[str, Any]]:
     """Each clause of the requirement's example against the truth valid on day d."""
     def valid(act: str, step: int = 0) -> Optional[Mapping[str, Any]]:
         for r in truth:
@@ -153,8 +156,16 @@ def checklist(day: Mapping[str, Any], truth: Sequence[Mapping[str, Any]], d: int
                 continue
             ips = [str(x) for x in ((s.get("who") or {}).get("members") or (s.get("who") or {}).get("items") or [])
                    if "/" not in str(x)]
-            sc.append((_jacc(ips, who), s))
-        return max(sc, key=lambda x: x[0]) if sc else (0.0, None)
+            w = s.get("who") or {}
+            # equal who: the most specific statement (an address-level node's own
+            # statement before a group's part of a mixed node; then the deeper
+            # context) - seed 3 picked the 综合部 part of the all-department login
+            # node (its window spans D1) over the 综合部 node's own statement
+            sc.append(((_jacc(ips, who), w.get("level") == "ip", len(s.get("context") or [])), s))
+        if not sc:
+            return (0.0, None)
+        k, st = max(sc, key=lambda x: x[0])
+        return k[0], st
 
     t_login = valid("GA.oa.login")
     if t_login:
@@ -172,8 +183,16 @@ def checklist(day: Mapping[str, Any], truth: Sequence[Mapping[str, Any]], d: int
         rows.append({"clause": "提交数据量 90 % 在 1–2 KB", "measured": f"band {band}",
                      "pass": bool(band) and abs(band[0] - 1024) <= 205 and abs(band[1] - 2048) <= 410})
         rng = bl.get("range")
+        # against the part of 0.5-3 KB the emitted logins could show by day d
+        # (pmetrics PTruth.observable: no engine can state a tail never drawn)
+        t_rg = [512.0, 3072.0]
+        if pt is not None:
+            t_rg = (pt.observable(t_login, d).get("content") or {}).get("body.len", {}).get("range") or t_rg
         rows.append({"clause": "100 % 在 0.5–3 KB", "measured": f"range {rng}",
-                     "pass": bool(rng) and abs(rng[0] - 512) <= 128 and abs(rng[1] - 3072) <= 768})
+                     "data_range": [round(float(x), 1) for x in t_rg],
+                     "pass": bool(rng) and any(abs(rng[0] - x[0]) <= 0.25 * x[0]
+                                               and abs(rng[1] - x[1]) <= 0.25 * x[1]
+                                               for x in (t_rg, (512.0, 3072.0)))})
         un = (((s or {}).get("content") or {}).get("body.kv.username") or {})
         g = un.get("grammar")
         rows.append({"clause": "提交内容含 username=，取值不超过 10 个字符", "measured": f"grammar {g}",
@@ -267,7 +286,18 @@ def _job(seed: int, opts: Mapping[str, Any]) -> Dict[str, Any]:
             pack.registry_mode = opts["registry"]
         if opts.get("bounded"):
             pack.config.setdefault("lib3", {})["resource_mode"] = "bounded"
-        res = run_pack(pack, seed, strict=True, record_series=not opts.get("no_series"))
+        if opts.get("checkpoint"):                   # resumable (eval/resumable.py)
+            from app.eval.resumable import run_pack_resumable
+            os.makedirs(opts["checkpoint"], exist_ok=True)
+            ck = os.path.join(opts["checkpoint"], f"{pack.name}_{seed}.ckpt")
+            res = run_pack_resumable(pack, seed, ck, segment_s=float(opts.get("segment_s") or 1800.0),
+                                     stop_after_s=opts.get("stop_after_s"),
+                                     record_series=not opts.get("no_series"),
+                                     on_progress=lambda m: print(f"[{pack.name} {seed}] {m}", flush=True))
+            if res is None:
+                return {"seed": seed, "checkpointed": ck}
+        else:
+            res = run_pack(pack, seed, strict=True, record_series=not opts.get("no_series"))
         if opts.get("keep_res"):                     # re-scorable later (--rescore) without a re-run
             import pickle
             os.makedirs(opts["keep_res"], exist_ok=True)
@@ -444,6 +474,13 @@ def main() -> None:
                     help="directory to pickle each seed's RunResult into (for --rescore)")
     ap.add_argument("--rescore", default=None,
                     help="run nothing: re-score the RunResults pickled in this directory")
+    ap.add_argument("--checkpoint", default=None,
+                    help="resumable runs: checkpoint directory (<pack>_<seed>.ckpt); a run that "
+                         "stops at a checkpoint (--stop-after) is resumed by the next invocation")
+    ap.add_argument("--segment-s", type=float, default=1800.0,
+                    help="with --checkpoint: wall seconds between checkpoints (taken at a day end)")
+    ap.add_argument("--stop-after", type=float, default=None,
+                    help="with --checkpoint: stop after the first checkpoint past this many seconds")
     ap.add_argument("--skip-existing", action="store_true",
                     help="do not re-run a seed whose <out>/runs/O_<seed>.json exists without error")
     args = ap.parse_args()
@@ -459,7 +496,8 @@ def main() -> None:
     seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
     os.makedirs(os.path.join(args.out, "runs"), exist_ok=True)
     opts = {"registry": args.registry, "bounded": args.bounded, "keep_res": args.keep_res,
-            "no_series": args.no_series, "pack": args.pack}
+            "no_series": args.no_series, "pack": args.pack, "checkpoint": args.checkpoint,
+            "segment_s": args.segment_s, "stop_after_s": args.stop_after}
     tag = "O" if args.pack == "O" else args.pack
     if args.rescore:
         import pickle
@@ -495,6 +533,10 @@ def main() -> None:
         futs = {ex.submit(_job, s, opts): s for s in todo}
         for fut in as_completed(futs):
             r = fut.result()
+            if r.get("checkpointed"):
+                print(f"[{time.perf_counter() - t0:7.1f}s] seed {r['seed']}: stopped at checkpoint "
+                      f"{r['checkpointed']} (run again to resume)", flush=True)
+                continue
             runs.append(r)
             with open(os.path.join(args.out, "runs", f"{tag}_{r['seed']}.json"), "w", encoding="utf-8") as f:
                 json.dump(r, f, indent=1, ensure_ascii=False)

@@ -78,6 +78,7 @@ OPTIONAL = 0.01
 CLOSED_COVER = 0.99
 CLOSED_U = 0.02                    # spec §6.11: 0.01 (deviation, measured: see fit_text doc)
 CLOSED_N = 20.0                    # spec §6.11: 50 (= n_conf, §6.8.1)
+CLOSED_EV_MIN = 0.25               # a closed-set member arrived clean at least once (a damped row: 0.1)
 N_MIN = 3.0                        # evidence needed before anything is published
 N_SCORE = 20.0                     # support needed to score (§6.16.1)
 DANGEROUS = frozenset("'\"`=<>;() ")
@@ -286,9 +287,10 @@ def _charset_cover(ts: Any, t: float, classes: Iterable[str], lo: int, hi: int) 
 
 
 def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N,
-             closed_u: float = CLOSED_U, pin: Optional[Mapping[str, Any]] = None
-             ) -> Optional[Dict[str, Any]]:
-    """Grammar of a pnode.TextSummary (§6.11); None below n_min evidence."""
+             closed_u: float = CLOSED_U, pin: Optional[Mapping[str, Any]] = None,
+             vcap: Optional[Mapping[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Grammar of a pnode.TextSummary (§6.11); None below n_min evidence.
+    vcap: the value sketch's capacity state (adapt_values), if any."""
     ss = ts.shapes
     N = ss.total_evidence(t)
     tot = ss.total(t)
@@ -399,7 +401,13 @@ def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N
                 "skeletons": chosen if mode == "shape" else []})
     vs = getattr(ts, "values", None)
     if vs is not None:
-        rec.update(_closed(vs, t, closed_n, closed_u))
+        # the closed set lists values of the stated grammar only: a value the
+        # grammar rejects (pack O A3's "admin' OR '1'='1", released by B28 after
+        # its incident and learned as content at full weight) is the set's
+        # uncovered mass, never a member ("取值 [a-z]{3,8}，取值集合封闭 {admin' OR ...}")
+        crx = _compiled(rx) if rx else None
+        member = (lambda v, c=crx: bool(c.fullmatch(str(v)))) if crx else None
+        rec.update(_closed(vs, t, closed_n, closed_u, vcap, member))
     rec["confidence"] = float(rec["c_g"] * (1.0 - rec["U_s"]))
     return rec
 
@@ -424,25 +432,159 @@ def inherit_text(anc: Optional[Mapping[str, Any]], ts: Any, t: float) -> Optiona
         return None
     n = float(ts.shapes.total_evidence(t))
     out = {k: v for k, v in anc.items() if k not in ("closed", "U", "top", "value_cover", "n_values",
-                                                       "_from", "cver", "gain")}
+                                                       "_from", "cver", "gain", "capacity", "U_all")}
     out.update({"inherited": int(anc.get("_from", -1)), "n": n,
                 "confidence": float(anc.get("confidence", 0.0)) * min(1.0, n / N_MIN)})
     return out
 
 
-def _closed(vs: Any, t: float, closed_n: float, closed_u: float) -> Dict[str, Any]:
+def _closed(vs: Any, t: float, closed_n: float, closed_u: float,
+            vcap: Optional[Mapping[str, Any]] = None,
+            member: Optional[Any] = None) -> Dict[str, Any]:
     vtot = vs.total(t)
     nv = vs.total_evidence(t)
     if vtot <= 0:
         return {}
-    its = [(k, g) for k, _, g, _ in vs.items(t) if g > 0]
+    # a value whose arrivals were all damped by P03 (an outlier learned at
+    # 0.1: evidence < CLOSED_EV_MIN) is no member of a closed set, its mass is
+    # the set's uncovered mass: pack O A3's injected username ("admin' OR
+    # '1'='1", one damped login) joined the grown 销售部 value sketch and its
+    # closed set on day 21
+    its = [(k, g) for k, _, g, e in vs.items(t) if g > 0 and e >= CLOSED_EV_MIN
+           and (member is None or member(k))]
     cov = sum(g for _, g in its) / vtot
     U = float(vs.unseen(t))
     out: Dict[str, Any] = {"n_values": float(nv), "U": U, "value_cover": float(cov),
                            "top": [[_jv(k), float(g / vtot)] for k, g in its[:8]]}
+    seg = value_segment(vs, t, vcap["seg"]) if (vcap and vcap.get("seg")) else None
+    if seg is not None:
+        # the sketch was grown (adapt_values): the closure is judged on the
+        # arrivals since its capacity became adequate - Good-Turing with the
+        # evictions and the untracked mass of that segment only (the earlier
+        # evictions measured the old capacity, not the value space)
+        U = float(min(1.0, (vs.n1(t) + seg["E"] + 0.5) / (seg["N"] + 1.0)))
+        cov, nv = seg["cover"], seg["N"]
+        out.update({"U": U, "value_cover": float(cov), "n_values": float(nv), "U_all": out["U"],
+                    "capacity": int(vs.k)})
     if cov >= CLOSED_COVER and U <= closed_u and nv >= closed_n:
         out["closed"] = sorted((_jv(k) for k, _ in its), key=_vkey)
     return out
+
+
+# ------------------------------------------------- adaptive value capacity
+VALUES_K_MAX = 64      # exact values one text summary may track at most (4 x pnode.TEXT_VALUES_K)
+GROW_MARGIN = 1.25     # capacity >= 1.25 x the values seen
+SEEN_MAX = 2 * VALUES_K_MAX   # value hashes remembered per full sketch; beyond: an open value space
+
+
+def _vh(v: Any) -> int:
+    """48-bit stable hash of a value (the remembered tracked values)."""
+    import hashlib
+    return int.from_bytes(hashlib.blake2b(str(v).encode("utf-8", "surrogatepass"),
+                                          digest_size=6).digest(), "little")
+
+
+def _snapshot(vs: Any, t: float) -> Dict[str, Any]:
+    return {"k": int(vs.k), "t0": float(t), "N0": float(vs.total_evidence(t)),
+            "E0": float(vs.eviction_evidence(t)), "T0": float(vs.total(t)),
+            "G0": float(sum(g for _, _, g, _ in vs.items(t)))}
+
+
+def value_segment(vs: Any, t: float, snap: Mapping[str, Any]) -> Optional[Dict[str, float]]:
+    """Evidence N, eviction evidence E and guaranteed share `cover` of the
+    arrivals since the snapshot (decayed differences on the sketch's own
+    channels: exact for N, E and the total; the guaranteed mass of the values
+    tracked at the snapshot only grows while nothing is evicted, so cover is
+    1 then and conservative otherwise). None when the sketch is not the one
+    the snapshot was taken of (capacity changed) or was reset since (P04's
+    confidence reset makes the differences negative)."""
+    if not snap or int(snap.get("k", -1)) != int(vs.k):
+        return None
+    dt = float(t) - float(snap["t0"])
+    if dt < 0:
+        return None
+    fe = 2.0 ** (-dt / float(vs.ev_hl[-1])) if len(vs.ev_hl) else 1.0
+    fm = 2.0 ** (-dt / float(vs.mass_hl[vs.primary]))
+    N = float(vs.total_evidence(t)) - float(snap["N0"]) * fe
+    E = float(vs.eviction_evidence(t)) - float(snap["E0"]) * fe
+    T = float(vs.total(t)) - float(snap["T0"]) * fm
+    if N < -1e-6 or E < -1e-6 or T < -1e-6:
+        return None
+    G = float(sum(g for _, _, g, _ in vs.items(t))) - float(snap["G0"]) * fm
+    cover = min(1.0, max(0.0, G / T)) if T > 1e-12 else 0.0
+    return {"N": max(0.0, N), "E": max(0.0, E), "cover": cover}
+
+
+def adapt_values(ts: Any, t: float, vcap: Optional[Mapping[str, Any]] = None,
+                 k_max: int = VALUES_K_MAX, inherit_k: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Adaptive capacity of a TextSummary's exact-value sketch (P07, at each
+    fit of the node). The sketch (Space-Saving, pnode.TEXT_VALUES_K = 16) cannot
+    hold a population of more values than its capacity: 销售部's 20 usernames
+    kept evicting each other, its Good-Turing unseen mass stayed ~0.2 and no
+    closed set was ever stated. Its own counters cannot tell such a population
+    from random tokens - under cyclic use (each user once a morning, in a
+    similar order) Space-Saving's least-counted replacement thrashes like LRU
+    and EVERY arrival evicts, exactly as with tokens that never repeat. So P07
+    remembers the values it found tracked at its fits (48-bit hashes, at most
+    SEEN_MAX): when, over >= k arrivals that still evicted, the remembered set
+    stopped growing (<= max(1, k / 8) new values), the population is finite
+    and about that large, and the capacity grows to the power of two >=
+    GROW_MARGIN x |seen| (at least doubling, <= k_max). Random tokens add k new
+    values per k arrivals and exceed SEEN_MAX (then only `open` is kept); a
+    finite population larger than k_max / GROW_MARGIN keeps the base capacity.
+    The growth snapshot (`seg`) makes the closure decision (_closed) read the
+    arrivals since the growth only. Returns the state to keep with the record
+    (None when there is nothing to remember)."""
+    vs = getattr(ts, "values", None)
+    if vs is None:
+        return None
+    st: Dict[str, Any] = dict(vcap) if vcap else {}
+    if st.get("k") is not None and int(st["k"]) != int(vs.k):
+        st = {}                                   # P04 re-created the summary: judged afresh
+    seg = st.get("seg")
+    if seg is not None and value_segment(vs, t, seg) is None:
+        seg = dict(_snapshot(vs, t), k0=int(vs.k))   # confidence reset: a new segment starts now
+    st["seg"] = seg
+    st["k"] = int(vs.k)
+    if (seg is None and not st.get("open") and inherit_k and int(inherit_k) > int(vs.k)
+            and len(vs) >= int(vs.k) and float(vs.eviction_evidence(t)) > 0.0):
+        # a node's values are a subset of its ancestor's (its events are): a full,
+        # evicting sketch under an ancestor whose population needed a larger one
+        # takes that capacity at once - a department's login node created by a
+        # late split (销售部, day ~10) would otherwise spend a day of checkpoints
+        # re-learning what its parent showed (closure by day 12 instead of 15)
+        k0 = int(vs.k)
+        vs.k = int(min(k_max, int(inherit_k)))
+        return {"k": int(vs.k), "seg": dict(_snapshot(vs, t), k0=k0), "inherited_k": int(inherit_k)}
+    if st.get("open") or len(vs) < int(vs.k) or 2 * int(vs.k) > k_max:
+        st.pop("seen", None)
+        return st if (seg is not None or st.get("open")) else None
+    N, E = float(vs.total_evidence(t)), float(vs.eviction_evidence(t))
+    seen = set(st.get("seen") or ())
+    cur = {_vh(k) for k in vs.keys()}
+    new = len(cur - seen)
+    seen |= cur
+    if len(seen) > SEEN_MAX:
+        return {"k": int(vs.k), "seg": seg, "open": True}
+    ck = st.get("ck")
+    if ck is None:
+        st.update(seen=sorted(seen), ck=[float(t), N, E], new=0)
+        return st
+    f = 2.0 ** (-(float(t) - float(ck[0])) / float(vs.ev_hl[-1])) if len(vs.ev_hl) else 1.0
+    dN, dE = N - float(ck[1]) * f, E - float(ck[2]) * f
+    new_tot = int(st.get("new", 0)) + new
+    st["seen"] = sorted(seen)
+    if dN < int(vs.k):
+        st["new"] = new_tot                       # not yet k arrivals since the checkpoint
+        return st
+    st.update(ck=[float(t), N, E], new=0)
+    if dE >= 1.0 and new_tot <= max(1, int(vs.k) // 8) and GROW_MARGIN * len(seen) <= k_max:
+        need = GROW_MARGIN * len(seen)
+        k_new = int(min(k_max, max(2 * int(vs.k), 2 ** int(math.ceil(math.log2(max(need, 2.0)))))))
+        k0 = int(vs.k)
+        vs.k = k_new
+        st.update(k=k_new, seg=dict(_snapshot(vs, t), k0=k0), ck=[float(t), N, E])
+    return st
 
 
 def _jv(k: Any) -> Any:

@@ -17,8 +17,12 @@ Trust (architecture section 3):
                when q_inst is unscored)
   trust_prov = clip(log10(e_inst / 0.1), 0, 1) x [no alarm at t]
                x [no discrete finding >= MEDIUM at t]
-  trust      = trust_prov x [no open incident] x [regime normal/returned/accepted]
-               x [every accumulator < h/2]
+  trust      = trust_prov x [incident factor] x [regime normal/returned/accepted]
+               x [every accumulator < h/2]; incident factor (round 3,
+               _incident_trust) = 1 while every live incident's evidence is
+               pattern-scoped (P03 findings <= MEDIUM on ONE learned pattern, plus
+               conformity-family alarms), else 0 (architecture §3: 0 while any
+               incident is open)
   quarantine = open incident (keyed by this entity) OR regime in
                {suspect, drifting, rejected}
   ctx.training => trust = trust_prov = 1 unless a lib-4 match >= HIGH exists
@@ -602,7 +606,7 @@ class GovernorEngine(Engine):
         else:
             self._labels(store, sc, e, model, ob, now, dt, frontier)
             self._machine(store, sc, e, model, ob, now, dt, frontier)
-            prov, trust = self._trust(model, ob, dt, sc, e)
+            prov, trust = self._trust(model, ob, dt, sc, e, store)
         if sc.retracted.get(e):
             self._link_retractions(store, s, e, model, sc.retracted[e], now)
         q = self._quarantine(model, sc, e)
@@ -1363,7 +1367,7 @@ class GovernorEngine(Engine):
 
     # ------------------------------------------------------------ trust
     def _trust(self, model: Dict[str, Any], ob: _Obs, dt: float, sc: _Sys,
-               e: str) -> Tuple[float, float]:
+               e: str, store: Any = None) -> Tuple[float, float]:
         if ob.degraded:
             return _NAN, _NAN
         prov = evidence_factor(ob.q_inst, ob.q_all, dt, getattr(ob, "e_inst", None))
@@ -1371,9 +1375,80 @@ class GovernorEngine(Engine):
             prov = 0.0
         trust = prov
         live = [i for i in sc.incidents.get(e, []) if i.status in LIVE]
-        if live or model["regime"] not in MG.TRUSTED_STATES or ob.acc_max >= ACC_TRUST_LEVEL:
+        if model["regime"] not in MG.TRUSTED_STATES or ob.acc_max >= ACC_TRUST_LEVEL:
             trust = 0.0
+        elif live:
+            # (round 3) the incident's evidence and scope, not its existence
+            trust = prov * min(self._incident_trust(store, i) for i in live)
         return prov, trust
+
+    def _incident_trust(self, store: Any, inc: Incident) -> float:
+        """Trust factor of a source while one of its incidents is live
+        (round 3, groups_views owner).
+
+        Architecture §3 set trust = 0 while ANY incident is open: on pack O one
+        false pattern finding (192.168.1.21's renamed approval route, D3, a
+        MEDIUM `new_action` on day 14) stopped all learning from the address
+        - its logins, documents and mail, which no finding concerned - until
+        the incident timed out six days later (every row of those days was
+        held and released at trust 0, i.e. never learned).
+
+        Now the factor is 1 when the incident's evidence is PATTERN-SCOPED: every
+        evidence item is a P03 `pattern_violation` (or a B25 accumulator alarm
+        of the conformity family, the same findings accumulated), none is HIGH,
+        and the findings concern ONE learned pattern (P03's covering node
+        (tree key, node id)). The affected pattern's own rows are already
+        handled row by row - P03 damps a violating row, P04 keeps its source out
+        of the pattern's who - so the rest of the source's behaviour stays
+        learnable. Anything else (a HIGH finding, findings on >= 2 patterns,
+        entity-level detectors, lib-4 matches, risk, an incident without
+        evidence) is evidence about the SOURCE and keeps trust 0. The ticks of
+        the findings themselves keep trust_prov = 0 (finding >= MEDIUM).
+        Cached per incident and evidence length."""
+        if store is None:
+            return 0.0
+        cache = self.__dict__.setdefault("_inc_scope", {})
+        evs = list(inc.evidence or [])
+        key = (inc.id, len(evs), str(inc.severity))
+        hit = cache.get(inc.id)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        out = 1.0
+        if str(getattr(inc.severity, "value", inc.severity)).lower() in ("high", "critical") \
+                or set(inc.kinds or ()) - {"pattern_violation", "alarm"}:
+            out = 0.0
+        patterns: Set[Tuple[str, Any]] = set()
+        n_find = 0
+        for it in evs:
+            if out == 0.0:
+                break
+            if not isinstance(it, Mapping):
+                continue
+            src = it.get("source")
+            if src == "b27":
+                continue                                   # incident state transitions
+            if str(it.get("severity") or "").lower() in ("high", "critical"):
+                out = 0.0
+            elif src == "alarm":
+                fams = set(it.get("families") or ())
+                if not fams or fams - {"conformity"}:
+                    out = 0.0
+            elif src == "event" and it.get("kind") == "pattern_violation":
+                ev = store.get_event(str(it.get("event_id"))) if it.get("event_id") else None
+                ex = (ev.extra or {}) if ev is not None else {}
+                if ex.get("node") is None:
+                    out = 0.0
+                else:
+                    patterns.add((str(ex.get("tree_key")), ex.get("node")))
+                    n_find += 1
+            else:
+                out = 0.0
+        if out > 0.0 and (n_find == 0 or len(patterns) > 1):
+            out = 0.0
+        if len(cache) > 4096:
+            cache.clear()
+        cache[inc.id] = (key, out)
+        return out
 
     def _trust_evidence(self, ob: _Obs) -> float:
         """behavior.trust_evidence (m_governor.evidence_weight), live ticks

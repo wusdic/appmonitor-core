@@ -240,6 +240,7 @@ class EventBatch:
     rid: Optional[np.ndarray] = None
     meta: Dict[str, Any] = field(default_factory=dict)
     _pos: Dict[str, np.ndarray] = field(default_factory=dict, repr=False)
+    _lst: Dict[str, List[Any]] = field(default_factory=dict, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.rid is None:
@@ -263,16 +264,35 @@ class EventBatch:
             self._pos[name] = pos
         return pos
 
+    def _values(self, name: str) -> Optional[List[Any]]:
+        """Row-aligned Python list of the column (ABSENT where a row lacks
+        it; numpy floats as Python floats), built once per batch and name:
+        get() is called per row by every engine (P04, P05, P03: ~6 M calls
+        on 3 days of pack O), where numpy scalar indexing dominated."""
+        lst = self._lst.get(name)
+        if lst is None:
+            c = self.cols.get(name)
+            if c is None:
+                return None
+            lst = [ABSENT] * self.n
+            if c.numeric:
+                vals = c.vals.tolist()
+            else:
+                vals = [float(v) if isinstance(v, np.floating) else v for v in c.vals.tolist()]
+            for r, v in zip(c.rows.tolist(), vals):
+                lst[r] = v
+            self._lst[name] = lst
+        return lst
+
     def get(self, name: str, row: int, default: Any = ABSENT) -> Any:
         """Value of attribute `name` at row (ABSENT when the row lacks it). O(1)."""
-        pos = self._position(name)
-        if pos is None:
-            return default
-        j = pos[row]
-        if j < 0:
-            return default
-        v = self.cols[name].vals[j]
-        return float(v) if isinstance(v, np.floating) else v
+        lst = self._lst.get(name)
+        if lst is None:
+            lst = self._values(name)
+            if lst is None:
+                return default
+        v = lst[row]
+        return default if v is ABSENT else v
 
     def dense(self, name: str, fill: Any = ABSENT) -> np.ndarray:
         """Row-aligned array of the column (object dtype when fill is not a

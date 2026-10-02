@@ -54,6 +54,10 @@ Hygiene (2026-10-01, measured on pack O, oa seeds 0-1; §6.9.2-§6.9.3):
           provisional). Before: the 综合部 login window after D1 (08:30-08:51)
           read 08:30-09:15 (IoU 0.47) from a slot histogram mixing both regimes
           and A2's undamped 09:10 logins.
+        * (round 3) a window that only ONE source's arrivals support, at a node
+          whose arrivals come from >= 2 sources, needs REGIME_SINGLE_DATES dates
+          (lib/pwindows._accepted): A2's three released 09:10 logins formed
+          '09:10-09:11' in the 综合部 login statement.
 Change  while P04 has an open Page-Hinkley alarm on the node's arrival time
         (node.meta['evolving']['@when']), windows are PROVISIONAL and fitted
         from the reservoir arrivals since the alarm; when P04 accepts the change

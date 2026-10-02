@@ -66,11 +66,27 @@ Daily (entity_due, 24 h) — the clustering:
               "final Louvain level" suffers modularity's resolution limit on an
               organisation with a large public population (a 3-IP department
               joins any neighbour); (a) and (b) replace aggregation.
+              (d) (round 3) POOLS: configured DHCP / VPN scopes and prefixes whose
+                  judged addresses turn over (_pool_nets, outside ip_classes
+                  regions): every community inside one is a slice of the pool and
+                  they are merged; a lone address inside joins the pool's
+                  community (_pool_absorb); the pool group covers its prefix
+                  (_pool_covers). Pack O: 研发 (10.50.0.0/22, 24-h leases) was 5-10
+                  groups on every seed (dev_pool_grouped 0/5);
+              (e) (round 3) ROLES: an eligible stable address left alone that
+              performs an action nobody else does at its scale (>= 50 % of the
+              action's organisation-wide mass) and would not join any group is a
+              one-address group (_roles): 财务部's approver 192.168.2.10 had no
+              group on any seed;
   stable ids  Hungarian on 1 - Jaccard(members), inherit at J >= 0.3; an IP
               moves only after 2 consecutive runs put it outside its group
               (a community that forms anew gets a new id each run, so the runs
               "elsewhere" are counted); events group_formed / group_changed (INFO,
-              at (__org__, __org__)).
+              at (__org__, __org__)). Lineage (round 3): the ids of groups that
+              dissolved in the last 7 days are matched too (a re-forming group
+              gets its id back), and a merged group keeps the id of a predecessor
+              it contains >= 80 % of (pack O seed 1: 综合部 G12 -> G31 on day 17;
+              A5 was then scored against a two-day scope).
   names       config who_group_names [{name, ips | cidrs}] and dhcp_scopes
               [{cidr, name}] -> Hungarian on Jaccard >= 0.5 over the groups'
               ADDRESSES (prefix-mode pool sources are not people of the
@@ -165,6 +181,9 @@ N_LABELS = 5
 REPS = 32                   # representative MinHash samples kept per group
 G_MAX = 256
 CHANGED_J = 0.9
+CONTAIN = 0.8               # ... and a merged group keeps the id of a predecessor it contains >= 80 % of
+LINEAGE_IDS = 16            # predecessor ids kept per group (rec 'lineage', read by P03)
+LINEAGE_S = 7 * DAY         # a dissolved group's id is reused when it re-forms within 7 days (round 3)
 SHARED_MAX = 4096
 WHO_LEVEL_MODE = {0: "ip", 1: "prefix", 2: "prefix", 3: "grp", 4: "reg"}
 SIG_MODES = ("ip", "grp", "prefix")
@@ -255,6 +274,8 @@ class WGState:
         # prefix mode: address -> (last local day, distinct days); recurrent
         # addresses keep their own signature (see _source)
         self.addr_days: PS.LRU = PS.LRU(min(65536, 4 * s_max))
+        # lineage (round 3): ids of groups that dissolved in a recent run -> (members, when)
+        self.retired: Dict[str, Tuple[Set[str], float]] = {}
 
     def nbytes(self) -> int:
         return int(self.sigs.nbytes() + sum(r.nbytes for r in self.reps.values())
@@ -565,9 +586,20 @@ class WhoGroupsEngine(Engine):
         levels = [lv[inv] for lv in levels_u] if n else []
         # re-addressed pools (DHCP / VPN): ephemeral addresses in one pure prefix
         active = LV.ActiveIndex(k for k in sigs.keys() if "/" not in str(k))
+        pool_nets = _pool_nets(ctx.config, sigs, now)
         if n:
-            eph = [_ephemeral(sigs.get(src), now) and "/" not in src for src in srcs]
-            lab = LV.merge_local(lab, M, srcs, eph, active)
+            if pool_nets:
+                # (round 3) the pool prefixes are known (configured scopes, or
+                # prefixes whose judged addresses turn over): every community of
+                # addresses inside one is a slice of the pool's population (a
+                # lease, re-leased on a few days in a busy pool), and so is a
+                # lone such address
+                eph = ["/" not in src and any(_in_net(src, x) for x in pool_nets) for src in srcs]
+                lab = LV.merge_local(lab, M, srcs, eph, active, nets=pool_nets, min_size=2)
+                lab = _pool_absorb(lab, srcs, eph, pool_nets)
+            else:
+                eph = [_ephemeral(sigs.get(src), now) and "/" not in src for src in srcs]
+                lab = LV.merge_local(lab, M, srcs, eph, active)
             # a department split by one optional activity, inside its own subnet
             lab = LV.merge_prefix(lab, M, srcs, active, self.rho)
         comm: Dict[int, List[str]] = {}
@@ -575,20 +607,49 @@ class WhoGroupsEngine(Engine):
             comm.setdefault(c, []).append(srcs[i])
         new_groups = [set(v) for c, v in sorted(comm.items()) if len(v) >= 2]
         sub0 = levels[0] if levels else np.arange(n)
-        # ---- stable ids with the two-run move rule
+        # ---- group-wide action shares (labels, roles)
+        glob: Dict[int, float] = {}
+        for p in prof:
+            s_ = sum(p.values())
+            for k, v in p.items():
+                glob[k] = glob.get(k, 0.0) + v / s_
+        idx = {src: i for i, src in enumerate(srcs)}
+        # ---- single-member functional roles (round 3)
+        roles = _roles(srcs, prof, glob, M, sigs, now, new_groups, idx, eph if n else [], self.rho)
+        new_groups += [{r} for r in roles]
+        # ---- stable ids with the two-run move rule; lineage: a group that
+        # dissolved in a recent run gets its id back when it re-forms
         prev = {g: set(m) for g, m in st.prev_members.items()}
-        inherit = LV.match_ids(prev, new_groups, J_INHERIT)
+        retired = getattr(st, "retired", None)
+        if retired is None:
+            retired = st.retired = {}
+        for g in [g for g, (_, tr) in retired.items() if now - tr > LINEAGE_S or g in prev]:
+            del retired[g]
+        cand = dict(prev)
+        for g, (m, _) in retired.items():
+            cand.setdefault(g, set(m))
+        inherit = _inherit_ids(cand, new_groups)
+        # lineage: the earlier ids whose addresses a new group contains (merged /
+        # re-formed predecessors); P03 reads a group's label history through it
+        # (the node summaries carry the label of learning time)
+        cand_ids_ = {g: _idset(m) for g, m in cand.items()}
+        preds_of: Dict[int, Set[str]] = {}
+        for i, members in enumerate(new_groups):
+            mi_ = _idset(members)
+            preds_of[i] = {g for g, m in cand_ids_.items() if m and len(m & mi_) >= CONTAIN * len(m)}
         old_of: Dict[str, str] = {}
         for g, m in prev.items():
             for ip in m:
                 old_of[ip] = g
         final: Dict[str, Set[str]] = {}
+        lineage_new: Dict[str, Set[str]] = {}
         for i, members in enumerate(new_groups):
             gid = inherit.get(i)
             if gid is None:
                 gid = f"G{st.next_gid}"
                 st.next_gid += 1
             final[gid] = set(members)
+            lineage_new[gid] = preds_of.get(i, set()) - {gid}
         where = {ip: g for g, m in final.items() for ip in m}
         pend: Dict[str, Tuple[Optional[str], int]] = {}
         for ip, g_old in old_of.items():
@@ -612,7 +673,8 @@ class WhoGroupsEngine(Engine):
             elif g_old in prev and len(prev[g_old]) >= 2:
                 final.setdefault(g_old, set()).add(ip)
         st.pending_move = pend
-        final = {g: m for g, m in final.items() if len(m) >= 2}
+        role_set = set(roles)
+        final = {g: m for g, m in final.items() if len(m) >= 2 or (len(m) == 1 and next(iter(m)) in role_set)}
         # ---- provisional members (readdress) are confirmed by the clustering or released
         prov_keep: Dict[str, Set[str]] = {}
         for g, gr in (model.get("groups") or {}).items():
@@ -625,13 +687,7 @@ class WhoGroupsEngine(Engine):
         for g, ips in prov_keep.items():
             final[g] |= ips
         # ---- group records
-        glob: Dict[int, float] = {}
-        for p in prof:
-            s = sum(p.values())
-            for k, v in p.items():
-                glob[k] = glob.get(k, 0.0) + v / s
         gsum = sum(glob.values()) or 1.0
-        idx = {src: i for i, src in enumerate(srcs)}
         named = _named_sets(ctx.config, sigs.keys())
         # names are matched on the groups' ADDRESSES: prefix-mode pool sources
         # (one-shot visitors pooled per /24) are not people of the department -
@@ -692,9 +748,18 @@ class WhoGroupsEngine(Engine):
             top = labels[:2] or [{"label": item_label(sigs.items.key_of(k) or f"#{k}")}
                                  for k, _ in sorted(gp.items(), key=lambda kv: -kv[1])[:2]
                                  if not (sigs.items.key_of(k) or "").partition("|")[2].startswith("@")]
+            old = old_groups.get(g) or {}
+            # (round 3) sticky display labels: a group keeps the labels of its
+            # name while they are still among its representative actions (the
+            # role 192.168.1.21 was '综合部·oa GET /approval/{num}' one day and
+            # '…/approval/list' the next: a group_changed event and a renamed
+            # view every day)
+            have = {x["label"] for x in labels}
+            keep = [x for x in (old.get("name_labels") or []) if x in have]
+            if keep and len(keep) == len(old.get("name_labels") or []):
+                top = [{"label": x} for x in keep]
             auto = f"{g}·" + "+".join(x["label"] for x in top) if top else g
             nm = names.get(g) or subnames.get(g)
-            old = old_groups.get(g) or {}
             prov = [ip for ip in old.get("provisional") or [] if ip in prov_keep.get(g, set())]
             if nm is not None and g in subnames and g not in names:
                 # a learned role inside a configured department (another group got
@@ -708,6 +773,8 @@ class WhoGroupsEngine(Engine):
                                                   if v >= 0.01},
                    "actions": acts,
                    "first_seen": old.get("first_seen", now), "changed": now, "provisional": prov,
+                   "name_labels": [x["label"] for x in top],
+                   "lineage": sorted((set(old.get("lineage") or []) | lineage_new.get(g, set())) - {g})[-LINEAGE_IDS:],
                    "materialise": rank < G_MAX or bool(nm)}
             if not old:
                 events.append(("group_formed", g, {"members": members[:32], "n": len(members),
@@ -733,6 +800,13 @@ class WhoGroupsEngine(Engine):
                 reps[g] = M[sel]
                 cl = {int(lab[i]) for i in mi}
                 rec["cohesion"] = round(float(np.mean([intra.get(c, 1.0) for c in cl])), 4)
+        _pool_covers(groups, covers, pool_nets)
+        for g, m in prev.items():
+            if g not in groups:
+                retired[g] = (set(m), now)
+        if len(retired) > 4 * G_MAX:
+            for g, _ in sorted(retired.items(), key=lambda kv: kv[1][1])[:len(retired) - 4 * G_MAX]:
+                del retired[g]
         st.prev_members = {g: set(final[g]) for g in groups}
         st.reps = reps
         st.cohesion = {g: float(r.get("cohesion", 1.0)) for g, r in groups.items()}
@@ -844,6 +918,226 @@ def _first(labels: np.ndarray, c: int) -> int:
 def _ephemeral(sg: Any, now: float) -> bool:
     age = (now - sg.first) / DAY
     return age >= EPHEMERAL_AGE_S / DAY and sg.days <= max(1.0, EPHEMERAL_SHARE * age)
+
+
+def _inherit_ids(cand: Mapping[str, Set[str]], new_groups: Sequence[Set[str]]) -> Dict[int, Optional[str]]:
+    """{index of new group: inherited id or None} (§6.15 item 4 + round 3).
+
+    Identity is matched on the groups' ADDRESSES (people); prefix-mode pool
+    sources (one-shot addresses pooled per /24) come and go with the days'
+    visitors. Pack O seed 1, day 19-20: 综合部 {.23, .121} picked up two /24
+    pool sources that had formed a group of their own (G32) the day before;
+    Jaccard 0.5 to both G12 and G32 and the tie went to G32, so 综合部 got a
+    new id (A5 then had no scope history). Lineage across merges: a new group
+    that absorbed >= CONTAIN of an old group's addresses (several pool slices
+    becoming the pool) keeps the id of the largest such predecessor."""
+    cand_ids = {g: _idset(m) for g, m in cand.items()}
+    new_ids = [_idset(m) for m in new_groups]
+    inherit = LV.match_ids(cand_ids, new_ids, J_INHERIT)
+    used = {g for g in inherit.values() if g is not None}
+    for i, members in enumerate(new_ids):
+        if inherit.get(i) is not None or len(new_groups[i]) < 2:
+            continue
+        best = None
+        for g, m in cand_ids.items():
+            if g in used or not m:
+                continue
+            ov = len(m & members)
+            if ov >= CONTAIN * len(m) and (best is None or ov > best[1]):
+                best = (g, ov)
+        if best is not None:
+            inherit[i] = best[0]
+            used.add(best[0])
+    return inherit
+
+
+def _idset(members: Iterable[str]) -> Set[str]:
+    """A group's identity for id matching: its addresses, or all its sources
+    when it has no address (a group of prefix-mode pool sources)."""
+    m = set(members)
+    ips = {x for x in m if "/" not in str(x)}
+    return ips or m
+
+
+def _young(sg: Any, now: float) -> bool:
+    """First seen less than EPHEMERAL_AGE_S ago: too young to be judged
+    ephemeral or recurring (inside a pool prefix: a fresh lease)."""
+    return sg is not None and (now - sg.first) < EPHEMERAL_AGE_S
+
+
+# ------------------------------------------------------------- round 3: pools
+POOL_MIN_EPH = 8            # ephemeral addresses a learned turnover prefix needs to be a pool
+POOL_PURITY = 0.5           # ... most of its judged addresses ephemeral (a busy pool re-leases addresses)
+POOL_COVER = 0.9            # a pool group's addresses lie >= 90 % inside its pool prefix
+
+
+def _nets(cidrs: Iterable[Any]) -> List[Any]:
+    out = []
+    for c in cidrs:
+        try:
+            out.append(ipaddress.ip_network(str(c), strict=False))
+        except ValueError:
+            continue
+    return out
+
+
+def _pool_nets(config: Mapping[str, Any], sigs: Any, now: float) -> List[Any]:
+    """The address pools of the organisation (round 3): configured DHCP / VPN
+    scopes (`dhcp_scopes`), plus prefixes (/16 or longer) whose JUDGED
+    addresses (first seen >= EPHEMERAL_AGE_S ago) turn over - most of them
+    (POOL_PURITY; a busy pool re-leases an address on a few days, a static
+    office's addresses are active nearly every day) ephemeral, >=
+    POOL_MIN_EPH ephemeral addresses - outside the configured regions
+    (`ip_classes`: their addresses are rendered by the region already, and a
+    public region's one-shot visitors are not one population). Measured on
+    pack O: the 研发 pool 10.50.0.0/22 (24-h leases) was 5-10 learned groups
+    on every seed because its young leases and low-evidence addresses made
+    the prefix impure over the active addresses (dev_pool_grouped 0/5)."""
+    nets = _nets(it.get("cidr") for it in (config or {}).get("dhcp_scopes") or []
+                 if isinstance(it, Mapping) and it.get("cidr"))
+    regions = _nets(c for it in (config or {}).get("ip_classes") or [] if isinstance(it, Mapping)
+                    for c in it.get("cidrs") or [])
+    known = nets + regions
+    judged, ephs = [], []
+    for k in sigs.keys():
+        if "/" in str(k) or any(_in_net(str(k), x) for x in known):
+            continue
+        sg = sigs.get(k)
+        if sg is None or (now - sg.first) < EPHEMERAL_AGE_S:
+            continue
+        judged.append(str(k))
+        if _ephemeral(sg, now):
+            ephs.append(str(k))
+    if len(ephs) >= POOL_MIN_EPH:
+        cov = LV.prefix_covers(ephs, LV.ActiveIndex(judged), cover=LV.COVER, purity=POOL_PURITY,
+                               max_prefixes=16, partial=True, min_len=(16, 48))
+        for net in _nets(cov):
+            if any(net.version == x.version and (net.subnet_of(x) or x.subnet_of(net)) for x in known):
+                continue
+            if sum(1 for ip in ephs if _in_net(ip, net)) >= POOL_MIN_EPH:
+                nets.append(net)
+    return nets
+
+
+def _pool_absorb(lab: np.ndarray, srcs: Sequence[str], eph: Sequence[bool], pools: Sequence[Any]) -> np.ndarray:
+    """A lone ephemeral / young address inside a pool prefix joins the pool's
+    community (the one holding most of the pool's addresses): one day of one
+    lease is a slice of the pool's behaviour, too small to be its own
+    community and too different from any single slice to pass the join rule."""
+    lab = np.asarray(lab, dtype=np.int64).copy()
+    size: Dict[int, int] = {}
+    for c in lab.tolist():
+        size[c] = size.get(c, 0) + 1
+    for net in pools:
+        inside = [i for i, src in enumerate(srcs) if "/" not in src and _in_net(src, net)]
+        cnt: Dict[int, int] = {}
+        for i in inside:
+            if size[int(lab[i])] >= 2:
+                cnt[int(lab[i])] = cnt.get(int(lab[i]), 0) + 1
+        if not cnt:
+            continue
+        head = max(cnt.items(), key=lambda kv: (kv[1], -kv[0]))[0]
+        for i in inside:
+            if size[int(lab[i])] == 1 and eph[i]:
+                lab[i] = head
+    return lab
+
+
+def _pool_covers(groups: Dict[str, Dict[str, Any]], covers: Dict[str, List[str]], pools: Sequence[Any]) -> None:
+    """A pool group's address range is its pool prefix: the group holding
+    >= POOL_COVER of the grouped addresses inside the prefix, its own
+    addresses >= POOL_COVER inside it, covers the prefix ("研发 = 10.50.0.0/22").
+    prefix_covers' purity over active addresses cannot say it: a pool's
+    unjudged or low-evidence leases are active and ungrouped."""
+    for net in pools:
+        cnt: Dict[str, int] = {}
+        tot = 0
+        for g, gr in groups.items():
+            k = sum(1 for m in gr.get("members") or [] if "/" not in str(m) and _in_net(str(m), net))
+            if k:
+                cnt[g] = k
+                tot += k
+        if not cnt:
+            continue
+        g, k = max(cnt.items(), key=lambda kv: (kv[1], kv[0]))
+        gr = groups[g]
+        ips = [m for m in gr.get("members") or [] if "/" not in str(m)]
+        if k < POOL_COVER * tot or k < POOL_COVER * len(ips):
+            continue
+        cv = [str(net)] + [c for c in gr.get("covers") or [] if not _sub_of(c, net)]
+        gr["covers"] = cv
+        gr["pool"] = str(net)
+        covers[g] = cv
+
+
+def _sub_of(c: str, net: Any) -> bool:
+    try:
+        x = ipaddress.ip_network(str(c), strict=False)
+    except ValueError:
+        return False
+    return x.version == net.version and x.subnet_of(net)
+
+
+# ------------------------------------------------------------- round 3: roles
+ROLE_DAYS = 5               # active local days before a lone address can be a role
+ROLE_EXCL = 0.5             # ... holding >= 50 % of an action's organisation-wide (normalised) mass
+
+
+def _roles(srcs: Sequence[str], prof: Sequence[Mapping[int, float]], glob: Mapping[int, float],
+           M: np.ndarray, sigs: Any, now: float, groups: Sequence[Set[str]], idx: Mapping[str, int],
+           eph: Sequence[bool], rho: float) -> List[str]:
+    """Single-member FUNCTIONAL ROLES (round 3): an eligible address the
+    clustering left alone becomes a group of its own when (a) it is a stable
+    client (>= ROLE_DAYS active days, not ephemeral, not a prefix source),
+    (b) it performs an action nobody else does at its scale - it holds >=
+    ROLE_EXCL of the action's organisation-wide normalised mass, the action
+    being >= ACT_MEMBER_W of its own signature - and (c) it would not join an
+    existing group by the join rule (votes >= JOIN_MAJ among its nearest
+    representatives, mean J >= rho x the group's cohesion). Pack O: the
+    finance approver 192.168.2.10 (the only address approving vouchers) had
+    no group on any seed, so the user view never stated 财务部's approvals and
+    P03 judged it by its own history only. Public visitors (shared actions)
+    and the members of a department (they join it) never qualify."""
+    grouped = set().union(*groups) if groups else set()
+    reps: List[Tuple[int, List[int], float]] = []
+    for gi, g in enumerate(groups):
+        mi = [idx[m] for m in g if m in idx]
+        if len(mi) < 2:
+            continue
+        smp = LV._sample(mi, 16)
+        reps.append((gi, smp, LV._mean_j(M, smp)))
+    out: List[str] = []
+    for i, src in enumerate(srcs):
+        if src in grouped or "/" in src or (eph and i < len(eph) and eph[i]):
+            continue
+        sg = sigs.get(src)
+        if sg is None or sg.ev < EV_JOIN or sg.days < ROLE_DAYS or _ephemeral(sg, now):
+            continue
+        p = prof[i]
+        s = sum(p.values()) or 1.0
+        excl = False
+        for k, v in p.items():
+            key = sigs.items.key_of(k) or ""
+            if key.partition("|")[2].startswith("@"):
+                continue
+            if v / s >= ACT_MEMBER_W and (v / s) / max(glob.get(k, 0.0), 1e-12) >= ROLE_EXCL:
+                excl = True
+                break
+        if not excl:
+            continue
+        joins = False
+        if reps:
+            Js = [(gi, float((M[smp] == M[i][None, :]).mean(axis=1).max()), float((M[smp] == M[i][None, :]).mean()), coh)
+                  for gi, smp, coh in reps]
+            votes = {gi: jmax for gi, jmax, _, _ in Js if jmax >= MH.J_MIN}
+            if votes:
+                gi = max(votes, key=votes.get)
+                tot = sum(votes.values())
+                jm, coh = next((jmean, coh) for g_, _, jmean, coh in Js if g_ == gi)
+                joins = votes[gi] / tot >= JOIN_MAJ and jm >= rho * coh
+        if not joins:
+            out.append(src)
+    return out
 
 
 # split attributes that partition WHO does an action (address, client stack) or
@@ -983,7 +1277,10 @@ def _named_sets(config: Mapping[str, Any], sources: Iterable[str]) -> List[Tuple
         if str(it["name"]) in have:
             continue
         m = inside([it["cidr"]])
-        if m:
+        # a scope that is a configured department's range already is that
+        # department, not a second name for it (round 3: the merged 研发 pool
+        # was named '研发 DHCP' by a tie with who_group_names' '研发')
+        if m and not any(m <= ss for _, ss in out):
             out.append((str(it["name"]), m))
     return out
 

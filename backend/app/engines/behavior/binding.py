@@ -32,6 +32,15 @@ Hourly per tree (entity_due), trees whose arm 'p08' is not 'off':
       {jack, rose}, and at the 综合部 login node created by a late split the
       D2 rename read {mike, mike.w} because the rebinding lived in the parent
       node's baselines only.
+      Deviation (round 3, measured on pack O finance): hierarchical pooling.
+      A newly screened pair's value history is seeded from the probe's rows of
+      it (_seed_histories: the rows kept since the payload became a candidate,
+      <= 64 sources seen on >= 2 days), and a source is judged on its tree-level
+      clean normal DAYS (lib/pfd.history_support) when they hold more evidence
+      than the node's young sketch and name the same value, with the node's
+      leave-one-out empirical-Bayes prior as before: 财务部's once-a-day users
+      were screened on day 8, their sketch started on day 9 and no binding was
+      ever stated (P12 switched the arm off on day 10 for want of a judged one).
 Writes  model.pbind@(tree key, '__system__'):
           {'fmt': 1, 'version', 'updated', 'applicable',
            'nodes': {kind: {nid: {'status', 'pairs': {'X->Y': record}, 'fit_t', 'n_c'}}},
@@ -78,6 +87,9 @@ Y_EXCLUDE = ("http.route", "http.path", "http.host", "http.method", "hdr.referer
 WHO_LEVELS = {"ip": (0,), "grp": (3,), "prefix": (1,), "reg": (), "none": ()}
 DEFAULT_WHO_LEVELS = (0, 1, 3)
 STRATUM_KEYS = ("http.route", "tls.sni", "dns.qname", "net.dst")
+CLEAN_COL = "__clean"         # probe rows: P03 did not damp the row (never a screened column)
+HIST_IDLE_S = 7 * 86400.0     # an untracked source's value history is kept while seen within a week ...
+SEED_X = 64                   # ... (seeded: <= 64 sources per pair, each seen on >= 2 days)
 
 
 def _stratum(get) -> str:
@@ -260,13 +272,14 @@ class BindingEngine(Engine):
                 if a == "net.src":
                     return b.ip_of(i)
                 return EV.ABSENT
-            row = {"net.src": ip}
+            clean_i = damp is None or not (float(damp[i]) < 1.0)
+            row = {"net.src": ip, CLEAN_COL: bool(clean_i)}
             for a, arr in dense.items():
                 v = arr[i]
                 if v is not EV.ABSENT:
                     row[a] = v
             ts = float(b.ts[i])
-            if len(row) > 1:
+            if len(row) > 2:
                 probe.offer(_stratum(get), row, float(mass[i]), ts,
                             seeded_uniform("p08", s, ts, int(b.rid[i])))
                 n += 1
@@ -289,11 +302,15 @@ class BindingEngine(Engine):
                     if day is None:
                         day = dmemo[mk] = TB.local_datetime(mk * 60.0, tz).date().toordinal()
                     is_normal = bool(normal.get(day, _dt.date.fromordinal(day) not in cal.holidays))
-                    clean = damp is None or not (float(damp[i]) < 1.0)
+                    clean = clean_i
                 pk = pair_key(X, Y)
-                if str(xg) not in (st["track"].get(pk) or ()):
-                    continue                    # history only for sources some node tracks
                 hist = st["hist"].get(pk)
+                tr = st["track"].get(pk)
+                if tr is not None:
+                    if str(xg) not in tr:
+                        continue                # history only for sources some node tracks
+                elif hist is None or str(xg) not in hist.x:
+                    continue                    # a screened pair no sketch holds yet: its seeded sources
                 if hist is None:
                     hist = st["hist"][pk] = FD.ValueHistory()
                 hist.observe(str(xg), yg, ts, day, is_normal, clean)
@@ -327,6 +344,7 @@ class BindingEngine(Engine):
             model["screen"] = [{k: v for k, v in d.items()} for d in specs]
             st["screened_at"] = probe.offered
             st["screened_t"] = now
+            self._seed_histories(ctx, key, st, model["screen"], hier)
         specs = model["screen"]
         by_kind: Dict[int, Dict[int, List[List[str]]]] = {}
         budget = PAIR_NODES
@@ -407,14 +425,28 @@ class BindingEngine(Engine):
                 for (X, Y), ps in (node.pairs or {}).items():
                     track.setdefault(pair_key(X, Y), set()).update(str(x) for x in ps.x.keys())
         st["track"] = track
+        screened = {pair_key(d["x"], d["y"]) for d in specs}
         for pk in list(st["hist"]):
             keep = track.get(pk)
             if not keep:
-                del st["hist"][pk]
+                if pk not in screened:
+                    del st["hist"][pk]          # a seeded history waits for its sketches while screened
                 continue
             h = st["hist"][pk]
-            for x in [x for x in h.x if x not in keep]:
-                del h.x[x]
+            # an untracked source leaves the history once it has been silent for
+            # HIST_IDLE_S: a source seeded from the probe is often not yet in any
+            # sketch when the first fit after the sketch's start runs (finance:
+            # .10 / .11 had not logged in yet at 09:00, kate had - the seeded days
+            # of the other two were deleted and they started again from 1)
+            idle = [x for x in h.x if x not in keep]
+            for x in idle:
+                seen = h.seen(x)
+                multi = max((len(r[3]) for r in h.x[x]["v"].values()), default=0) >= FD.REBIND_DAYS
+                if seen is None or not multi or now - seen[1] > HIST_IDLE_S:
+                    del h.x[x]
+            extra = [x for x in h.x if x not in keep]
+            for x in extra[:max(0, len(extra) - SEED_X)]:
+                del h.x[x]                      # (LRU order: the least recently seen first)
         live = {(k, n) for k, tr in ptm.kinds.items() for n in tr.nodes}
         st["rebound"] = {k: v for k, v in st["rebound"].items() if (k[0], k[1]) in live}
         ms = (time.perf_counter() - t0) * 1000.0
@@ -426,6 +458,55 @@ class BindingEngine(Engine):
         store.put_model(key, SYSTEM_ENTITY, MP.PBIND, model, version=model["version"], ts=now)
         store.put_model(key, SYSTEM_ENTITY, STATE, st, ts=now)
         return n_fit
+
+    @staticmethod
+    def _seed_histories(ctx: Context, key: str, st: Dict[str, Any], specs: Iterable[Mapping[str, Any]],
+                        hier: Any) -> int:
+        """A newly screened pair's value history starts from the probe's rows of
+        it (the learned rows P08 kept since the payload became a candidate,
+        oldest first, with their clean flags and normal days), not from the
+        first row after a node's sketch exists: pack O's finance logins (three
+        users, one login a workday) were screened on day 8 and their sketch
+        started on day 9, so no source reached n_bind before P12 judged the arm.
+        Bounded by the probe (<= R_TOTAL rows per tree)."""
+        probe: FD.ProbeReservoir = st["probe"]
+        new = [d for d in specs if pair_key(d["x"], d["y"]) not in st["hist"]]
+        if not new or hier is None:
+            return 0
+        tz = ctx.config.get("tz") or TB.DEFAULT_TZ
+        cal = TB.parse_calendar(ctx.config.get("calendar"))
+        pcal = ctx.store.get_model(key, SYSTEM_ENTITY, PCAL)
+        normal = (pcal or {}).get("normal", {}) if isinstance(pcal, Mapping) else {}
+        rows = probe.timed_rows()
+        n = 0
+        for d in new:
+            X, Y = d["x"], d["y"]
+            xa, xl = FD.parse_x(X)
+            ya, yl = FD.parse_x(Y)
+            h = FD.ValueHistory()
+            for row, ts in rows:
+                xv, yv = row.get(xa), row.get(ya)
+                if xv is None or yv is None:
+                    continue
+                xg = hier.gen(xa, xl, xv)
+                yg = hier.gen(ya, yl, yv) if yl else yv
+                if xg is None or yg is None:
+                    continue
+                day = TB.local_datetime(ts, tz).date().toordinal()
+                is_normal = bool(normal.get(day, _dt.date.fromordinal(day) not in cal.holidays))
+                h.observe(str(xg), yg, ts, day, is_normal, bool(row.get(CLEAN_COL, True)))
+                n += 1
+            # only sources the probe saw on >= REBIND_DAYS days can be pooled (a
+            # one-off visitor never could), at most SEED_X of them (most days first):
+            # the history stays bounded like the sketches (<= 64 sources a node tracks)
+            keep = sorted(((max((len(r[3]) for r in v["v"].values()), default=0), x)
+                           for x, v in h.x.items()), reverse=True)
+            keep = {x for d_, x in keep[:SEED_X] if d_ >= FD.REBIND_DAYS}
+            for x in [x for x in h.x if x not in keep]:
+                del h.x[x]
+            if h.x:
+                st["hist"][pair_key(X, Y)] = h
+        return n
 
     @staticmethod
     def _hist_version(st: Mapping[str, Any], node: Any) -> int:
@@ -473,7 +554,13 @@ class BindingEngine(Engine):
                 ex = FD.classify(hist.get(str(x)), values.get(str(x), ()), now, others, episode(str(x)))
                 if ex:
                     excl[str(x)] = ex
-        rec = FD.fit_pair(ps, now, exclude=excl)
+            # hierarchical pooling (deviation, §6.12): each source's tree-level days
+            # (every node of the pair, seeded with the probe rows from before the
+            # sketch existed), the node's leave-one-out prior over its other sources
+            sup = {str(x): FD.history_support(hist.get(str(x)), excl.get(str(x))) for x in xs}
+        else:
+            sup = {}
+        rec = FD.fit_pair(ps, now, exclude=excl, support=sup)
         if rec is None:
             return None
         prev_b = (st.get("bound") or {}).get((kind, node.id, pk)) or {}

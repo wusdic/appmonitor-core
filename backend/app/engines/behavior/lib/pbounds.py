@@ -649,6 +649,16 @@ REQ_PER_NODE = 3        # requested attributes per node and fitter
 REQ_TRY_UNITS = 5.0     # evidence and active days a node must gain before an unmet
 REQ_TRY_DAYS = 2        # request is given up (a login node is busy with page views all day
 REQ_RETRY_DAYS = 7      # but sees the login body only at 9 am); retried after 7 active days
+CONTEXT_NS = ("ctx", "ev", "sess")   # derived time / session / event context: not content (P09, P10 model it)
+PAYLOAD_NS = ("body", "q", "hdr", "resp")   # the content of a request / response itself
+
+
+def _same_quantity(a: str, b: str) -> bool:
+    try:
+        from .pselect import same_source
+    except Exception:                          # pragma: no cover
+        return a == b
+    return bool(same_source(a, b))
 M_T_P04 = 8             # m_t: P04 models the first m_t system targets without a request
 
 
@@ -662,6 +672,9 @@ def request_targets(store: Any, key: str, ptm: Any, t: float, types: Sequence[st
     targets), that the node does not model yet. Without such a request a
     split-only attribute (pack O's login body size and key set) is never a
     target, so the requirement's "90 % of submissions 1-2 KB" cannot be fitted.
+    The derived context namespaces (CONTEXT_NS: time of day, session age /
+    position, think time) are never requested: they are P09's / P10's, and
+    ranked first they took every request slot of pack O's portal comment node.
     No attribute name is written in code. A request the node never fills (the
     attribute is absent there) is given up after the node gained REQ_TRY_UNITS
     evidence units on REQ_TRY_DAYS more active days, so the slot moves to the next
@@ -693,6 +706,14 @@ def request_targets(store: Any, key: str, ptm: Any, t: float, types: Sequence[st
                             key=lambda a: (-float(reg.coverage(a)), a))
         cands = []
         for a in order:
+            if a.split(".", 1)[0] in CONTEXT_NS:
+                # the derived context of an event (time of day, session age and
+                # position, think time) is P09's / P10's (windows, workflow delay
+                # bands), not content: pack O's portal comment node gave its 3
+                # request slots to ctx.sess_age_s / ctx.sess_pos / ctx.think_s
+                # (P05 split candidates, ranked first) and never received its
+                # body size (PG1 portal comment content: band from 1 observation)
+                continue
             rec = reg.get(a)
             if rec is None or getattr(rec, "type", None) not in types:
                 continue
@@ -703,6 +724,16 @@ def request_targets(store: Any, key: str, ptm: Any, t: float, types: Sequence[st
             cands.append(a)
         if not cands:
             continue
+        numeric = any(ty not in ("set", "text") for ty in types)
+        if numeric:
+            # sizes (P06): the payload's own field before its transport measures
+            # (stable order otherwise), and one quantity measured twice takes one
+            # request slot (lib/pselect.same_source: request body and upstream
+            # bytes / packets, response bytes and packets). Pack O seed 0, portal
+            # comment node: the slots held net.bytes_down AND net.pkts_down (P05
+            # ranked the transport measures first), the body size P04 had no room
+            # for was given up and the statement had no "提交数据量" band
+            cands.sort(key=lambda a: 0 if a.split(".", 1)[0] in PAYLOAD_NS else 1)
         nodes = [nd for nd in tree.nodes.values()
                  if nd.parent is not None and not getattr(nd, "is_exc", False)
                  and nd.state not in ("retired", "dormant")]
@@ -730,6 +761,9 @@ def request_targets(store: Any, key: str, ptm: Any, t: float, types: Sequence[st
                 if len(want) >= per_node and len(keep) >= per_node:
                     break
                 if a in base:
+                    nb.pop(a, None)
+                    continue
+                if numeric and any(_same_quantity(a, b) for b in keep + want):
                     nb.pop(a, None)
                     continue
                 if a in nd.targets:

@@ -150,6 +150,7 @@ def test_truth_consistency(full_o):
     # re-plan every day (planning is deterministic and independent of emission)
     g2 = TrafficGenerator(seed=0, pack=P.get_pack("O"))
     n = 0
+    win_in = defaultdict(list)
     for d in range(1, 22):
         for e in g2.org._plan_day(d):
             if e.tid is None:
@@ -171,7 +172,10 @@ def test_truth_consistency(full_o):
             ld = g2.clock.local(e.ts)
             dt_ = "workday" if g2.clock.day_kind(ld.date())[0] else "nonworkday"
             minute = ld.hour * 60 + ld.minute + ld.second / 60.0
-            assert any(a <= minute <= b for a, b in row["windows"][dt_]), (e.tid, minute)
+            # every arrival inside the step's support; its windows hold the
+            # central 99 % of the step's arrival law (round 3, §11.5)
+            assert any(a <= minute <= b for a, b in row["gen"]["support"][dt_]), (e.tid, minute)
+            win_in[e.tid].append(any(a <= minute <= b for a, b in row["windows"][dt_]))
             c = row["content"]
             if "body.len" in c and e.l7 is not None:
                 lo, hi = c["body.len"]["range"]
@@ -192,6 +196,9 @@ def test_truth_consistency(full_o):
                     v = parse_qs(e.l7["body"], keep_blank_values=True)[attr[8:]][0]
                     assert re.fullmatch(tc["grammar"]["regex"], v), (attr, v)
     assert n > 100000
+    for tid, hits in win_in.items():
+        assert np.mean(hits) >= 0.99 - 3.0 * math.sqrt(0.01 * 0.99 / len(hits)) - 1.0 / len(hits), \
+            (tid, np.mean(hits), len(hits))
     # opportunities recorded while emitting == planned benign events
     tot = sum(c for per in g.ptruth["opportunities"].values() for day in per.values()
               for c in day.values())
@@ -409,3 +416,86 @@ def test_org_packs_default_to_a_registry_that_fits_in_memory():
         assert P.get_pack(n).registry_mode == "progressive_decision", n
     assert P.get_pack("O-servers-20").registry_mode == "progressive_only"
     assert P.get_pack("O-scale-500-0").registry_mode == "progressive_only"
+
+
+def _ks_to_law(x, q):
+    """Kolmogorov distance between a sample and a law given by its quantile
+    function at equally spaced probabilities."""
+    x = np.sort(np.asarray(x, dtype=float))
+    F = np.interp(x, np.asarray(q, dtype=float), np.linspace(0.0, 1.0, len(q)))
+    emp = np.arange(1, len(x) + 1) / len(x)
+    return float(np.max(np.maximum(np.abs(F - emp), np.abs(F - (emp - 1.0 / len(x))))))
+
+
+def test_step_truth_is_the_steps_own_arrival_law():
+    """Round 3 (truth fix): a step's truth windows and held-out minutes follow
+    the step's own arrival law (session start + think times, repeats,
+    optional steps), not the activity's window widened by the think-time
+    sums with minutes drawn uniformly in it. GA mail records 2-8 of a session
+    were drawn in a 09:40-09:47 tail the generator hardly reaches (KS 0.23)."""
+    from app.eval import pmetrics as M
+    spec = G.build_org("O", n_days=3)
+    g = G.OrgGenerator(spec, seed=0)
+    r = np.random.default_rng(7)
+    for name in ("GA.mail", "PUB.portal.visit"):
+        act = next(a for a in spec.activities if a.name == name)
+        e = g.eff(act, 1)
+        w = e.when[0]
+        actor = g.actors[g.members[act.dept][0]] if act.dept != "PUB" else \
+            next(a for a in g.actors.values() if a.dept == "PUB")
+        arr = defaultdict(list)
+        for _ in range(2500):
+            if w.arrival == "normal":
+                m = float(np.clip(r.normal(0.5 * (w.m0 + w.m1), (w.m1 - w.m0) / 4), w.m0, w.m1))
+            else:
+                m = float(r.uniform(w.m0, w.m1))
+            sysid = act.system if isinstance(act.system, str) else act.system[0]
+            for ev in g._session(act, e, actor, g._minute_ts(1, m), r, 1, sysid):
+                k = int(ev.tid.split("#")[1].split("@")[0])
+                arr[k].append((ev.ts - g.day_start(1)) / 60.0)
+        rows = {row["step"]: row for row in g.ptruth()["pattern_truth"]
+                if row["activity"] == name and row["valid_from_day"] == 1}
+        for k, x in arr.items():
+            row = rows[k]
+            dt = "workday"
+            # the truth row's held-out minutes are the generator's arrivals
+            # (the sessions above start in the first window spec only)
+            a0, b0 = row["windows"][dt][0]
+            hold = [h["minute"] for h in M.holdout_events([row], np.random.default_rng(k), 6000)
+                    if h["daytype"] == dt and h["minute"] <= b0 + 30]
+            qh = np.quantile(hold, np.linspace(0, 1, 129))
+            tol = max(0.05, 1.63 / math.sqrt(len(x)) + 0.01)       # 1 % KS level + quantile noise
+            assert _ks_to_law(x, qh) < tol, (name, k, _ks_to_law(x, qh))
+            # the stated window holds >= 98 % of the arrivals
+            inside = np.mean([any(a <= v <= b for a, b in row["windows"][dt]) for v in x])
+            assert inside >= 0.98, (name, k, inside, row["windows"][dt])
+    # the GA login (step 0, one record) keeps the activity's window exactly
+    login = next(row for row in g.ptruth()["pattern_truth"] if row["tid"] == "GA.oa.login#0")
+    assert login["windows"]["workday"] == [[G._hm("09:00"), G._hm("09:21")]]
+
+
+def test_tls_truth_states_the_observed_upstream_bytes():
+    """Evaluator round 3: a TLS row's net.bytes_up is the step's payload plus the
+    TLS framing; the truth's band / range must describe that observed quantity.
+    The truth stated the bare payload, so the learned mail and git bands were
+    exactly truth + 300 B and failed PG1 content on every seed."""
+    spec = G.build_org("O", n_days=3)
+    g = G.OrgGenerator(spec, seed=0)
+    rows = {r["tid"]: r for r in g.ptruth()["pattern_truth"]}
+    ups = defaultdict(list)
+    for d in (1, 2):
+        for e in g._plan_day(d):
+            if e.ch == "t" and e.tid is not None and "net.bytes_up" in rows[e.tid]["content"]:
+                ups[e.tid].append(e.up)
+    assert ups, "no TLS step with a bytes_up truth"
+    for tid, x in ups.items():
+        c = rows[tid]["content"]["net.bytes_up"]
+        lo, hi = c["range"]
+        assert all(lo - 1 <= v <= hi + 1 for v in x), (tid, lo, hi, min(x), max(x))
+        if len(x) >= 100:
+            # the stated lower edge is reached: the smallest observed value is
+            # close to it (the bare payload's edge lies 300 B below every row)
+            assert min(x) - lo <= 0.2 * lo, (tid, lo, min(x))
+            b0, b1 = c["band90"]
+            inside = np.mean([b0 - 1 <= v <= b1 + 1 for v in x])
+            assert inside >= 0.75, (tid, inside, c["band90"])

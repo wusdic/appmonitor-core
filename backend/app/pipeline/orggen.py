@@ -103,6 +103,11 @@ class ValueSpec:
         return ValueSpec(str(d["kind"]), p)
 
 
+# bytes a TLS session adds to the payload upstream (records, handshake share): a TLS
+# row's net.bytes_up is the step's `up` payload plus this framing
+TLS_UP_FRAMING = 300
+
+
 @dataclass
 class SizeSpec:
     """Mixture of uniforms [(weight, lo, hi)] in bytes, hard-clipped to `clip`."""
@@ -1201,6 +1206,110 @@ def build_servers_org(n_days: int = 7, n_families: int = 12, members: int = 20,
 # --------------------------------------------------------------------------- #
 # The generator
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Per-step arrival law (truth; progressive.md §11.5)
+# --------------------------------------------------------------------------- #
+STEP_LAW_N = 20000               # simulated sessions per window spec
+STEP_LAW_Q = 129                 # quantile-function points published per segment
+STEP_LAW_MASS = 0.99             # a step's window = the central 99 % of its arrival law
+_STEP_LAW_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _session_offsets(steps: Sequence[Step], k: int, n: int, r: np.random.Generator
+                     ) -> Tuple[np.ndarray, np.ndarray]:
+    """Offsets (s) from the session start of every arrival of step k in n
+    simulated sessions, and the index of the session each belongs to. The
+    same program as OrgGenerator._session: a step with p < 1 is skipped with
+    probability 1 - p, it is repeated U{repeat} times, and every record but
+    the session's first is preceded by a think time U(think_s) of its step."""
+    t = np.zeros(n)
+    started = np.zeros(n, dtype=bool)
+    offs: List[np.ndarray] = []
+    sess: List[np.ndarray] = []
+    idx = np.arange(n)
+    for kk, st in enumerate(steps[: k + 1]):
+        on = r.random(n) < st.p if st.p < 1.0 else np.ones(n, dtype=bool)
+        lo, hi = int(st.repeat[0]), int(st.repeat[1])
+        reps = r.integers(lo, hi + 1, n)
+        for j in range(hi):
+            sel = on & (j < reps)
+            think = sel & started
+            t[think] += r.uniform(float(st.think_s[0]), float(st.think_s[1]), int(think.sum()))
+            if kk == k:
+                offs.append(t[sel].copy())
+                sess.append(idx[sel])
+            started |= sel
+    if not offs:
+        return np.zeros(0), np.zeros(0, dtype=int)
+    return np.concatenate(offs), np.concatenate(sess)
+
+
+def step_arrival_law(when: Sequence[WindowSpec], steps: Sequence[Step], k: int) -> Dict[str, Any]:
+    """The arrival law of step k of an activity, as the generator produces it:
+    a session starts at a minute drawn from its window spec's arrival law
+    (uniform, or N(mid, width / 4) clipped to the window), then the steps
+    follow with their think times (_session_offsets). Per window spec the law
+    is simulated once (STEP_LAW_N sessions, a fixed RNG: the law is a property
+    of the program, not of the seed) and published as
+
+      segments  {daytype: [[weight, [q_0 .. q_1]]]}: the quantile function at
+                STEP_LAW_Q equally spaced probabilities, weight = the spec's
+                share of sessions (proportional to its width, as _plan_day
+                draws it) x the step's mean arrivals per session
+      windows   {daytype: [[a, b]]}: per spec the central STEP_LAW_MASS of the
+                law, floor / ceil to minutes (step 0 of a non-repeated step:
+                the activity's window itself), merged when they overlap.
+
+    Before (round 2) a step's windows were the activity's window widened by
+    the sums of the think-time bounds and the scorer drew held-out minutes
+    uniformly inside them."""
+    key = json.dumps([[[w.daytypes, w.start, w.end, w.arrival] for w in when], [[s.method, s.route_fmt, s.p, list(s.repeat), list(s.think_s)]
+                                           for s in steps[: k + 1]], int(k)], sort_keys=True, default=str)
+    hit = _STEP_LAW_CACHE.get(key)
+    if hit is not None:
+        return copy.deepcopy(hit)
+    segs: Dict[str, List[List[Any]]] = {"workday": [], "nonworkday": []}
+    wins: Dict[str, List[List[int]]] = {"workday": [], "nonworkday": []}
+    qs = np.linspace(0.0, 1.0, STEP_LAW_Q)
+    tail = 0.5 * (1.0 - STEP_LAW_MASS)
+    for i, w in enumerate(when):
+        r = np.random.default_rng([crc(key) & 0x7FFFFFFF, i])
+        m0, m1 = float(w.m0), float(w.m1)
+        if w.arrival == "normal":
+            mu, sd = 0.5 * (m0 + m1), (m1 - m0) / 4.0
+            start = np.clip(r.normal(mu, sd, STEP_LAW_N), m0, m1)
+        else:
+            start = r.uniform(m0, m1, STEP_LAW_N)
+        off, sid = _session_offsets(steps, k, STEP_LAW_N, r)
+        if off.size == 0:
+            continue
+        x = np.minimum(start[sid] + off / 60.0, 1440.0)
+        q = np.round(np.quantile(x, qs), 2)
+        a = int(math.floor(float(np.quantile(x, tail))))
+        b = int(math.ceil(float(np.quantile(x, 1.0 - tail))))
+        exact = (k == 0 and steps[0].repeat[1] <= 1)
+        if exact:                                   # the session start law itself
+            a, b = int(w.m0), int(min(1440, w.m1))
+        if w.m1 >= 1439 and w.m0 == 0:
+            a, b = 0, 1440
+        weight = round(max(1.0, m1 - m0) * off.size / STEP_LAW_N, 4)
+        for dt_ in ("workday", "nonworkday"):
+            if w.daytypes in (dt_, "all"):
+                wins[dt_].append([a, b])
+                segs[dt_].append([weight, [float(v) for v in q]])
+    for dt_ in wins:
+        merged: List[List[int]] = []
+        for a, b in sorted(wins[dt_]):
+            if merged and a <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], b)
+            else:
+                merged.append([a, b])
+        wins[dt_] = merged
+    out = {"windows": wins, "segments": segs}
+    _STEP_LAW_CACHE[key] = out
+    return copy.deepcopy(out)
+
+
 @dataclass
 class _Eff:
     when: List[WindowSpec]
@@ -1244,6 +1353,9 @@ class OrgGenerator:
         self._index_public()
         self._mend = self._month_end_dates()
         self.opportunities: Dict[str, Dict[str, Dict[str, int]]] = {}
+        # {tid: {attr: {date: [min, max]}}} of the benign events emitted: the part
+        # of a row's content range the data could show (evaluator round 3)
+        self.extremes: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
         self.who_log: Dict[str, Dict[str, Dict[str, int]]] = {}
         # (source, action, local hour) counts per system and date: the offline
         # who-arm utility of PG8 (held-out code of who + behaviour given who,
@@ -1465,6 +1577,19 @@ class OrgGenerator:
     # ---------------------------------------------------------------- truth
     def _step_windows(self, when: List[WindowSpec], steps: List[Step], k: int
                       ) -> Dict[str, List[List[int]]]:
+        """Each step's own windows: per window spec, the central
+        STEP_LAW_MASS hull of the step's arrival law (step_arrival_law), merged
+        per day type. Before (round 2), the windows were the activity's window
+        widened by the sum of the steps' think-time bounds, and the scorer drew
+        held-out minutes uniformly in them: a later step's (or a repeated
+        record's) arrivals were placed in a tail the generator almost never
+        reaches (e.g. mail records 2-8 of a session)."""
+        return step_arrival_law(when, steps, k)["windows"]
+
+    def _step_windows_r2(self, when: List[WindowSpec], steps: List[Step], k: int
+                         ) -> Dict[str, List[List[int]]]:
+        """Round-2 step windows (support bounds); kept for the regression test
+        and the before/after re-scoring only."""
         lo_off = 0.0
         hi_off = 0.0
         n_before = 0
@@ -1535,8 +1660,12 @@ class OrgGenerator:
         gen_fields: Dict[str, Any] = {}
         if tls and st.up is not None:
             lo, hi = st.up.support()
-            content["net.bytes_up"] = {"band90": [st.up.quantile(0.05), st.up.quantile(0.95)],
-                                       "range": [lo, hi], "core": True}
+            # the observation is the payload plus the TLS record framing (`_render`),
+            # so the truth states the observed quantity (evaluator round 3: the
+            # learned mail / git bands were exactly truth + 300 and failed PG1)
+            f = TLS_UP_FRAMING
+            content["net.bytes_up"] = {"band90": [st.up.quantile(0.05) + f, st.up.quantile(0.95) + f],
+                                       "range": [lo + f, hi + f], "core": True}
             gen["up"] = st.up.to_dict()
         if st.body is not None and s0.visibility == "clear":
             b = st.body
@@ -1589,9 +1718,15 @@ class OrgGenerator:
         gen["fields"] = gen_fields
         if any(ValueSpec.from_dict(v).kind == "bound" for v in gen_fields.values()):
             gen["usernames"] = users
-        windows = self._step_windows(e.when, e.steps, k)
-        # arrival law inside the windows (eval draws held-out minutes from it)
+        law = step_arrival_law(e.when, e.steps, k)
+        windows = law["windows"]
+        # arrival law of the step (eval draws held-out minutes from it: the
+        # quantile function of each window spec's segment, segments by weight)
         gen["arrival"] = "normal" if any(w.arrival == "normal" for w in e.when) else "uniform"
+        gen["arrival_q"] = law["segments"]
+        # the bounds every arrival respects (the window widened by the think-time
+        # sums: round 2's `windows`); `windows` hold STEP_LAW_MASS of the law
+        gen["support"] = self._step_windows_r2(e.when, e.steps, k)
         daytypes = [t for t in ("workday", "nonworkday") if windows[t]]
         period = ("continuous" if act.period_s else
                   "monthly" if any(w.mend for w in e.when) else
@@ -1835,7 +1970,7 @@ class OrgGenerator:
             up = st.up.sample(r) if st.up is not None else int(r.integers(500, 5000))
             down = st.resp.sample(r)
             return OEv(t, sysid, ip, "t", "TLS", st.route_fmt if st.method == "TLS" else s.host,
-                       "", 0, up + 300, down, float(r.lognormal(4.0, 0.8)), a.stack, None, None,
+                       "", 0, up + TLS_UP_FRAMING, down, float(r.lognormal(4.0, 0.8)), a.stack, None, None,
                        tid, a.aid, anomaly, st.route_fmt)
         ids = ids if ids is not None else {}
         path = st.route_fmt
@@ -1910,6 +2045,7 @@ class OrgGenerator:
                 self.stats["benign"] += 1
                 o = self.opportunities.setdefault(e.tid, {}).setdefault(date_iso, {})
                 o[e.src] = o.get(e.src, 0) + 1
+                self._note_extremes(e, date_iso)
             else:
                 self.stats["anomalous"] += 1
             if replica is not None and e.system == replica.params["system"] and d >= replica.day \
@@ -2174,6 +2310,21 @@ class OrgGenerator:
             rows.append(rec)
         return rows
 
+    def _note_extremes(self, e: OEv, date_iso: str) -> None:
+        """Smallest / largest emitted value per (row, size attribute, date)."""
+        vals = []
+        if e.ch == "t":
+            vals.append(("net.bytes_up", float(e.up)))
+        elif e.l7 is not None and e.l7.get("body_len") is not None:
+            vals.append(("body.len", float(e.l7["body_len"])))
+        for a, v in vals:
+            ext = self.extremes.setdefault(e.tid, {}).setdefault(a, {})
+            mm = ext.get(date_iso)
+            if mm is None:
+                ext[date_iso] = [v, v]
+            else:
+                mm[0], mm[1] = min(mm[0], v), max(mm[1], v)
+
     def ptruth(self) -> Dict[str, Any]:
         return {
             "pattern_truth": self._ptruth_rows,
@@ -2182,6 +2333,7 @@ class OrgGenerator:
             "system_truth": self.system_truth(),
             "attr_truth": self.attr_truth(),
             "opportunities": self.opportunities,
+            "extremes": self.extremes,
             "who_log": self.who_log,
             "act_log": self.act_log,
             "stats": dict(self.stats),

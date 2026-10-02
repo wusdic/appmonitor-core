@@ -23,6 +23,15 @@ same learned patterns are projected into
       and a negative statement where every role never wrote (dept_view);
   * the IP view (on read, `ip_view`): the IP's group view plus its exception
       statements and the bindings whose source is the IP.
+Round 3 (checked against the requirement's wording on pack O): a system-view
+statement names the configured department of its addresses ('财务部
+（192.168.2.10）') and the action after its page ('POST /fin/approval/{num}/
+approve（审批）'); a binding is stated when it discriminates its sources (3
+finance users) even below BIND_MIN_CARD values; a group view states the
+group's PART of a node (its members, its windows); "never" agrees with the
+group's own P11 action mix and signatures, and what a group / department never
+does inside a system it uses is stated too ('销售部 在 oa 中从未执行：审批（…）',
+evidence scope 'actions'; the whole-system statement has scope 'system').
 Each statement is rendered in zh and en (lib/prender) and carries the
 machine-readable `evidence` block of the statement contract (eval/pmetrics
 header) plus support (n_c), confidence, first / last seen, version, state.
@@ -55,6 +64,7 @@ from ...models.schema import ORG, SYSTEM_ENTITY
 from .lib import m_ptree as MP
 from .lib import pbounds as PB
 from .lib import pdfg as DF
+from .lib import pfd as FD
 from .lib import pevent as EV
 from .lib import pnode as PN
 from .lib import psketch as PS
@@ -323,6 +333,35 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
                 return None
             who_ev = dict(who_ev, items=items, members=items)
             who_zh, who_en = PR.join_zh(items), PR.join_en(items)
+    elif who_ev.get("level") == "ip":
+        # (round 3) which KIND of people: the configured department all the
+        # stated addresses belong to (through their learned groups' `dept`, or
+        # the department's configured addresses), e.g. '财务部（192.168.2.10）'
+        # for the approver's role group - the requirement's "某类人"
+        ips = [str(x) for x in who_ev.get("members") or who_ev.get("items") or []]
+        dn = _dept_of(c, ips)
+        lz, le = PR.join_zh(who_ev.get("items") or ips), PR.join_en(who_ev.get("items") or ips)
+        if dn or _auto_group_of(c, ips):
+            # a department's name; an AUTO-named learned group of these
+            # addresses ('G16·finance GET /health+oa GET /health') says nothing
+            # the addresses do not: plain addresses then
+            who_zh, who_en = (f"{dn}（{lz}）", f"{dn} ({le})") if dn else (lz, le)
+            if not who_ev.get("closed"):
+                who_zh = f"目前观测到 {who_zh}（来源集合尚未封闭）"
+                who_en = f"so far {who_en} (source set not yet closed)"
+            if dn:
+                who_ev = dict(who_ev, dept=dn)
+    elif who_ev.get("level") in ("prefix", "reg"):
+        # (round 3) a pool group's prefixes: '研发（10.50.0.0/24、…，约 97 个 IP）'
+        pn = _pool_group_of(c, [str(x) for x in who_ev.get("items") or []])
+        if pn:
+            items = [str(x) for x in who_ev.get("items") or []]
+            nd_ = who_ev.get("distinct")
+            tail_zh = f"，约 {nd_} 个 IP" if nd_ else ""
+            tail_en = f", ~{nd_} IPs" if nd_ else ""
+            who_zh = f"{pn}（{PR.join_zh(items)}{tail_zh}）"
+            who_en = f"{pn} ({PR.join_en(items)}{tail_en})"
+            who_ev = dict(who_ev, group_name=pn)
     wentry = PW.lookup(c.pwin, kind, nd.id)
     own_when = False
     if part is not None:
@@ -337,8 +376,11 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     skip = [a for a in list(((PB.lookup(c.pb, kind, nd.id) or {}).get("attrs") or {}))
             + list(((PB.lookup(c.pg, kind, nd.id) or {}).get("attrs") or {}))
             if a.startswith(SKIP_PREFIX)]
-    content, czh, cen, c_c = PR.content_block(PB.lookup(c.pb, kind, nd.id), PB.lookup(c.pg, kind, nd.id),
-                                              c.labels, skip)
+    g_ent = PB.lookup(c.pg, kind, nd.id)
+    if restrict is not None:
+        g_ent = _restrict_closed(g_ent, PB.lookup(c.pbind, kind, nd.id) if isinstance(c.pbind, Mapping)
+                                 else None, restrict)
+    content, czh, cen, c_c = PR.content_block(PB.lookup(c.pb, kind, nd.id), g_ent, c.labels, skip)
     bent = PB.lookup(c.pbind, kind, nd.id) if isinstance(c.pbind, Mapping) else None
     if bent and c.reg is not None:
         # a "binding" of an attribute with a handful of values system-wide (body
@@ -346,14 +388,8 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         # content; only identifier-like payloads (usernames, accounts) bind
         keep = {}
         for pk, rec in (bent.get("pairs") or {}).items():
-            X, Y = (rec or {}).get("x"), (rec or {}).get("y")
-            pay = Y if (rec or {}).get("dir") != "rev" else X
-            r = c.reg.get(str(pay)) if pay else None
-            try:
-                card = float(r.card_estimate()) if r is not None else math.inf
-            except Exception:
-                card = math.inf
-            if card >= BIND_MIN_CARD:
+            # the same rule decides which pairs P04's held-out test checks
+            if FD.binding_stated(rec, FD.payload_card(c.reg, rec)):
                 keep[pk] = rec
         bent = dict(bent, pairs=keep)
     binds, bzh, ben, b_c = PR.binding_block(bent, c.labels)
@@ -382,6 +418,16 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     # 1.0, ptree open issue 2)
     if ph is not None and math.isfinite(float(ph)) and not own_when:
         conf = float(ph)
+    elif ph is not None and math.isfinite(float(ph)):
+        # a part with its own windows states the node's other constraints (whose
+        # held-out hold rate is p_hold) plus its own windows (their stated
+        # coverage): both must hold, so min(p_hold, own coverage). Evaluator
+        # round 3: the min of the parts' NOMINAL coverages stated 0.85-0.97 for
+        # mail parts whose node held ~0.5 of its tests, and 0.10 (a workflow
+        # edge's dependency strength, no coverage at all) for /docs parts that
+        # held 1.0 - the two ends of PG2's reliability diagram
+        own = when_c if (when_c is not None and math.isfinite(float(when_c))) else 1.0
+        conf = float(min(float(ph), float(own)))
     sys_label = c.key
     addr = ""
     root = c.ptm.kinds[kind].nodes.get(c.ptm.kinds[kind].root) if c.ptm is not None else None
@@ -389,8 +435,15 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         addr = _address(root, t)
     first = PR.local_date(nd.first_seen, c.tz)
     last = PR.local_date(nd.last_seen, c.tz)
-    zh, en = PR.sentence(sys_label, addr, when_zh, when_en, who_zh, who_en, PR.route_text(route),
-                         czh, cen, bzh, ben, fzh, fen, conf, first, last, nd.version, nd.cver, nd.state)
+    # (round 3) doing what: the action's display name after its page
+    # ('POST /fin/approval/{num}/approve（审批）')
+    rt = PR.route_text(route)
+    aw = action_word(route, c.config)
+    rt_zh, rt_en = (f"{rt}（{aw[0]}）", f"{rt} ({aw[1]})") if aw else (rt, rt)
+    zh, _ = PR.sentence(sys_label, addr, when_zh, when_en, who_zh, who_en, rt_zh,
+                        czh, cen, bzh, ben, fzh, fen, conf, first, last, nd.version, nd.cver, nd.state)
+    _, en = PR.sentence(sys_label, addr, when_zh, when_en, who_zh, who_en, rt_en,
+                        czh, cen, bzh, ben, fzh, fen, conf, first, last, nd.version, nd.cver, nd.state)
     facets = ["functional", "spatial"]
     if when_ev:
         facets.append("temporal")
@@ -419,7 +472,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
             "facets": facets, "evidence": ev}
 
 
-BIND_MIN_CARD = 8                # distinct payload values system-wide for a binding to be stated
+BIND_MIN_CARD = FD.BIND_MIN_CARD  # distinct payload values system-wide for a binding to be stated
 PART_SHARE = 0.05                # a group's part of a node is stated when it holds >= 5 % of its mass
 PART_MAX = 8                     # parts per node (largest first)
 
@@ -442,6 +495,148 @@ def _configured_ips(config: Mapping[str, Any]) -> Dict[str, List[str]]:
         if isinstance(it, Mapping) and it.get("name") and it.get("ips"):
             out.setdefault(str(it["name"]), []).extend(str(x) for x in it["ips"])
     return out
+
+
+def _dept_of(c: Any, ips: Sequence[str]) -> Optional[str]:
+    """The one configured department every address belongs to (its learned
+    group's `dept`, else the department's configured addresses), else None."""
+    if not ips:
+        return None
+    cfg_ips = getattr(c, "_cfg_ips", None)
+    if cfg_ips is None:
+        cfg_ips = {}
+        for name, lst in _configured_ips(getattr(c, "config", None) or {}).items():
+            for ip in lst:
+                cfg_ips.setdefault(ip, name)
+        try:
+            c._cfg_ips = cfg_ips
+        except AttributeError:                      # pragma: no cover
+            pass
+    out = set()
+    for ip in ips:
+        ip = ip[7:] if ip.startswith("shared:") else ip
+        g = (getattr(c, "ip2g", None) or {}).get(ip)
+        d = ((getattr(c, "groups", None) or {}).get(g) or {}).get("dept") if g is not None else None
+        d = d or cfg_ips.get(ip)
+        if not d:
+            return None
+        out.add(str(d))
+    return next(iter(out)) if len(out) == 1 else None
+
+
+def _auto_group_of(c: Any, ips: Sequence[str]) -> bool:
+    """All addresses belong to ONE learned group whose name is automatic."""
+    gs = {(getattr(c, "ip2g", None) or {}).get(ip[7:] if ip.startswith("shared:") else ip) for ip in ips}
+    if len(gs) != 1 or None in gs:
+        return False
+    gr = (getattr(c, "groups", None) or {}).get(next(iter(gs))) or {}
+    return gr.get("name_source") == "auto"
+
+
+def _pool_group_of(c: Any, prefixes: Sequence[str]) -> Optional[str]:
+    """The configured name of the pool group (P11 rec 'pool') whose pool
+    prefix holds every stated prefix, else None."""
+    import ipaddress
+    nets = []
+    for p in prefixes:
+        try:
+            nets.append(ipaddress.ip_network(p, strict=False))
+        except ValueError:
+            return None
+    if not nets:
+        return None
+    for g, gr in (getattr(c, "groups", None) or {}).items():
+        pool = gr.get("pool")
+        if not pool or gr.get("name_source") != "config":
+            continue
+        try:
+            pn = ipaddress.ip_network(pool, strict=False)
+        except ValueError:
+            continue
+        if all(n.version == pn.version and n.subnet_of(pn) for n in nets):
+            return str(gr.get("name") or g)
+    return None
+
+
+def _restrict_closed(g_ent: Optional[Mapping[str, Any]], bent: Optional[Mapping[str, Any]],
+                     members: Set[str]) -> Optional[Mapping[str, Any]]:
+    """A group's part (or group view) of a node states the node's closed value
+    sets for ITS members: when P08 binds every member to one value of a closed
+    set (net.src -> attr), the part's closed set is its members' bound values.
+    Evaluator round 3: the 销售部 part of the 财务部+销售部 login node stated
+    the node's 23 user names (销售部's 20 and 财务部's 3), not its own 20."""
+    if not g_ent or not members or not isinstance(bent, Mapping):
+        return g_ent
+    attrs = g_ent.get("attrs") or {}
+    new = None
+    for pk, rec in (bent.get("pairs") or {}).items():
+        if not isinstance(rec, Mapping) or rec.get("dir") == "rev":
+            continue
+        X, Y = rec.get("x"), rec.get("y")
+        if not X or not Y:
+            X, _, Y = str(pk).partition("->")
+        if X != "net.src" or Y not in attrs:
+            continue
+        ga = attrs[Y]
+        if not isinstance(ga, Mapping) or ga.get("closed") is None:
+            continue
+        tab = rec.get("table") or {}
+        vals = set()
+        for m in members:
+            ent = tab.get(m)
+            if not isinstance(ent, Mapping) or not ent.get("bound") or ent.get("top") is None:
+                vals = None
+                break
+            vals.add(str(ent["top"]))
+        closed = {str(v) for v in ga["closed"]}
+        if not vals or not vals <= closed or vals == closed:
+            continue
+        if new is None:
+            new = dict(attrs)
+        new[Y] = dict(ga, closed=sorted(vals), part_of_closed=len(closed))
+    return g_ent if new is None else dict(g_ent, attrs=new)
+
+
+def _ctx_admits(nd: Any, ip: str, ip2g: Mapping[str, Any]) -> bool:
+    """Whether address `ip` satisfies every net.src constraint of the node's
+    context (prefixes, addresses, learned groups); False when one cannot be
+    decided (a region)."""
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for attr, _l, vals, neg in getattr(nd, "ctx", ()):
+        if attr != "net.src":
+            continue
+        hit = False
+        for v in vals:
+            v = str(v)
+            if v.startswith("grp:"):
+                hit = str(ip2g.get(ip)) == v[4:]
+            elif "/" in v:
+                try:
+                    hit = a in ipaddress.ip_network(v, strict=False)
+                except ValueError:
+                    return False
+            elif v.startswith("reg:"):
+                return False
+            else:
+                hit = v == ip
+            if hit:
+                break
+        if hit == bool(neg):
+            return False
+    return True
+
+
+def _discriminates(rec: Mapping[str, Any]) -> bool:
+    """pfd.binding_discriminates (shared with P04's held-out test). A payload
+    with a handful of values system-wide that every source shares binds every
+    source to the same value - a constant of the action, already stated as
+    content (the reason for BIND_MIN_CARD, which alone dropped the finance
+    username binding: 3 values system-wide)."""
+    return FD.binding_discriminates(rec)
 
 
 GRP_GAIN_N = 200.0               # behaviour evidence units before P12's group gain is believed
@@ -524,8 +719,12 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0, route: Optional
     lv0 = nd.who.levels[0]
     seen = {str(ip) for ip, *_ in lv0.items(t)}
     sigs = getattr(c, "sigs", None)
-    use_sig = route is not None and sigs is not None and \
-        not any(a == "net.src" and not neg for a, l, vals, neg in getattr(nd, "ctx", ()))
+    use_sig = route is not None and sigs is not None
+    # at a node with an address context, a signature member counts only when
+    # its address satisfies that context (evaluator round 3: the 销售部 part
+    # of the 财务部+销售部 login node, context 192.168.2.0/24 + 192.168.3.0/24,
+    # listed the 5 of 20 members among the node's heavy hitters)
+    sig_ctx = any(a == "net.src" for a, l, vals, neg in getattr(nd, "ctx", ()))
     # merge the roles of a configured department
     units: Dict[str, Dict[str, Any]] = {}
     for g, share in parts:
@@ -551,6 +750,7 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0, route: Optional
                 # hitter cut; listing the whole group then claimed 19 sales IPs read
                 # finance's approval list on pack O)
                 if m in seen or (use_sig and i < CF.MEMBERS_CHECKED
+                                 and (not sig_ctx or _ctx_admits(nd, m, c.ip2g))
                                  and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING):
                     mem.append(m)
         if uk.startswith("dept:"):
@@ -560,7 +760,8 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0, route: Optional
             for m in _configured_ips(getattr(c, "config", None) or {}).get(uk[5:], ()):
                 if m in mem or m in c.ip2g:
                     continue
-                if m in seen or (use_sig and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING):
+                if m in seen or (use_sig and (not sig_ctx or _ctx_admits(nd, m, c.ip2g))
+                                 and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING):
                     mem.append(m)
         if not mem:
             continue
@@ -704,14 +905,17 @@ ACTION_NAMES: Tuple[Tuple[str, str, str], ...] = (
     (r"(^|/)(logout|signout)(/|$)", "退出", "log out"),
     (r"approv|/flow/", "审批", "approve"),
     (r"(^|/)report(s)?(/|$)", "报告", "report"),
+    (r"(^|/)comment", "评论", "comments"),
     (r"(^|/)(docs?|documents?|files?)(/|$)", "文档", "documents"),
     (r"(^|/)(mail|inbox)(/|$)|^TLS mail", "邮件", "mail"),
     (r"(^|/)voucher", "凭证", "vouchers"),
     (r"(^|/)(customer|crm)(/|$)", "客户", "customers"),
-    (r"(^|/)comment", "评论", "comments"),
     (r"(^|/)news(/|$)", "新闻", "news"),
     (r"(^|/)(export|backup)(/|$)", "导出", "export"),
     (r"(^|/)health(/|$)", "健康检查", "health check"),
+    (r"(^|/)(home|index|portal)(/|$)", "首页", "home page"),
+    (r"(^|/)ledger", "账簿", "ledger"),
+    (r"^TLS (git|svn|code|gitlab)\.", "代码库", "code repository"),
 )
 
 
@@ -732,7 +936,7 @@ def action_name(route: str, config: Optional[Mapping[str, Any]] = None) -> Tuple
     for p, zh, en in rules:
         try:
             if re.search(p, path, re.I) or re.search(p, rt, re.I):
-                if m == "GET" and zh in ("审批", "报告", "凭证", "评论"):
+                if m == "GET" and zh in ("审批", "报告", "凭证", "评论", "账簿"):
                     zh, en = f"查看{zh}", f"view {en}"
                 elif m in PR.WRITE_METHODS and zh in ("报告",):
                     zh, en = "提交报告", "submit reports"
@@ -740,6 +944,17 @@ def action_name(route: str, config: Optional[Mapping[str, Any]] = None) -> Tuple
         except re.error:
             continue
     return rt, rt
+
+
+def action_word(route: str, config: Optional[Mapping[str, Any]] = None) -> Optional[Tuple[str, str]]:
+    """(zh, en) bare display name of an action ('审批', 'approve'), None when
+    no vocabulary entry matches (the route text then speaks for itself)."""
+    zh, en = action_name(route, config)
+    rt = PR.route_text(route)
+    if zh == rt:
+        return None
+    suf_zh, suf_en = f"（{rt}）", f" ({rt})"
+    return (zh[:-len(suf_zh)] if zh.endswith(suf_zh) else zh, en[:-len(suf_en)] if en.endswith(suf_en) else en)
 
 
 def activity_statement(g: str, name: str, key: str, acts: Sequence[Mapping[str, Any]], share_sys: float,
@@ -807,10 +1022,20 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
             for nd, route, act in _walk(tree, c.now, c.route_dist(EV.KIND_TXN)):
                 if route is None or nd.state not in RENDERED:
                     continue
-                if _group_mass(nd, g, members, now) < GROUP_NODE_SHARE:
+                gm = _group_mass(nd, g, members, now)
+                if gm < GROUP_NODE_SHARE:
                     continue
+                # (round 3) the group's part of the node: its members there, its
+                # own windows when the node's reservoir holds them - not the
+                # node's whole population ('来自 10.50.0.0/16、192.168.0.0/16
+                # （约 400 个 IP）' in 销售部's view of the mail node)
                 st = node_statement(c, EV.KIND_TXN, nd, route, view="group", subject=subject,
                                     restrict=members)
+                if st is not None and (st["evidence"].get("who") or {}).get("level") != "ip":
+                    mem = _members_at(c, nd, members, route, now)
+                    if mem:
+                        st = node_statement(c, EV.KIND_TXN, nd, route, view="group", subject=subject,
+                                            part=(g, mem, name, gm)) or st
                 if st is not None:
                     st["act_node"] = act
                     stmts.append(st)
@@ -818,15 +1043,34 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
         cw = cache.get(("cw", key))
         if cw is None:
             cw = cache[("cw", key)] = _closed_write_nodes(c)
-        never = [(nd, route) for nd, route in cw if _group_mass(nd, g, members, now) <= 0.0]
+        # (round 3) "never" must agree with what the group's own signatures say
+        # it does: P11's action mix of the group and its members' recurring
+        # uses. The node summaries carry group LABELS as of learning time, so a
+        # group P11 re-formed under a new id had no mass anywhere yet - pack O:
+        # '研发·oa POST /login 访问 oa：登录（POST /login）' next to '… 在 oa 中
+        # 从未执行写操作（…登录（POST /login））'
+        did = {str(a.get("action")) for a in (gr.get("actions") or {}).get(key) or []}
+
+        def reached(nd: Any, route: str) -> bool:
+            return _group_mass(nd, g, members, now) > 0.0 or route in did or \
+                _sig_uses(c, members, route, now)
+        never = [(nd, route) for nd, route in cw if not reached(nd, route)]
         # "never wrote in this system" must hold on EVERY write node, not only the
         # who-closed ones: a group whose own write node is still a candidate (or
         # not closed) did write there (the sentence was false on pack O's OA)
         wr = cache.get(("wr", key))
         if wr is None and never:
-            wr = cache[("wr", key)] = [nd for nd, route, _ in _walk(tree, c.now, c.route_dist(EV.KIND_TXN))
+            wr = cache[("wr", key)] = [(nd, route) for nd, route, _ in _walk(tree, c.now,
+                                                                              c.route_dist(EV.KIND_TXN))
                                        if route is not None and PR.is_write(route)]
-        if never and not any(_group_mass(nd, g, members, now) > 0 for nd in wr):
+        wrote = bool(never) and (any(PR.is_write(a) for a in did) or any(reached(nd, r) for nd, r in wr))
+        if never and wrote:
+            # (round 3) "never does what" inside a system the group uses: the
+            # closed write actions of the system it never performed ('销售部 在
+            # oa 中从未执行：审批（POST /approval/{num}/approve）')
+            stmts.append(_partial_negative(g, name, key, never, int(root.days_total or 0), members,
+                                           subject, config, now))
+        if never and not wrote:
             n_days = int(root.days_total or 0)
             zh, en = PR.negative_sentence(name, key, n_days)
             routes = sorted({PR.route_text(r) for _, r in never})
@@ -848,8 +1092,9 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
                                                   for nd, _ in never)),
                           "state": "confirmed", "version": 1, "cver": 0,
                           "facets": ["relational", "risk"],
-                          "evidence": {"negative": True, "target_system": key, "system": key,
-                                       "routes": routes, "group": g, "foreign_attempts": sus,
+                          "evidence": {"negative": True, "scope": "system", "target_system": key,
+                                       "system": key, "routes": routes, "route_keys": sorted({r for _, r in never}),
+                                       "group": g, "foreign_attempts": sus,
                                        "n_days": n_days,
                                        "closed_zh": [x[0] for x in names][:6],
                                        "closed_en": [x[1] for x in names][:6],
@@ -863,6 +1108,63 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
                        "covers": gr.get("covers") or [], "labels": gr.get("labels") or [],
                        "systems": gr.get("systems") or {}},
             "statements": stmts[:S_MAX]}
+
+
+def _sig_uses(c: Any, members: Set[str], route: str, t: float) -> bool:
+    """Some member's own P11 signature holds the action as a recurring use
+    (P03's colleague rule, <= MEMBERS_CHECKED members read)."""
+    sigs = getattr(c, "sigs", None)
+    if sigs is None:
+        return False
+    for i, m in enumerate(sorted(members)):
+        if i >= CF.MEMBERS_CHECKED:
+            break
+        if "/" not in m and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING:
+            return True
+    return False
+
+
+def _members_at(c: Any, nd: Any, members: Set[str], route: Optional[str], t: float) -> List[str]:
+    """The group's members at a node: seen in its IP-level summary, or - at a
+    node without an address context - holding the action in their own
+    signatures (group_parts' rule)."""
+    seen = {str(ip) for ip, *_ in nd.who.levels[0].items(t)}
+    sigs = getattr(c, "sigs", None)
+    use_sig = route is not None and sigs is not None
+    # at a node with an address context, a signature member counts only when
+    # its address satisfies that context (evaluator round 3: the 销售部 part
+    # of the 财务部+销售部 login node, context 192.168.2.0/24 + 192.168.3.0/24,
+    # listed the 5 of 20 members among the node's heavy hitters)
+    sig_ctx = any(a == "net.src" for a, l, vals, neg in getattr(nd, "ctx", ()))
+    out = []
+    for i, m in enumerate(sorted(members, key=PR._ip_sort)):
+        if "/" in m:
+            continue
+        if m in seen or (use_sig and i < CF.MEMBERS_CHECKED
+                         and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING):
+            out.append(m)
+    return out
+
+
+def _partial_negative(g: str, name: str, key: str, never: Sequence[Tuple[Any, str]], n_days: int,
+                      members: Set[str], subject: str, config: Mapping[str, Any], now: float
+                      ) -> Dict[str, Any]:
+    """'<group> 在 <system> 中从未执行：<closed write actions>（n 天、0 次）' for a
+    system the group does write in (round 3)."""
+    names = sorted({action_name(r, config) for _, r in never})
+    zh = f"{name} 在 {key} 中从未执行：" + PR.join_zh([x[0] for x in names][:6]) + f"（{n_days} 天、0 次）"
+    en = f"{name} has never performed on {key}: " + PR.join_en([x[1] for x in names][:6]) + \
+        f" ({n_days} days, 0 times)"
+    conf = float(min(1.0 - nd.who.levels[nd.who.closed_level(now, nd.n_days())].unseen(now) for nd, _ in never))
+    return {"id": f"neg:{g}:{key}:actions", "pattern_id": f"neg:{g}:{key}:actions", "view": "group",
+            "subject": subject, "text_zh": zh, "text_en": en,
+            "support": float(sum(nd.n_c(now) for nd, _ in never)), "confidence": conf,
+            "state": "confirmed", "version": 1, "cver": 0, "facets": ["relational", "risk"],
+            "evidence": {"negative": True, "scope": "actions", "target_system": key, "system": key,
+                         "routes": sorted({PR.route_text(r) for _, r in never}),
+                         "route_keys": sorted({r for _, r in never}), "group": g, "n_days": n_days,
+                         "closed_zh": [x[0] for x in names][:6], "closed_en": [x[1] for x in names][:6],
+                         "who": {"level": "grp", "items": [f"grp:{g}"], "members": sorted(members)}}}
 
 
 def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str, Mapping[str, Any]],
@@ -920,11 +1222,42 @@ def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str
         if st is not None:
             stmts.append(st)
     negs: Dict[str, List[Mapping[str, Any]]] = {}
-    for v in views:
+    never_by: Dict[str, List[Optional[Set[str]]]] = {}
+    for vi, v in enumerate(views):
         for st in v.get("statements") or []:
             ev = st.get("evidence") or {}
-            if ev.get("negative"):
-                negs.setdefault(str(ev.get("target_system")), []).append(st)
+            if not ev.get("negative"):
+                continue
+            key = str(ev.get("target_system"))
+            if ev.get("scope", "system") == "system":
+                negs.setdefault(key, []).append(st)
+            lst_ = never_by.setdefault(key, [None] * len(views))
+            lst_[vi] = (lst_[vi] or set()) | set(ev.get("route_keys") or [])
+    # (round 3) "never does what" of the department inside a system it uses:
+    # the closed write actions NONE of its roles performed
+    for key, sets in sorted(never_by.items()):
+        if len(negs.get(key) or []) >= len(views) or any(x is None for x in sets):
+            continue
+        inter = set.intersection(*sets)
+        if inter:
+            nz = sorted({action_name(r, config) for r in inter})
+            n_days = max(int((st.get("evidence") or {}).get("n_days") or 0)
+                         for v in views for st in v.get("statements") or []
+                         if (st.get("evidence") or {}).get("negative")
+                         and str((st.get("evidence") or {}).get("target_system")) == key)
+            stmts.append({"id": f"neg:dept:{name}:{key}:actions", "pattern_id": f"neg:dept:{name}:{key}:actions",
+                          "view": "group", "subject": subject,
+                          "text_zh": f"{name} 在 {key} 中从未执行：" + PR.join_zh([x[0] for x in nz][:6])
+                          + f"（{n_days} 天、0 次）",
+                          "text_en": f"{name} has never performed on {key}: " + PR.join_en([x[1] for x in nz][:6])
+                          + f" ({n_days} days, 0 times)",
+                          "support": 0.0, "confidence": None, "state": "confirmed", "version": 1, "cver": 0,
+                          "facets": ["relational", "risk"],
+                          "evidence": {"negative": True, "scope": "actions", "target_system": key, "system": key,
+                                       "routes": sorted({PR.route_text(r) for r in inter}),
+                                       "route_keys": sorted(inter), "group": f"dept:{name}", "groups": gids,
+                                       "who": {"level": "grp", "items": [f"grp:{g}" for g in gids],
+                                               "members": sorted(members, key=PR._ip_sort)}}})
     for key, lst in sorted(negs.items()):
         if len(lst) < len(views):
             continue                       # some role of the department did write there
@@ -946,7 +1279,8 @@ def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str
                       "support": float(sum(float(st.get("support") or 0.0) for st in lst)),
                       "confidence": float(min(float(st.get("confidence") or 0.0) for st in lst)),
                       "state": "confirmed", "version": 1, "cver": 0, "facets": ["relational", "risk"],
-                      "evidence": {"negative": True, "target_system": key, "system": key, "routes": routes,
+                      "evidence": {"negative": True, "scope": "system", "target_system": key, "system": key,
+                                   "routes": routes, "route_keys": sorted({r for e in evs for r in e.get("route_keys") or []}),
                                    "group": f"dept:{name}", "groups": gids, "foreign_attempts": sus,
                                    "who": {"level": "grp", "items": [f"grp:{g}" for g in gids],
                                            "members": sorted(members, key=PR._ip_sort)}}})

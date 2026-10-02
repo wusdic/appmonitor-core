@@ -1342,6 +1342,29 @@ class WeightedReservoir:
             return True
         return False
 
+    def offer_lazy(self, make: Callable[[], Any], w: float = 1.0, t: float = 0.0,
+                   u: Optional[float] = None) -> bool:
+        """offer() whose item is built by make() only when it enters the sample
+        (same keys, same sample as offer())."""
+        w = float(w)
+        if not (w > 0 and math.isfinite(w)):
+            return False
+        t = float(t)
+        if len(self._heap) < self.R:
+            return self.offer(make(), w, t, u)
+        if self.hl is not None and self.L is not None and (t - self.L) / self.hl <= RESCALE_EXP:
+            g = 2.0 ** ((t - self.L) / self.hl)
+            uu = float(self._rng.random()) if u is None else float(u)
+            uu = min(max(uu, 1e-300), 1.0 - 1e-16)
+            key = math.log(uu) / (w * g)
+            self.offered += w
+            if key <= self._heap[0][0]:
+                return False
+            self._seq += 1
+            heapq.heapreplace(self._heap, (key, self._seq, make(), w, t))
+            return True
+        return self.offer(make(), w, t, u)
+
     def __len__(self) -> int:
         return len(self._heap)
 

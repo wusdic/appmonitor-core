@@ -489,8 +489,11 @@ def test_group_negative_statement_needs_no_write_at_all_in_the_system():
     for state in ("candidate", "confirmed"):
         st = build(state)
         gv = VW.group_view(st, "G1", cfg, st.now)
+        # (round 3) the whole-system sentence; what the group never does inside a
+        # system it writes in is a separate statement (scope 'actions')
         neg = [s for s in gv["statements"] if s["evidence"].get("negative")
-               and s["evidence"]["target_system"] == "finance"]
+               and s["evidence"]["target_system"] == "finance"
+               and s["evidence"].get("scope", "system") == "system"]
         assert not neg, (state, [s["text_zh"] for s in neg])
 
 

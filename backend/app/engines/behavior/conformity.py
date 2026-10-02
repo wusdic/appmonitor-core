@@ -23,7 +23,11 @@ Per event (txn events of evt.batch; win events of evt.win for content only):
             signatures, never active here), system_new (its group has no mass in
             the whole system), readdress_candidate / concurrent_use (bindings).
   when      HDR p of the local 15-min slot under the node's day-type density
-            (evidence on the confidence channel, backs off to the parent);
+            (evidence on the confidence channel, backs off to the parent; round
+            3: the density's prior is the PARENT's predictive with empirical-
+            Bayes strength, recursively to the root's uniform alpha_t / 96 -
+            _TreeCtx.when_pred, pscore.when_density_prior; pack O A4 at a young
+            node floored at ~alpha_t / (N + alpha_t));
             flag outside_windows from P09.
   content   per fitted attribute of the nearest node holding a record with
             support: numeric (P06 p_value: band / GPD tail / conformal rank),
@@ -159,6 +163,14 @@ implementation report):
   * intensity (round 2b): p = min(conformal rank, Cantelli bound with the
     node's own count moments, variance >= mean): the rank alone cannot go
     below 1 / (W + 1) (A7's 400 logins an hour was LOW on seed 1).
+  * round 3 (groups_views owner): when p with hierarchical back-off
+    (when_ptab: max(p_hier, min(p_own, p_parent))); a value the covering
+    node's (younger) binding table does not hold but an ancestor's record binds
+    to another source is cross_binding (_cross_up: A2 at a split 综合部 node);
+    a group is known to a system under its label or a predecessor's (P11 rec
+    'lineage', _label_known); a POOL group's standing at a node is its leases'
+    group-level evidence (group_outsider), and an address with no colleague by
+    the group rule may still be a member by the configured-pool rule.
   * intensity: the hour count's p is its conformal rank among every IP-hour
     P03 closed at the node (RateTally, binned histogram, H_L decay), not
     P06's rate.ip_h p - that digest is H_m-decayed (rank floor ~1/(mass+1)
@@ -329,6 +341,16 @@ def group_outsider(nd: Any, g: str, ip: str, t: float,
     lv3 = nd.who.levels[3]
     if lv3.total(t) <= 0:
         return False
+    gr_ = (groups or {}).get(g) if groups is not None else None
+    if isinstance(gr_, Mapping) and gr_.get("pool"):
+        # (round 3) a POOL group (P11: a DHCP / VPN pool's re-addressed population):
+        # its members are one-day leases with no recurring signature, so its
+        # standing at the node is the evidence its other leases brought to the
+        # group level (under any of its labels), not counted colleagues
+        ev_g = sum(lv3.evidence(f"grp:{x}", t) for x in _labels(g, groups) if f"grp:{x}" in lv3)
+        lv0 = nd.who.levels[0]
+        ev_ip = lv0.evidence(ip, t) if ip in lv0 else 0.0
+        return ev_g - ev_ip < MEMBER_EV
     if ip2g is not None:
         # the node is a pattern OF THE GROUP only when >= GROUP_MIN_MEMBERS other
         # members use it; one colleague's individual habit (the finance approver,
@@ -349,6 +371,23 @@ def group_outsider(nd: Any, g: str, ip: str, t: float,
     lv0 = nd.who.levels[0]
     ev_ip = lv0.evidence(ip, t) if ip in lv0 else 0.0
     return ev_g - ev_ip < MEMBER_EV
+
+
+def _labels(g: str, groups: Optional[Mapping[str, Any]]) -> List[str]:
+    """A group's label and its lineage (P11 rec 'lineage': the ids of the groups
+    it merged / re-formed from): node summaries carry the label of learning
+    time (round 3)."""
+    gr = (groups or {}).get(g) if groups is not None else None
+    lin = list((gr or {}).get("lineage") or []) if isinstance(gr, Mapping) else []
+    return [str(g)] + [str(x) for x in lin if str(x) != str(g)]
+
+
+def _label_known(lv: Any, g: str, groups: Optional[Mapping[str, Any]]) -> bool:
+    """The group (under its label or a predecessor's) has mass at this who level.
+    Pack O seed 2: the merged 研发 pool group kept the id of its largest
+    predecessor; the OA nodes knew its OA slice's label only, so the pool's
+    leases were 'system_new' in OA (MEDIUM lateral findings on days 11-12)."""
+    return any(f"grp:{x}" in lv for x in _labels(g, groups))
 
 
 def _own_standing(nd: Any, ip: Any, t: float) -> bool:
@@ -770,14 +809,9 @@ class _TreeCtx:
         self.content_nodes: Dict[int, Set[int]] = {}
         self.whokeys: Dict[str, List[Any]] = {}
 
-    def when_table(self, kind: int, nd: Any, daytype: int) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """HDR p of every 15-min slot under the node's density for a day type
-        (pscore.when_p, vectorised once per node and batch) and under the
-        reference snapshot's density; None where the model cannot speak."""
-        k = ("w", kind, nd.id, daytype)
-        hit = self.info.get(k)
-        if hit is not None:
-            return hit
+    def _when_counts(self, nd: Any, daytype: int) -> Tuple[np.ndarray, float]:
+        """(slot mass, evidence) of a node for a day type, all day types when
+        the day type has < N_MIN evidence (pscore.when_p's back-off)."""
         t = self.now
         d = 1 if daytype else 0
         N = nd.when.evidence(d, t)
@@ -785,13 +819,107 @@ class _TreeCtx:
         if N < SC.N_MIN:
             N = nd.when.evidence(0, t) + nd.when.evidence(1, t)
             h = nd.when.hist.sum(axis=0)
-        cur = _hdr_table(SC.when_density(h, N)) if N >= SC.N_MIN else None
+        return h, float(N)
+
+    def when_pred(self, kind: int, tree: Any, nd: Any, daytype: int) -> Optional[np.ndarray]:
+        """The node's slot predictive with hierarchical back-off (round 3): its
+        own slot counts under a Dirichlet prior centred on its PARENT's
+        predictive with empirical-Bayes strength (pscore.when_density_prior),
+        recursively up to the root, whose prior is the uniform alpha_t / 96 of
+        pscore.when_density. Every node on a path counts the events of its
+        subtree, so a slot its parent never saw in a longer history is one the
+        node's own population never used either. None when neither the node
+        nor an ancestor has any evidence. Cached per node and batch."""
+        if nd is None:
+            return None
+        k = ("wp", kind, nd.id, daytype)
+        if k in self.info:
+            return self.info[k]
+        par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
+        prior = self.when_pred(kind, tree, par, daytype) if par is not None else None
+        h, N = self._when_counts(nd, daytype)
+        if prior is None:
+            f = SC.when_density(h, N) if N > 0 and np.asarray(h).sum() > 0 else None
+        else:
+            f = SC.when_density_prior(h, N, prior)
+        self.info[k] = f
+        return f
+
+    def when_ptab(self, kind: int, tree: Any, nd: Any, daytype: int) -> Optional[np.ndarray]:
+        """Per-slot HDR p-values of a node with hierarchical back-off (round 3):
+
+            p(s) = max( p_hier(s), min( p_own(s), p_parent(s) ) )
+
+        p_own   the node's own density with the uniform alpha_t / 96 prior
+                (pscore.when_density; the round-2 rule): an empty slot ties with
+                every other empty slot, so it floors at ~alpha_t / (N + alpha_t)
+                - the node's own sample cannot say more;
+        p_parent the parent's p by the same rule (recursively; the root's is its
+                p_own);
+        p_hier  the node's density under the parent's predictive as prior
+                (when_pred; empirical-Bayes strength).
+        A young node therefore declares a slot rarer than its own floor only
+        where its ancestors agree (A4: 03:05 is empty at the 综合部 node AND at
+        the route node), never below what its own counts and the parent's prior
+        imply (p_hier); a slot its parent's population uses (22:45 on the
+        public portal) keeps the node's own floor - with p_hier alone, a young
+        portal node put such evening logins at ~1e-5 (pack O day 5: +10
+        incidents >= LOW). A mature node (small own floor) is unchanged."""
+        if nd is None:
+            return None
+        k = ("wt", kind, nd.id, daytype)
+        if k in self.info:
+            return self.info[k]
+        h, N = self._when_counts(nd, daytype)
+        own = _hdr_table(SC.when_density(h, N)) if N > 0 and np.asarray(h).sum() > 0 else None
+        par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
+        pt = self.when_ptab(kind, tree, par, daytype) if par is not None else None
+        if pt is None:
+            out = own
+        elif own is None:
+            out = pt
+        else:
+            f = self.when_pred(kind, tree, nd, daytype)
+            hier = _hdr_table(f) if f is not None else own
+            out = np.maximum(hier, np.minimum(own, pt))
+        self.info[k] = out
+        return out
+
+    def when_table(self, kind: int, nd: Any, daytype: int,
+                   tree: Any = None) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """HDR p of every 15-min slot under the node's density for a day type
+        (pscore.when_p, vectorised once per node and batch) and under the
+        reference snapshot's density; None where the model cannot speak.
+
+        With the tree (round 3), both densities back off hierarchically to the
+        parent's predictive (when_pred): measured on pack O (A4, a 03:05 login
+        of a 综合部 address), the uniform pseudo-count floored an empty slot's
+        HDR p at ~alpha_t / (N + alpha_t) - ~1e-3 at the young 综合部 login node
+        (N ~ 40) against ~1e-4 at the route node (N ~ 900) - so detection
+        depended on which node covered the event that day (missed on seed 3)."""
+        k = ("w", kind, nd.id, daytype)
+        hit = self.info.get(k)
+        if hit is not None:
+            return hit
+        t = self.now
+        d = 1 if daytype else 0
+        h, N = self._when_counts(nd, daytype)
+        par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
+        prior = self.when_pred(kind, tree, par, daytype) if par is not None else None
+        pt = self.when_ptab(kind, tree, par, daytype) if par is not None else None
+        cur = None
+        if N >= SC.N_MIN:
+            cur = self.when_ptab(kind, tree, nd, daytype) if tree is not None \
+                else _hdr_table(SC.when_density(h, N))
         ref = None
         refw = ((nd.ref or {}).get("when") or {}).get("nwd" if daytype else "wd")
         if refw is not None:
             Nd = nd.when.evidence(d, t)
             if Nd >= SC.N_MIN:
-                ref = _hdr_table(SC.when_density(np.asarray(refw, dtype=np.float64) * Nd, Nd))
+                rc = np.asarray(refw, dtype=np.float64) * Nd
+                ref = _hdr_table(SC.when_density(rc, Nd))
+                if prior is not None and pt is not None:
+                    ref = np.maximum(_hdr_table(SC.when_density_prior(rc, Nd, prior)), np.minimum(ref, pt))
         self.info[k] = (cur, ref)
         return cur, ref
 
@@ -880,6 +1008,23 @@ class _TreeCtx:
         ni.sens = 1.0
         self.info[k] = ni
         return ni
+
+
+def _cross_up(tc: Any, kind: int, tree: Any, ancestors: Sequence[Any], X_: str, Y_: str,
+              x: Any, y: Any) -> Optional[List[str]]:
+    """['cross_binding'] when an ancestor's forward record of the same pair
+    binds the value y to a source other than x (its dependency holding)."""
+    ys = str(FD._jv(y))
+    for anc in ancestors:
+        for rec in tc.node_info(kind, tree, anc.id).binds:
+            if rec.get("x") != X_ or rec.get("y") != Y_ or rec.get("dir") == "rev":
+                continue
+            if not (rec.get("fd") or {}).get("holds"):
+                continue
+            srcs = (rec.get("bound_values") or {}).get(ys)
+            if srcs and any(str(sx) != str(x) for sx in (srcs if isinstance(srcs, (list, tuple, set)) else [srcs])):
+                return ["cross_binding"]
+    return None
 
 
 def _who_closed(nd: Any, t: float) -> Tuple[Optional[int], Set[Any], float]:
@@ -1352,7 +1497,7 @@ class ConformityEngine(Engine):
             seen_attr: Set[str] = set()
             bind_top: Dict[Tuple[str, str], str] = {}
             worst: Tuple[float, str, Any, str, Any] = (2.0, "", None, "", None)
-            for nd in chain:
+            for ci_, nd in enumerate(chain):
                 ni = tc.node_info(kind, tree, nd.id)
                 for a, typ, rec in ni.content:
                     if a in seen_attr:
@@ -1441,6 +1586,15 @@ class ConformityEngine(Engine):
                         if y is EV.ABSENT or x is EV.ABSENT:
                             continue
                         p, fl = FD.check_forward(rec, x, y)
+                        if "unbound_value" in fl:
+                            # (round 3) the value is bound to ANOTHER source in an
+                            # ancestor's record of the pair (the covering node's own
+                            # table is younger: a split child holds only its own
+                            # sources' values). Pack O seed 2: A2 (rose's credential
+                            # from 192.168.1.21) at a 综合部 login node whose table did
+                            # not hold rose was 'unbound_value' (p 0.71, missed); the
+                            # route node bound rose to 192.168.1.23
+                            fl = _cross_up(tc, kind, tree, chain[ci_ + 1:], X_, Y_, x, y) or fl
                         ent = (rec.get("table") or {}).get(str(x)) or {}
                         if ent.get("LB") is not None:
                             lb_x = float(ent["LB"])
@@ -1536,9 +1690,11 @@ class ConformityEngine(Engine):
                     # node is a pattern of the group (>= GROUP_MIN_MEMBERS other
                     # members use it), not one member's individual pattern
                     g0 = tc.ip2g.get(ip)
-                    return g0 is None or group_members_at(
-                        ni_.nd, g0, ip, t, tc.ip2g, uses_route,
-                        (tc.groups.get(g0) or {}).get("members")) >= group_need(g0, ip, tc.groups)
+                    if g0 is None or not group_outsider(ni_.nd, g0, ip, t, tc.ip2g, tc.groups, uses_route):
+                        return True
+                    # (round 3) no colleague by the group rule: the configured pool
+                    # rule below may still apply (a fresh lease that P11 absorbed into
+                    # its pool group has no recurring colleague signature)
                 # a new address inside a CONFIGURED address pool (dhcp_scopes /
                 # ip_classes: the operator's statement that these addresses are one
                 # population) whose pool has standing at the node: a re-addressed
@@ -1562,7 +1718,7 @@ class ConformityEngine(Engine):
             g_ip = tc.ip2g.get(ip)
             root_ = tree.nodes[tree.root]
             new_label = g_ip is not None and root_.who.levels[GRP_LEVEL].total(t) > 0 \
-                and f"grp:{g_ip}" not in root_.who.levels[GRP_LEVEL]
+                and not _label_known(root_.who.levels[GRP_LEVEL], g_ip, tc.groups)
             for j in range(conf_i, -1, -1):
                 ni = tc.node_info(kind, tree, path[j])
                 if ni.who_l is None:
@@ -1601,7 +1757,8 @@ class ConformityEngine(Engine):
                     if g is not None and group_outsider(nd, g, ip, t, tc.ip2g, tc.groups, uses_route):
                         flags.add("outsider_group")
                     root = tree.nodes[tree.root]
-                    if g is not None and root.who.levels[3].total(t) > 0 and f"grp:{g}" not in root.who.levels[3] \
+                    if g is not None and root.who.levels[3].total(t) > 0 \
+                            and not _label_known(root.who.levels[3], g, tc.groups) \
                             and not _own_standing(root, ip, t) and tc.sig_share(ip, t) < SIG_STANDING:
                         flags.add("system_new")
                     if g is None and not self._known(tc, st, s, ip):
@@ -1619,7 +1776,7 @@ class ConformityEngine(Engine):
             slot = int(minute // 15) % 96
             for j in range(conf_i, -1, -1):
                 nd = tree.nodes[path[j]]
-                cur_t, ref_t = tc.when_table(kind, nd, daytype)
+                cur_t, ref_t = tc.when_table(kind, nd, daytype, tree)
                 if cur_t is None:
                     continue
                 p_cur = float(cur_t[slot])

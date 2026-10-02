@@ -378,6 +378,32 @@ def _snap(wins: List[Tuple[float, float, float]], u: np.ndarray, tot: float
     return out
 
 
+def _accepted(wins_u: List[Tuple[float, float, float]], pts: Sequence[Sequence[Any]],
+              wts: np.ndarray, cut: int, tz_offset_s: float) -> List[Tuple[float, float, float]]:
+    """The §6.9.2 acceptance rule applied to a window: at a node whose clean
+    arrivals come from >= 2 sources, a window that only ONE source's arrivals
+    support is that source's idiosyncrasy or anomaly until it persisted
+    REGIME_SINGLE_DATES dates (the rule regime_cut applies to a single source's
+    change). Pack O, A2 (192.168.1.21 logging in as rose at 09:10 on days
+    17-19, flagged and held, its held rows released and learned at full
+    weight): the 综合部 login node stated '08:32-08:51、09:10-09:11' (seeds 0,
+    3). A node of one source (an approver, an exception) is not affected; a
+    dropped window's arrivals count as outside the windows (coverage)."""
+    if len(wins_u) <= 1 or not pts or len(pts[0]) < 4:
+        return wins_u
+    clean = [(float(p[0]), float(p[1]), str(p[3])) for p, w in zip(pts, wts) if w >= CLEAN_W and p[3]]
+    if len({c[2] for c in clean}) < 2:
+        return wins_u
+    out = []
+    for s, e, sh in wins_u:
+        inside = [c for c in clean if s - 1e-9 <= (c[0] - cut) % DAY_MIN <= e + 1e-9]
+        srcs = {c[2] for c in inside}
+        if len(srcs) == 1 and len({_local_date(c[1], tz_offset_s) for c in inside}) < REGIME_SINGLE_DATES:
+            continue
+        out.append((s, e, sh))
+    return out or wins_u
+
+
 def _local_date(ts: float, tz_offset_s: float) -> int:
     return int((float(ts) + tz_offset_s) // 86400.0)
 
@@ -418,6 +444,7 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
         # < 1/2 of a typical arrival, never extends a window)
         clean = wts >= CLEAN_W
         wins_u = _snap(wins_u, (mins[clean] - cut) % DAY_MIN, float(clean.sum()) or 1.0)
+        wins_u = _accepted(wins_u, pts, wts, cut, tz_offset_s)
     windows: List[List[int]] = []
     for s, e, _ in wins_u:
         if info.get("all_day"):

@@ -232,6 +232,37 @@ def run_point(pack: Any, seed: int = 0, registry_factory: Optional[Callable] = N
     return out
 
 
+def run_point_resumable(pack: Any, seed: int, ckpt: str, *, stop_after_s: Optional[float] = None,
+                        segment_s: float = 1800.0, engines: Sequence[str] = P_ENGINES,
+                        model_names: Sequence[str] = P_MODELS,
+                        on_progress: Optional[Callable[[str], None]] = None) -> Optional[Dict[str, Any]]:
+    """run_point over several processes (resumable.run_pack_resumable, same
+    taps: generator org events and P00's scored / learned rows per tick).
+    Returns None while the run stopped at a checkpoint (call again with the
+    same ckpt), else the measurement dict of run_point plus `segments`."""
+    from .packs import get_pack
+    from .resumable import run_pack_resumable
+    p = get_pack(pack) if isinstance(pack, str) else pack
+    res = run_pack_resumable(p, seed, ckpt, segment_s=segment_s, stop_after_s=stop_after_s,
+                             keep_store=True, on_progress=on_progress)
+    if res is None:
+        return None
+    mem = pcore_memory(res.store, model_names)
+    cpu = pcore_cpu(res.timings, res.tap["events"], engines, batch_per_tick=res.tap["batch"])
+    org = getattr(p, "org", None)
+    n_meta = sum(1 for a in (getattr(org, "attr_schedule", None) or []) if a.name.startswith("f"))
+    idle = set((getattr(org, "config", None) or {}).get("idle_systems") or [])
+    out = {"pack": getattr(p, "name", str(pack)), "seed": int(seed),
+           "n_ips": int(getattr(org, "portal_n", 0) or 0), "n_attrs": BASE_ATTRS + n_meta,
+           "n_systems": len(getattr(org, "systems", None) or []),
+           "mem_bytes": mem["total"], "mem_by_key": mem["by_key"],
+           "idle_max_bytes": max([mem["by_key"].get(s, 0) for s in idle] or [0]) if idle else None,
+           "cpu": cpu, "events": res.gen_stats.get("events"), "aborted": res.aborted,
+           "exceptions": len(res.exceptions), "segments": res.segments, "wall_s": res.wall_s}
+    res.store = None
+    return out
+
+
 def _slope(points: Sequence[Mapping[str, Any]], x: str, y: Callable[[Mapping[str, Any]], Any]
            ) -> Optional[float]:
     pts = [(float(p[x]), y(p)) for p in points if y(p)]

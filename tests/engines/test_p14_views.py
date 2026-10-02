@@ -116,7 +116,7 @@ def store():
 
 
 GOLDEN_ZH = ("【oa · 192.168.100.100:8080】工作日 09:00–09:21（覆盖 97 %，21 个工作日），"
-             "综合部（10.168.7.121、192.168.1.21、192.168.1.23）访问 POST /login："
+             "综合部（10.168.7.121、192.168.1.21、192.168.1.23）访问 POST /login（登录）："
              "提交数据量 90 % 在 1–2 KB，全部在 0.5–3 KB（n = 183，下次越界概率 ≤ 1.1 %）；"
              "表单键必含 captcha=、password=、username=；username= 取值 `[a-z]{4}`，"
              "username= 取值集合封闭 {jack, mike, rose}；"
@@ -125,7 +125,7 @@ GOLDEN_ZH = ("【oa · 192.168.100.100:8080】工作日 09:00–09:21（覆盖 9
              "流程：POST /login → GET /home（间隔 1 秒–5 秒）。"
              "置信 0.93 · 首次 2026-09-01 · 最近 2026-09-21 · v1.0")
 GOLDEN_EN = ("[oa · 192.168.100.100:8080] On workdays 09:00–09:21 (coverage 97 %, 21 dates), "
-             "综合部 (10.168.7.121, 192.168.1.21, 192.168.1.23) opens POST /login: "
+             "综合部 (10.168.7.121, 192.168.1.21, 192.168.1.23) opens POST /login (log in): "
              "90 % of submitted size within 1–2 KB, all within 0.5–3 KB (n = 183, P(next outside) ≤ 1.1 %); "
              "form keys always carry captcha=, password=, username=; username= matching `[a-z]{4}`, "
              "username= in the closed set {jack, mike, rose}; "

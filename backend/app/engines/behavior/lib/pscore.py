@@ -108,6 +108,58 @@ def when_density(counts: np.ndarray, N: float, alpha_t: float = ALPHA_T) -> np.n
     return (share * N + alpha_t / c.size) / (N + alpha_t)
 
 
+EB_ALPHAS = tuple(float(2.0 ** k) for k in range(-2, 13))     # 0.25 .. 4096
+
+
+def eb_concentration(counts: np.ndarray, N: float, prior: np.ndarray,
+                     alphas: Sequence[float] = EB_ALPHAS) -> float:
+    """Empirical-Bayes strength alpha of a PARENT's slot predictive used as the
+    Dirichlet prior of a child's slot counts: the alpha maximising the
+    Dirichlet-multinomial marginal likelihood of the child's counts
+    n_s = share_s N under Dir(alpha prior) (grid over 2^-2 .. 2^12; Minka 2000,
+    fixed base measure). A child that keeps its parent's time-of-day law gets
+    a large alpha (the parent's longer evidence speaks for it), a child that
+    is much more concentrated (one department's login minutes inside the
+    route's) a small one."""
+    from scipy.special import gammaln
+    c = np.asarray(counts, dtype=np.float64)
+    s = c.sum()
+    if s <= 0 or N <= 0:
+        return float(alphas[-1])
+    n = c / s * float(N)
+    f = np.asarray(prior, dtype=np.float64)
+    f = np.maximum(f / max(f.sum(), 1e-300), 1e-300)
+    nz = n > 0
+    nn, ff = n[nz], f[nz]
+    best, arg = -math.inf, float(alphas[-1])
+    for a in alphas:
+        L = float(gammaln(a) - gammaln(N + a) + np.sum(gammaln(nn + a * ff) - gammaln(a * ff)))
+        if L > best:
+            best, arg = L, float(a)
+    return arg
+
+
+def when_density_prior(counts: np.ndarray, N: float, prior: np.ndarray,
+                       alpha: Optional[float] = None) -> np.ndarray:
+    """Hierarchical back-off of the slot density (P03, round 3):
+    f(s) = (share(s) N + alpha prior(s)) / (N + alpha), prior = the parent
+    node's own predictive (recursively; the root's prior is when_density's
+    uniform alpha_t / 96), alpha by eb_concentration. A slot empty at the node
+    AND at its ancestors keeps the ancestors' (tiny) mass, so a young node
+    (N ~ 40) no longer floors an empty slot's HDR p at ~alpha_t / (N +
+    alpha_t); a slot empty at the node but used by its parent's population
+    keeps a share of the parent's mass instead of the uniform floor."""
+    c = np.asarray(counts, dtype=np.float64)
+    pr = np.asarray(prior, dtype=np.float64)
+    ps = pr.sum()
+    pr = pr / ps if ps > 0 else np.full(c.size, 1.0 / c.size)
+    s = c.sum()
+    if s <= 0 or N <= 0:
+        return pr
+    a = eb_concentration(c, N, pr) if alpha is None else float(alpha)
+    return (c / s * float(N) + a * pr) / (float(N) + a)
+
+
 def when_p(when: Any, daytype: int, minute: float, t: float, alpha_t: float = ALPHA_T,
            n_min: float = N_MIN) -> float:
     """HDR p of the event's slot under the node's day-type density; backs off
