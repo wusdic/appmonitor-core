@@ -299,10 +299,42 @@ class _Ctx:
 
 
 # ================================================================ statements
+def part_hold(nd: Any, gids: Sequence[str], p_node: float) -> float:
+    """Confidence of a group's part of a node: the group's own held-out tests
+    (P04's per-group hold records, pnode meta 'hold_g') pooled with the node's
+    hold probability as the prior - a part states the node's constraints for
+    the group's sources, so the node's rate is the right prior and a group
+    with few tests of its own states (nearly) the node's rate:
+        p = (passes_g + m p_node) / (tests_g + m),  m = the node prior's a + b.
+    Measured on pack O seeds 0-1 (days 14 / 21, drv5 dual rendering): the
+    groups' records alone (pnode Node.p_hold_group, shrunk to the kind's prior
+    mean) stated 0.63-0.76 for parts holding 0.77-0.89, the node's p_hold
+    0.70-0.78 (mean |conf - hold| 0.14 vs 0.12)."""
+    meta = getattr(nd, "meta", None) or {}
+    recs = meta.get("hold_g") or {}
+    pr = meta.get("hold_prior")
+    m = float(pr[0] + pr[1]) if pr is not None else 2.0
+    ps = n = 0.0
+    for g in gids:
+        k = str(g)
+        hr = recs.get(k if k.startswith("grp:") else f"grp:{k}")
+        if hr is None:
+            continue
+        try:
+            p_, n_ = hr.tests()
+        except Exception:
+            continue
+        ps += float(p_)
+        n += float(n_)
+    if n <= 0:
+        return float(p_node)
+    return float((ps + m * p_node) / (n + m))
+
+
 def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system",
                    subject: Optional[str] = None, restrict: Optional[Set[str]] = None,
-                   part: Optional[Tuple[str, List[str], str, float]] = None
-                   ) -> Optional[Dict[str, Any]]:
+                   part: Optional[Tuple[str, List[str], str, float]] = None,
+                   adopted_from: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """One statement for a confident node (restrict: member IPs of a group view).
 
     `part` = (group id, member IPs seen at the node, group name, share): the
@@ -411,6 +443,8 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     # (PG2 ECE 0.36-0.43)
     ph = getattr(nd, "p_hold", None)
     ph = ph(t) if callable(ph) else None
+    if part is not None and ph is not None and math.isfinite(float(ph)):
+        ph = part_hold(nd, list(part[4]) if len(part) > 4 else [part[0]], float(ph))
     # A group's part of the node (or a group view's restriction of it) states the
     # node's own constraints for a subset of its sources, so the node's held-out
     # hold rate is its confidence too - unless the part states its own windows
@@ -437,13 +471,34 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     last = PR.local_date(nd.last_seen, c.tz)
     # (round 3) doing what: the action's display name after its page
     # ('POST /fin/approval/{num}/approve（审批）')
+    # support: the node's (decayed, confidence-channel) event count n_c; a
+    # group's part of the node holds its share of it. The TEXT states the
+    # undecayed observation count of the confidence segment (n_obs): a decayed
+    # count in the sentence changed the text on every render and minted a new
+    # profile version every 2 h without any new event
+    shr = float(part[3]) if part is not None else 1.0
+    sup = float(nd.n_c(t)) * shr
+    nob = getattr(nd, "n_obs", None)
+    sup_txt = float(nob()) * shr if callable(nob) else sup
     rt = PR.route_text(route)
     aw = action_word(route, c.config)
     rt_zh, rt_en = (f"{rt}（{aw[0]}）", f"{rt} ({aw[1]})") if aw else (rt, rt)
+    state = nd.state
+    if adopted_from is not None:
+        # (round 4) a CONFIRMED rename (P10 detect_renames: the old page stopped
+        # when the new one began, same sources, same place in the workflow,
+        # seen on >= RENAME_DATES dates): the old action's pattern is the new
+        # page's until the lattice has a node of its own for it
+        ot = PR.route_text(adopted_from)
+        rt_zh = f"{rt_zh}（原 {ot}，页面已更名）"
+        rt_en = f"{rt_en} (formerly {ot}, page renamed)"
+        state = "confirmed" if nd.state in ("stale", "confirmed", "stable") else nd.state
     zh, _ = PR.sentence(sys_label, addr, when_zh, when_en, who_zh, who_en, rt_zh,
-                        czh, cen, bzh, ben, fzh, fen, conf, first, last, nd.version, nd.cver, nd.state)
+                        czh, cen, bzh, ben, fzh, fen, conf, first, last, nd.version, nd.cver, state,
+                        support=sup_txt)
     _, en = PR.sentence(sys_label, addr, when_zh, when_en, who_zh, who_en, rt_en,
-                        czh, cen, bzh, ben, fzh, fen, conf, first, last, nd.version, nd.cver, nd.state)
+                        czh, cen, bzh, ben, fzh, fen, conf, first, last, nd.version, nd.cver, state,
+                        support=sup_txt)
     facets = ["functional", "spatial"]
     if when_ev:
         facets.append("temporal")
@@ -454,6 +509,9 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     if flow:
         facets.append("sequential")
     ctx_ev = [[a, int(l), sorted(str(v) for v in vals), bool(neg)] for a, l, vals, neg in nd.ctx]
+    if adopted_from is not None:
+        ctx_ev = [[a, l, sorted(route if v == adopted_from else v for v in vals), neg] if a in ROUTE_ATTRS
+                  else [a, l, vals, neg] for a, l, vals, neg in ctx_ev]
     if part is not None:
         ctx_ev.append(["net.src", 3, [f"grp:{x}" for x in (part[4] if len(part) > 4 else [part[0]])], False])
         pid = f"{pid}|grp:{part[0]}"
@@ -464,11 +522,14 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         "bindings": binds, "workflow": flow}
     if when_ev:
         ev["when"] = when_ev
+    if adopted_from is not None:
+        ev["adopted_from"] = adopted_from
+        pid = f"{pid}|as:{route}"
     return {"id": pid + (f"|{subject}" if subject else ""), "pattern_id": pid, "view": view,
             "subject": subject or c.key, "text_zh": zh, "text_en": en,
-            "support": float(nd.n_c(t)), "confidence": conf,
+            "support": sup, "n_obs": sup_txt, "confidence": conf,
             "first_seen": nd.first_seen, "last_seen": nd.last_seen, "version": nd.version,
-            "cver": nd.cver, "state": nd.state, "mass": float(nd.mass_at(t)),
+            "cver": nd.cver, "state": state, "mass": float(nd.mass_at(t)),
             "facets": facets, "evidence": ev}
 
 
@@ -799,6 +860,155 @@ def _walk(tree: Any, t: float, rd: Optional[Mapping[int, Mapping[str, float]]] =
             stack.append((c, route, act))
 
 
+def renamed_routes(pflow: Any, live: Set[str]) -> Dict[str, str]:
+    """old route -> new route for P10's CONFIRMED renames (model.pflow
+    'renamed': new -> {'from': old, ...}) whose new route has no rendered,
+    non-stale node yet. Pack O D3 (/approval/ -> /flow/ for the approver on
+    day 14): P10 confirmed the rename within two dates, P03 stopped judging the
+    pages new, but the lattice routed the new pages into a shared candidate
+    node, so no statement named them before day 21 and the old pages'
+    statements went stale (PG5 D3 0/5); the profile now states the old pattern
+    under the new pages, marked as renamed, until their own node is confident."""
+    rn = pflow.get("renamed") if isinstance(pflow, Mapping) else None
+    out: Dict[str, str] = {}
+    for new, rec in (rn or {}).items():
+        old = (rec or {}).get("from") if isinstance(rec, Mapping) else None
+        if old and str(new) not in live:
+            out[str(old)] = str(new)
+    return out
+
+
+def _who_identity(st: Mapping[str, Any]) -> Tuple[Any, ...]:
+    """WHO a statement is about, as a reader sees it: the named group /
+    department / pool it states ('综合部（…）', '销售部（20 个 IP）', '研发（…）'),
+    else its level and listed items."""
+    w = (st.get("evidence") or {}).get("who") or {}
+    for k in ("name", "dept", "group_name"):
+        if w.get(k):
+            if w.get("level") in ("ip", "grp"):
+                # a named set of addresses is the same people only with the same
+                # addresses: '综合部（192.168.1.21、192.168.1.23）' at a child is a
+                # subset of the parent's 综合部 part, not a duplicate of it
+                # (offline rescoring seed 1: name-only identity dropped the
+                # department's own statement, GA.oa.documents lost)
+                return ("name", str(w[k]), tuple(sorted(str(x) for x in w.get("members") or w.get("items") or [])))
+            return ("name", str(w[k]))
+    return ("items", str(w.get("level")), tuple(sorted(str(x) for x in w.get("items") or [])))
+
+
+WHO_SPLIT_ATTRS = ("net.src", "net.peer_src", "client.")   # source (who) split attributes
+
+
+def dedup_statements(stmts: Sequence[Dict[str, Any]], tree_of: Any = None) -> List[Dict[str, Any]]:
+    """The primary statements of fold_duplicates (one per behaviour)."""
+    return fold_duplicates(stmts, tree_of)[0]
+
+
+def fold_duplicates(stmts: Sequence[Dict[str, Any]], tree_of: Any = None
+                    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """One statement per behaviour (round 4, readability): statements of the
+    same action about the same WHO (_who_identity) at an ancestor node and at a
+    descendant reached through SOURCE splits only (net.src / client stack)
+    say the same thing twice - the descendant is the refinement the lattice
+    learned for those sources, so it is the PRIMARY statement of the
+    behaviour and the ancestor's statement is FOLDED into it (returned apart
+    with 'folded_into' = the primary's id; the view publishes it under
+    'folded', not in its readable list). A descendant below a content or time
+    split is a variant of the behaviour (its siblings hold the rest), not a
+    duplicate: both stay primary.
+    Why fold, not drop: the folded statement is a second, independently fitted
+    estimate of the same behaviour (the ancestor's longer history, e.g. its
+    group's own windows); offline rescoring of seeds 0-1 (tree round-4 runs)
+    with the ancestors REMOVED cost 2.4-4.8 points of recall on seed 1
+    (financial staff's OA login: the younger child's window missed) and moved
+    precision by -9.6..+3.7 points. Returns (primary, folded).
+
+    Pack O seed 0 day 14 (tree-round-4 code): the all-department GET /home and
+    POST /login nodes and their office-subnet children both stated a 销售部 /
+    综合部 / 财务部 part (3 + 3 duplicate pairs), mail / code roots repeated
+    their only confident child; seed 1: 38 duplicates of 90 statements."""
+    if tree_of is None:
+        return list(stmts), []
+    nodes = getattr(tree_of, "nodes", {}) or {}
+
+    def anc(a: int, d: int) -> bool:
+        """d below a through SOURCE splits only (the same behaviour for a
+        subset of a's sources; a content / time split makes a variant)."""
+        x = nodes.get(d)
+        seen = 0
+        while x is not None and seen < 256:
+            p = getattr(x, "parent", None)
+            if p is None:
+                return False
+            pn = nodes.get(p)
+            if pn is None:
+                return False
+            sp = getattr(pn, "split", None)
+            attr = str(getattr(sp, "attr", "") or "") if sp is not None else ""
+            if not attr.startswith(WHO_SPLIT_ATTRS):
+                return False
+            if p == a:
+                return True
+            x = pn
+            seen += 1
+        return False
+    by: Dict[Tuple[Any, ...], List[int]] = {}
+    for i, st in enumerate(stmts):
+        ev = st.get("evidence") or {}
+        by.setdefault((st.get("act_node"), ev.get("route"), _who_identity(st)), []).append(i)
+    into: Dict[int, int] = {}
+    for idx in by.values():
+        if len(idx) < 2:
+            continue
+        for i in idx:
+            ni = (stmts[i].get("evidence") or {}).get("node")
+            best = None
+            for j in idx:
+                nj = (stmts[j].get("evidence") or {}).get("node")
+                if i != j and ni is not None and nj is not None and ni != nj and anc(ni, nj):
+                    dj = int((stmts[j].get("evidence") or {}).get("depth") or 0)
+                    if best is None or dj > best[0]:
+                        best = (dj, j)
+            if best is not None:
+                into[i] = best[1]
+    primary = [st for i, st in enumerate(stmts) if i not in into]
+    folded = []
+    for i, j in sorted(into.items()):
+        while j in into:                    # fold into the deepest primary
+            j = into[j]
+        folded.append(dict(stmts[i], folded_into=stmts[j]["id"]))
+    return primary, folded
+
+
+def order_statements(stmts: Sequence[Dict[str, Any]], actions: Mapping[Any, Mapping[str, Any]]
+                     ) -> List[Dict[str, Any]]:
+    """Statements by importance (round 4): actions by how many sources perform
+    them (the action node's distinct sources; a one-address health monitor
+    with 10 000 events no longer heads the OA view), then by mass; within an
+    action the action node's statement first, then deeper nodes, each node
+    followed by its groups' parts (largest first)."""
+    dist: Dict[Any, float] = {}
+    for st in stmts:
+        a = st.get("act_node")
+        ev = st.get("evidence") or {}
+        if ev.get("node") == a and "|grp:" not in str(st.get("id")):
+            dist[a] = float((ev.get("who") or {}).get("distinct") or 0.0)
+    nmass: Dict[Any, float] = {}
+    for st in stmts:
+        if "|grp:" not in str(st.get("id")):
+            nmass[(st.get("act_node"), (st.get("evidence") or {}).get("node"))] = float(st.get("mass") or 0.0)
+
+    def key(st: Mapping[str, Any]) -> Tuple[Any, ...]:
+        a = st.get("act_node")
+        ev = st.get("evidence") or {}
+        part = "|grp:" in str(st.get("id"))
+        nm = nmass.get((a, ev.get("node")), float(st.get("mass") or 0.0))
+        return (-dist.get(a, 0.0), -float((actions.get(a) or {}).get("mass", 0.0)), str(a),
+                int(ev.get("depth") or 0), -nm, int(ev.get("node") or 0), part,
+                -float(st.get("mass") or 0.0), str(st.get("id")))
+    return sorted(stmts, key=key)
+
+
 def system_view(store: Any, key: str, config: Mapping[str, Any], now: float,
                 c: Optional[_Ctx] = None) -> Optional[Dict[str, Any]]:
     """The system view of a tree key (rendered now)."""
@@ -812,29 +1022,53 @@ def system_view(store: Any, key: str, config: Mapping[str, Any], now: float,
         if kind != EV.KIND_TXN:
             continue
         rd = c.route_dist(kind)
-        for nd, route, act in _walk(tree, now, rd):
-            if route is None or nd.state not in RENDERED:
-                continue
-            st = node_statement(c, kind, nd, route)
+        walked = [(nd, route, act) for nd, route, act in _walk(tree, now, rd)
+                  if route is not None and nd.state in RENDERED]
+        adopt = renamed_routes(c.pflow, {r for nd, r, a in walked if nd.state != "stale"})
+        for nd, route, act in walked:
+            adopted = None
+            if route in adopt:
+                if nd.state == "stale":
+                    # the old page's own (stale, unconfirmed) statement stays as
+                    # history, pointing at its successor
+                    ost = node_statement(c, kind, nd, route)
+                    if ost is not None:
+                        nz = PR.route_text(adopt[route])
+                        ost["text_zh"] += f"（页面已更名为 {nz}）"
+                        ost["text_en"] += f" (page renamed to {nz})"
+                        ost["evidence"]["renamed_to"] = adopt[route]
+                        ost["act_node"] = act
+                        stmts.append(ost)
+                        actions.setdefault(act, {"act_node": act, "route": route, "mass": 0.0,
+                                                 "statements": []})["statements"].append(ost["id"])
+                adopted, route = route, adopt[route]
+            st = node_statement(c, kind, nd, route, adopted_from=adopted)
             if st is None:
                 continue
             st["act_node"] = act
             stmts.append(st)
             a = actions.setdefault(act, {"act_node": act, "route": route, "mass": 0.0, "statements": []})
+            if adopted is not None:
+                a["route"] = route
             a["statements"].append(st["id"])
             if nd.id == act:
                 a["mass"] = st["mass"]
             # the "某类人" parts of a node shared by several learned groups
             if nd.split is None or nd.id == act:
-                for part in group_parts(c, nd, now, _impurity(rd.get(nd.id) if rd else None, route), route):
-                    ps = node_statement(c, kind, nd, route, part=part)
+                for part in group_parts(c, nd, now, _impurity(rd.get(nd.id) if rd else None, adopted or route),
+                                        adopted or route):
+                    ps = node_statement(c, kind, nd, route, part=part, adopted_from=adopted)
                     if ps is None:
                         continue
                     ps["act_node"] = act
                     ps["mass"] = float(st["mass"]) * part[3]
                     stmts.append(ps)
                     a["statements"].append(ps["id"])
-    stmts.sort(key=lambda s: (-actions.get(s.get("act_node"), {}).get("mass", 0.0), -s["mass"], s["id"]))
+    stmts, folded = fold_duplicates(stmts, tree_of=c.ptm.kinds.get(EV.KIND_TXN))
+    for a in actions.values():
+        kept = {st["id"] for st in stmts}
+        a["statements"] = [x for x in a["statements"] if x in kept]
+    stmts = order_statements(stmts, actions)
     stmts = stmts[:S_MAX]
     root = c.ptm.kinds.get(EV.KIND_TXN)
     addr = _address(root.nodes[root.root], now) if root is not None else ""
@@ -849,6 +1083,9 @@ def system_view(store: Any, key: str, config: Mapping[str, Any], now: float,
                        "text_en": head_en + ("; " + hint_en if hint_en else ""),
                        "address": addr, "who_mode": c.mode, "hint": hint_zh or None},
             "statements": stmts,
+            # duplicates of a primary statement (fold_duplicates): published for
+            # the API / audit and the evaluator, not in the readable list
+            "folded": folded[:S_MAX],
             "actions": sorted(actions.values(), key=lambda a: -a["mass"]),
             "ms": round((time.perf_counter() - t0) * 1000.0, 2)}
 
@@ -959,7 +1196,8 @@ def action_word(route: str, config: Optional[Mapping[str, Any]] = None) -> Optio
 
 def activity_statement(g: str, name: str, key: str, acts: Sequence[Mapping[str, Any]], share_sys: float,
                        members: Set[str], subject: str,
-                       config: Optional[Mapping[str, Any]] = None) -> Optional[Dict[str, Any]]:
+                       config: Optional[Mapping[str, Any]] = None,
+                       conf: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """The user view's "which systems a group uses and what it does there"
     (综合部 访问 oa：登录、审批、提交报告): P11's per-system action mix of the
     group (its learned signatures), each action with the members that do it
@@ -979,9 +1217,15 @@ def activity_statement(g: str, name: str, key: str, acts: Sequence[Mapping[str, 
                      "support": a.get("support")})
     zh = f"{name} 访问 {key}（占其活动 {PR.pct(share_sys)}）：{PR.join_zh(pz)}"
     en = f"{name} uses {key} ({PR.pct(share_sys)} of its activity): {PR.join_en(pe)}"
+    # (round 4) the same confidence / support phrase as every other statement:
+    # confidence = how alike the members behave (P11 cohesion), support = the
+    # members whose signatures state the mix
+    tz, te = PR.evidence_tail(conf, float(len(members)), "members")
+    zh += f"。{tz}"
+    en += f". {te}."
     return {"id": f"act:{g}:{key}", "pattern_id": f"act:{g}:{key}", "view": "group",
             "subject": subject, "text_zh": zh, "text_en": en, "support": float(len(members)),
-            "confidence": None, "state": "confirmed", "version": 1, "cver": 0,
+            "confidence": conf, "state": "confirmed", "version": 1, "cver": 0,
             "facets": ["functional", "relational"],
             "evidence": {"activity": True, "system": key, "group": g, "actions": rows,
                          "who": {"level": "grp", "items": [f"grp:{g}"], "members": sorted(members)}}}
@@ -1001,6 +1245,7 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
     keys = sorted({MP.tree_key(store, s) for s in store.batch_systems(EV.EVT_BATCH)} |
                   {MP.tree_key(store, s) for s in store.systems()})
     stmts: List[Dict[str, Any]] = []
+    folded: List[Dict[str, Any]] = []
     used: List[str] = []
     for key in keys:
         c = cache.get(key)
@@ -1013,15 +1258,22 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
         share_sys = float((gr.get("systems") or {}).get(key, 0.0))
         if share_sys >= GROUP_SYS_SHARE:
             used.append(key)
+            # confidence: how alike the members behave (P11's within-group similarity)
             act_st = activity_statement(g, name, key, (gr.get("actions") or {}).get(key) or [],
-                                        share_sys, members, subject, config)
+                                        share_sys, members, subject, config,
+                                        conf=float(gr.get("cohesion") or 0.0))
             if act_st is not None:
-                # how alike the members behave (P11's within-group similarity)
-                act_st["confidence"] = float(gr.get("cohesion") or 0.0)
                 stmts.append(act_st)
-            for nd, route, act in _walk(tree, c.now, c.route_dist(EV.KIND_TXN)):
-                if route is None or nd.state not in RENDERED:
-                    continue
+            node_sts: List[Dict[str, Any]] = []
+            walked = cache.get(("walk", key))
+            if walked is None:
+                walked = cache[("walk", key)] = [(nd, r, a) for nd, r, a in _walk(tree, c.now, c.route_dist(EV.KIND_TXN))
+                                                 if r is not None and nd.state in RENDERED]
+            adopt = renamed_routes(c.pflow, {r for nd, r, a in walked if nd.state != "stale"})
+            for nd, route, act in walked:
+                adopted = None
+                if route in adopt:
+                    adopted, route = route, adopt[route]
                 gm = _group_mass(nd, g, members, now)
                 if gm < GROUP_NODE_SHARE:
                     continue
@@ -1030,15 +1282,19 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
                 # node's whole population ('来自 10.50.0.0/16、192.168.0.0/16
                 # （约 400 个 IP）' in 销售部's view of the mail node)
                 st = node_statement(c, EV.KIND_TXN, nd, route, view="group", subject=subject,
-                                    restrict=members)
+                                    restrict=members, adopted_from=adopted)
                 if st is not None and (st["evidence"].get("who") or {}).get("level") != "ip":
-                    mem = _members_at(c, nd, members, route, now)
+                    mem = _members_at(c, nd, members, adopted or route, now)
                     if mem:
                         st = node_statement(c, EV.KIND_TXN, nd, route, view="group", subject=subject,
-                                            part=(g, mem, name, gm)) or st
+                                            part=(g, mem, name, gm), adopted_from=adopted) or st
                 if st is not None:
                     st["act_node"] = act
-                    stmts.append(st)
+                    node_sts.append(st)
+            # (round 4) one statement per behaviour, as in the system view
+            prim, fold = fold_duplicates(node_sts, tree)
+            stmts.extend(prim)
+            folded.extend(fold)
         # negative statements: who-closed write nodes of this system the group never reached
         cw = cache.get(("cw", key))
         if cw is None:
@@ -1085,11 +1341,13 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
             if sus:
                 zh += f"；{PR.join_zh(sus)} 的尝试被判定为越权（未学习）"
                 en += f"; attempts by {PR.join_en(sus)} were judged foreign (not learned)"
+            nconf = float(min(1.0 - nd.who.levels[nd.who.closed_level(now, nd.n_days())].unseen(now)
+                              for nd, _ in never))
+            zh, en = _with_tail(zh, en, nconf, n_days, "days")
             stmts.append({"id": f"neg:{g}:{key}", "pattern_id": f"neg:{g}:{key}", "view": "group",
                           "subject": subject, "text_zh": zh, "text_en": en,
                           "support": float(sum(nd.n_c(now) for nd, _ in never)),
-                          "confidence": float(min(1.0 - nd.who.levels[nd.who.closed_level(now, nd.n_days())].unseen(now)
-                                                  for nd, _ in never)),
+                          "confidence": nconf,
                           "state": "confirmed", "version": 1, "cver": 0,
                           "facets": ["relational", "risk"],
                           "evidence": {"negative": True, "scope": "system", "target_system": key,
@@ -1107,7 +1365,7 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
             "header": {"text_zh": zh, "text_en": en, "members": sorted(members),
                        "covers": gr.get("covers") or [], "labels": gr.get("labels") or [],
                        "systems": gr.get("systems") or {}},
-            "statements": stmts[:S_MAX]}
+            "statements": stmts[:S_MAX], "folded": folded[:S_MAX]}
 
 
 def _sig_uses(c: Any, members: Set[str], route: str, t: float) -> bool:
@@ -1146,6 +1404,12 @@ def _members_at(c: Any, nd: Any, members: Set[str], route: Optional[str], t: flo
     return out
 
 
+def _with_tail(zh: str, en: str, conf: Optional[float], support: Optional[float], unit: str) -> Tuple[str, str]:
+    """A group-view sentence closed by the common confidence / support phrase."""
+    tz, te = PR.evidence_tail(conf, support, unit)
+    return f"{zh}。{tz}", f"{en}. {te}."
+
+
 def _partial_negative(g: str, name: str, key: str, never: Sequence[Tuple[Any, str]], n_days: int,
                       members: Set[str], subject: str, config: Mapping[str, Any], now: float
                       ) -> Dict[str, Any]:
@@ -1156,6 +1420,7 @@ def _partial_negative(g: str, name: str, key: str, never: Sequence[Tuple[Any, st
     en = f"{name} has never performed on {key}: " + PR.join_en([x[1] for x in names][:6]) + \
         f" ({n_days} days, 0 times)"
     conf = float(min(1.0 - nd.who.levels[nd.who.closed_level(now, nd.n_days())].unseen(now) for nd, _ in never))
+    zh, en = _with_tail(zh, en, conf, n_days, "days")
     return {"id": f"neg:{g}:{key}:actions", "pattern_id": f"neg:{g}:{key}:actions", "view": "group",
             "subject": subject, "text_zh": zh, "text_en": en,
             "support": float(sum(nd.n_c(now) for nd, _ in never)), "confidence": conf,
@@ -1168,7 +1433,8 @@ def _partial_negative(g: str, name: str, key: str, never: Sequence[Tuple[Any, st
 
 
 def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str, Mapping[str, Any]],
-              config: Mapping[str, Any], now: float) -> Optional[Dict[str, Any]]:
+              config: Mapping[str, Any], now: float,
+              sys_views: Optional[Mapping[str, Mapping[str, Any]]] = None) -> Optional[Dict[str, Any]]:
     """The user view of a configured department whose members P11 learned as
     several groups (its roles): "综合部 访问 oa：登录、文档、审批[192.168.1.21]、
     提交报告[192.168.1.23、10.168.7.121]；在 finance 中从未执行写操作".
@@ -1217,12 +1483,16 @@ def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str
             rows.append({"action": r["action"], "share": round(r["share"], 4),
                          "members": mem if set(mem) != members else [],
                          "support": round(len(mem) / len(members), 3)})
+        # confidence: the roles' cohesion weighted by their sizes (the group view's rule)
+        coh = sum(len([m for m in (groups.get(g) or {}).get("members") or [] if "/" not in str(m)]) / n_tot
+                  * float((groups.get(g) or {}).get("cohesion") or 0.0) for g in gids)
         st = activity_statement(f"dept:{name}", name, key, rows[:2 * 8], sys_share[key], members,
-                                subject, config)
+                                subject, config, conf=round(float(coh), 4))
         if st is not None:
             stmts.append(st)
     negs: Dict[str, List[Mapping[str, Any]]] = {}
     never_by: Dict[str, List[Optional[Set[str]]]] = {}
+    never_conf: Dict[str, float] = {}
     for vi, v in enumerate(views):
         for st in v.get("statements") or []:
             ev = st.get("evidence") or {}
@@ -1233,6 +1503,8 @@ def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str
                 negs.setdefault(key, []).append(st)
             lst_ = never_by.setdefault(key, [None] * len(views))
             lst_[vi] = (lst_[vi] or set()) | set(ev.get("route_keys") or [])
+            if st.get("confidence") is not None:
+                never_conf[key] = min(never_conf.get(key, 1.0), float(st["confidence"]))
     # (round 3) "never does what" of the department inside a system it uses:
     # the closed write actions NONE of its roles performed
     for key, sets in sorted(never_by.items()):
@@ -1245,13 +1517,16 @@ def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str
                          for v in views for st in v.get("statements") or []
                          if (st.get("evidence") or {}).get("negative")
                          and str((st.get("evidence") or {}).get("target_system")) == key)
+            # confidence: the weakest of the roles' "never" statements it rests on
+            nc = never_conf.get(key)
+            tz_, te_ = _with_tail(f"{name} 在 {key} 中从未执行：" + PR.join_zh([x[0] for x in nz][:6])
+                                  + f"（{n_days} 天、0 次）",
+                                  f"{name} has never performed on {key}: " + PR.join_en([x[1] for x in nz][:6])
+                                  + f" ({n_days} days, 0 times)", nc, n_days, "days")
             stmts.append({"id": f"neg:dept:{name}:{key}:actions", "pattern_id": f"neg:dept:{name}:{key}:actions",
                           "view": "group", "subject": subject,
-                          "text_zh": f"{name} 在 {key} 中从未执行：" + PR.join_zh([x[0] for x in nz][:6])
-                          + f"（{n_days} 天、0 次）",
-                          "text_en": f"{name} has never performed on {key}: " + PR.join_en([x[1] for x in nz][:6])
-                          + f" ({n_days} days, 0 times)",
-                          "support": 0.0, "confidence": None, "state": "confirmed", "version": 1, "cver": 0,
+                          "text_zh": tz_, "text_en": te_,
+                          "support": 0.0, "confidence": nc, "state": "confirmed", "version": 1, "cver": 0,
                           "facets": ["relational", "risk"],
                           "evidence": {"negative": True, "scope": "actions", "target_system": key, "system": key,
                                        "routes": sorted({PR.route_text(r) for r in inter}),
@@ -1274,10 +1549,12 @@ def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str
         if sus:
             zh += f"；{PR.join_zh(sus)} 的尝试被判定为越权（未学习）"
             en += f"; attempts by {PR.join_en(sus)} were judged foreign (not learned)"
+        dconf = float(min(float(st.get("confidence") or 0.0) for st in lst))
+        zh, en = _with_tail(zh, en, dconf, n_days, "days")
         stmts.append({"id": f"neg:dept:{name}:{key}", "pattern_id": f"neg:dept:{name}:{key}", "view": "group",
                       "subject": subject, "text_zh": zh, "text_en": en,
                       "support": float(sum(float(st.get("support") or 0.0) for st in lst)),
-                      "confidence": float(min(float(st.get("confidence") or 0.0) for st in lst)),
+                      "confidence": dconf,
                       "state": "confirmed", "version": 1, "cver": 0, "facets": ["relational", "risk"],
                       "evidence": {"negative": True, "scope": "system", "target_system": key, "system": key,
                                    "routes": routes, "route_keys": sorted({r for e in evs for r in e.get("route_keys") or []}),
@@ -1285,6 +1562,7 @@ def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str
                                    "who": {"level": "grp", "items": [f"grp:{g}" for g in gids],
                                            "members": sorted(members, key=PR._ip_sort)}}})
     seen = {st["id"] for st in stmts}
+    have: Set[Tuple[str, str]] = set()
     for v in views:
         for st in v.get("statements") or []:
             ev = st.get("evidence") or {}
@@ -1292,6 +1570,42 @@ def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str
                 continue
             seen.add(st["id"])
             stmts.append(st)
+            have.add((str(ev.get("system")), str(ev.get("route"))))
+    # (round 4) COMPLETE: every action of the department the system views state
+    # about it - the department's part of a shared node ('综合部（…）访问 GET
+    # /docs', P14 group_parts) or a node whose addresses are the department's -
+    # where no role's own view holds a node statement for that action (a role
+    # holding < GROUP_NODE_SHARE of a node has none: pack O seed 0 day 14, 7 of
+    # the 11 actions 综合部's activity statement listed had no statement)
+    allowed = members | set(_configured_ips(config).get(name, ()))
+    for key in sorted(sys_views or {}):
+        best: Dict[str, Mapping[str, Any]] = {}
+        for st in (sys_views[key] or {}).get("statements") or []:
+            ev = st.get("evidence") or {}
+            w = ev.get("who") or {}
+            if (str(ev.get("system")), str(ev.get("route"))) in have:
+                continue
+            if w.get("group_name") == name:
+                pass                       # the department's pool, stated by its prefixes ('研发（10.50.0.0/24、…）')
+            elif not (w.get("name") == name or w.get("dept") == name):
+                continue
+            else:
+                mem = {str(m) for m in w.get("members") or w.get("items") or []}
+                if not mem or not mem <= allowed:
+                    continue
+            r = str(ev.get("route"))
+            # one statement per action: the most specific (deepest node), then
+            # the more confident
+            k_ = (int(ev.get("depth") or 0), float(st.get("confidence") or 0.0))
+            o = best.get(r)
+            if o is None or k_ > (int((o.get("evidence") or {}).get("depth") or 0), float(o.get("confidence") or 0.0)):
+                best[r] = st
+        for r, st in sorted(best.items(), key=lambda kv: -float(kv[1].get("mass") or 0.0)):
+            cp = dict(st, id=f"{st['id']}|{subject}", view="group", subject=subject)
+            if cp["id"] in seen:
+                continue
+            seen.add(cp["id"])
+            stmts.append(cp)
     zh = f"{name}（{len(members)} 个 IP，{len(gids)} 个行为群组）使用 {PR.join_zh(used) or '（尚无系统）'}"
     en = f"{name} ({len(members)} IPs, {len(gids)} behavioural groups) uses {PR.join_en(used) or '(no system yet)'}"
     return {"fmt": 1, "view": "group", "subject": subject, "group": f"dept:{name}", "groups": gids,
@@ -1393,7 +1707,12 @@ class ViewsEngine(Engine):
                 v = store.get_model(ORG, f"{GROUP_PREFIX}{g}", MP.PVIEWS)
                 if isinstance(v, Mapping) and v.get("group") == g:
                     gvs.append(v)
-            dv = dept_view(name, gvs, groups, ctx.config, now)
+            svs = {}
+            for key in keys:
+                sv = store.get_model(key, SYSTEM_ENTITY, MP.PVIEWS)
+                if isinstance(sv, Mapping):
+                    svs[key] = sv
+            dv = dept_view(name, gvs, groups, ctx.config, now, svs)
             if dv is None and isinstance(store.get_model(ORG, f"{GROUP_PREFIX}dept:{name}", MP.PVIEWS), Mapping):
                 # the department is one learned group again: retire its composed view
                 dv = {"fmt": 1, "view": "group", "subject": f"{GROUP_PREFIX}dept:{name}",

@@ -202,3 +202,124 @@ def test_a_groups_part_states_its_current_window():
     pw = PW.part_when(nd.when, GA, OFF)
     wd = pw["workday"]
     assert len(wd) == 1 and abs(wd[0][0] - 512) <= 2 and abs(wd[0][1] - 522) <= 2, wd
+
+
+def test_back_off_keeps_a_member_the_ancestor_holds_suspect():
+    """Pack O seed 2 (round 4 run 4, day 19): the 综合部 login node (three
+    members, created after two pre-D1 dates of its own) backs off to a wider
+    login node that never tracked 192.168.1.21 at its IP level and held it out
+    as suspect after A2's 09:10 logins. Filtering the node's members by the
+    ANCESTOR's suspect test read two of three sources, the back-off fell back
+    to the node's own points (2 dates before D1: no regime cut) and the node
+    stated the stale 08:31-09:20 (checklist IoU 0.40). Suspicion is the
+    member node's business: the ancestor's arrivals of all three members are
+    read and the window follows D1."""
+    class _T:
+        nodes = {}
+    net = ("net.src", 0, frozenset(GA), False)
+    anc = PN.Node(1, None, 0, 0, (), _ts(D0, 0))
+    anc.when.want_minutes(True, R=4096, seed=0)
+    kid = PN.Node(2, 1, 1, 0, (net,), _ts(D0 + 2, 0))
+    kid.when.want_minutes(True, R=4096, seed=0)
+    _T.nodes = {1: anc, 2: kid}
+    dates = [0, 1, 2, 3, 6, 7, 8, 9, 10, 13, 14, 15]          # D1 from date 6 (index 4)
+    for i, d in enumerate(dates):
+        for k, ip in enumerate(GA):
+            m = 542.0 + 6 * k + (d % 3) if i < 4 else 512.0 + 6 * k + (d % 3)
+            ts = _ts(D0 + d, m)
+            anc.when.update(0, m, ts, 1.0, 1.0, src=ip)
+            if d >= 2:
+                kid.when.update(0, m, ts, 1.0, 1.0, src=ip)
+        for j in range(4):                                     # the other department
+            m = 520.0 + 9 * j + (d % 4)
+            anc.when.update(0, m, _ts(D0 + d, m), 1.0, 1.0, src=f"192.168.3.2{j}")
+            anc.who.update([f"192.168.3.2{j}", None, None, None, None], f"192.168.3.2{j}",
+                           _ts(D0 + d, m), 1.0, 1.0)
+        if i >= 9:                                             # A2: 09:10 from .21
+            for nd in (anc, kid):
+                nd.when.update(0, 550.0, _ts(D0 + d, 550), 1.0, 1.0, src=GA[0])
+    for ip in GA:
+        kid.who.update([ip, None, None, None, None], ip, _ts(D0 + 2, 600), 1.0, 1.0)
+    now = _ts(D0 + 15, 1200)
+    anc.who.mark_suspect(GA[0], now - 3600.0)
+    kid.who.mark_suspect(GA[0], now - 3600.0)
+    assert GA[0] not in anc.who.levels[0] and GA[0] in kid.who.levels[0]
+    pts, a = TW._backoff(_T, kid, 0, TW._points(kid, 0, t=now), now)
+    assert a == 1 and {p[3] for p in pts} == set(GA)
+    e = TW.TimeWindowEngine().fit_node(kid, now, OFF, None, {}, _T)
+    wd = e["when"]["workday"]
+    assert len(wd) == 1 and 510 <= wd[0][0] <= 514 and 524 <= wd[0][1] <= 532, wd
+
+
+def test_violating_arrivals_do_not_shape_the_windows():
+    """Pack O seed 1 (round 4 run 4, day 21): A10's ~150 comment posts from 48
+    unknown addresses within 09:00-11:40 of the last (non-work) day - content
+    violations P03 judged at p <= 1e-3, learned by P04 at full weight - passed
+    regime_cut as a coordinated change of the nonworkday law, and portal POST
+    /comment stated 08:55-11:40 against the truth 07:05-23:12. Rows in P06's
+    violation ledger (content_bounds.point_ledger) leave the arrivals."""
+    r = np.random.default_rng(11)
+    nd = PN.Node(1, None, 0, 0, (), _ts(D0, 0))
+    nd.when.want_minutes(True, R=4096, seed=0)
+    for d in (3, 4, 10, 11, 17):                                # five non-work dates
+        for m in r.uniform(425, 1390, 30):
+            nd.when.update(1, float(m), _ts(D0 + d, m), 1.0, 1.0, src=f"10.60.{d}.{int(m) % 200}")
+    burst = set()
+    for i, m in enumerate(np.linspace(540, 700, 150)):
+        ts, src = _ts(D0 + 18, m), f"203.0.113.{i % 48}"
+        nd.when.update(1, float(m), ts, 1.0, 1.0, src=src)
+        burst.add((round(ts, 3), src))
+    now = _ts(D0 + 18, 1400)
+    raw = TW.TimeWindowEngine().fit_node(nd, now, OFF, None, {}, None)["when"]["nonworkday"]
+    clean = TW.TimeWindowEngine().fit_node(nd, now, OFF, None, {}, None, burst)["when"]["nonworkday"]
+    assert sum(e - s for s, e in clean) >= 600, clean           # the day-long law
+    assert sum(e - s for s, e in raw) < 300, raw                  # the burst alone
+
+
+def test_p06_ledger_records_violating_arrivals_for_p09():
+    from app.core.engine import Context
+    from app.core.store import MetricStore
+    from app.engines.behavior import content_bounds as CB
+    from app.engines.behavior.lib import pevent as EV
+    from pcontent_oracle import OracleLearner
+    cfg = {"progressive": {"enabled": True}, "grain_mode": "tick", "strict": True}
+    t0 = 1_788_220_800.0
+    store = MetricStore()
+    orc = OracleLearner(store, "oa", t0, ["POST /login"], config=cfg)
+    nid = orc.node_for("POST /login")
+    eng = CB.ContentBoundsEngine()
+    for d in range(3):
+        T = t0 + d * DAY + 12 * 3600
+        bb = EV.BatchBuilder("oa")
+        for i in range(6):
+            bb.add(T - 3600 + i * 7.0, f"192.168.1.{20 + i}", {"http.route": "POST /login",
+                                                              "body.len": 1500.0 + i}, 1.0)
+        b = bb.build(T - 43200, T)
+        store.add_batch("oa", EV.EVT_BATCH, T, b)
+        rr = np.arange(b.n, dtype=np.int32)
+        vt = np.zeros(b.n)
+        if d == 2:
+            vt[-1] = 4.0
+        cols = {"leaf": EV.Col(rr, np.full(b.n, float(nid))), "vtype": EV.Col(rr, vt)}
+        store.add_batch("oa", EV.PAT_ASSIGN, T, b.aligned(cols, {"kind": 0, "tree_key": "oa"}))
+        orc.learn(b)
+        eng.safe_run(Context(store=store, now=T + 3600, window_s=60, config=dict(cfg)))
+    T = t0 + 2 * DAY + 12 * 3600
+    assert CB.point_ledger(store, "oa", 0) == {(round(T - 3600 + 5 * 7.0, 3), "192.168.1.25")}
+
+
+def test_a_groups_part_leaves_violating_arrivals_out():
+    def rows(d):
+        return [(float(512 + 3 * k + (d % 4)), GA[k]) for k in range(3)]
+    nd = _node(range(10), rows)
+    burst = set()
+    for d in (7, 8, 9):
+        for j in range(6):
+            m = 700.0 + j
+            ts = _ts(D0 + d, m)
+            nd.when.update(0, m, ts, 1.0, 1.0, src=GA[0])
+            burst.add((round(ts, 3), GA[0]))
+    raw = PW.part_when(nd.when, GA, OFF)["workday"]
+    clean = PW.part_when(nd.when, GA, OFF, drop=burst)["workday"]
+    assert len(clean) == 1 and abs(clean[0][0] - 512) <= 2 and clean[0][1] <= 524, clean
+    assert raw != clean

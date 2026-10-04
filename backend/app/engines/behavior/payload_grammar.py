@@ -45,6 +45,7 @@ from .lib import pbounds as PB
 from .lib import pevent as EV
 from .lib import pgrammar as PG
 from .lib import pnode as PN
+from . import content_bounds as CB
 
 ARM = ("p07", "P07", "grammar", "payload_grammar")
 TEXT_TYPES = ("set", "text")
@@ -111,6 +112,7 @@ class PayloadGrammarEngine(Engine):
                 continue
             if tree.root in fits:
                 new_ev += max(0.0, PB.new_evidence(fits[tree.root], root, now))
+            vled = _set_viol_by_node(CB.set_ledger(store, key), tree, kind, now)
             for nid, node in tree.nodes.items():
                 if node.last_seen is None:
                     continue
@@ -126,7 +128,7 @@ class PayloadGrammarEngine(Engine):
                                       closed_u, lambda nd, a, tree=tree, outn=outn:
                                       _ancestor_grammar(tree, outn, nd, a),
                                       lambda nd, a, tree=tree, outn=outn:
-                                      _ancestor_capacity(tree, outn, nd, a))
+                                      _ancestor_capacity(tree, outn, nd, a), vled.get(nid))
                 outn[nid] = entry
                 fits[nid] = PB.fit_mark(node, now)
                 n_fit += 1
@@ -159,7 +161,8 @@ class PayloadGrammarEngine(Engine):
     def fit_node(self, store: Any, key: str, node: Any, now: float, reg: Any,
                  config: Mapping[str, Any], closed_n: float,
                  old: Optional[Mapping[str, Any]], closed_u: float = PG.CLOSED_U,
-                 inherit: Any = None, capacity_of: Any = None) -> Dict[str, Any]:
+                 inherit: Any = None, capacity_of: Any = None,
+                 viol: Optional[Mapping[str, List[Any]]] = None) -> Dict[str, Any]:
         attrs: Dict[str, Any] = {}
         old_attrs = (old or {}).get("attrs") or {}
         old_vstate = (old or {}).get("vstate") or {}
@@ -182,7 +185,7 @@ class PayloadGrammarEngine(Engine):
                 elif inherit is not None:
                     rec = PG.inherit_text(inherit(node, a), summ, now)
             elif isinstance(summ, PN.SetSummary):
-                rec = PG.fit_set(summ, now)
+                rec = PG.fit_set(summ, now, viol=(viol or {}).get(a))
             elif isinstance(summ, PN.CatSummary):
                 rec = PG.fit_cat(summ, now, closed_n=closed_n, closed_u=closed_u)
                 if rec is not None and "closed" not in rec:
@@ -201,6 +204,25 @@ class PayloadGrammarEngine(Engine):
         if vstate:
             out["vstate"] = vstate                # adaptive value capacity (lib/pgrammar.adapt_values)
         return out
+
+
+def _set_viol_by_node(led: List[Any], tree: Any, kind: int, now: float
+                      ) -> Dict[int, Dict[str, List[Any]]]:
+    """{node: {attr: [(ts, weight, keys)]}} of P06's ledger of violating rows'
+    key sets: a row belongs to its leaf and every ancestor (P04 updates the
+    targets along the whole path). Rows older than the ring's days are
+    dropped. O(rows x depth)."""
+    out: Dict[int, Dict[str, List[Any]]] = {}
+    for k, lf, ts, w, sv in led:
+        if k != kind or now - float(ts) > PN.RING_DAYS * 86400.0:
+            continue
+        cur = tree.nodes.get(lf)
+        while cur is not None:
+            dst = out.setdefault(cur.id, {})
+            for a, keys in sv.items():
+                dst.setdefault(a, []).append((float(ts), float(w), keys))
+            cur = tree.nodes.get(cur.parent) if cur.parent is not None else None
+    return out
 
 
 def _ancestor_grammar(tree: Any, outn: Mapping[int, Any], node: Any, a: str) -> Optional[Dict[str, Any]]:

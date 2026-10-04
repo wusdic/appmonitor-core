@@ -76,6 +76,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
+from . import psketch as PS
 from .phier import Shaped, shape_length, skeleton
 
 MAX_SKELETONS = 3
@@ -650,12 +651,53 @@ def fit_cat(cs: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N,
     return rec
 
 
-def fit_set(ss: Any, t: float, n_min: float = N_MIN) -> Optional[Dict[str, Any]]:
-    """Required / optional keys of a set target (pnode.SetSummary)."""
+CLEAN_REST = 1.0      # clean mass (rows' worth) clean_presence needs; whatever the violations' share
+
+
+def clean_presence(ss: Any, t: float, viol: Optional[Sequence[Sequence[Any]]] = None
+                   ) -> Dict[Any, float]:
+    """Key presences of a set target without the rows P03 judged violations
+    (§6.9.3; viol = [(ts, weight, keys)] from P06's ledger, content_bounds
+    set_ledger): p_c(k) = (g_k - W_k) / (M - W), the rows' learning weights
+    decayed at the presence channel's half-life (H_m), clipped to [0, 1].
+    P04 learns a violation a delay after P03 judges it and, unless P03 also
+    damped it, at full weight: pack O seeds 0 and 2, day 21, A10's ~150
+    comment posts without viewstate on portal POST /comment turned the
+    required key viewstate optional (presence 0.77). An over-estimated weight
+    (a low-trust row learned below its damping) only moves presences towards
+    the clean rows' own. No bound on the violations' share of the mass: in
+    seed 0 they were most of the decayed (H_m) presence mass of the day-21
+    node, and a 'violations < half the mass' guard kept viewstate optional."""
+    pres = ss.presence(t)
+    if not pres or not viol:
+        return pres
+    tot = float(ss.n.read(t)[PS.CH_M])
+    W, Wk = 0.0, {}
+    for row in viol:
+        ts, w, keys = float(row[0]), float(row[1]), row[2]
+        d = w * 2.0 ** (-max(0.0, t - ts) / PS.H_M)
+        W += d
+        for k in keys:
+            Wk[k] = Wk.get(k, 0.0) + d
+    rest = tot - W
+    if tot <= 0 or rest < CLEAN_REST:
+        return pres                      # (over-estimated weights) no clean row's worth of mass left: keep
+    out = {}
+    for k, p in pres.items():
+        sk = str(k)
+        g = p * tot - Wk.get(sk[:-2] if sk.endswith("[]") else sk, 0.0)
+        out[k] = float(min(1.0, max(0.0, g / rest)))
+    return out
+
+
+def fit_set(ss: Any, t: float, n_min: float = N_MIN,
+            viol: Optional[Sequence[Sequence[Any]]] = None) -> Optional[Dict[str, Any]]:
+    """Required / optional keys of a set target (pnode.SetSummary); viol: the
+    node's violating rows (clean_presence)."""
     N = ss.tpl.total_evidence(t)
     if N < n_min:
         return None
-    pres = ss.presence(t)
+    pres = clean_presence(ss, t, viol)
     if not pres:
         return None
     req = sorted(str(k) for k, p in pres.items() if p >= REQUIRED)

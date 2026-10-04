@@ -90,7 +90,10 @@ class OracleLearner:
             for c in kids:
                 tree.split(c, "net.src", 3, [[f"grp:{g}"] for g in self.groups], t)
 
-    def learn(self, b: Any, ctx_batch: Any = None, trust: Optional[Mapping[str, float]] = None) -> int:
+    def learn(self, b: Any, ctx_batch: Any = None, trust: Optional[Mapping[str, float]] = None,
+              damp: Any = None) -> int:
+        """P04's learning of batch b: mass w/pi x trust x damp (damp: P03's
+        per-row damping, row-aligned; None = 1)."""
         store, tree = self.store, self.tree
         self.reg.observe_batch(b)
         self.reg.update_types(b.t1)
@@ -118,7 +121,7 @@ class OracleLearner:
             leaf = path[-1]
             ts = float(b.ts[i])
             ev = self.burst.unit((ip, leaf), ts, tr)
-            m = float(mass[i]) * tr
+            m = float(mass[i]) * tr * (1.0 if damp is None else float(damp[i]))
             mk = int(ts // 3600)
             day = self._dmemo.get(mk)
             if day is None:

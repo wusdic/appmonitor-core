@@ -201,3 +201,45 @@ def test_stated_range_cover_bounds_the_realised_exceedance():
         miss_new += outside > rec["cover"]
         miss_old += outside > rec["cover_pred"]
     assert miss_new <= 0.08 * 200 < miss_old, (miss_new, miss_old)
+
+
+def test_band_describes_the_clean_rows_of_the_range():
+    """Pack O seeds 0-1 (round 4 run 4, day 21): A10's ~150 comment posts (8 KB,
+    no viewstate) entered portal POST /comment at full weight on the last day;
+    P03 judged them violations (the P06 ledger), so the range stayed 1.5-3 KB,
+    but the band was read from the whole digest: 1.6-8.3 KB, wider than the
+    range (truth 1.6-2.9 KB). The band is read from the digest truncated to
+    the clean range; without violations it is unchanged."""
+    r = np.random.default_rng(5)
+    clean = 1500.0 + r.random(480) * 1500.0
+    s, t, day = _num(clean, days=12)
+    base = PB.fit_numeric(s, t, day, n_c=480, n_eff=300, unit="B")
+    assert base["band90"][1] < 3000.0
+    bad = 6000.0 + r.random(150) * 4000.0
+    for i, v in enumerate(bad):
+        s.update(float(v), t - 3600.0 + i, 1.0, 1.0, day=day)
+    excl = {day: [math.log(float(v)) for v in bad]}
+    rec = PB.fit_numeric(s, t, day, n_c=630, n_eff=450, unit="B", excl=excl, day_of=lambda ts: day)
+    assert rec["range"][1] < 3000.0
+    assert rec["band90"][1] <= rec["range"][1] and abs(rec["band90"][1] - base["band90"][1]) < 150.0
+    assert abs(rec["band90"][0] - base["band90"][0]) < 100.0
+    assert 0.85 <= rec["coverage_emp"] <= 0.95
+    # no violations, digest within its range: the estimator is the plain quantile
+    s2, t2, day2 = _num(clean, days=12)
+    assert PB.clean_mass(s2.td, *[math.log(x) for x in (clean.min(), clean.max())]) == (0.0, 1.0)
+
+
+def test_band_describes_the_clean_rows_even_when_violations_dominate_the_digest():
+    """Pack O seed 1, day 21: A10's rows were ~3/4 of the comment node's
+    decayed digest mass (its confidence segment had restarted two days before);
+    a 'range holds >= half the digest' guard left the band at 1.8-8.3 KB."""
+    r = np.random.default_rng(6)
+    clean = 1500.0 + r.random(120) * 1500.0
+    s, t, day = _num(clean, days=4)
+    bad = 6000.0 + r.random(400) * 4000.0
+    for i, v in enumerate(bad):
+        s.update(float(v), t - 3600.0 + i, 1.0, 1.0, day=day)
+    excl = {day: [math.log(float(v)) for v in bad]}
+    rec = PB.fit_numeric(s, t, day, n_c=520, n_eff=400, unit="B", excl=excl, day_of=lambda ts: day)
+    assert rec["range"][1] < 3000.0
+    assert 1500.0 <= rec["band90"][0] and rec["band90"][1] <= rec["range"][1], rec["band90"]

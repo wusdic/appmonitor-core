@@ -92,6 +92,7 @@ from .lib import m_ptree as MP
 from .lib import pevent as EV
 from .lib import psketch as PS
 from .lib import pwindows as PW
+from . import content_bounds as CB
 
 N_FIT_MIN = 5.0                 # H_m evidence units of a day type before windows are fitted
 DIRTY_UNITS = 20.0
@@ -196,7 +197,8 @@ def _suspects(node: Any, t: Optional[float]) -> set:
 
 
 def _points(node: Any, d: int, since: Optional[float] = None,
-            members: Optional[set] = None, t: Optional[float] = None) -> List[Tuple[float, float, float, str]]:
+            members: Optional[set] = None, t: Optional[float] = None,
+            drop: Optional[set] = None) -> List[Tuple[float, float, float, str]]:
     """[(minute, ts, weight, source)] of the node's minute reservoir for day
     type d. The weight is the row's learning mass relative to the median
     point, capped at 1 (trust x outlier damping, §6.9.3): a damped row counts
@@ -208,7 +210,14 @@ def _points(node: Any, d: int, since: Optional[float] = None,
     (192.168.3.33, one finance approval-list page a day at 10:30, never a
     member) and A1 kept seven 10:30 points at full weight in the approver's
     reservoir, and Bayesian Blocks cut the approver's 10:00-11:30 window into
-    10:19-10:33 and 10:51-11:27 around that spike (seeds 0-1, day 21)."""
+    10:19-10:33 and 10:51-11:27 around that spike (seeds 0-1, day 21).
+    `drop` = {(ts, source)} of rows P03 judged violations (P06's ledger,
+    content_bounds.point_ledger): P04 learns them at full weight unless P03
+    damped them, and their arrivals are not the pattern's (§6.9.3). Pack O
+    seed 1, day 21: A10's ~150 comment posts from 48 unknown addresses within
+    09:00-11:40 on the last (non-work) day passed regime_cut as a coordinated
+    change of the nonworkday law, and portal POST /comment stated 08:55-11:40
+    against the truth 07:05-23:12 (held 0.13 of the stated 0.86)."""
     res = node.when.res
     if res is None or not len(res):
         return []
@@ -224,12 +233,15 @@ def _points(node: Any, d: int, since: Optional[float] = None,
             continue
         if src and src in sus:
             continue
+        if drop and (round(float(ts), 3), src) in drop:
+            continue
         out.append((float(it[1]), float(ts), 1.0 if med <= 0 else min(1.0, float(w) / med), src))
     return out
 
 
 def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, str]],
-             t: Optional[float] = None) -> Tuple[List[Tuple[float, float, float, str]], Optional[int]]:
+             t: Optional[float] = None, drop: Optional[set] = None
+             ) -> Tuple[List[Tuple[float, float, float, str]], Optional[int]]:
     """A node created by a source split (P04 seeds its who summary, not its
     arrivals; its own minute reservoir starts when P09 asks for it) reads the
     arrivals of ITS sources from the nearest ancestor that keeps a reservoir,
@@ -240,7 +252,14 @@ def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, 
     of its path). Drift between the older and newer arrivals is then P09's
     regime test's business (pack O, seed 0: the 综合部 login node created on
     day ~16 held 13 own arrivals from 3 dates and stated 08:32-08:49 against
-    the truth 08:30-08:51)."""
+    the truth 08:30-08:51). Suspicion is judged where the source is a
+    member: the node's own outsider suspects leave, but the ancestor's suspect
+    test does not filter the node's members (pack O seed 2, day 19: the
+    ancestor - a wider login node that never tracked 192.168.1.21 at its IP
+    level - held .21 out after A2's 09:10 logins, the back-off then read two
+    of the three sources, fell back to the node's own 2 pre-D1 dates, the
+    regime test had no 3 dates before the change, and the window stayed the
+    stale 08:31-09:20, IoU 0.40)."""
     if tree is None:
         return own, None
     try:
@@ -258,7 +277,7 @@ def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, 
         if any(c[0] != "net.src" for c in extra):
             break
         if anc.when.res is not None and len(anc.when.res):
-            pts = _points(anc, d, members=members - _suspects(node, t), t=t)
+            pts = _points(anc, d, members=members - _suspects(node, t), drop=drop)
             if len(pts) > len(own):
                 seen = {(round(p[0], 3), round(p[1], 3), p[3]) for p in pts}
                 pts += [p for p in own if (round(p[0], 3), round(p[1], 3), p[3]) not in seen]
@@ -331,6 +350,7 @@ class TimeWindowEngine(Engine):
             outn.pop(nid, None)
             fits.pop(nid, None)
         n_fit, gain_num, gain_den, new_ev = 0, 0.0, 0.0, 0.0
+        drop = CB.point_ledger(store, key, kind)
         for nid, node in tree.nodes.items():
             if node.last_seen is None:
                 continue
@@ -343,7 +363,7 @@ class TimeWindowEngine(Engine):
             else:
                 new_ev += n_tot
             regime = _regime(mk, node)
-            entry = self.fit_node(node, now, off, outn.get(nid), regime, tree)
+            entry = self.fit_node(node, now, off, outn.get(nid), regime, tree, drop)
             outn[nid] = entry
             fits[nid] = _mark(node, n_tot, now, regime)
             n_fit += 1
@@ -368,13 +388,14 @@ class TimeWindowEngine(Engine):
 
     # ------------------------------------------------------------- per node
     def fit_node(self, node: Any, now: float, off: float, old: Optional[Mapping[str, Any]],
-                 regime: Optional[Mapping[str, Any]] = None, tree: Any = None) -> Dict[str, Any]:
+                 regime: Optional[Mapping[str, Any]] = None, tree: Any = None,
+                 drop: Optional[set] = None) -> Dict[str, Any]:
         by: Dict[str, Optional[Dict[str, Any]]] = {}
         rg = regime or {}
         since0 = rg.get("when_t0") if rg.get("when_t0") is not None else rg.get("regime_t0")
         for d, dk in enumerate(DT_KEYS):
             n_m = node.when.evidence(d, now, conf=False)
-            pts, anc = _backoff(tree, node, d, _points(node, d, t=now), now)
+            pts, anc = _backoff(tree, node, d, _points(node, d, t=now, drop=drop), now, drop)
             if n_m < N_FIT_MIN and len(pts) < PW.MIN_POINTS:
                 by[dk] = None
                 continue

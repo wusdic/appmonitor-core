@@ -136,6 +136,24 @@ def _ip_sort(s: str) -> Tuple[int, int, str]:
         return (9, 0, s)
 
 
+def _stated_u(who: Any, level: int, t: float, items: Sequence[Any], u_level: float) -> float:
+    """The unseen mass the statement STATES for its listed items: the chance
+    that the next source is not one of them = max(the level's unseen mass, the
+    mass of the seen sources the list leaves out) (pnode
+    WhoSummary.stated_unseen). Round 4: a list covering 90-95 % of the mass
+    stated U = the level's unseen mass (~0.001), i.e. a 99.9 % claim, and held
+    0.90-0.98 on the evaluator's held-out events (~25 % of the failing
+    constraints of PG1 precision; GET /docs listed three /24s and left
+    10.168.7.0/24 out). Closure is still decided on the level's own U."""
+    f = getattr(who, "stated_unseen", None)
+    if f is None:
+        return float(u_level)
+    try:
+        return float(max(float(u_level), f(level, t, list(items))))
+    except Exception:
+        return float(u_level)
+
+
 def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
               groups: Mapping[str, Mapping[str, Any]], regions_cfg: Iterable[str] = (),
               mode: Optional[str] = None) -> Tuple[Dict[str, Any], str, str, float]:
@@ -168,9 +186,10 @@ def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
         if not closed0:
             zh = f"目前观测到 {zh}（来源集合尚未封闭）"
             en = f"so far {en} (source set not yet closed)"
-        ev = {"level": "ip", "items": ips, "members": plain, "U": U0, "closed": closed0,
-              "confidence": 1.0 - U0 if closed0 else 0.0, "distinct": distinct}
-        return ev, zh, en, (1.0 - U0) if closed0 else 1.0
+        Us = _stated_u(who, 0, t, heavy, U0)
+        ev = {"level": "ip", "items": ips, "members": plain, "U": Us, "closed": closed0,
+              "confidence": 1.0 - Us if closed0 else 0.0, "distinct": distinct}
+        return ev, zh, en, (1.0 - Us) if closed0 else 1.0
     # one group covering >= 90 %
     lv3 = who.levels[3] if len(who.levels) > 3 else None
     if mode != "none" and lv3 is not None and lv3.total(t) > 0:
@@ -187,9 +206,10 @@ def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
                 zh, en = f"{name}（{join_zh(mem)}）", f"{name} ({join_en(mem)})"
             else:
                 zh, en = f"{name}（{len(mem)} 个 IP）", f"{name} ({len(mem)} IPs)"
-            ev = {"level": "grp", "items": [f"grp:{g}"], "members": mem, "U": U3, "closed": closed,
-                  "confidence": 1.0 - U3 if closed else 0.0, "distinct": distinct}
-            return ev, zh, en, (1.0 - U3) if closed else 1.0
+            Us = _stated_u(who, 3, t, hg, U3)
+            ev = {"level": "grp", "items": [f"grp:{g}"], "members": mem, "U": Us, "closed": closed,
+                  "confidence": 1.0 - Us if closed else 0.0, "distinct": distinct}
+            return ev, zh, en, (1.0 - Us) if closed else 1.0
     # <= 4 prefixes or regions covering >= 90 %; a system whose who arm is the
     # region (P12 'reg': a DHCP pool whose users re-address daily) is stated by
     # its region first - pack O's 研发 pool 10.50.0.0/22 read as its four /24s,
@@ -227,9 +247,10 @@ def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
         shown = [i[4:] if i.startswith("reg:") else i for i in items]
         zh = f"来自 {join_zh(shown)}（约 {distinct} 个 IP）"
         en = f"from {join_en(shown)} (about {distinct} IPs)"
-        ev = {"level": level, "items": items, "U": Ul, "closed": closed,
-              "confidence": 1.0 - Ul if closed else 0.0, "distinct": distinct}
-        return ev, zh, en, (1.0 - Ul) if closed else 1.0
+        Us = _stated_u(who, l, t, hp, Ul)
+        ev = {"level": level, "items": items, "U": Us, "closed": closed,
+              "confidence": 1.0 - Us if closed else 0.0, "distinct": distinct}
+        return ev, zh, en, (1.0 - Us) if closed else 1.0
     ev = {"level": "any", "items": ["*"], "U": U0, "closed": False, "confidence": 0.0,
           "distinct": distinct}
     return ev, f"任意 IP（约 {distinct} 个，分散）", f"any IP (about {distinct}, dispersed)", 1.0
@@ -462,8 +483,8 @@ def _dur_zh(s: float) -> str:
 def sentence(sys_label: str, addr: str, when_zh: str, when_en: str, who_zh: str, who_en: str,
              route: str, content_zh: Sequence[str], content_en: Sequence[str],
              bind_zh: str, bind_en: str, flow_zh: str, flow_en: str, conf: float,
-             first: str, last: str, version: int, cver: int, state: str
-             ) -> Tuple[str, str]:
+             first: str, last: str, version: int, cver: int, state: str,
+             support: Optional[float] = None) -> Tuple[str, str]:
     head_zh = f"【{sys_label}" + (f" · {addr}" if addr else "") + "】"
     head_en = f"[{sys_label}" + (f" · {addr}" if addr else "") + "] "
     verb_zh = "访问" if not route.startswith(("TLS", "DNS", "DST")) else "连接"
@@ -481,9 +502,30 @@ def sentence(sys_label: str, addr: str, when_zh: str, when_en: str, who_zh: str,
         body_en += " " + flow_en[:1].upper() + flow_en[1:] + "."
     st_zh = {"stale": "（近期未出现）", "evolving": "（正在变化）"}.get(state, "")
     st_en = {"stale": " (not seen recently)", "evolving": " (changing)"}.get(state, "")
-    tail_zh = f"置信 {fnum(conf)} · 首次 {first} · 最近 {last} · v{version}.{cver}{st_zh}"
-    tail_en = f" Confidence {fnum(conf)}, first seen {first}, last seen {last}, v{version}.{cver}{st_en}."
+    tz, te = evidence_tail(conf, support, "events")
+    tail_zh = f"{tz} · 首次 {first} · 最近 {last} · v{version}.{cver}{st_zh}"
+    tail_en = f" {te}, first seen {first}, last seen {last}, v{version}.{cver}{st_en}."
     return head_zh + body_zh + tail_zh, head_en + body_en + tail_en
+
+
+SUPPORT_UNITS = {"events": ("次", "events"), "days": ("天", "days"), "members": ("个成员", "members")}
+
+
+def evidence_tail(conf: Optional[float], support: Optional[float], unit: str = "events") -> Tuple[str, str]:
+    """The one confidence / support phrase every statement ends with (round 4:
+    the system view stated '置信 x' but no support, group activity statements
+    neither, negative statements their days only - readers could not compare
+    statements): '置信 0.71 · 依据 379 次' / 'Confidence 0.71, support 379 events'.
+    `unit`: events (node statements: the node's decayed event count n_c),
+    days (negative statements: observed days without the action), members
+    (activity statements: the members whose signatures state the mix)."""
+    cz = f"置信 {fnum(conf)}" if conf is not None and math.isfinite(float(conf)) else "置信 —"
+    ce = f"Confidence {fnum(conf)}" if conf is not None and math.isfinite(float(conf)) else "Confidence —"
+    if support is None or not math.isfinite(float(support)):
+        return cz, ce
+    uz, ue = SUPPORT_UNITS.get(unit, ("", unit))
+    n = int(round(float(support)))
+    return f"{cz} · 依据 {n} {uz}", f"{ce}, support {n} {ue}"
 
 
 def negative_sentence(group: str, system: str, n_days: int, what_zh: str = "写操作",

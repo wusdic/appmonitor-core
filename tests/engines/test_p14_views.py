@@ -123,7 +123,7 @@ GOLDEN_ZH = ("【oa · 192.168.100.100:8080】工作日 09:00–09:21（覆盖 9
              "绑定：10.168.7.121 → username=mike、192.168.1.21 → username=jack、"
              "192.168.1.23 → username=rose（g3 = 0.00，各 ≥ 60 次）。"
              "流程：POST /login → GET /home（间隔 1 秒–5 秒）。"
-             "置信 0.93 · 首次 2026-09-01 · 最近 2026-09-21 · v1.0")
+             "置信 0.93 · 依据 45 次 · 首次 2026-09-01 · 最近 2026-09-21 · v1.0")
 GOLDEN_EN = ("[oa · 192.168.100.100:8080] On workdays 09:00–09:21 (coverage 97 %, 21 dates), "
              "综合部 (10.168.7.121, 192.168.1.21, 192.168.1.23) opens POST /login (log in): "
              "90 % of submitted size within 1–2 KB, all within 0.5–3 KB (n = 183, P(next outside) ≤ 1.1 %); "
@@ -132,7 +132,7 @@ GOLDEN_EN = ("[oa · 192.168.100.100:8080] On workdays 09:00–09:21 (coverage 9
              "bound values 10.168.7.121 → username=mike, 192.168.1.21 → username=jack, "
              "192.168.1.23 → username=rose (g3 = 0.00, each ≥ 60 times). "
              "Workflow: POST /login → GET /home. "
-             "Confidence 0.93, first seen 2026-09-01, last seen 2026-09-21, v1.0.")
+             "Confidence 0.93, support 45 events, first seen 2026-09-01, last seen 2026-09-21, v1.0.")
 
 
 def _login_stmt(v):
@@ -377,8 +377,11 @@ def test_statement_confidence_is_the_held_out_hold_probability(store):
     tr = oa.kinds[0]
     node = tr.nodes[tr.nodes[tr.root].split.children[0]]
     hr = PN.HoldRecord()
+    # 80 % against a 95 % nominal: outside the 3-sigma sampling error of the
+    # 200-check batch (round 4: P04 judges a test batch by its own sampling
+    # error, under which 90 % of 200 at 95 % nominal is a pass)
     for i in range(200):
-        hr.add("who", i % 10 != 0, 0.95, store.now - 3600.0 + i)       # 90 % < 95 % nominal
+        hr.add("who", i % 5 != 0, 0.95, store.now - 3600.0 + i)
     node.meta["hold"] = hr
     st = _login_stmt(VW.system_view(store, "oa", CFG, store.now))
     assert st["confidence"] == pytest.approx(node.p_hold(store.now), abs=1e-4)

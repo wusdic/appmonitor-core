@@ -57,6 +57,7 @@ from .lib import pnode as PN
 RATE_ATTR = "rate.ip_h"
 STATE = "model.pbounds_state"
 LEDGER_MAX = 1024               # violating rows remembered per tree (FIFO, <= RING_DAYS old)
+SET_TYPES = ("set",)            # key-set targets whose violating rows P07 leaves out (led_set)
 # Content flags that make a row a violation on their own (structural attack
 # signatures). 'above_range' / 'below_range' / 'grammar' / 'length' only say
 # that a value lies outside what the node has observed so far; their
@@ -65,6 +66,32 @@ VIOL_FLAGS = frozenset({"injection_shape"})
 NUM_TYPES = ("numeric",)
 pins_for, chosen_arm, local_day, empty_model = PB.pins_for, PB.chosen_arm, PB.local_day, PB.empty_model
 CPINS = PB.CPINS
+
+
+def _keyset(v: Any) -> Optional[tuple]:
+    """A set-typed value (key list) as a sorted tuple of keys ('a[]' -> 'a'), as
+    P04's held-out 'req' check reads it; None when absent."""
+    if v is None or v is EV.ABSENT:
+        return None
+    ks = v if isinstance(v, (list, tuple, set, frozenset)) else str(v).split(",")
+    out = sorted({str(k)[:-2] if str(k).endswith("[]") else str(k) for k in ks if str(k) != ""})
+    return tuple(out) if out else None
+
+
+def point_ledger(store: Any, key: str, kind: int) -> set:
+    """{(ts, source)} of the rows of one tree and kind P03 judged violations
+    (P06's ledger), for P09: their arrivals do not shape windows."""
+    st = store.get_model(key, SYSTEM_ENTITY, STATE)
+    if not isinstance(st, dict):
+        return set()
+    return {(round(float(ts), 3), str(src)) for k, _lf, ts, src in (st.get("led_pts") or ()) if k == kind}
+
+
+def set_ledger(store: Any, key: str) -> List[Any]:
+    """P06's ledger of the violating rows' key sets of one tree, for P07:
+    [(kind, leaf, ts, weight, {attr: keys})]."""
+    st = store.get_model(key, SYSTEM_ENTITY, STATE)
+    return list((st or {}).get("led_set") or ()) if isinstance(st, dict) else []
 
 
 class ContentBoundsEngine(Engine):
@@ -127,8 +154,11 @@ class ContentBoundsEngine(Engine):
         key = MP.tree_key(store, s)
         st = self._state(store, key)
         attrs = set(st.get("attrs") or ())
-        if not attrs:
-            return 0
+        sattrs = set(st.get("sattrs") or ())
+        if sattrs and not isinstance(st.get("led_set"), deque):
+            st["led_set"] = deque(maxlen=LEDGER_MAX)
+        if not isinstance(st.get("led_pts"), deque):
+            st["led_pts"] = deque(maxlen=LEDGER_MAX)
         n = 0
         last = st["last"].get(s)
         for ts_b, asg in MP.batches_since(store, s, EV.PAT_ASSIGN, -1e18 if last is None else last, now):
@@ -138,8 +168,7 @@ class ContentBoundsEngine(Engine):
                 continue
             leaf = asg.dense("leaf", float("nan"))
             cols = [a for a in attrs if b.has(a)]
-            if not cols:
-                continue
+            scols = [a for a in sattrs if b.has(a)]
             # violating rows, vectorised: any typed p <= 1e-3, damped, or an injection shape
             mask = np.zeros(b.n, dtype=bool)
             if asg.has("vtype"):
@@ -157,8 +186,33 @@ class ContentBoundsEngine(Engine):
             if not mask.any():
                 continue
             kind = int((getattr(asg, "meta", None) or {}).get("kind", getattr(b, "kind", 0)) or 0)
+            dmp = np.asarray(asg.dense("damp", 1.0), dtype=np.float64) if asg.has("damp") else None
+            bmass = None
             for i in np.flatnonzero(mask).tolist():
                 lf = float(leaf[i])
+                # (kind, leaf, ts, source): P09 leaves the row's arrival out of
+                # the node's windows (§6.9.3)
+                st["led_pts"].append((kind, int(lf), float(b.ts[i]), str(b.ip_of(i))))
+                n += 1
+                sv = {}
+                for a in scols:
+                    ks = _keyset(b.get(a, i))
+                    if ks is not None:
+                        sv[a] = ks
+                if sv:
+                    # (kind, leaf, ts, learning weight, {attr: keys}): P07 takes
+                    # these rows out of the key presences (§6.9.3). The weight is
+                    # P04's learning mass w/pi x damp (x trust <= 1, unknown here:
+                    # an upper bound, clean_presence clips): P00 samples a burst, so
+                    # w/pi > 1 - pack O seed 0, A10's 155 comment posts damped to
+                    # 0.1 by P03 still held 1/3 of the node's presence mass, and a
+                    # weight of 'damp' alone left viewstate optional (0.68)
+                    if bmass is None:
+                        bmass = np.asarray(b.mass(), dtype=np.float64)
+                    d = float(dmp[i]) if dmp is not None and np.isfinite(dmp[i]) else 1.0
+                    m = float(bmass[i]) if np.isfinite(bmass[i]) else 1.0
+                    st["led_set"].append((kind, int(lf), float(b.ts[i]), max(0.0, m * d), sv))
+                    n += 1
                 vals = {}
                 for a in cols:
                     v = b.get(a, i)
@@ -219,8 +273,11 @@ class ContentBoundsEngine(Engine):
         st = self._state(store, key)
         num_attrs = sorted({a for tree in ptm.kinds.values() for nd in tree.nodes.values()
                             for a, sm in nd.targets.items() if isinstance(sm, PN.NumSummary)})
-        if num_attrs != list(st.get("attrs") or []):
+        set_attrs = sorted({a for tree in ptm.kinds.values() for nd in tree.nodes.values()
+                            for a, sm in nd.targets.items() if isinstance(sm, PN.SetSummary)})
+        if num_attrs != list(st.get("attrs") or []) or set_attrs != list(st.get("sattrs") or []):
             st["attrs"] = num_attrs
+            st["sattrs"] = set_attrs
             store.put_model(key, SYSTEM_ENTITY, STATE, st, ts=now)
         for kind, tree in ptm.kinds.items():
             root = tree.nodes.get(tree.root)

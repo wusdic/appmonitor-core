@@ -5,7 +5,9 @@ STATUS: implemented (W-P4, P06 maths). Pure functions over a pnode.NumSummary
 confidence segment, exceedance reservoirs); no store access, no state.
 
 fit_numeric(num, t, day_now, ...) -> record
-    band90  = [Q(0.05), Q(0.95)]    "90 % in ..." (shape, H_m)
+    band90  = [Q(0.05), Q(0.95)]    "90 % in ..." (shape, H_m), Q of the digest
+              truncated to the clean range (clean_mass: the band describes the
+              range's rows; violations learned at full weight leave it)
     band98  = [Q(0.01), Q(0.99)]
     range   = observed [min, max] over the ring's days of the current
               confidence segment;  n_rng = evidence units observed on those days
@@ -309,14 +311,17 @@ def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float
     if td.total() <= 0 or td.n_centroids() == 0:
         return None
     lg = bool(num.log)
-    q = td.quantile
-    y05, y95, y01, y99 = q(BAND_LO), q(BAND_HI), q(BAND98_LO), q(BAND98_HI)
-    band90 = [_inv(y05, lg), _inv(y95, lg)]
-    band98 = [_inv(y01, lg), _inv(y99, lg)]
-    cov90 = closed_coverage(td, y05, y95) if _fin(y05) and _fin(y95) else NAN
     ymin, ymax, n_rng, n_drop = clean_range(num, int(day_now), excl, day_of)
     rng = [_inv(ymin, lg), _inv(ymax, lg)] if n_rng > 0 else None
     approx = float(approx_share) if _fin(approx_share) else 0.0
+    # the band is a statement about the same rows as the range (round 4)
+    pl, ph = clean_mass(td, ymin, ymax) if (rng is not None and approx <= APPROX_MAX) else (0.0, 1.0)
+    span = ph - pl
+    q = td.quantile if (pl <= 0.0 and ph >= 1.0) else (lambda p: td.quantile(pl + p * span))
+    y05, y95, y01, y99 = q(BAND_LO), q(BAND_HI), q(BAND98_LO), q(BAND98_HI)
+    band90 = [_inv(y05, lg), _inv(y95, lg)]
+    band98 = [_inv(y01, lg), _inv(y99, lg)]
+    cov90 = min(1.0, closed_coverage(td, y05, y95) / span) if _fin(y05) and _fin(y95) else NAN
     rec: Dict[str, Any] = {
         "kind": "num", "log": lg, "unit": unit,
         "band90": band90, "band98": band98, "coverage_emp": cov90,
@@ -358,13 +363,50 @@ def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float
         rec["hard"] = False
     rec["tail_hi"] = _tail(num, q(0.9), upper=True)
     rec["tail_lo"] = _tail(num, q(0.1), upper=False)
-    cdf_nat = (lambda x: td.cdf(_fwd(x, lg)) if (not lg or x > 0) else 0.0)
+    cdf_nat = (lambda x: min(1.0, max(0.0, (td.cdf(_fwd(x, lg)) - pl) / span))
+               if (not lg or x > 0) else 0.0)
     rec["disp90"] = round_band(band90[0], band90[1], cdf_nat, unit,
                                n=n_eff if _fin(n_eff) else math.inf)
     if rng is not None:
         rec["disp_range"] = round_range(rng[0], rng[1], unit)
     rec["confidence"] = confidence(rec)
     return rec
+
+
+CLEAN_MIN = 1.0                        # digest mass (rows' worth) the clean range must hold to be read
+
+
+def clean_mass(td: Any, ymin: float, ymax: float) -> Tuple[float, float]:
+    """(F(ymin-), F(ymax)) of the digest at the clean range's ends, (0, 1) when
+    the digest lies within it: the band is then read from the digest
+    truncated to the range, F_c(y) = (F(y) - F(ymin-)) / (F(ymax) - F(ymin-)).
+
+    Why: the range is taken over the CLEAN rows (clean_range leaves out the
+    rows P03 judged violations - the P06 ledger - and the damped rows, which
+    never reach the ring), so every conforming row of the range's days lies
+    in it and digest mass beyond it is mass of rows that must not teach the
+    pattern (§6.9.3). P04 learns a violation a delay after P03 judges it and,
+    unless P03 also damped it, at full weight: the digest holds it, the ring
+    does not. Pack O seeds 0-1, day 21: A10's ~150 comment posts without
+    viewstate, above the comment range, entered portal POST /comment at full
+    weight on the last day; the range stayed 1.5-3.0 KB but the band read
+    1.6-8.3 KB (wider than the range itself; truth 1.6-2.9 KB). Mass below
+    the range that a decayed digest keeps from before the ring's days (or the
+    confidence segment) leaves too: the band and the range describe the same
+    rows. Whatever share of the digest the clean rows hold: pack O seed 1,
+    day 21, A10's rows were ~3/4 of the decayed digest mass of the comment
+    node (whose confidence segment had restarted on day 19, n_rng 45), and a
+    "range holds >= half the digest" guard left its band at 1.8-8.3 KB. Only a
+    range holding less than CLEAN_MIN rows' worth of digest mass (nothing to
+    read a quantile from) leaves the digest as it is."""
+    if not (_fin(ymin) and _fin(ymax)) or ymax < ymin:
+        return 0.0, 1.0
+    vmin, vmax = float(getattr(td, "vmin", -math.inf)), float(getattr(td, "vmax", math.inf))
+    pl = td.cdf(ymin - 1e-9 * (1.0 + abs(ymin))) if vmin < ymin else 0.0
+    ph = td.cdf(ymax + 1e-9 * (1.0 + abs(ymax))) if vmax > ymax else 1.0
+    if not (_fin(pl) and _fin(ph)) or (ph - pl) * float(td.total()) < CLEAN_MIN:
+        return 0.0, 1.0
+    return float(max(0.0, pl)), float(min(1.0, ph))
 
 
 def _tail(num: Any, u: float, upper: bool) -> Optional[List[float]]:

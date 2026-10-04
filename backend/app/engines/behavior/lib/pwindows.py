@@ -837,7 +837,7 @@ def lookup(model: Any, kind: int, nid: int) -> Optional[Dict[str, Any]]:
 
 
 def part_when(when: Any, members: Iterable[str], tz_offset_s: float = 0.0,
-              min_points: int = MIN_POINTS) -> Optional[Dict[str, Any]]:
+              min_points: int = MIN_POINTS, drop: Optional[set] = None) -> Optional[Dict[str, Any]]:
     """The statement-contract `when` block of ONE learned group's part of a
     node, fitted by the node's own pipeline (fit_regime: learning-mass weights,
     the current regime, current-persistence acceptance, cross-validated coverage) on
@@ -850,7 +850,9 @@ def part_when(when: Any, members: Iterable[str], tz_offset_s: float = 0.0,
     Round 4: the part was fitted on its raw arrivals (no weights, no regime):
     the 综合部 part of pack O's shared login / home nodes stated the window
     before D1 (08:49-09:21, held-out coverage 0.08-0.13 against a stated
-    0.80-0.90, seed 0 day 14) and the mail parts their in-sample coverage."""
+    0.80-0.90, seed 0 day 14) and the mail parts their in-sample coverage.
+    `drop` = {(ts, source)} of rows P03 judged violations (P06's ledger,
+    behavior.content_bounds.point_ledger), left out as in the node fit."""
     res = getattr(when, "res", None)
     if res is None or not len(res):
         return None
@@ -860,7 +862,8 @@ def part_when(when: Any, members: Iterable[str], tz_offset_s: float = 0.0,
     by: Dict[str, Optional[Dict[str, Any]]] = {}
     for d, dk in enumerate(DAYTYPES):
         pts = [(float(it[1]), float(t), 1.0 if med <= 0 else min(1.0, float(w) / med), str(it[2]))
-               for it, w, t in items if len(it) > 2 and int(it[0]) == d and str(it[2]) in mem]
+               for it, w, t in items if len(it) > 2 and int(it[0]) == d and str(it[2]) in mem
+               and not (drop and (round(float(t), 3), str(it[2])) in drop)]
         if len(pts) < min_points:
             by[dk] = None
             continue
