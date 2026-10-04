@@ -34,9 +34,15 @@ def test_three_usernames_give_a_z4_and_closed_set():
 
 
 def test_closed_set_needs_evidence():
-    ts, t = _text(["jack", "rose", "mike"], days=5)           # 15 units < n_conf = 20
-    r = G.fit_text(ts, t)
-    assert r["grammar"] == "[a-z]{4}" and "closed" not in r
+    # (round 4: closed when Good-Turing's U is below the rarest member's share:
+    # values seen once are singletons, U > their share)
+    ts = G.PN.TextSummary() if hasattr(G, "PN") else PN.TextSummary()
+    for i, v in enumerate(["jack", "rose", "mike", "amy"]):
+        ts.update(v, T0 + i * 60, 1.0, 1.0)
+    r = G.fit_text(ts, T0 + 3600)
+    assert r["grammar"] == "[a-z]{3,4}" and "closed" not in r and r["U"] > r["p_min"]
+    ts, t = _text(["jack", "rose", "mike"], days=5)           # each value 5 times: closed
+    assert G.fit_text(ts, t)["closed"] == ["jack", "mike", "rose"]
 
 
 def test_rename_mike_w_prefix_factoring():

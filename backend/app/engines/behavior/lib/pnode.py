@@ -26,7 +26,7 @@ Counts in every p-value / bound are evidence on the confidence channel.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Hashable, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Hashable, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -227,6 +227,27 @@ class WhoSummary:
             items.append(key)
             acc += guar
         return items, acc / tot
+
+    def stated_unseen(self, level: int, t: float, items: Optional[Iterable[Hashable]] = None,
+                      cover: float = HEAVY_COVER) -> float:
+        """The probability that the next source is NOT one of the stated items
+        at `level` (default: the heavy set at `cover`): max(the level's unseen
+        mass U, the mass of the seen sources the list leaves out). A statement
+        that lists a heavy set covering 95 % of the mass and states U = 0.001
+        claims 99.9 % for a list that holds 95 % (round 4; pack O: GET /docs
+        listed three /24s and left 10.168.7.0/24 out, held 0.92-0.96 against
+        a nominal 0.999 on the evaluator's held-out events)."""
+        ss = self.levels[level]
+        tot = ss.total(t)
+        U = float(ss.unseen(t))
+        if tot <= 0:
+            return U
+        if items is None:
+            items, cov = self.heavy_set(level, t, cover)
+        else:
+            want = set(items)
+            cov = sum(float(g) for k, _c, g, _e in ss.items(t) if k in want) / tot
+        return float(min(1.0, max(U, 1.0 - cov)))
 
     def closed_level(self, t: float, n_days: int, u_max: float = CLOSED_U,
                      heavy_max: int = HEAVY_MAX, min_days: int = CLOSED_DAYS,
@@ -673,9 +694,35 @@ def hold_eps(nominal: float) -> float:
     return max(HOLD_EPS_MIN, 3.0 * math.sqrt(max(nom * (1.0 - nom), 1e-4) / HOLD_N_REF))
 
 
+def hold_facet(key: str) -> str:
+    """Facet of a held-out constraint key (P04 _hold_constraints keys): 'who',
+    'when', 'bind' (P08 pairs), 'net' (transport measures: sizes, packets,
+    durations of the connection), 'content' (the request's own attributes:
+    body, form fields, headers, key sets)."""
+    k = str(key)
+    if k in ("who", "when"):
+        return k
+    if k.startswith("bind:"):
+        return "bind"
+    a = k.split("#", 1)[0]
+    if a.startswith("net.") or a.startswith("tls.") or a.startswith("meta."):
+        return "net"
+    return "content"
+
+
+def batch_tol(nominal: float, n: float) -> float:
+    """Tolerance of a held-out test on n checked events (round 4): the 3-sigma
+    sampling error of the batch itself, max(0.02, 3 sqrt(nom (1 - nom) / n)) -
+    the rule a reader applies to the events in hand (pmetrics._tol with m = n)."""
+    nom = min(max(float(nominal), 0.0), 1.0)
+    return max(HOLD_EPS_MIN, 3.0 * math.sqrt(max(nom * (1.0 - nom), 1e-4) / max(float(n), 1.0)))
+
+
 HOLD_BATCH_N = 100.0               # a held-out test is a batch of >= 100 checked events ...
 HOLD_BATCH_S = 7 * DAY             # ... or of a week, whichever comes first (M46)
-HOLD_TEST_HALF_DAYS = 14.0         # the test record forgets at two weeks
+HOLD_TEST_HALF_DAYS = 14.0         # (round 3; kept for reference) the test record forgot at two weeks
+HOLD_TEST_HALF_N = 14.0            # the test record forgets per TEST: half weight after 14 newer tests
+HOLD_TEST_LAMBDA = 2.0 ** (-1.0 / HOLD_TEST_HALF_N)
 
 
 class HoldRecord:
@@ -688,11 +735,12 @@ class HoldRecord:
 
     The checks are grouped into held-out TESTS (M46): a batch of >= HOLD_BATCH_N
     checked events, or a week of them. A test passes when every constraint
-    checked in it holds - its coverage on the batch is >= nominal - hold_eps
-    (3 sigma of the check a reader would make on 300 fresh events). The
+    checked in it holds - its coverage on the batch is >= nominal - the
+    batch's own 3-sigma tolerance (round 4, batch_tol; round 3: hold_eps, the
+    error of a 300-event check). The
     stated confidence p_hold() is the predictive probability that the next test
-    passes, (passes + 1) / (tests + 2) over the tests of the last weeks
-    (forward-decayed at HOLD_TEST_HALF_DAYS): a frequency of the statement
+    passes, (passes + 1) / (tests + 2) over the recent tests (forgotten per
+    test at HOLD_TEST_LAMBDA, round 4; round 3 decayed them per day): a frequency of the statement
     holding on held-out data - calibrated by construction (Beta-Bernoulli
     predictive), rising with every test that passes, falling with every one
     that fails. Before M46 p_hold was the product over the constraints of each
@@ -701,16 +749,20 @@ class HoldRecord:
     ECE 0.37-0.41) although 35-45 % of them held; that product is kept as
     p_constraints() (diagnosis). O(constraints) floats per node."""
 
-    __slots__ = ("c", "L", "b", "bt0", "bn", "blast", "T")
+    __slots__ = ("c", "L", "b", "bt0", "bn", "blast", "T", "F", "seg", "TF", "lite")
 
-    def __init__(self) -> None:
+    def __init__(self, lite: bool = False) -> None:
+        self.lite = bool(lite)                       # tests only: no per-constraint counts / facets
         self.c: Dict[str, List[float]] = {}          # key -> [n, hits, nominal] (forward-decayed)
         self.L: Optional[float] = None
         self.b: Dict[str, List[float]] = {}          # current batch: key -> [n, hits, nominal]
         self.bt0: Optional[float] = None             # batch start
         self.bn = 0.0                                # evidence units checked in the batch
         self.blast: Optional[float] = None           # time of the batch's last event
-        self.T = [0.0, 0.0]                          # [passes, tests] (forward-decayed, landmark L)
+        self.T = [0.0, 0.0]                          # [passes, tests] (forgotten per test, round 4)
+        self.F: Dict[str, float] = {}                # key -> failed tests it caused (diagnosis)
+        self.seg = 0                                 # confidence segment (drop(None) starts a new one)
+        self.TF: Dict[str, List[float]] = {}         # facet -> [passes, tests] of its keys alone (diagnosis)
 
     def _f(self, t: float) -> float:
         if self.L is None:
@@ -721,10 +773,6 @@ class HoldRecord:
             for v in self.c.values():
                 v[0] *= g
                 v[1] *= g
-            gt = 2.0 ** (-(float(t) - self.L) / (HOLD_TEST_HALF_DAYS * DAY))
-            T = self._T()
-            T[0] *= gt
-            T[1] *= gt
             self.L = float(t)
             x = 0.0
         return 2.0 ** x
@@ -737,18 +785,67 @@ class HoldRecord:
         return T
 
     def _close(self) -> None:
-        """Close the current batch: one held-out test of the statement."""
+        """Close the current batch: one held-out test of the statement.
+
+        (round 4) A constraint holds in the test when its coverage on the
+        batch is >= nominal - batch_tol(nominal, n): the 3-sigma error of the
+        n checks in hand, the reader's rule for the events it has (the
+        evaluator's pmetrics._tol). Round 3 used the error of a 300-event
+        check whatever the batch size: a correct 90 % band failed a 20-event
+        weekly batch one time in four, a statement of 10-15 such constraints
+        failed most tests, and on pack O statements stated 0.47-0.55 while
+        holding 0.68-0.81 on the evaluator's held-out events, their single
+        constraints holding at or above nominal on every kind (seed 0, day 14:
+        bands 0.93 against 0.89, grammars 1.00 against 0.96).
+
+        The record forgets per TEST (HOLD_TEST_LAMBDA, half weight after
+        HOLD_TEST_HALF_N newer tests), not per day: between two tests nothing
+        changes, and a passed test never lowers the confidence. With the
+        14-day time decay of round 3 a weekly-tested statement lost ~30 % of
+        its record between two tests (a saw-tooth that made PG2's median
+        confidence dip on days without a test)."""
         T = self._T()
         if self.b and self.bn > 0 and self.blast is not None:
-            # the batch's coverage against the threshold of a HOLD_N_REF-event check
-            # (the evaluator's / a reader's test): a lenient small-batch tolerance
-            # would make the many small tests of a rare pattern pass by default
-            ok = all(h / n >= nom - hold_eps(nom) for n, h, nom in self.b.values() if n > 0)
-            g = 2.0 ** ((self.blast - (self.L if self.L is not None else self.blast)) / (HOLD_TEST_HALF_DAYS * DAY))
-            T[1] += g
-            if ok:
-                T[0] += g
+            failed = [k for k, (n, h, nom) in self.b.items() if n > 0 and h / n < nom - batch_tol(nom, n)]
+            lam = HOLD_TEST_LAMBDA
+            T[0] *= lam
+            T[1] *= lam
+            T[1] += 1.0
+            if not failed:
+                T[0] += 1.0
+            F = self._F()
+            for k in list(F):
+                F[k] *= lam
+            for k in failed:
+                F[k] = F.get(k, 0.0) + 1.0
+            # the same test judged on each facet's constraints alone (who, when,
+            # request content, transport measures, bindings): which part of a
+            # statement holds - a reader who can check only some facets (the
+            # evaluator: who, when, request content, bindings) sees those
+            TF = getattr(self, "TF", None)
+            if TF is None:
+                TF = self.TF = {}
+            if getattr(self, "lite", False):
+                self.b, self.bt0, self.bn, self.blast = {}, None, 0.0, None
+                return
+            fac_fail = {hold_facet(k) for k in failed}
+            # '~net': the statement without its transport measures (what a reader
+            # who sees only who / when / request content / bindings would judge)
+            if fac_fail - {"net"}:
+                fac_fail.add("~net")
+            for fac in {hold_facet(k) for k in self.b} | {"~net"}:
+                r = TF.get(fac)
+                if r is None:
+                    r = TF[fac] = [0.0, 0.0]
+                r[0] = r[0] * lam + (0.0 if fac in fac_fail else 1.0)
+                r[1] = r[1] * lam + 1.0
         self.b, self.bt0, self.bn, self.blast = {}, None, 0.0, None
+
+    def _F(self) -> Dict[str, float]:
+        F = getattr(self, "F", None)
+        if F is None:
+            F = self.F = {}
+        return F
 
     def add(self, key: str, hit: bool, nominal: float, t: float, w: float = 1.0) -> None:
         t = float(t)
@@ -758,14 +855,15 @@ class HoldRecord:
         if self.bt0 is not None and self.blast is not None and t > self.blast and (
                 self.bn >= HOLD_BATCH_N or t - self.bt0 >= HOLD_BATCH_S):
             self._close()
-        f = self._f(t) * float(w)
-        v = self.c.get(key)
-        if v is None:
-            v = self.c[key] = [0.0, 0.0, float(nominal)]
-        v[0] += f
-        if hit:
-            v[1] += f
-        v[2] = float(nominal)
+        if not getattr(self, "lite", False):           # a group's record keeps its tests only
+            f = self._f(t) * float(w)
+            v = self.c.get(key)
+            if v is None:
+                v = self.c[key] = [0.0, 0.0, float(nominal)]
+            v[0] += f
+            if hit:
+                v[1] += f
+            v[2] = float(nominal)
         if self.bt0 is None:
             self.bt0 = t
         if self.blast is None or t > self.blast:
@@ -785,13 +883,19 @@ class HoldRecord:
         g = 2.0 ** (-(float(t) - self.L) / (HOLD_HALF_DAYS * DAY))
         return {k: (v[0] * g, v[1] * g, v[2]) for k, v in self.c.items()}
 
-    def tests(self, t: float) -> Tuple[float, float]:
-        """(passes, tests), decayed to t."""
+    def tests(self, t: Optional[float] = None) -> Tuple[float, float]:
+        """(passes, tests), forgotten per test (round 4: no time decay; `t` is
+        kept for the callers' signature)."""
         T = self._T()
-        if self.L is None:
-            return 0.0, 0.0
-        g = 2.0 ** (-(float(t) - self.L) / (HOLD_TEST_HALF_DAYS * DAY))
-        return T[0] * g, T[1] * g
+        return float(T[0]), float(T[1])
+
+    def facet_tests(self) -> Dict[str, Tuple[float, float]]:
+        """facet -> (passes, tests) of the tests judged on that facet alone."""
+        return {k: (float(v[0]), float(v[1])) for k, v in (getattr(self, "TF", None) or {}).items()}
+
+    def failures(self) -> Dict[str, float]:
+        """Constraint key -> (forgotten) number of tests it failed (diagnosis)."""
+        return dict(self._F())
 
     def p_hold(self, t: float, prior: Optional[Tuple[float, float]] = None) -> float:
         """Predictive probability that the statement holds on the next held-out
@@ -833,6 +937,9 @@ class HoldRecord:
             self.L = None
             self.b, self.bt0, self.bn, self.blast = {}, None, 0.0, None
             self.T = [0.0, 0.0]
+            self.F = {}
+            self.TF = {}
+            self.seg = int(getattr(self, "seg", 0)) + 1
             return
         self._T()
         for k in keys:
@@ -911,6 +1018,124 @@ def keep_value(v: Any) -> bool:
     return not (isinstance(v, str) and len(v) > SPLIT_TEXT_MAX)
 
 
+# ================================================== per-source extremes
+SRC_EXT_K = 32                     # source keys whose extremes a leaf keeps (least seen evicted first)
+
+
+class SourceExtremes:
+    """Exact observed extremes of a LEAF's numeric targets per source key,
+    with their local days, over the leaf's whole life (round 4): the
+    sufficient statistic of the hard range of every child a split on the
+    source can create - the child's range is the union of its sources'
+    extremes. P04 keeps two per leaf: keyed by the address (`sext`, for
+    address / learned-group / region splits) and by its /24 prefix (`sext24`,
+    for prefix splits: a few keys however many addresses a pool leases),
+    each record with a representative address the split predicate is
+    evaluated on.
+
+    Why: the per-(candidate, value) extremes of round 3 (P04 `_note_extremes`)
+    and the row reservoir exist only while the leaf is LEARNING and only for
+    the candidates its episode tracks. A row learned before (the rows a route
+    waited for, replayed into its new node; the rows before the node had
+    LEARN_MIN units; rows of an episode that tracked other candidates, or of
+    a leaf the learning budget had paused) never reached the child's range:
+    pack O seed 1, 192.168.1.21's 643 B login of day 2, so the 综合部 login
+    node created on day ~12 stated 'all within 1-2.8 KB' against the truth's
+    0.5-3 KB. Bounded: <= K keys x the leaf's numeric targets; the key seen
+    the fewest times (then the least recently) is evicted, so one-off
+    sources (a DHCP pool's daily leases) replace each other and never a
+    recurring one; an extreme older than RING_DAYS is replaced by the next
+    value (the range is over the ring's days, NumSummary.observed_range)."""
+
+    __slots__ = ("d", "K")
+
+    def __init__(self, K: int = SRC_EXT_K) -> None:
+        self.d: Dict[str, List[Any]] = {}            # key -> [last ts, count, rep address, {attr: [lo, dlo, hi, dhi]}]
+        self.K = int(K)
+
+    def _evict(self) -> None:
+        del self.d[min(self.d, key=lambda k: (self.d[k][1], self.d[k][0]))]
+
+    def note(self, key: str, attr: str, x: float, day: int, ts: float, rep: Optional[str] = None,
+             count: bool = True) -> None:
+        """One value of `attr` from source `key` (rep: an address of the key;
+        default the key itself). `count` = this is the row's first attribute
+        (the count is of rows, not of attribute values)."""
+        x = float(x)
+        if not math.isfinite(x):
+            return
+        r = self.d.get(key)
+        if r is None:
+            if len(self.d) >= self.K:
+                self._evict()
+            r = self.d[key] = [float(ts), 0, str(rep if rep is not None else key), {}]
+        if count or float(ts) > r[0]:
+            r[1] += 1
+        r[0] = max(r[0], float(ts))
+        e = r[3].get(attr)
+        day = int(day)
+        if e is None:
+            r[3][attr] = [x, day, x, day]
+            return
+        if x < e[0] or e[1] <= day - RING_DAYS:
+            e[0], e[1] = x, day
+        if x > e[2] or e[3] <= day - RING_DAYS:
+            e[2], e[3] = x, day
+
+    def union(self, pred: Callable[[str], bool]) -> Dict[str, List[Any]]:
+        """{attr: [lo, dlo, hi, dhi]} over the keys whose representative
+        address `pred` accepts."""
+        out: Dict[str, List[Any]] = {}
+        for _k, (_ts, _n, rep, ext) in self.d.items():
+            if not pred(rep):
+                continue
+            for a, e in ext.items():
+                cur = out.get(a)
+                if cur is None:
+                    out[a] = list(e)
+                else:
+                    if e[0] < cur[0]:
+                        cur[0], cur[1] = e[0], e[1]
+                    if e[2] > cur[2]:
+                        cur[2], cur[3] = e[2], e[3]
+        return out
+
+    def subset(self, pred: Callable[[str], bool]) -> "SourceExtremes":
+        out = SourceExtremes(self.K)
+        for k, (ts, n, rep, ext) in self.d.items():
+            if pred(rep):
+                out.d[k] = [ts, n, rep, {a: list(e) for a, e in ext.items()}]
+        return out
+
+    def merge(self, other: "SourceExtremes") -> "SourceExtremes":
+        """Union with another leaf's records (a collapse or a sibling merge)."""
+        for k, (ts, n, rep, ext) in other.d.items():
+            r = self.d.get(k)
+            if r is None:
+                self.d[k] = [ts, n, rep, {a: list(e) for a, e in ext.items()}]
+                continue
+            r[0] = max(r[0], ts)
+            r[1] += n
+            for a, e in ext.items():
+                cur = r[3].get(a)
+                if cur is None:
+                    r[3][a] = list(e)
+                else:
+                    if e[0] < cur[0]:
+                        cur[0], cur[1] = e[0], e[1]
+                    if e[2] > cur[2]:
+                        cur[2], cur[3] = e[2], e[3]
+        while len(self.d) > self.K:
+            self._evict()
+        return self
+
+    def __len__(self) -> int:
+        return len(self.d)
+
+    def nbytes(self) -> int:
+        return int(64 + sum(128 + 72 * len(r[3]) for r in self.d.values()))
+
+
 # ============================================= empirical-Bayes hold prior
 HOLD_PRIOR_MIN_NODES = 8           # statements with tests a kind needs for its own prior
 HOLD_PRIOR_M = tuple(np.round(np.arange(0.05, 0.96, 0.05), 2))
@@ -951,7 +1176,13 @@ def fit_hold_prior(recs: Sequence[Tuple[float, float]]) -> Optional[Tuple[float,
         for s_ in HOLD_PRIOR_S:
             a, b = float(m) * s_, (1.0 - float(m)) * s_
             lb0 = _lbeta(a, b)
-            ll = 0.0
+            # (round 4) a weak hyperprior p(s) ~ s^(-1/2) on the strength: when the
+            # records cannot tell the statements' dispersion (one or two tests
+            # each, the first days) the likelihood is flat in s and the grid's
+            # strongest prior won - pack O seed 0: Beta(11.2, 20.8) fitted on day
+            # 4-5, kept by the health checks' and GET /docs' statements, which
+            # stated 0.44-0.53 after 5-12 passed tests of 5-12
+            ll = -0.5 * math.log(s_)
             for p, n in rr:
                 p = min(max(p, 0.0), n)
                 ll += _lbeta(p + a, n - p + b) - lb0
@@ -1099,7 +1330,14 @@ class Node:
                          for k, (n, h, nom) in (self.hold.counts(self.last_seen or self.created).items()
                                                 if self.hold is not None else ())},
                 "hold_tests": ([round(x, 2) for x in self.hold.tests(self.last_seen or self.created)]
-                               if self.hold is not None else None)}
+                               if self.hold is not None else None),
+                "hold_fail": ({k: round(v, 2) for k, v in self.hold.failures().items() if v >= 0.05}
+                              if self.hold is not None else None),
+                "hold_groups": {g: [round(x, 2) for x in hr.tests()]
+                                for g, hr in (self.meta.get("hold_g") or {}).items()},
+                "hold_facets": ({f: [round(x, 2) for x in v] for f, v in self.hold.facet_tests().items()}
+                                if self.hold is not None else None),
+                "hold_prior": (list(self.meta["hold_prior"]) if self.meta.get("hold_prior") else None)}
 
     # ------------------------------------------------------- confidence
     @property
@@ -1117,6 +1355,34 @@ class Node:
             return None if prior is None else round(prior[0] / (prior[0] + prior[1]), 4)
         p = hr.p_hold(self.last_seen or self.created if t is None else t, prior)
         return None if p != p else round(p, 4)
+
+    def p_hold_group(self, groups: Iterable[Any], t: Optional[float] = None) -> Optional[float]:
+        """Calibrated confidence of the node's statement restricted to the
+        sources of learned group(s) `groups` (P11 ids, with or without the
+        'grp:' prefix): the held-out tests of those groups' own events
+        (HoldRecord per group, round 4) under the node's prior; None when no
+        group has a test yet (callers fall back to p_hold). A group's part of a
+        shared node ('综合部 访问 GET /docs') states the node's constraints for
+        the group's sources, and its held-out events are the group's: on pack
+        O parts stated the node's p_hold 0.43-0.48 and held 0.79-0.88."""
+        recs = self.meta.get("hold_g") if self.meta else None
+        if not recs:
+            return None
+        prior = self.meta.get("hold_prior")
+        a, b = prior if prior is not None else (1.0, 1.0)
+        ps = n = 0.0
+        for g in groups:
+            k = str(g)
+            k = k if k.startswith("grp:") else f"grp:{k}"
+            hr = recs.get(k)
+            if hr is None:
+                continue
+            p_, n_ = hr.tests()
+            ps += p_
+            n += n_
+        if n <= 0:
+            return None
+        return round(float((ps + a) / (n + a + b)), 4)
 
     # ----------------------------------------------------------- updates
     def touch_day(self, day: int) -> None:
@@ -1275,12 +1541,25 @@ class Node:
                 self.pairs[k] = p
         self.days_bits |= other.days_bits
         self.days_total = max(self.days_total, other.days_total)
+        self.absorb_extremes(other)
         for tt in (other.first_seen,):
             if tt is not None:
                 self.first_seen = tt if self.first_seen is None else min(self.first_seen, tt)
         if other.last_seen is not None:
             self.last_seen = other.last_seen if self.last_seen is None else max(self.last_seen,
                                                                                other.last_seen)
+
+    def absorb_extremes(self, other: "Node") -> None:
+        """Take over another node's per-source extremes (SourceExtremes)."""
+        for nm in ("sext", "sext24"):
+            ox = other.meta.get(nm) if other.meta else None
+            if ox is None or not len(ox):
+                continue
+            mx = self.meta.get(nm)
+            if mx is None:
+                self.meta[nm] = ox.subset(lambda _ip: True)
+            else:
+                mx.merge(ox)
 
     def nbytes(self) -> int:
         b = 400 + self.who.nbytes() + self.when.nbytes() + self.mass.nbytes() + self.n_eff.nbytes()
@@ -1300,6 +1579,13 @@ class Node:
         rpr = self.meta.get("rpart_rows") if self.meta else None
         if rpr:
             b += sum(200 + 64 * len(r[9]) for rows in rpr.values() for r in rows)
+        for nm in ("sext", "sext24"):
+            sx = self.meta.get(nm) if self.meta else None
+            if sx is not None:
+                b += sx.nbytes()
+        hg = self.meta.get("hold_g") if self.meta else None
+        if hg:
+            b += sum(64 + hr.nbytes() for hr in hg.values())
         return int(b)
 
 

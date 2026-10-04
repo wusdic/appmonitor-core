@@ -232,7 +232,7 @@ def test_precision_rises_with_observation_time_on_the_requirement_example(seed):
     range's exceedance bound and the grammar's unseen-shape mass fall, the
     band's coverage bound and the bindings' lower bounds rise, and more truth
     constraints are recovered (bindings 3/3 by day 14, the closed username set
-    once n_c >= 20 and U <= 0.02 on the confidence channel)."""
+    once each user repeated on two days)."""
     out = _converge(seed)
     assert all(o["hold"] for o in out), [(o["day"], o["hold"]) for o in out]
     cover = [o["range_cover"] for o in out]
@@ -250,10 +250,11 @@ def test_precision_rises_with_observation_time_on_the_requirement_example(seed):
     by = {o["day"]: o for o in out}
     assert by[14]["bind"] == 3 and by[3]["bind"] == 0
     assert all(o["det"]["body.keys"] for o in out)
-    # the closed username set (U <= 0.02 at n_c >= 20, the MEDIUM who-closed level
-    # and n_conf) appears once the confidence channel holds ~24 units: after day 10
-    # (spec thresholds 0.01 / 50 would need ~day 24, PG1 asks at day 14)
-    assert by[10]["closed"] is None and by[14]["closed"] == ["jack", "mike", "rose"]
+    # the closed username set: (round 4) a completeness test on days
+    # (lib/pgrammar.closure_test_days) closes the three users once each repeated
+    # on two days of the node - by day 3, holding at its stated U at every
+    # snapshot (round 3: U <= 0.02 at n_c >= 20, from day ~11)
+    assert all(o["closed"] == ["jack", "mike", "rose"] for o in out), [(o["day"], o["closed"]) for o in out]
     assert all(o["det"]["body.kv.username"] for o in out if o["day"] >= 14)
     nc = [o["n_constraints"] for o in out]
     assert all(b >= a for a, b in zip(nc, nc[1:])) and nc[-1] > nc[0]

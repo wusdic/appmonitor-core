@@ -16,6 +16,7 @@ from helpers import ctx, make_store
 from app.engines.behavior import conformity as CF
 from app.engines.behavior.lib import m_ptree as MP
 from app.engines.behavior.lib import pbounds as PB
+from app.engines.behavior.lib import pscore as SC
 from app.engines.behavior.lib import pevent as EV
 from app.engines.behavior.lib import pnode as PN
 from app.engines.behavior.lib import ptree as PT
@@ -517,11 +518,28 @@ def test_fast_numeric_path_equals_pbounds_p_value():
         num.update(float(np.exp(rng.normal(7.0, 0.5))), T0 + i * 60, 1.0, 1.0, day=int(i // 100))
     rec = PB.fit_numeric(num, T0 + 36000, 6, n_c=400.0, n_eff=300.0, unit="B")
     fast = CF._NumFast(rec)
+    th, tl = rec["tail_hi"], rec["tail_lo"]
+    assert th and tl and len(th) == 4
+    lo98, hi98 = rec["band98"]
+    n_tail = 0
     for v in list(np.exp(rng.normal(7.0, 1.5, 300))) + [0.0, -1.0, 1e9, float("nan"), "x"]:
         a, fa = PB.p_value(rec, v)
         b, fb = fast.p(v)
-        assert (math.isnan(a) and math.isnan(b)) or a == pytest.approx(b, rel=1e-9, abs=1e-12)
         assert fa == fb
+        if isinstance(v, float) and math.isfinite(v) and v > 0 and not (lo98 <= v <= hi98):
+            # beyond band98 P03 states the PREDICTIVE GPD tail (round 4): the
+            # plug-in tail of p_value with the fit's parameter uncertainty and
+            # the observed extreme (the record's range)
+            if v > hi98:
+                want = SC.tail_p(v, th[0], th[1], th[2], PB.TAIL_MASS, k=th[3], x_max=rec["range"][1])
+            else:
+                want = SC.tail_p(-v, -tl[0], tl[1], tl[2], PB.TAIL_MASS, k=tl[3], x_max=-rec["range"][0])
+            assert b == pytest.approx(want, rel=1e-9, abs=1e-15)
+            assert b >= a - 1e-15 or a > 1e-3            # never more extreme than the plug-in far out
+            n_tail += 1
+            continue
+        assert (math.isnan(a) and math.isnan(b)) or a == pytest.approx(b, rel=1e-9, abs=1e-12)
+    assert n_tail > 20
 
 
 def test_low_and_slow_outsider_is_learned_damped():

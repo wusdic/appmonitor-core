@@ -191,13 +191,98 @@ def conformal_rank_p(n_as_extreme: float, n: float) -> float:
     return float(min(1.0, (1.0 + max(0.0, n_as_extreme)) / (max(0.0, n) + 1.0)))
 
 
-def tail_p(y: float, u: float, xi: float, sigma: float, tail_mass: float = 0.1) -> float:
-    """Doubled POT tail probability beyond threshold u: 2 * tail_mass * GPD_sf(y - u)."""
-    from .evt import gpd_sf
+def tail_p(y: float, u: float, xi: float, sigma: float, tail_mass: float = 0.1,
+           k: Optional[float] = None, x_max: Optional[float] = None) -> float:
+    """Doubled POT tail probability beyond threshold u: 2 * tail_mass * sf(y - u).
+
+    Without k: the plug-in GPD survival function at the fitted (xi, sigma).
+    With k (the number of excesses the fit used): the PREDICTIVE survival
+    function, sf averaged over the sampling uncertainty of (sigma, xi)
+    (gpd_predictive_sf). x_max (the largest observed value, in the same
+    orientation as y) truncates that uncertainty to the parameters whose
+    support reaches it."""
     if y <= u:
         return 1.0
-    sf = float(gpd_sf(np.asarray([y - u]), xi, sigma)[0])
+    if k is not None and k >= PRED_K_MIN:
+        sf = gpd_predictive_sf(y - u, xi, sigma, k, None if x_max is None else x_max - u)
+    else:
+        from .evt import gpd_sf
+        sf = float(gpd_sf(np.asarray([y - u]), xi, sigma)[0])
     return float(min(1.0, 2.0 * tail_mass * sf))
+
+
+# Predictive GPD tail (round 4, groups_views owner). The plug-in sf at the PWM
+# estimate from k <= 64 reservoir excesses treats (xi, sigma) as known: a
+# bounded fit (xi < 0) ends at its estimated end point, often BEFORE the
+# observed maximum, and a light fitted tail decays exponentially - pack O: a
+# portal comment's 222 ms duration (lognormal(3.5, 0.6): true two-sided p
+# 1.5e-3) scored p 4.4e-7 against an observed maximum of 200 ms; a git
+# net.pkts_down of 2 968 inside the displayed range 4-3 000 scored 1e-9, the
+# git / mail TLS durations (lognormal(4, 0.8)) 449 ms p 5e-6 (true 8e-3) and
+# 12.7 ms below a range starting at ~13 ms p 1e-9 (true 7e-2). Simulated
+# (sim: lognormal, normal, gamma, Poisson, Pareto bodies, n = 300 / 3 000, 64
+# excesses): the plug-in p <= 1e-4 fired 4-39x, p <= 1e-6 120-3 600x more
+# often than nominal; the predictive below 0.4-1.7x (Pareto 2.8-3.4x, heavy
+# tails are where PWM itself is weakest), conservative in bounded tails.
+PRED_K_MIN = 3
+_GH_X, _GH_W = np.polynomial.hermite_e.hermegauss(9)       # N(0, 1) quadrature, 9 nodes
+_GH_W = _GH_W / _GH_W.sum()
+_GZ1 = np.repeat(_GH_X, _GH_X.size)
+_GZ2 = np.tile(_GH_X, _GH_X.size)
+_GZW = np.outer(_GH_W, _GH_W).ravel()
+
+
+def pwm_cov(xi: float, sigma: float, k: float) -> Tuple[float, float, float]:
+    """Asymptotic (var sigma, cov(sigma, xi), var xi) of the PWM estimates of a
+    GPD from k excesses (Hosking & Wallis 1987, Technometrics 29: shape
+    kappa = -xi; finite for xi < 1/2 - xi is clipped to [-0.5, 0.4] here)."""
+    kk = -min(max(float(xi), -0.5), 0.4)
+    c = 1.0 / (max(float(k), 1.0) * (1.0 + 2.0 * kk) * (3.0 + 2.0 * kk))
+    vs = sigma * sigma * (7.0 + 18.0 * kk + 11.0 * kk ** 2 + 2.0 * kk ** 3) * c
+    csk = sigma * (2.0 + kk) * (2.0 + 6.0 * kk + 7.0 * kk ** 2 + 2.0 * kk ** 3) * c
+    vk = (1.0 + kk) * (2.0 + kk) ** 2 * (1.0 + kk + 2.0 * kk ** 2) * c
+    return vs, -csk, vk
+
+
+def gpd_predictive_sf(z: float, xi: float, sigma: float, k: float,
+                      z_max: Optional[float] = None) -> float:
+    """P(excess > z) under the approximate posterior of (sigma, xi): the
+    estimate's asymptotic normal law (pwm_cov) integrated by a 9 x 9
+    Gauss-Hermite product rule, restricted to sigma > 0 and - when the
+    largest observed excess z_max is given - to the parameters whose support
+    reaches it (a bounded GPD ending before an observed value has likelihood
+    0). Past the observed maximum the result decays like the heavier members
+    of that set instead of jumping to 0; at the maximum it stays near the
+    rank probability 1 / (k + 1) of the tail. O(81)."""
+    if not (z > 0.0):
+        return 1.0
+    if not (sigma > 0.0 and math.isfinite(sigma) and math.isfinite(xi)):
+        return NAN
+    vs, cv, vx = pwm_cov(xi, sigma, k)
+    a = math.sqrt(max(vs, 0.0))
+    b = cv / a if a > 0 else 0.0
+    c = math.sqrt(max(vx - b * b, 0.0))
+    sg = sigma + a * _GZ1
+    xs = xi + b * _GZ1 + c * _GZ2
+    ok = sg > 0.0
+    if z_max is not None and z_max > 0.0:
+        neg = xs < 0.0
+        end = np.where(neg, -sg / np.where(neg, xs, -1.0), np.inf)
+        ok &= end >= z_max
+    w = _GZW[ok]
+    tw = float(w.sum())
+    if not tw > 0.0:
+        return 1.0 / (float(k) + 1.0)
+    sg, xs = sg[ok], xs[ok]
+    with np.errstate(all="ignore"):
+        zz = z / sg
+        small = np.abs(xs) < 1e-9
+        xsafe = np.where(small, 1.0, xs)
+        t = xsafe * zz
+        inside = t > -1.0
+        sf = np.where(small, np.exp(-zz),
+                      np.where(inside, np.exp(-np.log1p(np.where(inside, t, 0.0)) / xsafe), 0.0))
+    return float(min(1.0, float((w * sf).sum()) / tw))
 
 
 def num_summary_p(num: Any, v: float, t: float, n: float, gpd_hi: Optional[Tuple[float, float, float]] = None,

@@ -198,6 +198,8 @@ class Tree:
             for other in parts[1:]:
                 base.merge(other)
             nd.pairs[key] = base
+        for c in gone:                   # nid is a leaf again: its sources' extremes come back
+            nd.absorb_extremes(self.nodes[c])
         nd.split = None
         nd.version += 1
         for c in gone:

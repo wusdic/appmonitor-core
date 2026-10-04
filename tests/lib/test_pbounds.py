@@ -43,7 +43,8 @@ def test_band_1_2_kb_and_range_with_rank_bound(seed):
     emp = np.mean((vals >= d["lo"]) & (vals <= d["hi"]))
     assert 0.86 <= emp <= 0.96
     assert rec["n_rng"] == pytest.approx(200.0)
-    assert rec["cover"] == pytest.approx(2.0 / 201.0)
+    assert rec["cover_pred"] == pytest.approx(2.0 / 201.0)
+    assert rec["cover"] == pytest.approx(rec["cover_hi"]) and rec["cover"] > rec["cover_pred"]   # (round 4) the per-statement bound
     assert rec["hard"] is True
     assert rec["range"][0] == pytest.approx(vals.min(), rel=1e-9)
     assert rec["range"][1] == pytest.approx(vals.max(), rel=1e-9)
@@ -68,7 +69,7 @@ def test_range_uses_ring_observations_not_decayed_evidence():
     rec = PB.fit_numeric(s, t + 20 * DAY, day + 20, n_c=5.0, n_eff=2.0, unit="B")
     # the H_m evidence has decayed, the rank bound still counts the 60 ring observations
     assert rec["n_rng"] == pytest.approx(60.0)
-    assert rec["cover"] == pytest.approx(2 / 61)
+    assert rec["cover_pred"] == pytest.approx(2 / 61)
 
 
 def test_gpd_tail_scores_12kb_below_1e4():
@@ -176,3 +177,27 @@ def test_positive_lower_edge_of_a_wide_band_is_not_displayed_as_zero():
     r = PB.round_range(800.0, 300000.0, "B")
     assert 0 < r["lo"] <= 800.0 and r["hi"] >= 300000.0 and r["lo"] >= 0.5 * 800.0
     assert PB.round_range(530.0, 3050.0, "B")["text"] == "0.5–3 KB"          # narrow ranges unchanged
+
+
+def _mix_cdf(v):
+    return (0.05 * min(1.0, max(0.0, (v - 0.5 * KB) / (0.5 * KB))) + 0.9 * min(1.0, max(0.0, (v - KB) / KB))
+            + 0.05 * min(1.0, max(0.0, (v - 2 * KB) / KB)))
+
+
+def test_stated_range_cover_bounds_the_realised_exceedance():
+    """(round 4) A range is checked per statement: pack O seed 0's 综合部 login
+    range 1-2.6 KB from 39 logins (none of the 5 % below 1 KB drawn) stated
+    P(next outside) = 2 / 40 = 0.05 and held 0.115 on fresh logins. The stated
+    cover is now the 95 % upper bound of the realised range's exceedance; over
+    many samples of 39 it is exceeded in <= ~5 % of them (2 / (n + 1): ~30 %)."""
+    r = np.random.default_rng(11)
+    miss_new, miss_old = 0, 0
+    for rep in range(200):
+        vals = _mixture(r, 39)
+        s, t, day = _num(vals, days=13)
+        rec = PB.fit_numeric(s, t, day, n_c=39, n_eff=39, unit="B")
+        lo, hi = rec["range"]
+        outside = 1.0 - (_mix_cdf(hi) - _mix_cdf(lo))
+        miss_new += outside > rec["cover"]
+        miss_old += outside > rec["cover_pred"]
+    assert miss_new <= 0.08 * 200 < miss_old, (miss_new, miss_old)

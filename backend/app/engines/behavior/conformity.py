@@ -809,6 +809,20 @@ class _TreeCtx:
         self.content_nodes: Dict[int, Set[int]] = {}
         self.whokeys: Dict[str, List[Any]] = {}
 
+    def successor_of(self, route_key: Optional[str], ip: str, lday: int) -> Optional[str]:
+        """lib/pdfg.successor_candidate for P03's local day (P10's route ledger
+        counts days as EPOCH_ORD + local day), cached per tick."""
+        if not route_key or self.flow is None:
+            return None
+        ck = (route_key, ip, lday)
+        c = self.__dict__.setdefault("_succ", {})
+        if ck not in c:
+            try:
+                c[ck] = DF.successor_candidate(self.pflow, route_key, ip, DF.EPOCH_ORD + int(lday))
+            except Exception:                       # pragma: no cover - a malformed ledger never blocks scoring
+                c[ck] = None
+        return c[ck]
+
     def _when_counts(self, nd: Any, daytype: int) -> Tuple[np.ndarray, float]:
         """(slot mass, evidence) of a node for a day type, all day types when
         the day type has < N_MIN evidence (pscore.when_p's back-off)."""
@@ -1192,11 +1206,37 @@ class _NumFast:
             return SC.numeric_p(F), flags
         if y > self.hi:
             if self.th:
-                return SC.tail_p(x, self.th[0], self.th[1], self.th[2], PB.TAIL_MASS), flags
+                th = self.th
+                return SC.tail_p(x, th[0], th[1], th[2], PB.TAIL_MASS, k=_tail_k(th),
+                                 x_max=self._extreme(True)), flags
             return SC.conformal_rank_p(0.0 if y > self.vmax else 0.01 * nn, nn), flags
         if self.tl:
-            return SC.tail_p(-x, -self.tl[0], self.tl[1], self.tl[2], PB.TAIL_MASS), flags
+            tl = self.tl
+            xm = self._extreme(False)
+            return SC.tail_p(-x, -tl[0], tl[1], tl[2], PB.TAIL_MASS, k=_tail_k(tl),
+                             x_max=None if xm is None else -xm), flags
         return SC.conformal_rank_p(0.0 if y < self.vmin else 0.01 * nn, nn), flags
+
+    def _extreme(self, upper: bool) -> Optional[float]:
+        """The largest (smallest) observed value in natural units: the record's
+        clean range, else the digest's extreme."""
+        rng = self.rng
+        try:
+            if rng is not None:
+                return float(rng[1] if upper else rng[0])
+            v = self.vmax if upper else self.vmin
+            return float(PB._inv(v, self.lg))
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+
+
+def _tail_k(tail: Sequence[Any]) -> Optional[float]:
+    """Excess count of a pbounds tail record [u, xi, sigma, n] (None for a
+    3-element record: the plug-in tail)."""
+    try:
+        return float(tail[3]) if len(tail) > 3 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _check(typ: str, rec: Any, v: Any, num: Any) -> Tuple[float, List[str]]:
@@ -1443,10 +1483,23 @@ class ConformityEngine(Engine):
                 g_ip = str(g_ip) if g_ip is not None else None
                 if all(acts.id_of(x) is None for x in {key, route_key, k10} if x):
                     tot_ev = acts.ss.ss.total_evidence(t)
+                    succ = tc.successor_of(route_key, ip, lday) if tot_ev >= N_MIN else None
                     if ActionLedger.established(le, lday):
                         # seen on an earlier date by >= 2 sources: a recurring action
                         # (weekly / monthly) P10's decayed dictionary no longer holds
                         flags.add("recurring_action")
+                    elif succ is not None:
+                        # (round 4) the page an established route of THIS source
+                        # became - same shape, one literal segment renamed, the old
+                        # route not used today (lib/pdfg.successor_candidate): a
+                        # candidate rename, which P10 adopts after RENAME_DATES dates
+                        # (the new route then takes the old action's id), not a new
+                        # action. Pack O D3 (/approval/ -> /flow/, day 14): every
+                        # renamed page of the approver was a MEDIUM `new_action`;
+                        # the incident held 192.168.1.21's rows and the /flow/
+                        # nodes never confirmed (PG5 D3 0/5)
+                        flags.add("rename_candidate")
+                        res["rename_of"] = succ
                     elif tot_ev >= N_MIN:
                         p_novel = float(acts.unseen(t))
                         flags.add("new_action")

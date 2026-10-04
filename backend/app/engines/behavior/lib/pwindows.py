@@ -62,6 +62,7 @@ SLOT_MIN = 15
 P0 = 0.05
 KAPPA = 3.0
 MIN_SHARE = 0.05
+FLAT_SHARE = 0.5                 # windows holding less than half of the arrivals describe no time-of-day law
 Q_OFF = 0.15                     # the quietest 15 % of the day is the background ...
 F_MEAN = 0.5                     # ... and an active block has >= half the mean rate
 MERGE_GAP = 15.0                 # windows closer than one slot are one window
@@ -70,6 +71,7 @@ CLEAN_W = 0.5                    # a point weighing < 1/2 of a typical arrival i
 REGIME_DATES = 3                 # §6.9.2: a time window change persists >= 3 workdays ...
 REGIME_ALPHA = 1e-3              # ... and differs from the earlier arrivals at this level
 REGIME_SINGLE_DATES = 5          # a change shown by one source only persists >= 5 dates
+STALE_ALPHA = 0.05               # _persistence: a not currently supported segment is stale at this level
 REGIME_POINTS = 6                # arrivals on each side of a change (3 workdays x 2); with so
                                  # few points only a clean separation passes alpha after Bonferroni
 
@@ -269,9 +271,12 @@ def _cells_minutes(minutes: np.ndarray, cut: int, weights: Optional[np.ndarray] 
 
 
 def _windows_from_blocks(blocks: List[Tuple[int, int]], counts: np.ndarray, widths: np.ndarray,
-                         starts: np.ndarray, kappa: float, min_share: float
+                         starts: np.ndarray, kappa: float, min_share: float,
+                         accept: Optional[Any] = None
                          ) -> Tuple[List[Tuple[float, float, float]], Dict[str, Any]]:
-    """[(start, end, mass share)] in unwrapped minutes."""
+    """[(start, end, mass share)] in unwrapped minutes. `accept(s, e)`: an
+    active block must also pass it (current persistence, _persists) before
+    adjacent blocks join into windows."""
     tot = float(counts.sum())
     if tot <= 0 or not blocks:
         return [], {"blocks": len(blocks)}
@@ -298,6 +303,10 @@ def _windows_from_blocks(blocks: List[Tuple[int, int]], counts: np.ndarray, widt
     inw = [b[4] > 0 and b[4] >= thr for b in B]
     if all(inw) or not any(inw):
         return [(0.0, float(DAY_MIN), 1.0)], {"blocks": len(B), "all_day": True, "thr": thr}
+    if accept is not None:
+        acc = [ok and accept(b[0], b[1]) for b, ok in zip(B, inw)]
+        if any(acc):
+            inw = acc
     wins: List[List[float]] = []
     for (s, e, N, T, rate), ok in zip(B, inw):
         # adjacent active blocks join; so do windows separated by less than one
@@ -310,8 +319,12 @@ def _windows_from_blocks(blocks: List[Tuple[int, int]], counts: np.ndarray, widt
             wins.append([s, e, N])
     out = [(s, e, N / tot) for s, e, N in wins if N / tot >= min_share]
     info = {"blocks": len(B), "thr": thr}
-    if not out:
-        # flat day: nothing stands out of the background -> all day
+    if not out or sum(x[2] for x in out) < FLAT_SHARE:
+        # flat day: nothing stands out of the background, or what stands out
+        # holds a minority of the arrivals (round 4: pack O seed 1, the 60-s
+        # health monitors of OA and finance on days 13-14 stated a 10-minute
+        # workday window holding 5 % of their arrivals - a chance cluster of 8
+        # of 166 reservoir minutes three times the background rate) -> all day
         return [(0.0, float(DAY_MIN), 1.0)], dict(info, all_day=True)
     out.sort(key=lambda x: -x[2])
     return sorted(out[:W_MAX]), info
@@ -378,29 +391,81 @@ def _snap(wins: List[Tuple[float, float, float]], u: np.ndarray, tot: float
     return out
 
 
+def _persistence(pts: Sequence[Sequence[Any]], wts: np.ndarray, cut: int, tz_offset_s: float) -> Optional[Any]:
+    """The §6.9.2 acceptance rule for a segment of the day [s, e] (unwrapped
+    minutes) at a node whose clean arrivals come from >= 2 sources (None - no
+    constraint - at a node of one source: an approver, an exception):
+      * a segment only ONE source's arrivals support is that source's
+        idiosyncrasy or anomaly until it persisted REGIME_SINGLE_DATES dates
+        (round 3, R4);
+      * a segment is STALE when its support stopped: over the node's last
+        REGIME_SINGLE_DATES + 1 dates (of the day type; the latest may be
+        today, still partial) it is not currently supported (>= 2 sources on
+        >= REGIME_DATES of those dates, or arrivals on >= REGIME_SINGLE_DATES of
+        them) AND its source-dates (a source arriving in it on a date) there
+        are significantly fewer than its rate on the earlier dates predicts
+        (Poisson lower tail <= STALE_ALPHA).
+    Applied to the active Bayesian blocks before they join into windows and to
+    the windows after snapping (_accepted). Why (pack O): seed 3, day 21,
+    '09:09-09:14' = the three members' pre-D1 logins (two dates - too few for
+    regime_cut) + A2's 09:10 logins of 192.168.1.21 (three workdays, released
+    undamped): one source on three of the last six dates, 3 source-dates
+    against 12 expected, p = 0.002 (IoU 0.69 before). Seed 0 (round 4 run 1):
+    the pre-D1 block 09:03-09:21 joined the D1 block 08:32-08:50 across a
+    13-minute gap (< MERGE_GAP): '08:32-09:21' from day 17 to 21 (checklist
+    IoU 0.37). A sparse segment of a broad law (2 sources, < 1 source-date a
+    date: finance's ledger) is never significantly stale."""
+    if not pts or len(pts[0]) < 4:
+        return None
+    clean = [(float(p[0]), _local_date(float(p[1]), tz_offset_s), str(p[3]))
+             for p, w in zip(pts, wts) if w >= CLEAN_W and p[3]]
+    if len({c[2] for c in clean}) < 2:
+        return None
+    dates = sorted({c[1] for c in clean})
+    recent = set(dates[-(REGIME_SINGLE_DATES + 1):])
+    n_past = len(dates) - len(recent)
+    rc = [((c[0] - cut) % DAY_MIN, c[1], c[2]) for c in clean]
+
+    def persists(s: float, e: float) -> bool:
+        inside = [c for c in rc if s - 1e-9 <= c[0] <= e + 1e-9]
+        srcs = {c[2] for c in inside}
+        if len(srcs) == 1 and len({c[1] for c in inside}) < REGIME_SINGLE_DATES:
+            return False
+        if n_past <= 0:
+            return True
+        rec_in = [c for c in inside if c[1] in recent]
+        r_src = {c[2] for c in rec_in}
+        r_days = {c[1] for c in rec_in}
+        if (len(r_src) >= 2 and len(r_days) >= REGIME_DATES) or len(r_days) >= REGIME_SINGLE_DATES:
+            return True                         # currently supported (the R4 rule on the recent dates)
+        sd = {(c[1], c[2]) for c in inside}
+        k_rec = sum(1 for d, _ in sd if d in recent)
+        lam = (len(sd) - k_rec) / float(n_past) * len(recent)
+        return _poisson_cdf(k_rec, lam) > STALE_ALPHA
+    return persists
+
+
+def _poisson_cdf(k: int, lam: float) -> float:
+    if lam <= 0:
+        return 1.0
+    term = math.exp(-lam)
+    acc = term
+    for j in range(1, int(k) + 1):
+        term *= lam / j
+        acc += term
+    return float(min(1.0, acc))
+
+
 def _accepted(wins_u: List[Tuple[float, float, float]], pts: Sequence[Sequence[Any]],
               wts: np.ndarray, cut: int, tz_offset_s: float) -> List[Tuple[float, float, float]]:
-    """The §6.9.2 acceptance rule applied to a window: at a node whose clean
-    arrivals come from >= 2 sources, a window that only ONE source's arrivals
-    support is that source's idiosyncrasy or anomaly until it persisted
-    REGIME_SINGLE_DATES dates (the rule regime_cut applies to a single source's
-    change). Pack O, A2 (192.168.1.21 logging in as rose at 09:10 on days
-    17-19, flagged and held, its held rows released and learned at full
-    weight): the 综合部 login node stated '08:32-08:51、09:10-09:11' (seeds 0,
-    3). A node of one source (an approver, an exception) is not affected; a
+    """Windows that persist (_persistence); all of them when none does. A
     dropped window's arrivals count as outside the windows (coverage)."""
-    if len(wins_u) <= 1 or not pts or len(pts[0]) < 4:
+    if len(wins_u) <= 1:
         return wins_u
-    clean = [(float(p[0]), float(p[1]), str(p[3])) for p, w in zip(pts, wts) if w >= CLEAN_W and p[3]]
-    if len({c[2] for c in clean}) < 2:
+    ok = _persistence(pts, wts, cut, tz_offset_s)
+    if ok is None:
         return wins_u
-    out = []
-    for s, e, sh in wins_u:
-        inside = [c for c in clean if s - 1e-9 <= (c[0] - cut) % DAY_MIN <= e + 1e-9]
-        srcs = {c[2] for c in inside}
-        if len(srcs) == 1 and len({_local_date(c[1], tz_offset_s) for c in inside}) < REGIME_SINGLE_DATES:
-            continue
-        out.append((s, e, sh))
+    out = [w for w in wins_u if ok(w[0], w[1])]
     return out or wins_u
 
 
@@ -430,15 +495,17 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
     pts = list(points or [])
     minute_mode = len(pts) >= min_points
     wts = np.asarray([float(p[2]) if len(p) > 2 else 1.0 for p in pts], dtype=np.float64)
+    cw = wts
     if minute_mode:
         mins = np.asarray([p[0] for p in pts], dtype=np.float64)
-        counts, widths, starts = _cells_minutes(mins, cut, wts)
-        ncp = ncp_prior(float(wts.sum()), p0)
+        counts, widths, starts = _cells_minutes(mins, cut, cw)
+        ncp = ncp_prior(float(cw.sum()), p0)
     else:
         counts, widths, starts = _cells_slots(h, cut, n)
         ncp = ncp_prior(n, p0)
     blocks = bayesian_blocks(counts, widths, ncp)
-    wins_u, info = _windows_from_blocks(blocks, counts, widths, starts, kappa, min_share)
+    wins_u, info = _windows_from_blocks(blocks, counts, widths, starts, kappa, min_share,
+                                        _persistence(pts, wts, cut, tz_offset_s) if minute_mode else None)
     if minute_mode and not info.get("all_day"):
         # edge snapping / trimming on the clean arrivals (a damped outlier, weight
         # < 1/2 of a typical arrival, never extends a window)
@@ -461,7 +528,7 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
     # slot mass share in slot mode (edges are slot edges)
     if minute_mode:
         inside = np.asarray([in_windows(m, windows) for m in mins], dtype=np.float64)
-        cov = float(np.sum(inside * wts) / max(float(wts.sum()), 1e-12))
+        cov = float(np.sum(inside * cw) / max(float(cw.sum()), 1e-12))
         if not info.get("all_day"):
             cov = predictive_coverage(cov, float(np.sum(wts >= CLEAN_W)), len(windows))
     else:
@@ -480,9 +547,121 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
     return {"windows": windows, "labels": [label(s, e) for s, e in windows],
             "shares": [round(float(x[2]), 4) for x in wins_u], "coverage": cov,
             "res": "minute" if minute_mode else "slot", "n": float(n), "n_points": len(pts),
-            "w_points": round(float(wts.sum()), 3),
+            "w_points": round(float(cw.sum()), 3),
             "dates": dates, "stability": stab, "blocks": int(info.get("blocks", 0)),
             "cut": int(cut), "all_day": bool(info.get("all_day", False))}
+
+
+FWD_PRIOR = 2.0                  # out-of-sample coverage: Beta prior strength centred on the in-sample coverage
+
+
+CV_FOLDS = 5                     # date folds of the out-of-sample coverage
+
+
+def cv_coverage(hist: np.ndarray, pts: Sequence[Sequence[Any]], tz_offset_s: float = 0.0,
+                folds: int = CV_FOLDS) -> Optional[Tuple[float, float]]:
+    """Out-of-sample coverage of the windows a node's arrivals give: blocked
+    cross-validation by DATE - the dates are dealt into min(folds, #dates)
+    folds; the windows fitted on the other folds' arrivals are checked on the
+    clean arrivals of each fold (the arrivals of one date stay together: they
+    are not independent). Returns (weighted hits, weighted tests) or None
+    (fewer than 3 dates, slot mode, an all-day fit, no fold with >= MIN_POINTS
+    training points). The training fits saw fewer arrivals than the stated
+    windows: their edges (order statistics, the rank bound of
+    predictive_coverage) leave 2 / (n + 1) per window outside where the full
+    fit leaves 2 / (N + 1); the difference is credited, so the estimate
+    measures the stated windows, not smaller ones.
+    Why (pack O, round 3, day 14, seeds 0-1): 'when' was the constraint that
+    failed most often in PG1 precision (13 / 11 constraints); besides drift,
+    the in-sample coverage of minute-exact windows overstated how many fresh
+    arrivals fall inside: finance ledger windows stated 0.94 held 0.80, the
+    approval list 0.88 / 0.77, mail department parts 0.86-0.87 / 0.63-0.71
+    (the edges and gaps are chosen on the very arrivals they are scored on).
+    (A forward split - train on the older two thirds of the dates - was
+    tried first: on a department's part of the mail node, ~20 arrivals, it
+    halved the stated coverage, 0.86 -> 0.47, against ~0.68 held: a third of
+    the dates missing from training is too pessimistic for small samples.)"""
+    rows = [p for p in pts if len(p) >= 2]
+    if not rows:
+        return None
+    wts = [float(p[2]) if len(p) > 2 else 1.0 for p in rows]
+    day = [_local_date(float(p[1]), tz_offset_s) for p in rows]
+    dates = sorted({d for d, w in zip(day, wts) if w >= CLEAN_W})
+    if len(dates) < 3:
+        return None
+    K = min(int(folds), len(dates))
+    fold_of = {d: i % K for i, d in enumerate(dates)}
+    n_all = float(np.sum(wts))
+    hits, tot = 0.0, 0.0
+    for j in range(K):
+        train = [p for p, d in zip(rows, day) if fold_of.get(d, -1) != j]
+        test = [(float(p[0]), w) for p, w, d in zip(rows, wts, day) if w >= CLEAN_W and fold_of.get(d, -1) == j]
+        if len(train) < MIN_POINTS or not test:
+            continue
+        r2 = fit_daytype(hist, float(len(train)), train, tz_offset_s=tz_offset_s)
+        if r2 is None or r2.get("res") != "minute":
+            continue
+        t_ = float(sum(w for _, w in test))
+        h_ = float(sum(w for m, w in test if in_windows(m, r2["windows"])))
+        n_tr = float(np.sum([float(p[2]) if len(p) > 2 else 1.0 for p in train]))
+        edge = 2.0 * len(r2["windows"]) * (1.0 / (n_tr + 1.0) - 1.0 / (n_all + 1.0))
+        hits += min(t_, h_ + max(0.0, edge) * t_)
+        tot += t_
+    if tot <= 0:
+        return None
+    return hits, tot
+
+
+def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offset_s: float = 0.0,
+               since0: Optional[float] = None, provisional0: bool = False) -> Optional[Dict[str, Any]]:
+    """Windows of one node (or one group's part of it) and day type from its
+    arrivals [(minute, ts, weight, source)]: P09's pipeline shared by the
+    node fit (behavior.time_window) and part_when.
+      1 the current regime: `since0` (a P04 alarm / an accepted change) or the
+        latest significant change of the time-of-day law (regime_cut); its
+        arrivals replace the full set when there are enough of them - and,
+        when they come from an alarm rather than a tested change, they span
+        >= REGIME_DATES dates (a time-of-day law is a statement about days:
+        the 60-s health monitors of OA and finance, pack O seed 1, day 14,
+        stated a 23-minute window of 38 % coverage fitted on the minutes since
+        an alarm);
+      2 fit_daytype (Bayesian Blocks, snapping, current-persistence acceptance);
+      3 coverage: the in-sample predictive coverage, lowered to the date
+        cross-validated coverage (cv_coverage; the posterior mean under a Beta
+        prior of strength FWD_PRIOR centred on the in-sample value) when that
+        is smaller: the out-of-sample check reveals windows that hold less than
+        their own sample says (edges and gaps chosen on it, a drifting law),
+        never more than the rank bound of the in-sample value."""
+    pts = list(pts)
+    since, provisional, cut = since0, bool(provisional0), None
+    if since is None:
+        cut = regime_cut(pts, hist, tz_offset_s=tz_offset_s)
+        if cut is not None:
+            since, provisional = cut["since"], not cut["accepted"]
+    recent = [p for p in pts if float(p[1]) >= since] if since is not None else pts
+    need = REGIME_POINTS if cut is not None else MIN_POINTS
+    spans = cut is not None or len({_local_date(float(p[1]), tz_offset_s) for p in recent}) >= REGIME_DATES
+    use_recent = since is not None and len(recent) >= need and spans
+    use = recent if use_recent else pts
+    rec = fit_daytype(hist, max(float(n), float(len(pts))), use, tz_offset_s=tz_offset_s,
+                      min_points=min(need, MIN_POINTS))
+    if rec is None:
+        return None
+    if since is not None:
+        rec["since"] = float(since)
+        rec["provisional"] = bool(provisional)
+        rec["regime"] = "new" if use_recent else "mixed"
+        if cut is not None:
+            rec["change"] = {k: cut[k] for k in ("p", "dates_after", "sources_after", "accepted")}
+    if rec.get("res") == "minute" and not rec.get("all_day"):
+        fc = cv_coverage(hist, use, tz_offset_s)
+        if fc is not None:
+            h, m = fc
+            c_in = float(rec["coverage"])
+            rec["coverage_in"] = c_in
+            rec["cv"] = [round(h, 3), round(m, 3)]
+            rec["coverage"] = float(min(c_in, (h + FWD_PRIOR * c_in) / (m + FWD_PRIOR)))
+    return rec
 
 
 def _ks_sf(lam: float) -> float:
@@ -660,28 +839,35 @@ def lookup(model: Any, kind: int, nid: int) -> Optional[Dict[str, Any]]:
 def part_when(when: Any, members: Iterable[str], tz_offset_s: float = 0.0,
               min_points: int = MIN_POINTS) -> Optional[Dict[str, Any]]:
     """The statement-contract `when` block of ONE learned group's part of a
-    node, fitted like the node's own windows (fit_daytype, minute mode) on the
-    node's minute-reservoir arrivals whose source is a member of the group;
-    None when the node keeps no reservoir or the part has fewer than
+    node, fitted by the node's own pipeline (fit_regime: learning-mass weights,
+    the current regime, current-persistence acceptance, cross-validated coverage) on
+    the node's minute-reservoir arrivals whose source is a member of the
+    group; None when the node keeps no reservoir or the part has fewer than
     `min_points` arrivals on every day type (the view then states the node's
     windows). Integration addition (2026-09-30): on a login route shared by
     综合部 (09:00-09:21), 财务部 (09:05-09:30) and 销售部 (08:30-09:30) the
-    node's union window matched no department's truth (IoU 0.17-0.42)."""
+    node's union window matched no department's truth (IoU 0.17-0.42).
+    Round 4: the part was fitted on its raw arrivals (no weights, no regime):
+    the 综合部 part of pack O's shared login / home nodes stated the window
+    before D1 (08:49-09:21, held-out coverage 0.08-0.13 against a stated
+    0.80-0.90, seed 0 day 14) and the mail parts their in-sample coverage."""
     res = getattr(when, "res", None)
     if res is None or not len(res):
         return None
     mem = {str(m) for m in members}
+    items = res.items()
+    med = float(np.median([w for _it, w, _t in items])) if items else 1.0
     by: Dict[str, Optional[Dict[str, Any]]] = {}
     for d, dk in enumerate(DAYTYPES):
-        pts = [(float(it[1]), float(t)) for it, _w, t in res.items()
-               if len(it) > 2 and int(it[0]) == d and str(it[2]) in mem]
+        pts = [(float(it[1]), float(t), 1.0 if med <= 0 else min(1.0, float(w) / med), str(it[2]))
+               for it, w, t in items if len(it) > 2 and int(it[0]) == d and str(it[2]) in mem]
         if len(pts) < min_points:
             by[dk] = None
             continue
         h = np.zeros(SLOTS)
-        for m, _ in pts:
-            h[int(m // 15) % SLOTS] += 1.0
-        rec = fit_daytype(h, float(len(pts)), pts, tz_offset_s=tz_offset_s)
+        for m, _t, w, _s in pts:
+            h[int(m // 15) % SLOTS] += w
+        rec = fit_regime(h, float(len(pts)), pts, tz_offset_s=tz_offset_s)
         if rec is not None:
             rec["confidence"] = confidence(rec)
             rec["text_zh"] = render_zh(dk, rec)

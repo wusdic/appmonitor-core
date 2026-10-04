@@ -123,6 +123,17 @@ the implementation report):
     that every constraint holds on new data (Node.p_hold, exported in to_plain).
   * at most PAIRS_NODE_MAX binding pair sketches per node, in P08's request
     order; pairs P08 no longer requests are dropped daily.
+  * (round 4) every leaf keeps the exact extremes of its numeric targets per
+    source address and per /24 (pnode.SourceExtremes, <= SRC_EXT_K keys,
+    least-seen evicted) from its birth, rows it learned before it was learning
+    included; a source split's child starts its hard range from its sources'
+    extremes (_inherit_source_extremes).
+  * (round 4) held-out tests: a test passes when every constraint is within the
+    batch's own 3-sigma error (pnode.batch_tol); the record forgets per test,
+    not per day; a statement keeps its kind's prior once it has a test of its
+    own; the who constraint's nominal is the share of the listed sources
+    (WhoSummary.stated_unseen); each learned group at a node has its own test
+    record (Node.p_hold_group, for its part of the node's statement).
 
 Trust gating follows the lib-3 learner rule (lib/gating): a row's weight is
 behavior.trust of its own tick, the hold decision is the quarantine gate at
@@ -217,6 +228,7 @@ PSEUDO_SOURCE = {"@who": "net.src", "@when": "ctx.when"}
 # P03 components that, when less likely than the who, make a damped row an
 # outlier of its time / content / sequence rather than a foreign source (M41)
 HOLD_BIND_MAX = 16             # bound sources checked per node (M43)
+HOLD_GROUPS_MAX = 8            # learned groups with their own held-out record per node (round 4; = P14 PART_MAX)
 SUS_OTHER_P = ("p_when", "p_content", "p_seq", "p_novel")
 SUS_BIND_FLAGS = frozenset({"cross_binding", "concurrent_use", "readdress_candidate"})
 FITTERS = (MP.PBOUNDS, MP.PGRAMMAR, MP.PBIND, MP.PWIN)
@@ -789,6 +801,8 @@ class PatternTreeEngine(Engine):
             self._update_targets(lc, tr, xn, kind, sel, get, ts, mass, omega, day)
         if not leaf.is_exc:
             self._leaf_learning(lc, tr, leaf, kind, sel, get, ip, ts, omega, day, daytype, minute)
+            if factor >= 0.999 and leaf.split is None:
+                self._note_source_extremes(lc, leaf, kind, get, ip, ts, day)
         if lc.pairs:
             self._pairs(lc, tr, path, kind, get, ts, mass, omega)
         lc.n_learned += 1
@@ -823,26 +837,56 @@ class PatternTreeEngine(Engine):
                 old = seen.get(k)
                 if old is not None and _hold_material(old, c):
                     hr.drop([k])
+                    for g_hr in (nd.meta.get("hold_g") or {}).values():
+                        g_hr.drop([k])
                 seen[k] = c                     # the reference's own tuple (shared, not copied)
             for k in [k for k in seen if k != "_ref" and k not in cons]:
                 del seen[k]
             seen["_ref"] = rid
             nd.meta["hold_fp"] = seen
+        # (round 4) the same checks also go to the record of the source's learned
+        # group (<= HOLD_GROUPS_MAX groups per node, the largest at the node's
+        # grp level): the confidence of a group's part of the node (Node.p_hold_group)
+        hg = None
+        gk = keys[3] if len(keys) > 3 else None
+        if isinstance(gk, str) and gk.startswith("grp:") and gk not in TRANSIENT_VALUES:
+            recs = nd.meta.get("hold_g")
+            if recs is None:
+                recs = nd.meta["hold_g"] = {}
+            hg = recs.get(gk)
+            if hg is None:
+                if len(recs) >= HOLD_GROUPS_MAX:
+                    lv3 = nd.who.levels[3] if len(nd.who.levels) > 3 else None
+                    if lv3 is not None:
+                        heavy = {str(x) for x, *_ in lv3.items(ts, None, HOLD_GROUPS_MAX)}
+                        for old_k in [x for x in recs if x not in heavy]:
+                            del recs[old_k]
+                if len(recs) < HOLD_GROUPS_MAX:
+                    hg = recs[gk] = PN.HoldRecord(lite=True)
+        recs_add = (hr,) if hg is None else (hr, hg)
+
+        def add(key: str, hit: bool, nom: float) -> None:
+            for r in recs_add:
+                r.add(key, hit, nom, ts, omega)
+
         w = cons.get("who")
         if w is not None:
             lvl, items, nom = w
             k = keys[lvl] if lvl < len(keys) else None
-            hr.add("who", str(k) in items, nom, ts, omega)
+            add("who", str(k) in items, nom)
         wh = cons.get("when")
         if wh is not None:
             dt = 1 if daytype else 0
+            hit = None
             if wh[0] == "win":
                 iv = wh[1].get(dt)
                 if iv:                                  # a day type without stated windows: no check
-                    hr.add("when", any(a <= minute < b for a, b in iv), wh[2], ts, omega)
+                    hit = any(a <= minute < b for a, b in iv)
             else:
                 slot = dt * 96 + min(95, max(0, int(minute // 15)))
-                hr.add("when", slot in wh[1], wh[2], ts, omega)
+                hit = slot in wh[1]
+            if hit is not None:
+                add("when", hit, wh[2])
         for a, c in cons.items():
             if a in ("who", "when"):
                 continue
@@ -863,7 +907,7 @@ class PatternTreeEngine(Engine):
                     # exact comparison failed every check of a constant attribute
                     # (pack O: every health-check statement, 0 of 1 066 checks)
                     tol = 1e-9 * max(1.0, abs(c[1]), abs(c[2]))
-                    hr.add(a, c[1] - tol <= x <= c[2] + tol, c[3], ts, omega)
+                    add(a, c[1] - tol <= x <= c[2] + tol, c[3])
             elif c[0] == "rx":
                 rx = _rx(c[1])
                 if rx is not None:
@@ -874,11 +918,11 @@ class PatternTreeEngine(Engine):
                     # viewstate check failed, so every login statement failed
                     # every held-out test (pack O OA /login: 0 of 289 checks)
                     probe = _shape_instance(v) if isinstance(v, Shaped) else str(v)
-                    hr.add(a, bool(rx.fullmatch(probe)), c[2], ts, omega)
+                    add(a, bool(rx.fullmatch(probe)), c[2])
             elif c[0] == "req":
                 ks = v if isinstance(v, (list, tuple, set, frozenset)) else str(v).split(",")
                 have = {str(k)[:-2] if str(k).endswith("[]") else str(k) for k in ks}
-                hr.add(a, c[1] <= have, c[2], ts, omega)
+                add(a, c[1] <= have, c[2])
             elif c[0] == "bind":
                 # c = ("bind", X attribute, x value, y attribute, bound y, nominal LB_x)
                 xv = get(c[1])
@@ -886,9 +930,9 @@ class PatternTreeEngine(Engine):
                     continue
                 yv = get(c[3])
                 if yv is not EV.ABSENT:
-                    hr.add(a, str(yv) == c[4], c[5], ts, omega)
+                    add(a, str(yv) == c[4], c[5])
             else:
-                hr.add(a, str(v) in c[1], c[2], ts, omega)
+                add(a, str(v) in c[1], c[2])
 
     # ------------------------------------------------- route partition
     def _route_partition(self, lc: _LC, tr: PT.Tree, get: Callable[[str], Any], ts: float) -> None:
@@ -996,9 +1040,18 @@ class PatternTreeEngine(Engine):
 
     @staticmethod
     def _apply_target(lc: _LC, nd: PN.Node, a: str, v: Any, ts: float, mass: float, omega: float,
-                      day: int, extreme: bool) -> Optional[str]:
+                      day: int, extreme: bool, ip: Any = None) -> Optional[str]:
         """One target update of a node (the value kind it was learned as, None
-        when it was not learned): shared by learning and the split replay."""
+        when it was not learned): shared by learning and the split replay. A
+        leaf also keeps the row's numeric value as an extreme of its source
+        (`ip`; pnode.SourceExtremes, the hard range of a future source split's
+        child)."""
+        if extreme and ip is not None and day is not None and nd.split is None and not nd.is_exc \
+                and isinstance(v, (int, float, np.number)) and not isinstance(v, (bool, np.bool_)):
+            # a raw record of the source's numeric value, kept whatever P02 has
+            # typed the attribute as so far (a re-typing restarts the summaries,
+            # not the sources' observed extremes)
+            PatternTreeEngine._note_extreme(lc, nd, a, float(v), ip, ts, int(day))
         k, pol, lg = lc.kind_of(a)
         if k == "?":
             return None                                    # not typed yet (P02)
@@ -1025,7 +1078,8 @@ class PatternTreeEngine(Engine):
                         get: Callable[[str], Any], ts: float, mass: float, omega: float, day: int) -> None:
         for a in self._targets_of(lc, tr, nd, kind, sel):
             v = get(a)
-            k = self._apply_target(lc, nd, a, v, ts, mass, omega, day, lc.row_factor >= 0.999)
+            k = self._apply_target(lc, nd, a, v, ts, mass, omega, day, lc.row_factor >= 0.999,
+                                   get("net.src") if nd.split is None else None)
             if k is None:
                 continue
             # content drift detectors run on leaves (and exception nodes) only: an
@@ -1729,14 +1783,7 @@ class PatternTreeEngine(Engine):
         P05 keeps (roles split / target / shape and the system targets)."""
         root = tr.nodes[tr.root]
         store = root.meta.setdefault("rpart_rows", {})
-        attrs = lc.rpart_attrs.get(kind)
-        if attrs is None:
-            sel = lc.selection(kind)
-            roles = sel.get("roles") or {}
-            attrs = list(dict.fromkeys(list((sel.get("targets_sys") or {}).get(kind) or [])
-                                       + [a for a, r in roles.items() if r in ("split", "target", "shape")
-                                          and SEL.targetable(a)]))
-            lc.rpart_attrs[kind] = attrs
+        attrs = self._row_attrs(lc, kind)
         tv: Dict[str, Any] = {}
         for a in attrs:
             v = get(a)
@@ -1751,13 +1798,56 @@ class PatternTreeEngine(Engine):
             victim = min(store, key=lambda k: store[k][-1][0] if store[k] else -math.inf)
             del store[victim]
 
+    def _row_attrs(self, lc: _LC, kind: int) -> List[str]:
+        """The attributes P05 keeps for rows of this kind (system targets and
+        the split / target / shape roles): what a waiting route row and a
+        leaf's per-source extremes record."""
+        attrs = lc.rpart_attrs.get(kind)
+        if attrs is None:
+            sel = lc.selection(kind)
+            roles = sel.get("roles") or {}
+            attrs = list(dict.fromkeys(list((sel.get("targets_sys") or {}).get(kind) or [])
+                                       + [a for a, r in roles.items() if r in ("split", "target", "shape")
+                                          and SEL.targetable(a)]))
+            lc.rpart_attrs[kind] = attrs
+        return attrs
+
+    def _note_source_extremes(self, lc: _LC, leaf: PN.Node, kind: int, get: Callable[[str], Any],
+                              ip: str, ts: float, day: int) -> None:
+        """The row's numeric values of the attributes P05 keeps (targets of the
+        leaf or not yet), as extremes of its source (min / max: noting a value
+        _apply_target noted too changes nothing). Measured on pack O seed 1:
+        192.168.1.21's 643 B login of day 2 reached the login node before
+        body.len was one of its targets, so no record of the node held it and
+        the 综合部 node created on day ~12 stated 'all within 1-2.8 KB'."""
+        for a in self._row_attrs(lc, kind):
+            v = get(a)
+            if isinstance(v, (int, float, np.number)) and not isinstance(v, (bool, np.bool_)):
+                self._note_extreme(lc, leaf, a, float(v), ip, ts, day)
+
+    @staticmethod
+    def _note_extreme(lc: _LC, nd: PN.Node, a: str, x: float, ip: Any, ts: float, day: int) -> None:
+        if x != x:
+            return
+        ip_s = str(ip)
+        sx = nd.meta.get("sext")
+        if sx is None:
+            sx = nd.meta["sext"] = PN.SourceExtremes()
+        sx.note(ip_s, a, x, int(day), ts)
+        ks = lc.who_keys(ip_s)
+        if len(ks) > 1 and isinstance(ks[1], str) and ks[1] != ip_s:
+            s24 = nd.meta.get("sext24")
+            if s24 is None:
+                s24 = nd.meta["sext24"] = PN.SourceExtremes()
+            s24.note(ks[1], a, x, int(day), ts, rep=ip_s)
+
     def _replay_route_rows(self, lc: _LC, tr: PT.Tree, nd: PN.Node, rows: Sequence[Tuple]) -> None:
         """Learn a new route node's waiting rows into it, at their own times."""
         for row in sorted(rows, key=lambda r: r[0]):
             ts_r, ip, day, dt, minute, mass, om, ext, sus, tv, _cv = row
             nd.update_core(ts_r, mass, om, lc.who_keys(ip), ip, dt, minute, day, suspicious=sus)
             for attr, val in tv.items():
-                self._apply_target(lc, nd, attr, val, ts_r, mass, om, day, ext)
+                self._apply_target(lc, nd, attr, val, ts_r, mass, om, day, ext, ip)
         st_ = lc.aux["stats"]
         st_["route_rows_inherited"] = st_.get("route_rows_inherited", 0) + len(rows)
 
@@ -1841,7 +1931,7 @@ class PatternTreeEngine(Engine):
             skip = seeded if cid in named else ()
             for attr, val in tv.items():
                 if attr not in skip:
-                    self._apply_target(lc, child, attr, val, ts_r, mass, om, day, ext)
+                    self._apply_target(lc, child, attr, val, ts_r, mass, om, day, ext, ip)
             n += 1
         st_ = lc.aux["stats"]
         st_["rows_inherited"] = st_.get("rows_inherited", 0) + n
@@ -1958,6 +2048,10 @@ class PatternTreeEngine(Engine):
                 for ip, cnt, _g, e in leaf.who.levels[0].items(ts):
                     if cnt > 0 and mine(ip):
                         child.who.update(lc.who_keys(str(ip)), str(ip), ts, float(cnt), float(e))
+                # (round 4) the child's hard range starts from its sources' observed
+                # extremes over the leaf's whole life (pnode.SourceExtremes), rows the
+                # leaf learned before it was learning included
+                self._inherit_source_extremes(lc, leaf, child, mine, ts, int(l))
                 # binding pairs keyed by the address: the child's sources' rows
                 # (P08 fits the child's bindings from its first run, instead of
                 # from pairs counted only after its next request)
@@ -1984,11 +2078,44 @@ class PatternTreeEngine(Engine):
         leaf.split_stats = None
         leaf.meta.pop("cands", None)
         leaf.meta.pop("C", None)
+        leaf.meta.pop("sext", None)                     # an internal node: its children keep them
+        leaf.meta.pop("sext24", None)
         leaf.xstats = None
         leaf.adwin = None
         self.aux_learning(lc, kind).discard(leaf.id)
         lc.aux["stats"]["splits"] += 1
         return True
+
+    @staticmethod
+    def _inherit_source_extremes(lc: _LC, leaf: PN.Node, child: PN.Node, mine: Callable[[Any], bool],
+                                 ts: float, level: int) -> None:
+        """A source split's child: the per-source extremes of its sources
+        seed its numeric targets' hard range (at their own days) and become
+        its own records (a later source split of it inherits them again)."""
+        day_now = _local_day(ts, lc.off)
+        # the /24 records serve every prefix split (all addresses of a /24 fall in
+        # the same /24 and /16 child; a pool's leases are a few keys); the address
+        # records serve address, learned-group and region splits as well
+        for nm in ("sext", "sext24") if level in (1, 2) else ("sext",):
+            sx = leaf.meta.get(nm)
+            if sx is None or not len(sx):
+                continue
+            for a, (lo, dlo, hi, dhi) in sx.union(mine).items():
+                k, pol, lg = lc.kind_of(a)
+                if k != "num":
+                    continue
+                num = child.target(a, k, pol, lg)
+                if isinstance(num, PN.NumSummary):
+                    num.seed_extreme(lo, int(dlo), day_now, extend=True)
+                    num.seed_extreme(hi, int(dhi), day_now, extend=True)
+        for nm in ("sext", "sext24"):
+            sx = leaf.meta.get(nm)
+            if sx is None or not len(sx):
+                continue
+            sub = sx.subset(mine)
+            if len(sub):
+                cx = child.meta.get(nm)
+                child.meta[nm] = sub if cx is None else cx.merge(sub)
 
     # --------------------------------------------------------- revision
     def _rev_update(self, lc: _LC, tr: PT.Tree, nd: PN.Node, child_id: int, get: Callable[[str], Any],
@@ -2582,6 +2709,7 @@ class PatternTreeEngine(Engine):
                 cons = nd.ref.get("hold") if isinstance(nd.ref, Mapping) else None
                 if not cons or nd.state not in PN.CONFIDENT_STATES:
                     nd.meta.pop("hold_prior", None)
+                    nd.meta.pop("hold_prior_seg", None)
                     continue
                 k = PN.hold_kind(len(cons))
                 hr = nd.meta.get("hold")
@@ -2589,11 +2717,28 @@ class PatternTreeEngine(Engine):
                     ps, n = hr.tests(t)
                     if n > 0:
                         pool.setdefault(k, []).append((ps, n))
+                # (round 4) once a statement has its own held-out test, its prior
+                # is kept for the rest of its confidence segment (afterwards only its
+                # own tests move it); before its first test it states its kind's
+                # current base rate. Refitted daily for every statement, the pooled
+                # prior moved every few-test statement with the pool - on and after
+                # a drift day the failing tests of the drifted statements lowered
+                # the confidence of statements the drift did not touch (PG2's
+                # median confidence dipped on pack O days 13 / 16). Frozen from the
+                # statement's birth instead, the pessimistic prior of the first
+                # days (few statements, few tests) stayed: pack O seed 0's GET /docs
+                # stated 0.40 after 3 passed tests of 3
+                seg = int(getattr(hr, "seg", 0)) if hr is not None else 0
+                tested = hr is not None and hr.tests()[1] > 0
+                if tested and nd.meta.get("hold_prior") is not None and nd.meta.get("hold_prior_seg") == seg:
+                    continue
                 pr = prior.get(k) or prior.get("*")
                 if pr is not None:
                     nd.meta["hold_prior"] = (round(float(pr[0]), 4), round(float(pr[1]), 4))
+                    nd.meta["hold_prior_seg"] = seg
                 else:
                     nd.meta.pop("hold_prior", None)
+                    nd.meta.pop("hold_prior_seg", None)
 
     def _normal_days_fn(self, lc: _LC, systems: Iterable[str]) -> Callable[[int, int], int]:
         cal: Dict[int, Any] = {}
@@ -3465,7 +3610,13 @@ def _hold_constraints(nd: PN.Node, t: float, targets: Mapping[str, Any],
     lvl = nd.who.closed_level(t, nd.n_days())
     if lvl is not None:
         items, _cov = nd.who.heavy_set(lvl, t)
-        U = nd.who.levels[lvl].unseen(t)
+        # (round 4) the nominal of "the next source is one of these" is the share
+        # the listed items hold, never more: 1 - stated_unseen (the heavy set
+        # covers >= 95 %, the unseen mass U is ~0.001 at a closed level). With
+        # 1 - U every batch in which the light sources outside the set held their
+        # 3-5 % failed (pack O seed 0, day 14: mail / home / login / comment
+        # nodes' who held 0.95-0.96 against nominal 0.997-0.9997)
+        U = nd.who.stated_unseen(lvl, t, items)
         out["who"] = (int(lvl), frozenset(str(x) for x in items), float(max(0.0, 1.0 - U)))
     fit = fit or {}
     pw = fit.get(MP.PWIN)

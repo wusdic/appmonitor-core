@@ -23,6 +23,11 @@ Adaptive value capacity (round 3, lib/pgrammar.adapt_values): a text target's
         usernames), and the closed set is then judged on the arrivals since the
         growth; random tokens never grow it. The state is kept per node in
         'vstate' {attr: {'k', 'seg', 'seen' (<= 128 hashes) | 'open', 'ck', 'new'}}.
+Closure (round 4, lib/pgrammar._closed): a value set is closed when its
+        Good-Turing unseen mass U is below its rarest member's share (every
+        member repeated, nothing evicted), not at fixed U / n thresholds:
+        finance's three users close once each logged in twice (round 3: U <=
+        0.02 at n_c >= 20, ~day 16-21 of pack O).
 Cadence 1 h per tree, dirty nodes only (§6.20).
 Nothing is pre-set: "后边内容不超过 10 个字符" is an output only when observed
 lengths reach 10 (or an operator pins it; pins only widen).
@@ -161,11 +166,12 @@ class PayloadGrammarEngine(Engine):
         vstate: Dict[str, Any] = {}
         for a, summ in node.targets.items():
             rr = reg.get(a) if reg is not None else None
+            old_st = old_vstate.get(a) or {}
             if isinstance(summ, PN.TextSummary):
                 # adaptive value capacity (lib/pgrammar.adapt_values): a finite
                 # population of values that outgrew the exact-value sketch grows it
                 # (bounded), the closure is then judged on the arrivals since
-                vcap = PG.adapt_values(summ, now, old_vstate.get(a),
+                vcap = PG.adapt_values(summ, now, old_st or None,
                                        inherit_k=capacity_of(node, a) if capacity_of else None)
                 if vcap:
                     vstate[a] = vcap

@@ -58,6 +58,15 @@ Hygiene (2026-10-01, measured on pack O, oa seeds 0-1; §6.9.2-§6.9.3):
           whose arrivals come from >= 2 sources, needs REGIME_SINGLE_DATES dates
           (lib/pwindows._accepted): A2's three released 09:10 logins formed
           '09:10-09:11' in the 综合部 login statement.
+        * (round 4) lib/pwindows.fit_regime is the pipeline of the node fit
+          and of a group's part (part_when): the arrivals since an alarm
+          replace the full set only when they span >= 3 dates; a window
+          must persist in the node's last 5 (+1) dates (>= 2 sources on >= 3
+          of them, or one source on 5) - stale regimes and one source's late
+          arrivals leave; the stated coverage is lowered to the date-CV
+          validation coverage when that is smaller; arrivals of sources the
+          node's who holds out as suspect and never tracked (outsiders, A9)
+          are not the node's (_points).
 Change  while P04 has an open Page-Hinkley alarm on the node's arrival time
         (node.meta['evolving']['@when']), windows are PROVISIONAL and fitted
         from the reservoir arrivals since the alarm; when P04 accepts the change
@@ -168,33 +177,59 @@ def _changed(mark: Optional[Mapping[str, Any]], node: Any) -> bool:
             or int(mark.get("cver", -1)) != int(node.cver) or _when_alarm(node) != mark.get("when_t0"))
 
 
+def _suspects(node: Any, t: Optional[float]) -> set:
+    """Sources the node's who summary holds out as suspect at t (P04's
+    sequential foreign test, pnode.WhoSummary.suspects) that never gained a
+    member's standing there (not tracked at the IP level: a suspect's rows stay
+    out of the levels, so an outsider never enters them): an outsider's
+    arrivals are not the node's. A member that turned suspect later (pack O
+    seed 3: 192.168.1.21 after A2 borrowed a colleague's credential from it)
+    keeps its arrivals - its usual logins are the pattern; dropping them left
+    the 综合部 window to two sources and a stale regime (08:33-09:20)."""
+    if t is None:
+        return set()
+    try:
+        l0 = node.who.levels[0]
+        return {ip for ip in node.who.suspects(float(t)) if ip not in l0}
+    except Exception:
+        return set()
+
+
 def _points(node: Any, d: int, since: Optional[float] = None,
-            members: Optional[set] = None) -> List[Tuple[float, float, float, str]]:
+            members: Optional[set] = None, t: Optional[float] = None) -> List[Tuple[float, float, float, str]]:
     """[(minute, ts, weight, source)] of the node's minute reservoir for day
     type d. The weight is the row's learning mass relative to the median
     point, capped at 1 (trust x outlier damping, §6.9.3): a damped row counts
     0.1 of an arrival. (A full reservoir is a time-decayed weighted sample in
     which a recent damped row still often survives, so the weight is applied
     there too; rows heavier than the median count 1, so HT-weighted rows are
-    not double-counted.)"""
+    not double-counted.) With `t`, the arrivals of sources the node's who
+    summary holds out as suspect are left out too (round 4): pack O's A9
+    (192.168.3.33, one finance approval-list page a day at 10:30, never a
+    member) and A1 kept seven 10:30 points at full weight in the approver's
+    reservoir, and Bayesian Blocks cut the approver's 10:00-11:30 window into
+    10:19-10:33 and 10:51-11:27 around that spike (seeds 0-1, day 21)."""
     res = node.when.res
     if res is None or not len(res):
         return []
     items = res.items()
     med = float(np.median([w for _it, w, _t in items])) if items else 1.0
+    sus = _suspects(node, t)
     out = []
-    for it, w, t in items:
-        if int(it[0]) != d or (since is not None and t < since):
+    for it, w, ts in items:
+        if int(it[0]) != d or (since is not None and ts < since):
             continue
         src = str(it[2]) if len(it) > 2 else ""
         if members is not None and src not in members:
             continue
-        out.append((float(it[1]), float(t), 1.0 if med <= 0 else min(1.0, float(w) / med), src))
+        if src and src in sus:
+            continue
+        out.append((float(it[1]), float(ts), 1.0 if med <= 0 else min(1.0, float(w) / med), src))
     return out
 
 
-def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, str]]
-             ) -> Tuple[List[Tuple[float, float, float, str]], Optional[int]]:
+def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, str]],
+             t: Optional[float] = None) -> Tuple[List[Tuple[float, float, float, str]], Optional[int]]:
     """A node created by a source split (P04 seeds its who summary, not its
     arrivals; its own minute reservoir starts when P09 asks for it) reads the
     arrivals of ITS sources from the nearest ancestor that keeps a reservoir,
@@ -223,9 +258,9 @@ def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, 
         if any(c[0] != "net.src" for c in extra):
             break
         if anc.when.res is not None and len(anc.when.res):
-            pts = _points(anc, d, members=members)
+            pts = _points(anc, d, members=members - _suspects(node, t), t=t)
             if len(pts) > len(own):
-                seen = {(round(m, 3), round(t, 3), s_) for m, t, _w, s_ in pts}
+                seen = {(round(p[0], 3), round(p[1], 3), p[3]) for p in pts}
                 pts += [p for p in own if (round(p[0], 3), round(p[1], 3), p[3]) not in seen]
                 return pts, int(anc.id)
         cur = anc
@@ -339,36 +374,20 @@ class TimeWindowEngine(Engine):
         since0 = rg.get("when_t0") if rg.get("when_t0") is not None else rg.get("regime_t0")
         for d, dk in enumerate(DT_KEYS):
             n_m = node.when.evidence(d, now, conf=False)
-            pts, anc = _backoff(tree, node, d, _points(node, d))
+            pts, anc = _backoff(tree, node, d, _points(node, d, t=now), now)
             if n_m < N_FIT_MIN and len(pts) < PW.MIN_POINTS:
                 by[dk] = None
                 continue
             hist = node.when.hist[d]
             if float(np.sum(hist)) <= 0:
                 hist = np.zeros(PW.SLOTS)
-                for m, _t, w, _s in pts:
-                    hist[int(m // PW.SLOT_MIN) % PW.SLOTS] += w
-            since, provisional, cut = since0, rg.get("when_t0") is not None, None
-            if since is None:
-                # P09 owns arrival-time drift (§16.2 M8): the latest significant
-                # change of the time-of-day law in the node's own arrivals
-                cut = PW.regime_cut(pts, hist, tz_offset_s=off)
-                if cut is not None:
-                    since, provisional = cut["since"], not cut["accepted"]
-            recent = [p for p in pts if p[1] >= since] if since is not None else pts
-            need = PW.REGIME_POINTS if cut is not None else PW.MIN_POINTS
-            use_recent = since is not None and len(recent) >= need
-            rec = PW.fit_daytype(hist, max(n_m, float(len(pts))), recent if use_recent else pts,
-                                 tz_offset_s=off, min_points=min(need, PW.MIN_POINTS))
+                for p in pts:
+                    hist[int(p[0] // PW.SLOT_MIN) % PW.SLOTS] += p[2]
+            rec = PW.fit_regime(hist, n_m, pts, tz_offset_s=off, since0=since0,
+                                provisional0=rg.get("when_t0") is not None)
             if rec is None:
                 by[dk] = None
                 continue
-            if since is not None:
-                rec["since"] = float(since)
-                rec["provisional"] = bool(provisional)
-                rec["regime"] = "new" if use_recent else "mixed"
-                if cut is not None:
-                    rec["change"] = {k: cut[k] for k in ("p", "dates_after", "sources_after", "accepted")}
             if anc is not None:
                 rec["backoff"] = anc
             if rec.get("dates") is None:

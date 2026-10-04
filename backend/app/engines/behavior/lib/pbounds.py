@@ -9,7 +9,8 @@ fit_numeric(num, t, day_now, ...) -> record
     band98  = [Q(0.01), Q(0.99)]
     range   = observed [min, max] over the ring's days of the current
               confidence segment;  n_rng = evidence units observed on those days
-    cover   = 2 / (n_rng + 1)       P(next observed row outside range), exchangeability
+    cover   = Beta(2, n_rng - 1) 95 % quantile: an upper bound of P(next row outside
+              this range) (round 4; the predictive rank bound 2 / (n_rng + 1) is cover_pred)
     hard    = n_rng >= 30 and approx share <= 0.2 ("100 % in [a, b]" may be rendered)
     tail_hi / tail_lo = [u, xi, sigma, n] in natural units: GPD (lib/evt.gpd_pwm_fit) on the
               exceedances over Q(0.90) (under Q(0.10)) when >= 30 of them
@@ -335,12 +336,20 @@ def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float
     if rng is not None:
         if approx <= APPROX_MAX:
             rec["range"] = rng
-            rec["cover"] = 2.0 / (n_rng + 1.0)
-            # the rank bound is predictive (averaged over samples); the realised
-            # range's own exceedance mass is Beta(2, n - 1): its 95 % upper bound
-            # is the per-statement guarantee
+            # the rank bound 2 / (n + 1) is predictive (averaged over samples);
+            # the realised range's own exceedance mass is Beta(2, n - 1) and its
+            # 95 % upper bound is the per-statement guarantee - the STATED cover
+            # (round 4), as the band states its coverage's 95 % lower bound
+            # (coverage_lb): "下次越界概率 ≤ x %" is then an upper bound of this
+            # range's exceedance. With the predictive value a correct range drawn
+            # from a sample that happened to miss a tail failed its held-out
+            # check: pack O seed 0, day 21, the 综合部 login range 1-2.6 KB from 39
+            # logins (none of the 5 % below 1 KB drawn) stated 0.05, held 0.115
+            # (Beta(2, 38): 95 % bound 0.12)
+            rec["cover_pred"] = 2.0 / (n_rng + 1.0)
             rec["cover_hi"] = float(pmdl.beta_quantile(0.95, 2.0, max(n_rng - 1.0, 1e-6))) \
                 if n_rng >= 1 else 1.0
+            rec["cover"] = rec["cover_hi"]
             rec["hard"] = bool(n_rng >= HARD_N)
         else:
             rec["observed"] = rng

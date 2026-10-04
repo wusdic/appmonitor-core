@@ -15,8 +15,8 @@ histogram, charset-class counts)
                             L4, L3, L5 . L1 -> [a-z]{3,5}(\\.[a-z])?
                          3 otherwise the charset-class union and the total length range
                          4 closed value set when the exact-value SS covers >= 99 % of
-                            mass, its unseen mass U <= closed_u and n_c >= closed_n (policy
-                            clear / hmac): p(new value) = U
+                            mass and U < the rarest member's share (policy clear /
+                            hmac): p(new value) = U
     published: grammar (regex), charset, len [lo, hi] with len_cover = 2 / (n + 1),
     c_g (mass the grammar covers), U_shapes = (N1_shapes + E + 0.5) / (N + 1),
     U_s = the grammar's unseen mass (p of a grammar failure, and the confidence
@@ -39,11 +39,19 @@ histogram, charset-class counts)
         A): hex tokens of 8-16 characters give [A-Za-z0-9]{8,16} instead of A9..A16
         plus one skeleton per 8-character token (which left 11 % of passwords outside
         the grammar in pack O's FIN login).
-      * closed sets at U <= 0.02 and n_c >= 20 (spec: 0.01 and 50; config
-        progressive.defaults.closed_u / closed_n). 0.02 is the MEDIUM who-closed level
-        and 20 is n_conf. Claim-level violation rate 3.4 % (spec: 1.4 %), ECE 0.011
-        (0.008) over 9 distributions; the spec thresholds cannot close 综合部's three
-        usernames before about day 24 of pack O, PG1 asks at day 14.
+      * closure (round 4) compares, instead of thresholds on U and n: the set
+        is closed when the unseen class is predicted rarer than its rarest
+        member, U < e_min / N (U = (N1 + E + 0.5) / (N + 1), Good-Turing with the
+        KT pseudo-count; e_min the rarest member's evidence): every member
+        repeated (no singleton), nothing evicted, and the claim separates members
+        from non-members. Was: U <= 0.02 and n_c >= 20 (spec 0.01 / 50), which an
+        honest U cannot meet below ~24 arrivals however clearly the set repeats:
+        finance's three users (16-19 logins at day 14, U 0.026-0.029) and its
+        3-value opinion set (U 0.021) were not closed by PG1's day 14 on 5 of 5
+        seeds. A growing set (each new value a singleton, U >= 1.5 / N > 1 / N)
+        or an evicting sketch never closes. P03 scores a non-member at p = U,
+        far above its 1e-3 finding level, so an early closure states the set
+        (with its U) without raising findings.
     A class token A (mixed alphanumeric run > 8, lib/phier) becomes the class union
     the charset counts actually saw (e.g. [a-z0-9]), [A-Za-z0-9] when unknown
     (shape-only policy).
@@ -76,8 +84,8 @@ SHAPE_MIN_SHARE = 0.002           # shapes below this share of mass do not widen
 REQUIRED = 0.99
 OPTIONAL = 0.01
 CLOSED_COVER = 0.99
-CLOSED_U = 0.02                    # spec §6.11: 0.01 (deviation, measured: see fit_text doc)
-CLOSED_N = 20.0                    # spec §6.11: 50 (= n_conf, §6.8.1)
+CLOSED_U = 0.02                    # round 3 closure threshold (kept for callers; no longer gating)
+CLOSED_N = 20.0                    # round 3 closure evidence (kept for callers; no longer gating)
 CLOSED_EV_MIN = 0.25               # a closed-set member arrived clean at least once (a damped row: 0.1)
 N_MIN = 3.0                        # evidence needed before anything is published
 N_SCORE = 20.0                     # support needed to score (§6.16.1)
@@ -107,6 +115,23 @@ def parse_shape(shp: str) -> List[Token]:
                 continue
         out.append((" " if tok == "SP" else tok, 1))
     return out
+
+
+_SHAPE_TOK = re.compile(r"(?:[LUDXA][0-9]+|SP|E0|.\{[0-9]+\}|.)\Z", re.S)
+
+
+def shape_key(k: Any) -> str:
+    """A tracked shape key as a level-1 shape: a key that is not one (a raw
+    value counted as its own shape - pnode.TextSummary.update with the 'shape'
+    policy and a plain string, seen on pack O's replayed comment rows) is
+    shaped (lib/phier.shape). Without this the raw text became one 'literal'
+    token: the OA comment grammar of seed 1 listed the CJK characters of 7
+    comments as its charset ('[内重家子...]{1,126}', held-out 0.7-2 %)."""
+    s = str(k)
+    if isinstance(k, Shaped) or all(_SHAPE_TOK.match(tok) for tok in s.split(" ") if tok):
+        return s
+    from .phier import shape as _shape_of
+    return _shape_of(s)
 
 
 def _key(tokens: Sequence[Token]) -> Tuple[str, ...]:
@@ -296,12 +321,12 @@ def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N
     tot = ss.total(t)
     if N < n_min or tot <= 0:
         return None
-    raw = ss.items(t)
-    items = [(k, g) for k, _, g, _ in raw if g > 0]
+    raw = [(shape_key(k), c, g, e) for k, c, g, e in ss.items(t)]
+    items = _merge_keys([(k, g) for k, _, g, _ in raw if g > 0])
     if not items:
         # all tracked counts are inherited errors (a churning, e.g. random,
         # value space): classes and lengths come from the upper-bound counts
-        items = [(k, c) for k, c, _, _ in raw if c > 0]
+        items = _merge_keys([(k, c) for k, c, _, _ in raw if c > 0])
     if not items:
         return None
     chars = None
@@ -412,6 +437,13 @@ def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N
     return rec
 
 
+def _merge_keys(items: Sequence[Tuple[str, float]]) -> List[Tuple[str, float]]:
+    out: Dict[str, float] = {}
+    for k, g in items:
+        out[k] = out.get(k, 0.0) + float(g)
+    return list(out.items())
+
+
 def inherit_text(anc: Optional[Mapping[str, Any]], ts: Any, t: float) -> Optional[Dict[str, Any]]:
     """Hierarchical back-off of a grammar (§6.16.1 applied to publishing): a
     node too young for its own grammar (< N_MIN evidence, e.g. a department's
@@ -427,7 +459,7 @@ def inherit_text(anc: Optional[Mapping[str, Any]], ts: Any, t: float) -> Optiona
         rx = re.compile(str(anc["grammar"]))
     except re.error:
         return None
-    seen = [k for k, _, g, _ in ts.shapes.items(t) if g > 0]
+    seen = [shape_key(k) for k, _, g, _ in ts.shapes.items(t) if g > 0]
     if not seen or not all(rx.fullmatch(instance(k)) for k in seen):
         return None
     n = float(ts.shapes.total_evidence(t))
@@ -466,15 +498,24 @@ def _closed(vs: Any, t: float, closed_n: float, closed_u: float,
         cov, nv = seg["cover"], seg["N"]
         out.update({"U": U, "value_cover": float(cov), "n_values": float(nv), "U_all": out["U"],
                     "capacity": int(vs.k)})
-    if cov >= CLOSED_COVER and U <= closed_u and nv >= closed_n:
-        out["closed"] = sorted((_jv(k) for k, _ in its), key=_vkey)
+    if its and cov >= CLOSED_COVER:
+        # closure (round 4): the unseen class must be predicted rarer than the
+        # set's rarest member - Good-Turing's U (KT pseudo-count, evictions,
+        # singletons) against the rarest member's share of the evidence
+        e_min = min(float(vs.evidence(k, t)) for k, _ in its)
+        p_min = e_min / max(float(vs.total_evidence(t)), 1e-12)
+        out["p_min"] = float(p_min)
+        if U < p_min:
+            out["closed"] = sorted((_jv(k) for k, _ in its), key=_vkey)
     return out
 
 
 # ------------------------------------------------- adaptive value capacity
-VALUES_K_MAX = 64      # exact values one text summary may track at most (4 x pnode.TEXT_VALUES_K)
+VALUES_K_MAX = 128     # exact values one text summary may track at most (8 x pnode.TEXT_VALUES_K):
+                       # a population of <= 102 values (1.25 margin), a department's users; round 3:
+                       # 64 (<= 51 values) left pack O's 60-persona DEV pool evicting for ever (U ~ 0.9)
 GROW_MARGIN = 1.25     # capacity >= 1.25 x the values seen
-SEEN_MAX = 2 * VALUES_K_MAX   # value hashes remembered per full sketch; beyond: an open value space
+SEEN_MAX = 128         # value hashes remembered per full sketch; beyond: an open value space
 
 
 def _vh(v: Any) -> int:
