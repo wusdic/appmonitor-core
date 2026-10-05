@@ -67,6 +67,14 @@ Hygiene (2026-10-01, measured on pack O, oa seeds 0-1; §6.9.2-§6.9.3):
           validation coverage when that is smaller; arrivals of sources the
           node's who holds out as suspect and never tracked (outsiders, A9)
           are not the node's (_points).
+        * (round 4, young change) a change of the time-of-day law younger than
+          3 dates is not fitted (lib/pwindows.fit_regime step 4: regime_cut
+          with one date allowed after the boundary, or the established law
+          binomial-tested on the last 2 dates): the established windows stay,
+          provisional, with when['drift'] and the confidence the young
+          arrivals show (D1, pack O seed 0: '08:49-09:21' at day 14 and the
+          union 08:32-09:21 until day 17 before); the block's one coverage is
+          the smallest day type's (lib/pwindows.block_coverage).
 Change  while P04 has an open Page-Hinkley alarm on the node's arrival time
         (node.meta['evolving']['@when']), windows are PROVISIONAL and fitted
         from the reservoir arrivals since the alarm; when P04 accepts the change
@@ -425,13 +433,15 @@ class TimeWindowEngine(Engine):
                        (prev.get(dk) and by.get(dk) and PW.moved(prev[dk]["windows"], by[dk]["windows"]))
                        for dk in DT_KEYS):
             cv += 1
-        masses = [node.when.mass(d, now) for d in range(2)]
-        cov_num = sum(masses[d] * by[dk]["coverage"] for d, dk in enumerate(DT_KEYS) if by.get(dk))
-        cov_den = sum(masses[d] for d, dk in enumerate(DT_KEYS) if by.get(dk))
         when = {PW.DT_LONG[dk]: (PW.as_intervals(by[dk]["windows"]) if by.get(dk) else [])
                 for dk in DT_KEYS}
-        when["coverage"] = cov_num / cov_den if cov_den > 0 else None
+        when.update(PW.block_coverage(by))
         when["confidence"] = min([r["confidence"] for r in fitted]) if fitted else None
+        drift = {PW.DT_LONG[dk]: by[dk]["drift"] for dk in DT_KEYS if by.get(dk) and by[dk].get("drift")}
+        if drift:
+            # PW.recent_drift: the latest date(s) contradict the windows (a change
+            # too young for regime_cut) - the statement is evolving (§6.9.2)
+            when["drift"] = drift
         return {"status": "fitted" if fitted else "none", "by_daytype": by, "when": when,
                 "n_c": float(node.n_c(now)), "dates": int(node.n_days()), "cver": cv,
                 "fit_t": float(now), "state": node.state,

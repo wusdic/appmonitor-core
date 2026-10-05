@@ -51,6 +51,7 @@ import ipaddress
 import json
 import math
 import re
+import zlib
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
@@ -214,6 +215,48 @@ def ece(conf: Sequence[float], obs: Sequence[float], bins: int = 10) -> Optional
         if m.any():
             tot += m.sum() / c.size * abs(float(c[m].mean()) - float(o[m].mean()))
     return float(tot)
+
+
+def calibration(conf: Sequence[float], obs: Sequence[float], bins: int = 10,
+                null_draws: int = 200, seed: int = 0) -> Dict[str, Any]:
+    """Calibration of stated confidences against held-out outcomes (§16.12):
+
+      ece        the plug-in expected calibration error (10 equal-width bins)
+      ece_null   its expectation for a PERFECTLY calibrated statement set with
+                 the same confidences (outcomes drawn Bernoulli(conf); Monte
+                 Carlo, fixed seed): the plug-in's finite-sample floor - 0.11-0.16
+                 at the ~60 statements of one snapshot of pack O, ~0.03 pooled
+      ce         the debiased RMS calibration error (Kumar, Liang & Ma 2019):
+                 sqrt(sum_b w_b [(o_b - c_b)^2 - o_b (1 - o_b) / (n_b - 1)]),
+                 an unbiased estimate of the squared error per bin, so ~0 for
+                 a calibrated set at any n, and >= the population ECE (Jensen)
+                 - the gate's value; a bin of one statement uses c (1 - c)
+      conf/hold  mean stated confidence / hold rate."""
+    c = np.asarray(conf, dtype=float)
+    o = np.asarray(obs, dtype=float)
+    ok = np.isfinite(c) & np.isfinite(o)
+    c, o = np.clip(c[ok], 0, 1), np.clip(o[ok], 0, 1)
+    out: Dict[str, Any] = {"n": int(c.size), "ece": None, "ece_null": None, "ce": None,
+                           "conf": None, "hold": None}
+    if c.size == 0:
+        return out
+    out["ece"] = ece(c, o, bins)
+    r = np.random.default_rng([seed, c.size, 12])
+    out["ece_null"] = float(np.mean([ece(c, (r.random(c.size) < c).astype(float), bins)
+                                     for _ in range(null_draws)]))
+    idx = np.minimum((c * bins).astype(int), bins - 1)
+    tot = 0.0
+    for b in range(bins):
+        m = idx == b
+        nb = int(m.sum())
+        if nb == 0:
+            continue
+        ob, cb = float(o[m].mean()), float(c[m].mean())
+        var = ob * (1.0 - ob) / (nb - 1) if nb >= 2 else cb * (1.0 - cb)
+        tot += nb / c.size * ((ob - cb) ** 2 - var)
+    out["ce"] = float(math.sqrt(max(0.0, tot)))
+    out["conf"], out["hold"] = float(c.mean()), float(o.mean())
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -763,6 +806,56 @@ def law_windows(row: Mapping[str, Any], dt: str, cov: float) -> List[List[float]
     return out
 
 
+def law_mass(row: Mapping[str, Any], dt: str, iv: Sequence) -> Optional[float]:
+    """Share of the row's arrivals (its law, `gen.arrival_q`) inside the
+    minute intervals `iv`: per window spec, the CDF from its quantile function,
+    weighted by the specs' weights."""
+    comps = ((row.get("gen") or {}).get("arrival_q") or {}).get(dt) or []
+    merged: List[Tuple[float, float]] = []
+    for a, b in _intervals(iv):
+        if merged and a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    tot = m = 0.0
+    for comp in comps:
+        try:
+            w, q = float(comp[0]), np.asarray(comp[1], dtype=float)
+        except (TypeError, ValueError, IndexError):
+            continue
+        if q.size < 2 or not (w > 0):
+            continue
+        ps = np.linspace(0.0, 1.0, q.size)
+        cdf = lambda x: float(np.interp(x, q, ps, left=0.0, right=1.0))   # noqa: E731
+        tot += w
+        m += w * sum(max(0.0, cdf(b) - cdf(a)) for a, b in merged)
+    return m / tot if tot > 0 else None
+
+
+def window_edges_ok(row: Mapping[str, Any], dt: str, lw: Sequence, cov: float,
+                    tol: float = 2.0) -> bool:
+    """PG10's window clause (§12, §16.12): the learned windows' edges lie
+    within `tol` minutes of the truth's windows (the central 99 %, e.g.
+    08:30-08:51) - or, for a statement that states a coverage 0.5 <= c < 0.99,
+    within `tol` of SOME set of intervals of the truth's arrival law holding c:
+    the law's mass of the windows shrunk by `tol` is <= c <= its mass of the
+    windows widened by `tol`, and every edge is inside the truth's windows
+    +- tol. A correct 74 % window of a uniform 21-minute law is ~15.5 minutes
+    long and can never have both edges within 2 minutes of the 99 % window."""
+    lw = _intervals(lw)
+    tw = _intervals((row.get("windows") or {}).get(dt) or [])
+    if not lw or not tw:
+        return False
+    if abs(lw[0][0] - tw[0][0]) <= tol and abs(lw[-1][1] - tw[-1][1]) <= tol:
+        return True
+    if not (math.isfinite(cov) and 0.5 <= cov < 0.99):
+        return False
+    inside = all(any(a - tol <= x <= b + tol for a, b in tw) for iv in lw for x in iv)
+    lo = law_mass(row, dt, [(a + tol, b - tol) for a, b in lw if b - a > 2 * tol])
+    hi = law_mass(row, dt, [(a - tol, b + tol) for a, b in lw])
+    return bool(inside and lo is not None and hi is not None and lo - 1e-9 <= cov <= hi + 1e-9)
+
+
 def when_compatible(row: Mapping[str, Any], s: LStmt, thr: float = 0.7) -> bool:
     cov = s.when_cov if math.isfinite(s.when_cov) else None
     for dt in row.get("daytypes") or []:
@@ -1242,6 +1335,25 @@ def eligible(row: Mapping[str, Any], pt: PTruth, day: int) -> bool:
     return n >= 20 and dates >= 3
 
 
+def _claim_key(s: LStmt) -> str:
+    """What a statement claims (system, action, who, when, content, bindings,
+    context), without its ids: two rendered statements with the same key are
+    one claim for precision and calibration."""
+    ev = s.raw.get("evidence") or {}
+    who = ev.get("who") or {}
+    return json.dumps([s.system, s.method, s.route,
+                       {k: who.get(k) for k in ("level", "items", "members", "group", "closed", "any")},
+                       ev.get("when"), ev.get("content"), ev.get("bindings"), ev.get("context")],
+                      sort_keys=True, default=str, ensure_ascii=False)
+
+
+def _stream(seed: int, day: int, purpose: int, item: Any) -> np.random.Generator:
+    """The evaluator's random stream for one item (a truth pattern's tid or a
+    claim key) of one snapshot: a function of (seed, day, purpose, item) only."""
+    return np.random.default_rng([int(seed), int(day), int(purpose),
+                                  zlib.crc32(str(item).encode("utf-8"))])
+
+
 def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, List[str]],
                  day: int, seed: int = 0, systems: Optional[Set[str]] = None,
                  precision_n: int = 300) -> Dict[str, Any]:
@@ -1249,11 +1361,15 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
     if systems is not None:
         stmts = [s for s in stmts if s.system in systems]
     edges = _edges(stmts)
-    r = np.random.default_rng([seed, day, 1])
     rows = [row for row in pt.rows if eligible(row, pt, day)
             and (systems is None or row["system"] in systems)]
     per: Dict[str, Any] = {}
     for row in rows:
+        # one random stream per truth pattern and per claim (_stream): the
+        # draws of one item do not depend on which statements came before it,
+        # so reordering or folding statements is metric-neutral (round 4: a
+        # pure reordering moved precision by up to 0.03)
+        r = _stream(seed, day, 1, row["tid"])
         per[row["tid"]] = recover(pt.observable(row, day), stmts, edges, pt, r)
         per[row["tid"]]["period"] = row.get("period")
     comps = {}
@@ -1267,28 +1383,37 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
         by_period[per_] = float(np.mean(v)) if v else None
     # precision + calibration over rendered confirmed statements
     valid = pt.valid_at_day(day)
-    rp = np.random.default_rng([seed, day, 2])
     prec_hits, conf, obs = [], [], []
-    unjudged = 0
+    calib: List[List[Any]] = []
+    unjudged = dups = 0
+    seen: Set[str] = set()
     for s in stmts:
         if not s.confirmed or s.negative:
             continue
         if not judgeable_context(s):
             unjudged += 1
             continue
-        h = holdout_check(s, valid, pt, rp, precision_n, day)
+        # a claim rendered twice (same system, same text) is one claim (§16.12)
+        claim = _claim_key(s)
+        if claim in seen:
+            dups += 1
+            continue
+        seen.add(claim)
+        h = holdout_check(s, valid, pt, _stream(seed, day, 2, claim), precision_n, day)
         prec_hits.append(bool(h["ok"]))           # no held-out event of its context: false
         if math.isfinite(s.confidence):
             conf.append(s.confidence)
             obs.append(1.0 if h["ok"] else 0.0)
+            calib.append([round(float(s.confidence), 4), int(bool(h["ok"])), int("|" in s.pattern_id)])
     depths = [s.depth for s in stmts if s.confirmed and math.isfinite(s.depth)]
     return {
         "day": day, "n_truth": len(rows), "n_stmt": len(stmts),
         "n_confirmed": sum(1 for s in stmts if s.confirmed),
         "recall": recall, "components": comps, "recall_by_period": by_period,
         "precision": float(np.mean(prec_hits)) if prec_hits else None,
-        "n_precision": len(prec_hits), "n_unjudged": unjudged,
-        "ece": ece(conf, obs), "mean_depth": float(np.mean(depths)) if depths else None,
+        "n_precision": len(prec_hits), "n_unjudged": unjudged, "n_duplicate": dups,
+        "ece": ece(conf, obs), "calib": calib,
+        "mean_depth": float(np.mean(depths)) if depths else None,
         "per_pattern": {k: {"recovered": v["recovered"], "components": v["components"],
                             "period": v["period"], "stmt": v["stmt"]} for k, v in per.items()},
         "stmt_conf": {k: _stmt_conf(stmts, pt.by_tid[k]) for k, v in per.items() if v["recovered"]},
@@ -1310,24 +1435,35 @@ def _stmt_U(stmts: Sequence[LStmt], pid: Optional[str]) -> Optional[float]:
     return None
 
 
+TREND_DAYS = (3, 5, 7, 10, 14, 21)     # §12's snapshot days (runs now snapshot daily)
+CALIB_FROM = 7                         # PG2 calibration pools the judged claims of days >= 7
+
+
 def pg2_convergence(pg1: Mapping[int, Mapping[str, Any]], pt: PTruth,
                     drift_days: Tuple[int, int] = (12, 15)) -> Dict[str, Any]:
     days = sorted(pg1)
     rec = {d: pg1[d].get("recall") for d in days}
-    viol = []
-    prev = None
-    for d in days:
-        if drift_days[0] <= d <= drift_days[1]:
-            continue
-        if prev is not None and rec[prev] is not None and rec[d] is not None \
-                and rec[d] < rec[prev] - 0.05:
-            viol.append([prev, d])
-        prev = d
+    # the trend checks read §12's snapshot days (TREND_DAYS); runs snapshot
+    # every day since round 3, which silently turned them into day-to-day
+    # checks (the daily recall violations are kept for information)
+    tdays = [d for d in days if d in TREND_DAYS] if any(d in TREND_DAYS for d in days) else days
+
+    def rec_viol(ds: Sequence[int]) -> List[List[int]]:
+        out, prev = [], None
+        for d in ds:
+            if drift_days[0] <= d <= drift_days[1]:
+                continue
+            if prev is not None and rec[prev] is not None and rec[d] is not None \
+                    and rec[d] < rec[prev] - 0.05:
+                out.append([prev, d])
+            prev = d
+        return out
+    viol = rec_viol(tdays)
     ttr: Dict[str, Optional[int]] = {}
     for period in ("daily", "weekly"):
         ttr[period] = next((d for d in days if (pg1[d].get("recall_by_period") or {}).get(period)
                             is not None and pg1[d]["recall_by_period"][period] >= 0.8), None)
-    dep = [(d, pg1[d].get("mean_depth")) for d in days if d < drift_days[0]
+    dep = [(d, pg1[d].get("mean_depth")) for d in tdays if d < drift_days[0]
            and pg1[d].get("mean_depth") is not None]
     depth_ok = all(b[1] >= a[1] - 1e-9 for a, b in zip(dep, dep[1:])) if len(dep) >= 2 else None
     unchanged = {r["tid"] for r in pt.rows if int(r["valid_from_day"]) == 1
@@ -1335,18 +1471,52 @@ def pg2_convergence(pg1: Mapping[int, Mapping[str, Any]], pt: PTruth,
     med_conf = [(d, _median(v for k, v in (pg1[d].get("stmt_conf") or {}).items()
                             if k in unchanged)) for d in days]
     med_conf = [(d, v) for d, v in med_conf if v is not None]
-    conf_ok = all(b[1] >= a[1] - 1e-9 for a, b in zip(med_conf, med_conf[1:])) \
-        if len(med_conf) >= 2 else None
     med_u = [(d, _median((pg1[d].get("who_U") or {}).values())) for d in days]
     med_u = [(d, v) for d, v in med_u if v is not None]
-    u_ok = all(b[1] <= a[1] + 1e-9 for a, b in zip(med_u, med_u[1:])) if len(med_u) >= 2 else None
+    # "precision grows with time" (§12 PG2, §16.12): judged on the spec's
+    # snapshot days, outside the drift days (as recall), and on a FIXED cohort:
+    # for each step the median change of the unchanged truth patterns
+    # recovered on both days. The median over whatever is recovered each day
+    # mixes newly recovered patterns (which enter at a low confidence) with the
+    # old ones: on round 3 it fell on steps where the paired change was
+    # positive (seed 0, days 7 -> 10: median -0.067, paired +0.05).
+    sdays = [d for d in tdays if not (drift_days[0] <= d <= drift_days[1])]
+    conf_steps = _paired_steps(pg1, sdays, "stmt_conf", unchanged)
+    u_steps = _paired_steps(pg1, sdays, "who_U", None)
+    conf_ok = all(x[3] >= -1e-9 for x in conf_steps) if conf_steps else None
+    u_ok = all(x[3] <= 1e-9 for x in u_steps) if u_steps else None
     eces = [pg1[d].get("ece") for d in days if pg1[d].get("ece") is not None]
+    # calibration over every judged claim of days >= CALIB_FROM pooled (one
+    # snapshot holds ~60 statements: the plug-in ECE's floor there is 0.11-0.16)
+    pool = [c for d in days if d >= CALIB_FROM for c in (pg1[d].get("calib") or [])]
+    cal = calibration([c[0] for c in pool], [c[1] for c in pool]) if pool else calibration([], [])
+    cal_kind = {k: calibration([c[0] for c in pool if c[2] == i], [c[1] for c in pool if c[2] == i])
+                for k, i in (("node", 0), ("part", 1))}
     return {"recall": rec, "precision": {d: pg1[d].get("precision") for d in days},
             "recall_violations": viol, "recall_monotone": (not viol) if rec else None,
+            "recall_violations_daily": rec_viol(days), "trend_days": tdays,
             "days_to_80": ttr, "depth_nondecreasing": depth_ok,
-            "median_conf": med_conf, "conf_nondecreasing": conf_ok,
-            "median_U": med_u, "U_nonincreasing": u_ok,
-            "ece": eces[-1] if eces else None}
+            "median_conf": med_conf, "conf_steps": conf_steps, "conf_nondecreasing": conf_ok,
+            "median_U": med_u, "U_steps": u_steps, "U_nonincreasing": u_ok,
+            "calibration": cal, "calibration_by_kind": cal_kind,
+            "ece": cal["ce"] if pool else (eces[-1] if eces else None),
+            "ece_last_day": eces[-1] if eces else None}
+
+
+def _paired_steps(pg1: Mapping[int, Mapping[str, Any]], days: Sequence[int], key: str,
+                  cohort: Optional[Set[str]]) -> List[List[Any]]:
+    """[day a, day b, n paired, median of (v_b - v_a)] over the patterns with a
+    value on both days (restricted to `cohort` when given)."""
+    out = []
+    for a, b in zip(days, days[1:]):
+        va = {k: v for k, v in (pg1[a].get(key) or {}).items() if v is not None
+              and (cohort is None or k in cohort)}
+        vb = {k: v for k, v in (pg1[b].get(key) or {}).items() if v is not None
+              and (cohort is None or k in cohort)}
+        com = sorted(set(va) & set(vb))
+        if com:
+            out.append([a, b, len(com), float(np.median([vb[k] - va[k] for k in com]))])
+    return out
 
 
 def false_splits(snaps: Mapping[int, Mapping[str, Any]], pt: PTruth,
@@ -2175,8 +2345,7 @@ def pg10_views(run: Any, pt: PTruth, ipc: Mapping[str, List[str]], seed: int = 0
         for s in _find(statements(snaps[day], ipc), "oa", "POST", "/login"):
             if jaccard(s.who.ipset(), row["who"]["value"]) < 1.0:
                 continue
-            tw, lw = row["windows"]["workday"], s.when["workday"]
-            if not lw or abs(lw[0][0] - tw[0][0]) > 2 or abs(lw[-1][1] - tw[0][1]) > 2:
+            if not window_edges_ok(row, "workday", s.when["workday"], s.when_cov):
                 continue
             c = s.content.get("body.len") or {}
             b = c.get("band90")
@@ -2228,6 +2397,23 @@ def pg10_views(run: Any, pt: PTruth, ipc: Mapping[str, List[str]], seed: int = 0
 def _events(run: Any, kinds: Iterable[str]) -> List[Dict[str, Any]]:
     ks = set(kinds)
     return [e for e in getattr(run, "events", None) or [] if e.get("kind") in ks]
+
+
+def family_size_ratio(snaps: Mapping[int, Mapping[str, Any]], fam_key: str, single: str) -> Optional[float]:
+    """R13: the family tree's size on the last day over the size of the single
+    system's OWN tree on the last day it had one. Pack O's CRM serves the same
+    application as R13's branch servers (same host and routes) and may join
+    their family (§6.20 / §16.12); its key then holds no tree on the last day
+    and the ratio must not silently become 'not measured'."""
+    def size(snap: Mapping[str, Any], k: str) -> int:
+        t = ((snap.get("systems") or {}).get(k) or {}).get("model.ptree")
+        return len(json.dumps(t, default=str)) if t else 0
+    if not snaps:
+        return None
+    last = snaps[max(snaps)]
+    fam = size(last, fam_key)
+    base = next((size(snaps[d], single) for d in sorted(snaps, reverse=True) if size(snaps[d], single) > 4), 0)
+    return fam / base if fam and base else None
 
 
 def pg11_items(run: Any, pt: PTruth, sbd: Mapping[int, List[LStmt]],
@@ -2387,11 +2573,7 @@ def pg11_items(run: Any, pt: PTruth, sbd: Mapping[int, List[LStmt]],
                 keys = {m.get(x) for x in mem}
                 fam_ok = len(keys) == 1 and None not in keys
                 if fam_ok:
-                    fk = next(iter(keys))
-                    size = lambda k: len(json.dumps((last_snap.get("systems") or {}).get(k, {})
-                                                    .get("model.ptree"), default=str))
-                    base = size("crm")
-                    ratio = size(fk) / base if base > 4 else None
+                    ratio = family_size_ratio(snaps, next(iter(keys)), "crm")
         out["R13"] = {"one_family": fam_ok, "size_ratio_vs_crm": ratio,
                       "pass": (fam_ok and (ratio is None or ratio <= 2.0)) if fam_ok is not None else None}
     return out
@@ -2420,7 +2602,8 @@ def score_prun(run: Any, precision_n: int = 300) -> Dict[str, Any]:
         "aborted": getattr(run, "aborted", None), "n_snapshots": len(snaps),
         "pg1": {str(d): {k: v for k, v in pg1[d].items() if k not in ("stmt_conf", "who_U")}
                 for d in pg1},
-        "pg1_day14": ({k: v for k, v in pg1[d14].items() if k not in ("per_pattern", "stmt_conf", "who_U")}
+        "pg1_day14": ({k: v for k, v in pg1[d14].items() if k not in ("per_pattern", "stmt_conf", "who_U",
+                                                                         "calib")}
                       if d14 is not None else None),
         "pg1_last_by_system": per_sys,
         "bindings_ga_fin_day14": (list(login_bindings(snaps[d14], pt, ipc, d14))
@@ -2503,7 +2686,7 @@ def compute_pgates(scores: Sequence[Mapping[str, Any]],
     gates["PG1"] = g
 
     ch2 = [
-        _share_check("recall non-decreasing (±0.05) outside days 12-15", O,
+        _share_check("recall non-decreasing (±0.05, days 3-21) outside days 12-15", O,
                      lambda s: s["pg2"]["recall_monotone"]),
         _share_check("daily patterns: 80 % recall by day 7", O,
                      lambda s: None if s["n_snapshots"] == 0 else
@@ -2511,11 +2694,14 @@ def compute_pgates(scores: Sequence[Mapping[str, Any]],
         _share_check("weekly patterns: 80 % recall by day 21", O,
                      lambda s: None if s["n_snapshots"] == 0 else
                      (s["pg2"]["days_to_80"]["weekly"] or 99) <= 21),
-        _share_check("mean depth non-decreasing before day 12", O,
+        _share_check("mean depth non-decreasing before day 12 (days 3-10)", O,
                      lambda s: s["pg2"]["depth_nondecreasing"]),
-        _share_check("median confidence non-decreasing", O, lambda s: s["pg2"]["conf_nondecreasing"]),
-        _share_check("median unseen-IP mass non-increasing", O, lambda s: s["pg2"]["U_nonincreasing"]),
-        _med_check("ECE", O, lambda s: s["pg2"]["ece"], 0.05, ge=False),
+        _share_check("confidence of unchanged patterns non-decreasing (paired, days 3-21 ex. drift)", O,
+                     lambda s: s["pg2"]["conf_nondecreasing"]),
+        _share_check("unseen-IP mass non-increasing (paired, days 3-21 ex. drift)", O,
+                     lambda s: s["pg2"]["U_nonincreasing"]),
+        _med_check("calibration error (debiased, claims of days >= 7)", O, lambda s: s["pg2"]["ece"], 0.05,
+                   ge=False),
         _med_check("false splits per system-month (O-red)", RED,
                    lambda s: s["false_splits"]["per_system_month"], 1.0, ge=False),
     ]

@@ -1024,6 +1024,119 @@ class _TreeCtx:
         return ni
 
 
+SEQ_COARSE_P = CAL_P             # a transition this improbable is re-scored at the route level
+
+
+def _hdr(probs: Mapping[Any, float], key: Any, extra: float = 0.0) -> float:
+    """HDR p of outcome `key` under the distribution `probs` (+ an `extra`
+    outcome of that mass, e.g. the novel action): the mass of every outcome no
+    more probable than it, ties counting half."""
+    pb = float(probs.get(key, 0.0))
+    s = 0.0
+    for k, p in probs.items():
+        if p < pb:
+            s += p
+        elif p == pb:
+            s += 0.5 * p
+    if 0.0 < extra < pb:
+        s += extra
+    return float(min(1.0, s))
+
+
+def seq_coarse_p(st: Any, a: Optional[int], b: Optional[int], t: float) -> float:
+    """Route-level re-scoring of an improbable transition a -> b (round 4):
+    max(p_route_trans, p_route_start), each an HDR p over ROUTES instead of
+    P10's action keys.
+      p_route_trans  P10's successor predictive of a (trans_dist, scope '*')
+                     summed over the content variants of each route
+                     ('GET /news/{num}#v17' and '#v11' are one action for the
+                     session model): P04 re-splits a route's content and mints
+                     new variant ids whose transitions have no history, so a
+                     reader's next article scored p_trans ~ 1e-7..0;
+      p_route_start  how often b's route OPENS a session (P10's session starts,
+                     summed over variants, KT-smoothed): an event that can be the
+                     first of a new visit is no evidence against the sequence
+                     model even when the gap rule merged the visits (a reader
+                     back on the portal 5-28 minutes after the last article:
+                     news -> GET / at p_trans 3e-8).
+    Both are valid p-values for the coarser null, so is their max. Pack O seed 1,
+    D4 (legitimate growth of the public population, days 12-18): all 6 incidents
+    were conf_seq alarms of these two kinds (3 variant hops, 3 revisits), p 2.6e-7 -
+    1.6e-4. NaN when P10 cannot speak (no a / b, no dictionary key)."""
+    if st is None or a is None or b is None:
+        return NAN
+    acts = getattr(st, "acts", None)
+    kb = acts.key_of(b) if acts is not None else None
+    if kb is None:
+        return NAN
+    try:
+        tab = _coarse_tables(st, t)
+        dist, w0 = DF.trans_dist(st, DF.STAR, a, t)
+    except Exception:
+        return NAN
+    route_of, pr_marg, ps, rank, U, sp, n = tab
+    rb = DF.split_key(kb)[0]
+    # route masses of a's successor predictive: w0 x the marginal of every action
+    # of the route, corrected for a's tracked successors (O(|successors|))
+    pr = dict(pr_marg) if w0 == 1.0 else {r: w0 * v for r, v in pr_marg.items()}
+    for x, p in dist.items():
+        r = route_of(x)
+        if r is None:
+            continue
+        pr[r] = pr.get(r, 0.0) + p - (w0 * float(ps[rank[x]]) if x in rank else 0.0)
+    p_tr = _hdr(pr, rb, w0 * U) if rb in pr else NAN
+    p_st = NAN
+    if n > 0:
+        if rb not in sp:
+            sp = dict(sp)
+            sp[rb] = 0.5 / (n + 1.0)
+        p_st = _hdr(sp, rb)
+    vals = [x for x in (p_tr, p_st) if not _nan(x)]
+    return float(max(vals)) if vals else NAN
+
+
+_COARSE: Dict[str, Any] = {"key": None, "tab": None}
+
+
+def _coarse_tables(st: Any, t: float) -> Tuple[Any, ...]:
+    """Per (P10 state, tick) tables of seq_coarse_p, built once: action -> route,
+    the '*' marginal summed per route, the session-start distribution per route
+    (KT-smoothed shares) and its total. P03 scores a tick against P10's state as
+    of the previous pass, so the counts do not change within it."""
+    U, ps, ids, rank = DF._marginal(st, t)
+    key = (id(st), float(t), id(ps), len(ids))
+    if _COARSE["key"] == key:
+        return _COARSE["tab"]
+    acts = st.acts
+    cache: Dict[int, Optional[str]] = {}
+
+    def route_of(x: int) -> Optional[str]:
+        if x in cache:
+            return cache[x]
+        k = acts.key_of(x)
+        r = cache[x] = DF.split_key(k)[0] if k is not None else None
+        return r
+    pr_marg: Dict[str, float] = {}
+    for i, x in enumerate(ids):
+        r = route_of(x)
+        if r is not None:
+            pr_marg[r] = pr_marg.get(r, 0.0) + float(ps[i])
+    sr: Dict[str, float] = {}
+    n = 0.0
+    for k in list(st.starts.keys()):
+        if k[0] != DF.STAR:
+            continue
+        e = DF._ev(st.starts, k, t)
+        n += e
+        r = route_of(k[1])
+        if r is not None:
+            sr[r] = sr.get(r, 0.0) + e
+    sp = {r: (v + 0.5) / (n + 1.0) for r, v in sr.items()} if n > 0 else {}
+    tab = (route_of, pr_marg, ps, rank, float(U), sp, n)
+    _COARSE["key"], _COARSE["tab"] = key, tab
+    return tab
+
+
 def _cross_up(tc: Any, kind: int, tree: Any, ancestors: Sequence[Any], X_: str, Y_: str,
               x: Any, y: Any) -> Optional[List[str]]:
     """['cross_binding'] when an ancestor's forward record of the same pair
@@ -1471,6 +1584,14 @@ class ConformityEngine(Engine):
                 g = tc.ip2g.get(ip)
                 sc = DF.seq_scores(tc.pflow, str(g) if g is not None else DF.STAR, a_key, key, bits, t)
                 p_seq = float(sc.get("p_seq", NAN))
+                p_tr = float(sc.get("p_trans", NAN))
+                if not _nan(p_tr) and p_tr <= SEQ_COARSE_P:
+                    # (round 4) a content-variant hop or a revisit merged into the
+                    # session is not a sequence anomaly: re-score at the route level
+                    pc = seq_coarse_p(tc.flow, sc.get("a"), sc.get("b"), t)
+                    if not _nan(pc) and pc > p_tr:
+                        ps_ = [x for x in (pc, float(sc.get("p_req", NAN))) if not _nan(x)]
+                        p_seq = float(min(1.0, 2.0 * min(ps_)))
                 if sc.get("missing"):
                     seq_missing = [tc.flow.acts.key_of(a) or "?" for a in sc["missing"]]
                     res["p_req"] = sc.get("p_req")

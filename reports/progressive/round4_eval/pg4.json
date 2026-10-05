@@ -1,0 +1,117 @@
+{
+ "note": "PG4: servers curve with fixed applications (E4-8) and the family join on observed days (E4-9) on the final code; IP / attribute points are round 3's scale7 (code of 2026-10-02 04:49Z)",
+ "pg4": {
+  "name": "PG4 resources sublinear in IPs, metrics and servers",
+  "value": 0.04010772523462153,
+  "target": "slopes per \u00a712",
+  "pass": false,
+  "details": {
+   "checks": [
+    {
+     "name": "memory slope vs IPs (attrs fixed)",
+     "value": 0.04010772523462153,
+     "target": "<= 0.15 (0.35 with P11 ip mode)",
+     "pass": true
+    },
+    {
+     "name": "CPU/event slope vs IPs",
+     "value": -0.15657818987685512,
+     "target": "<= 0.1",
+     "pass": true
+    },
+    {
+     "name": "memory slope vs attributes (IPs fixed)",
+     "value": 0.17219827276019156,
+     "target": "<= 0.2",
+     "pass": true
+    },
+    {
+     "name": "CPU/event slope vs attributes",
+     "value": 0.1488522695117016,
+     "target": "<= 0.2",
+     "pass": true
+    },
+    {
+     "name": "memory slope vs systems (12 families)",
+     "value": 0.267478059685712,
+     "target": "<= 0.3",
+     "pass": true
+    },
+    {
+     "name": "idle system memory after >= 1 day (MB)",
+     "value": 0.4197673797607422,
+     "target": "<= 1",
+     "pass": true
+    },
+    {
+     "name": "max P-core memory per tree (MB)",
+     "value": 14.179534912109375,
+     "target": "<= 40",
+     "pass": true
+    },
+    {
+     "name": "scoring p95 us/event",
+     "value": 6844.009032109022,
+     "target": "<= 100",
+     "pass": false
+    },
+    {
+     "name": "learning p95 us/event",
+     "value": 6442.566847742629,
+     "target": "<= 250",
+     "pass": false
+    }
+   ],
+   "points": [
+    {
+     "pack": "O-servers-100",
+     "n_ips": 0,
+     "n_attrs": 40,
+     "n_systems": 100,
+     "mem_bytes": 58350727.0,
+     "us_per_event": 37996.62927622403
+    },
+    {
+     "pack": "O-servers-20",
+     "n_ips": 0,
+     "n_attrs": 40,
+     "n_systems": 20,
+     "mem_bytes": 39090627.0,
+     "us_per_event": 36934.04691924112
+    },
+    {
+     "pack": "O-servers-300",
+     "n_ips": 0,
+     "n_attrs": 40,
+     "n_systems": 300,
+     "mem_bytes": 80982989.0,
+     "us_per_event": 52847.973073588946
+    },
+    {
+     "pack": "O-scale-20000-0",
+     "n_ips": 20000,
+     "n_attrs": 40,
+     "n_systems": 6,
+     "mem_bytes": 35594933.0,
+     "us_per_event": 2157.1425415255853
+    },
+    {
+     "pack": "O-scale-500-0",
+     "n_ips": 500,
+     "n_attrs": 40,
+     "n_systems": 6,
+     "mem_bytes": 30699634.0,
+     "us_per_event": 3843.496564853973
+    },
+    {
+     "pack": "O-scale-500-300",
+     "n_ips": 500,
+     "n_attrs": 340,
+     "n_systems": 6,
+     "mem_bytes": 44379002.0,
+     "us_per_event": 5285.336147637138
+    }
+   ]
+  }
+ }
+}

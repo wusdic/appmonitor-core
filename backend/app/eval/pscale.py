@@ -23,6 +23,7 @@ real P engines unchanged once they exist.
 """
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -34,6 +35,26 @@ from .metrics import check, gate
 from .pmetrics import loglog_slope
 from .runner import P_ORG, P_SYS_FULL, _fam_keys, run_pack
 
+HASH_SEED = "0"
+
+
+def pin_hash_seed(seed: str = HASH_SEED, argv: Optional[Sequence[str]] = None) -> bool:
+    """Re-execute the current script with PYTHONHASHSEED pinned when it is not
+    set (returns False when already pinned; does not return otherwise). str
+    hashes are salted per process, so set / dict-of-set iteration order - and
+    with it a few engines' tie-breaks, sketch evictions and float summation
+    order - differs between two processes running the same seed (§16.12:
+    P07's finance body.kv.lines[] values, P02's set_keep, P11's cover order,
+    P08's bound shares in their last bits). The evaluation entry points pin it
+    so identical runs are identical; worker processes (fork) inherit it."""
+    if os.environ.get("PYTHONHASHSEED") is not None:
+        return False
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    args = list(sys.argv if argv is None else argv)
+    os.execv(sys.executable, [sys.executable] + args)
+    return True                                   # pragma: no cover (execv does not return)
+
+
 P_ENGINES = ("raw.event", "derived.event_context", "behavior.attr_registry",
              "behavior.conformity", "behavior.pattern_tree", "behavior.attr_select",
              "behavior.content_bounds", "behavior.payload_grammar", "behavior.binding",
@@ -41,6 +62,7 @@ P_ENGINES = ("raw.event", "derived.event_context", "behavior.attr_registry",
              "behavior.system_profile", "behavior.facets", "behavior.views",
              "behavior.resource_governor")
 P_MODELS = tuple(P_SYS_FULL) + tuple(P_ORG) + ("model.pwant",)
+DETAIL_KEYS = 40                     # pcore_memory: per-model bytes of the largest store keys
 SCORING_ENGINE = "behavior.conformity"
 LEARNING_ENGINE = "behavior.pattern_tree"
 BASE_ATTRS = 40                      # attributes of pack O without synthetic ones (§12 PG4 axis)
@@ -89,15 +111,24 @@ def pcore_memory(store: MetricStore, model_names: Sequence[str] = P_MODELS) -> D
         if m is not None:
             org += deep_sizeof(m, seen)
     keys = set(store.systems()) | set(_fam_keys(store.get_model(ORG, ORG, "model.sysfam")))
+    by_model: Dict[str, Dict[str, int]] = {}
     for s in sorted(keys):
         b = 0
+        per: Dict[str, int] = {}
         for n in model_names:
             m = store.get_model(s, SYSTEM_ENTITY, n)
             if m is not None:
-                b += deep_sizeof(m, seen)
+                x = deep_sizeof(m, seen)
+                b += x
+                if x:
+                    per[n] = x
         if b:
             by_key[s] = b
-    return {"total": org + sum(by_key.values()), "org": org, "by_key": by_key}
+            by_model[s] = per
+    # per-model detail of the largest keys (what a key holds when it is large)
+    top = sorted(by_key, key=lambda k: -by_key[k])[:DETAIL_KEYS]
+    return {"total": org + sum(by_key.values()), "org": org, "by_key": by_key,
+            "by_key_model": {k: by_model[k] for k in top}}
 
 
 def pcore_cpu(timings: Mapping[str, Any], events_per_tick: Sequence[float],
@@ -224,7 +255,7 @@ def run_point(pack: Any, seed: int = 0, registry_factory: Optional[Callable] = N
            "n_ips": int(getattr(org, "portal_n", 0) or 0),
            "n_attrs": BASE_ATTRS + n_meta,
            "n_systems": len(getattr(org, "systems", None) or []),
-           "mem_bytes": mem["total"], "mem_by_key": mem["by_key"],
+           "mem_bytes": mem["total"], "mem_by_key": mem["by_key"], "mem_by_key_model": mem.get("by_key_model"),
            "idle_max_bytes": max([mem["by_key"].get(s, 0) for s in idle] or [0]) if idle else None,
            "cpu": cpu, "events": res.gen_stats.get("events"), "aborted": res.aborted,
            "exceptions": len(res.exceptions)}
@@ -255,7 +286,7 @@ def run_point_resumable(pack: Any, seed: int, ckpt: str, *, stop_after_s: Option
     out = {"pack": getattr(p, "name", str(pack)), "seed": int(seed),
            "n_ips": int(getattr(org, "portal_n", 0) or 0), "n_attrs": BASE_ATTRS + n_meta,
            "n_systems": len(getattr(org, "systems", None) or []),
-           "mem_bytes": mem["total"], "mem_by_key": mem["by_key"],
+           "mem_bytes": mem["total"], "mem_by_key": mem["by_key"], "mem_by_key_model": mem.get("by_key_model"),
            "idle_max_bytes": max([mem["by_key"].get(s, 0) for s in idle] or [0]) if idle else None,
            "cpu": cpu, "events": res.gen_stats.get("events"), "aborted": res.aborted,
            "exceptions": len(res.exceptions), "segments": res.segments, "wall_s": res.wall_s}

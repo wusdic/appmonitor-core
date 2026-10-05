@@ -1,0 +1,958 @@
+{
+ "F4": {
+  "desc": "round-3 final runs (reports/progressive/runs), HEAD c67c985 engines",
+  "seeds": [
+   {
+    "seed": 0,
+    "ece_last_day_old_gate": 0.3670375,
+    "ece_day14": 0.23119516129032255,
+    "calib_pooled": {
+     "n": 841,
+     "ece": 0.2679587903171273,
+     "ece_null": 0.03430094021262765,
+     "ce": 0.3203575082801457,
+     "conf": 0.47998475911021843,
+     "hold": 0.7324613555291319
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 540,
+      "ece": 0.2296646880029926,
+      "ece_null": 0.042149345837426536,
+      "ce": 0.28407825219425553,
+      "conf": 0.48955276354113686,
+      "hold": 0.6925925925925925
+     },
+     "part": {
+      "n": 301,
+      "ece": 0.34860801041557493,
+      "ece_null": 0.057910311256614694,
+      "ce": 0.3943139356978967,
+      "conf": 0.46281956843681016,
+      "hold": 0.8039867109634552
+     }
+    },
+    "ce_gate_new": 0.3203575082801457,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": true,
+    "conf_steps": [
+     [
+      5,
+      7,
+      6,
+      0.022950000000000012
+     ],
+     [
+      7,
+      10,
+      10,
+      0.04999999999999999
+     ],
+     [
+      10,
+      21,
+      24,
+      0.04275000000000001
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": true,
+    "recall_monotone_new": true,
+    "recall_violations_daily": [],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": false,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": false,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   },
+   {
+    "seed": 1,
+    "ece_last_day_old_gate": 0.26918888888888887,
+    "ece_day14": 0.2203731343283582,
+    "calib_pooled": {
+     "n": 894,
+     "ece": 0.20001248947844544,
+     "ece_null": 0.031501880709316435,
+     "ce": 0.2442920474581834,
+     "conf": 0.5495983611848171,
+     "hold": 0.7404921700223713
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 572,
+      "ece": 0.22818681524217138,
+      "ece_null": 0.03904076441048806,
+      "ce": 0.26814384106302147,
+      "conf": 0.5398154329091227,
+      "hold": 0.6905594405594405
+     },
+     "part": {
+      "n": 322,
+      "ece": 0.26709407678506764,
+      "ece_null": 0.0497036343865813,
+      "ce": 0.2783114804056128,
+      "conf": 0.5669767306683485,
+      "hold": 0.8291925465838509
+     }
+    },
+    "ce_gate_new": 0.2442920474581834,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": false,
+    "conf_steps": [
+     [
+      5,
+      7,
+      8,
+      -0.06779999999999997
+     ],
+     [
+      7,
+      10,
+      10,
+      0.10000000000000003
+     ],
+     [
+      10,
+      21,
+      23,
+      0.036800000000000055
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": false,
+    "recall_monotone_new": true,
+    "recall_violations_daily": [
+     [
+      17,
+      18
+     ]
+    ],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": false,
+     "day21": false,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": false,
+     "day21": false,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   },
+   {
+    "seed": 2,
+    "ece_last_day_old_gate": 0.33935507246376817,
+    "ece_day14": 0.23345096525096531,
+    "calib_pooled": {
+     "n": 981,
+     "ece": 0.2913630405653852,
+     "ece_null": 0.030227229426593737,
+     "ce": 0.327039662778985,
+     "conf": 0.47627101258464194,
+     "hold": 0.764525993883792
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 618,
+      "ece": 0.2526939647456362,
+      "ece_null": 0.03810499248295283,
+      "ce": 0.2806329377822039,
+      "conf": 0.47183800751248484,
+      "hold": 0.7152103559870551
+     },
+     "part": {
+      "n": 363,
+      "ece": 0.3715122737499318,
+      "ece_null": 0.04937076190436602,
+      "ce": 0.40726897565850895,
+      "conf": 0.48381811212897546,
+      "hold": 0.8484848484848485
+     }
+    },
+    "ce_gate_new": 0.327039662778985,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": false,
+    "conf_steps": [
+     [
+      5,
+      7,
+      8,
+      -0.0046499999999999875
+     ],
+     [
+      7,
+      10,
+      10,
+      -0.0446
+     ],
+     [
+      10,
+      21,
+      24,
+      0.14419999999999994
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": false,
+    "recall_monotone_new": true,
+    "recall_violations_daily": [
+     [
+      16,
+      17
+     ],
+     [
+      18,
+      19
+     ]
+    ],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": true,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": true,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   },
+   {
+    "seed": 3,
+    "ece_last_day_old_gate": 0.34435660825509995,
+    "ece_day14": 0.24597619047619054,
+    "calib_pooled": {
+     "n": 842,
+     "ece": 0.25917880384316094,
+     "ece_null": 0.035525614639767576,
+     "ce": 0.33407516304481016,
+     "conf": 0.5098882535342478,
+     "hold": 0.7565320665083135
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 545,
+      "ece": 0.2304469857399353,
+      "ece_null": 0.0426946349318369,
+      "ce": 0.2908940481586314,
+      "conf": 0.5086300665940373,
+      "hold": 0.7174311926605504
+     },
+     "part": {
+      "n": 297,
+      "ece": 0.3333463590458983,
+      "ece_null": 0.057880260850789095,
+      "ce": 0.40762072619536177,
+      "conf": 0.5121970477511325,
+      "hold": 0.8282828282828283
+     }
+    },
+    "ce_gate_new": 0.33407516304481016,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": false,
+    "conf_steps": [
+     [
+      5,
+      7,
+      6,
+      -0.015014506016972101
+     ],
+     [
+      7,
+      10,
+      10,
+      -0.062250000000000055
+     ],
+     [
+      10,
+      21,
+      21,
+      0.15479999999999994
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": false,
+    "recall_monotone_new": true,
+    "recall_violations_daily": [
+     [
+      6,
+      7
+     ],
+     [
+      16,
+      17
+     ],
+     [
+      20,
+      21
+     ]
+    ],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": false,
+     "day21": false,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": false,
+     "day21": false,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   },
+   {
+    "seed": 4,
+    "ece_last_day_old_gate": 0.3551016662551193,
+    "ece_day14": 0.2649066666666666,
+    "calib_pooled": {
+     "n": 810,
+     "ece": 0.22809525936891287,
+     "ece_null": 0.03556246409974768,
+     "ce": 0.27920908842353126,
+     "conf": 0.5570582243664262,
+     "hold": 0.7567901234567901
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 515,
+      "ece": 0.21780185012351694,
+      "ece_null": 0.04233721612480197,
+      "ce": 0.2956046045411227,
+      "conf": 0.563848455265237,
+      "hold": 0.7398058252427184
+     },
+     "part": {
+      "n": 295,
+      "ece": 0.24607590754166705,
+      "ece_null": 0.05618234064656076,
+      "ce": 0.2718707349353754,
+      "conf": 0.5452040924583329,
+      "hold": 0.7864406779661017
+     }
+    },
+    "ce_gate_new": 0.27920908842353126,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": true,
+    "conf_steps": [
+     [
+      5,
+      7,
+      7,
+      0.06912435743687728
+     ],
+     [
+      7,
+      10,
+      10,
+      0.05994999999999995
+     ],
+     [
+      10,
+      21,
+      22,
+      0.055499999999999994
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": false,
+    "recall_monotone_new": false,
+    "recall_violations_daily": [
+     [
+      17,
+      18
+     ]
+    ],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": false,
+     "day21": false,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": false,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   }
+  ]
+ },
+ "TF": {
+  "desc": "round-4 tree agent final runs (prog4/tree/f), engines at e83b6e2",
+  "seeds": [
+   {
+    "seed": 0,
+    "ece_last_day_old_gate": 0.15405000000000005,
+    "ece_day14": 0.1496526392961877,
+    "calib_pooled": {
+     "n": 841,
+     "ece": 0.13048377796197552,
+     "ece_null": 0.032472538675154136,
+     "ce": 0.19796868382825458,
+     "conf": 0.606734816561465,
+     "hold": 0.7336504161712247
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 540,
+      "ece": 0.12200061392891862,
+      "ece_null": 0.04209931661459626,
+      "ce": 0.1892505192402893,
+      "conf": 0.6033120228003961,
+      "hold": 0.6944444444444444
+     },
+     "part": {
+      "n": 301,
+      "ece": 0.1911113341661856,
+      "ece_null": 0.049491651698822914,
+      "ce": 0.23565154771005417,
+      "conf": 0.6128753767972698,
+      "hold": 0.8039867109634552
+     }
+    },
+    "ce_gate_new": 0.19796868382825458,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": true,
+    "conf_steps": [
+     [
+      5,
+      7,
+      6,
+      0.009450000000000014
+     ],
+     [
+      7,
+      10,
+      10,
+      0.050000000000000044
+     ],
+     [
+      10,
+      21,
+      24,
+      0.10980000000000001
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": true,
+    "recall_monotone_new": true,
+    "recall_violations_daily": [],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": false,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": false,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   },
+   {
+    "seed": 1,
+    "ece_last_day_old_gate": 0.15851111111111116,
+    "ece_day14": 0.12285970149253732,
+    "calib_pooled": {
+     "n": 894,
+     "ece": 0.13002385602617342,
+     "ece_null": 0.030608095091144837,
+     "ce": 0.14618115753055344,
+     "conf": 0.6969385923555851,
+     "hold": 0.7404921700223713
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 572,
+      "ece": 0.1550434507665748,
+      "ece_null": 0.03726517301111659,
+      "ce": 0.1854036274346873,
+      "conf": 0.698299174167864,
+      "hold": 0.6905594405594405
+     },
+     "part": {
+      "n": 322,
+      "ece": 0.1346708883792706,
+      "ece_null": 0.05018654713022125,
+      "ce": 0.16748268182444223,
+      "conf": 0.6945216582045803,
+      "hold": 0.8291925465838509
+     }
+    },
+    "ce_gate_new": 0.14618115753055344,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": true,
+    "conf_steps": [
+     [
+      5,
+      7,
+      8,
+      0.07679999999999998
+     ],
+     [
+      7,
+      10,
+      10,
+      0.09999999999999998
+     ],
+     [
+      10,
+      21,
+      23,
+      0.08129999999999993
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": false,
+    "recall_monotone_new": true,
+    "recall_violations_daily": [
+     [
+      17,
+      18
+     ]
+    ],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": false,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": false,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   },
+   {
+    "seed": 2,
+    "ece_last_day_old_gate": 0.23449355623022922,
+    "ece_day14": 0.19600436865436865,
+    "calib_pooled": {
+     "n": 981,
+     "ece": 0.20720841681473007,
+     "ece_null": 0.028731433483355887,
+     "ce": 0.22874362775072252,
+     "conf": 0.6324034687288467,
+     "hold": 0.764525993883792
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 618,
+      "ece": 0.14419548763314635,
+      "ece_null": 0.03643411056216007,
+      "ce": 0.1953574907793972,
+      "conf": 0.6247449654412873,
+      "hold": 0.7152103559870551
+     },
+     "part": {
+      "n": 363,
+      "ece": 0.3202291170022934,
+      "ece_null": 0.04378556116369893,
+      "ce": 0.32967052416138615,
+      "conf": 0.6454419123423776,
+      "hold": 0.8484848484848485
+     }
+    },
+    "ce_gate_new": 0.22874362775072252,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": true,
+    "conf_steps": [
+     [
+      5,
+      7,
+      8,
+      0.01805000000000001
+     ],
+     [
+      7,
+      10,
+      10,
+      0.003500000000000003
+     ],
+     [
+      10,
+      21,
+      24,
+      0.12340000000000001
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": false,
+    "recall_monotone_new": true,
+    "recall_violations_daily": [
+     [
+      16,
+      17
+     ],
+     [
+      18,
+      19
+     ]
+    ],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": true,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": true,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   }
+  ]
+ },
+ "C4": {
+  "desc": "round-4 content agent final runs (prog4/c4/run11, run11b), engines at 303dac6 + content edits",
+  "seeds": [
+   {
+    "seed": 0,
+    "ece_last_day_old_gate": 0.10881124188812255,
+    "ece_day14": 0.09955650137613006,
+    "calib_pooled": {
+     "n": 859,
+     "ece": 0.1465061923691511,
+     "ece_null": 0.02802838071907689,
+     "ce": 0.18113100112358457,
+     "conf": 0.7219454956401621,
+     "hold": 0.8684516880093132
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 543,
+      "ece": 0.19526092001476394,
+      "ece_null": 0.034965020587783835,
+      "ce": 0.2418847674054488,
+      "conf": 0.7126580486776855,
+      "hold": 0.9079189686924494
+     },
+     "part": {
+      "n": 316,
+      "ece": 0.06708066089860225,
+      "ece_null": 0.04471694365758097,
+      "ce": 0.0749893144395373,
+      "conf": 0.7379046212750506,
+      "hold": 0.8006329113924051
+     }
+    },
+    "ce_gate_new": 0.18113100112358457,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": true,
+    "conf_steps": [
+     [
+      5,
+      7,
+      8,
+      0.03594999999999998
+     ],
+     [
+      7,
+      10,
+      13,
+      0.06640000000000001
+     ],
+     [
+      10,
+      21,
+      23,
+      0.14452784519572925
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": false,
+    "recall_monotone_new": true,
+    "recall_violations_daily": [
+     [
+      18,
+      19
+     ]
+    ],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": false,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": false,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   },
+   {
+    "seed": 1,
+    "ece_last_day_old_gate": 0.15726309744504827,
+    "ece_day14": 0.0809016345418502,
+    "calib_pooled": {
+     "n": 911,
+     "ece": 0.1228229643824021,
+     "ece_null": 0.028594716283886566,
+     "ce": 0.16775819074574896,
+     "conf": 0.7516680907959216,
+     "hold": 0.8715697036223929
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 572,
+      "ece": 0.1290706748649756,
+      "ece_null": 0.034459941302449094,
+      "ce": 0.1911332962869249,
+      "conf": 0.7412613737972066,
+      "hold": 0.8671328671328671
+     },
+     "part": {
+      "n": 339,
+      "ece": 0.13196193749024798,
+      "ece_null": 0.04433916367755806,
+      "ce": 0.18408125457245644,
+      "conf": 0.7692275070887385,
+      "hold": 0.8790560471976401
+     }
+    },
+    "ce_gate_new": 0.16775819074574896,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": true,
+    "conf_steps": [
+     [
+      5,
+      7,
+      10,
+      0.10059999999999997
+     ],
+     [
+      7,
+      10,
+      13,
+      0.050000000000000044
+     ],
+     [
+      10,
+      21,
+      25,
+      0.09999999999999998
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": true,
+    "recall_monotone_new": true,
+    "recall_violations_daily": [],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": false,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": false,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   },
+   {
+    "seed": 2,
+    "ece_last_day_old_gate": 0.17359918389455745,
+    "ece_day14": 0.16837971241526006,
+    "calib_pooled": {
+     "n": 996,
+     "ece": 0.20838944905927767,
+     "ece_null": 0.027913717334742617,
+     "ce": 0.2339807448457208,
+     "conf": 0.6882665750371078,
+     "hold": 0.8825301204819277
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 618,
+      "ece": 0.20740435242523955,
+      "ece_null": 0.03539777514939794,
+      "ce": 0.23789187978326,
+      "conf": 0.684280760843369,
+      "hold": 0.8705501618122977
+     },
+     "part": {
+      "n": 378,
+      "ece": 0.21000000387365772,
+      "ece_null": 0.04538851247832147,
+      "ce": 0.24960872440575396,
+      "conf": 0.6947830649094111,
+      "hold": 0.9021164021164021
+     }
+    },
+    "ce_gate_new": 0.2339807448457208,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": false,
+    "conf_steps": [
+     [
+      5,
+      7,
+      11,
+      -0.0026999999999999247
+     ],
+     [
+      7,
+      10,
+      13,
+      -0.016100000000000003
+     ],
+     [
+      10,
+      21,
+      24,
+      0.17299963725565914
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": false,
+    "recall_monotone_new": true,
+    "recall_violations_daily": [
+     [
+      16,
+      17
+     ]
+    ],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": true,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": true,
+     "day21": true,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   },
+   {
+    "seed": 3,
+    "ece_last_day_old_gate": 0.1593538607392965,
+    "ece_day14": 0.11900994409291876,
+    "calib_pooled": {
+     "n": 879,
+     "ece": 0.1449135071264789,
+     "ece_null": 0.029914158786492184,
+     "ce": 0.17012389805030664,
+     "conf": 0.716199861697564,
+     "hold": 0.8600682593856656
+    },
+    "calib_by_kind": {
+     "node": {
+      "n": 555,
+      "ece": 0.15586217538222868,
+      "ece_null": 0.03850232404426989,
+      "ce": 0.18020477556921669,
+      "conf": 0.6992135925390933,
+      "hold": 0.8540540540540541
+     },
+     "part": {
+      "n": 324,
+      "ece": 0.13242665017841743,
+      "ece_null": 0.04599999825783293,
+      "ce": 0.17585978916021514,
+      "conf": 0.7452967116449445,
+      "hold": 0.8703703703703703
+     }
+    },
+    "ce_gate_new": 0.17012389805030664,
+    "conf_nondecreasing_old": false,
+    "conf_nondecreasing_new": true,
+    "conf_steps": [
+     [
+      5,
+      7,
+      9,
+      0.1683
+     ],
+     [
+      7,
+      10,
+      11,
+      0.0
+     ],
+     [
+      10,
+      21,
+      25,
+      0.11405469595651285
+     ]
+    ],
+    "U_nonincreasing_old": false,
+    "U_nonincreasing_new": true,
+    "recall_monotone_old": false,
+    "recall_monotone_new": true,
+    "recall_violations_daily": [
+     [
+      7,
+      8
+     ],
+     [
+      16,
+      17
+     ]
+    ],
+    "depth_old": false,
+    "depth_new": true,
+    "pg10_old": {
+     "day11": false,
+     "day21": false,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    },
+    "pg10_new": {
+     "day11": false,
+     "day21": false,
+     "finance_single_ip": true,
+     "ga_negative_finance": true
+    }
+   }
+  ]
+ }
+}

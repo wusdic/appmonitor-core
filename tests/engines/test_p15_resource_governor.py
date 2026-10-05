@@ -35,7 +35,9 @@ def budget(st):
 def test_ladder_one_step_per_three_over_ticks_and_recovery_after_24h():
     st = make_store()
     eng = ResourceGovernorEngine()
-    cfg = dict(CFG, progressive={"enabled": True, "budget": {"pcore_cpu_share": 0.01}})
+    # the ladder's mechanics on measured durations (cost_model 'wall'); the
+    # default prices counted work instead (test_p12_p15_cost_model.py)
+    cfg = dict(CFG, progressive={"enabled": True, "budget": {"pcore_cpu_share": 0.01, "cost_model": "wall"}})
     dt = 60.0
     steps = []
     t = T0
@@ -242,3 +244,23 @@ def test_pactive_before_p15_uses_previous_sets_plus_this_ticks_observations():
     assert PA.periodic_candidate(st, "oa", "10.0.0.2", cfg)            # earned
     assert not PA.periodic_candidate(st, "oa", "10.0.0.1", cfg)        # neither earned nor periodic
     assert PA.periodic_candidate(st, "oa", "10.0.0.1", {})             # full mode
+
+
+def test_tree_memory_is_remeasured_only_when_changed_and_at_most_hourly(monkeypatch):
+    """The deep size of every tree every 15 min was 83 % of P15's time on
+    pack O (§16.12): a tree is re-measured when it changed, at most hourly."""
+    import app.engines.behavior.resource_governor as RG
+    calls = []
+    monkeypatch.setattr(RG, "_tree_bytes", lambda store, k: calls.append(k) or 1000)
+    st = make_store()
+    eng = ResourceGovernorEngine()
+    t = T0
+    for k in range(12):                                   # 3 h of 15-min ticks; 'oa' active, 'fin' only at first
+        t += 900.0
+        put_batch(st, "oa", t, ["10.0.0.1"], dt=900.0)
+        if k == 0:
+            put_batch(st, "fin", t, ["10.0.0.2"], dt=900.0)
+        eng.safe_run(ctx(st, t, window_s=900.0, config=CFG), None)
+    assert calls.count("fin") == 1                        # idle since its first measure
+    assert 3 <= calls.count("oa") <= 4                    # hourly while it changes (was 12)
+    assert budget(st)["trees"]["oa"]["bytes"] == 1000

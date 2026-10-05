@@ -1,0 +1,60 @@
+{
+ "setup": "pack O (portal 500 IPs, O-scale-500), seed 0, 4 days, registry progressive_decision, two processes each; eval/det_run.py + det_cmp.py (wall-clock-only fields excluded: ms, us_per_event, duration_ms, *_wall_*)",
+ "head_wallclock_costs_same_hashseed": {
+  "diffs_per_day": {
+   "1": 55,
+   "2": 118,
+   "3": 131,
+   "4": 152
+  },
+  "by_model": {
+   "systems/*/model.sysprof": 421,
+   "org/model.budget": 19,
+   "systems/*/model.pflow": 12,
+   "org/model.who_groups": 4
+  }
+ },
+ "round4_counted_costs_different_hashseeds": {
+  "diffs_per_day": {
+   "1": 16,
+   "2": 19,
+   "3": 101,
+   "4": 244
+  },
+  "by_model": {
+   "org/model.who_groups": 216,
+   "group_views/class:grp:G*": 101,
+   "systems/*/model.pgrammar": 33,
+   "systems/*/model.pbind": 15,
+   "systems/*/model.pflow": 12,
+   "systems/*/model.attr": 3
+  }
+ },
+ "final_code_pinned_hashseed": {
+  "note": "final round-4 code (eval/final/code), PYTHONHASHSEED=0 in both processes",
+  "diffs_per_day": {
+   "1": 1,
+   "2": 1,
+   "3": 1,
+   "4": 13
+  },
+  "other_diffs": [
+   "day1/org/model.who_groups/stats/ms_tick_total 422.6 vs 380.9",
+   "day2/org/model.who_groups/stats/ms_tick_total 987.6 vs 901.1",
+   "day3/org/model.who_groups/stats/ms_tick_total 1522.7 vs 1430.3",
+   "day4/org/model.who_groups/stats/ms_tick_total 2042.0 vs 1922.8",
+   "day4/systems/code/model.pflow/stats/us_per_counted 30.921755208236267 vs 30.064430040664377",
+   "day4/systems/code/model.pflow/stats/us_per_row 15.170923419538473 vs 14.560265157685249",
+   "day4/systems/crm/model.pflow/stats/us_per_counted 71.91867292698659 vs 71.31879620479698",
+   "day4/systems/crm/model.pflow/stats/us_per_row 37.979858453461546 vs 33.356109536032314",
+   "day4/systems/finance/model.pflow/stats/us_per_counted 54.708383821092355 vs 53.213994498424825",
+   "day4/systems/finance/model.pflow/stats/us_per_row 19.238592637041545 vs 18.495463178585602",
+   "day4/systems/mail/model.pflow/stats/us_per_counted 52.67146138323879 vs 38.417066217368784",
+   "day4/systems/mail/model.pflow/stats/us_per_row 21.819595805075217 vs 18.147869456075377",
+   "day4/systems/oa/model.pflow/stats/us_per_counted 54.997717291174695 vs 53.56572222479365",
+   "day4/systems/oa/model.pflow/stats/us_per_row 15.925101260809734 vs 15.65995321703091",
+   "day4/systems/portal/model.pflow/stats/us_per_counted 59.31083362495845 vs 58.19125977101764",
+   "day4/systems/portal/model.pflow/stats/us_per_row 12.752567494688995 vs 12.464479952284728"
+  ]
+ }
+}

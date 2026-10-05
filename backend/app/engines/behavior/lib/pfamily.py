@@ -48,6 +48,7 @@ BANDS, ROWS = 16, 4
 J_MIN = 0.6
 PAYLOAD_TOL = 0.2
 MATCH_DAYS = 2
+MATCH_GAP_DAYS = 7               # a match older than this no longer continues a streak
 MIN_ROUTES = 3
 DETACH_SHARE = 0.2
 DETACH_DAYS = 7
@@ -230,9 +231,16 @@ def update_families(state: Dict[str, Any], day: int, sigs: Mapping[str, Mapping[
     st.setdefault("detach", {})           # system -> consecutive days over the detach share
     st.setdefault("forbid_pairs", [])
     forced, forbidden = _cfg_rules(config_families)
-    pairs = candidate_pairs({s: v["sig"] for s, v in sigs.items() if v.get("informative")})
+    informative = {s for s, v in sigs.items() if v.get("informative")}
+    pairs = candidate_pairs({s: sigs[s]["sig"] for s in informative})
+    streak = st["streak"]
+    # pairs already on a streak are judged today whenever both signatures are
+    # informative, whether or not LSH proposed them again (an LSH miss is not
+    # evidence of dissimilarity)
+    judged = set(pairs) | {tuple(k.split("|", 1)) for k in streak}
+    judged = {(a, b) for a, b in judged if a in informative and b in informative}
     matched_today: Set[Tuple[str, str]] = set()
-    for a, b in sorted(pairs):
+    for a, b in sorted(judged):
         if a in forbidden or b in forbidden:
             continue
         va, vb = sigs[a], sigs[b]
@@ -241,17 +249,26 @@ def update_families(state: Dict[str, Any], day: int, sigs: Mapping[str, Mapping[
         if weighted_jaccard(va["fs"], vb["fs"]) < J_MIN:
             continue
         matched_today.add((a, b))
-    streak = st["streak"]
+    # MATCH_DAYS matches on days on which BOTH were observed with an informative
+    # signature, with no contrary day in between: a day on which either side is
+    # idle or uninformative neither counts nor resets (round 4, §16.12: a
+    # replica of a load-balanced family sees ~1 session a day and is idle or
+    # uninformative on many days, so calendar-consecutive matches left 24 MB of
+    # unjoined replicas at 300 systems); evidence older than MATCH_GAP_DAYS lapses
     for a, b in matched_today:
         key = f"{a}|{b}"
         last = st["matches"].get(key)
-        streak[key] = (int(streak.get(key, 0)) + 1) if last == day - 1 else (
-            int(streak.get(key, 1)) if last == day else 1)
+        if last == day:
+            streak[key] = int(streak.get(key, 1))
+        elif last is not None and day - int(last) <= MATCH_GAP_DAYS and key in streak:
+            streak[key] = int(streak.get(key, 0)) + 1
+        else:
+            streak[key] = 1
         st["matches"][key] = day
-    # a pair that had a fresh signature on both sides today but did not match loses its streak
+    # a pair judged today (both informative) that did not match loses its streak
     for key in list(streak):
         a, b = key.split("|", 1)
-        if a in sigs and b in sigs and (a, b) not in matched_today:
+        if (a, b) in judged and (a, b) not in matched_today:
             streak.pop(key, None)
             st["matches"].pop(key, None)
     recent = {x for x, d0 in (st.get("detached") or {}).items() if day - int(d0) < REJOIN_DAYS}

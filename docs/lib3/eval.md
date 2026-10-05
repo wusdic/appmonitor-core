@@ -112,3 +112,12 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
     - Fault injection: disabling B04 degrades its family (NaN), not p = 1, and FAR does not rise.
 
 16. The design doc's §3.3 table is regenerated from eval_report.json. No accuracy claim is written by hand.
+PROGRESSIVE CORE (PG1–PG11): MEASUREMENT SEMANTICS (round 4)
+
+The PG gates are defined in progressive.md §12 and scored by backend/app/eval/pmetrics.py. Round 4 fixed what some checks measured (reasons and re-scored runs: progressive.md §16.12):
+
+- PG2 calibration: the debiased RMS calibration error (Kumar et al. 2019) over every judged claim of days ≥ 7 pooled, target ≤ 0.05. The plug-in ECE of one snapshot (~60 statements) has a floor of 0.11–0.16 for a perfectly calibrated set, so the old check could not be met by any learner; the pooled debiased error reads ~0.01 for a calibrated set (sd 0.015–0.02) and ≥ the population ECE. The plug-in ECE, its null floor and the node / group-part split are reported beside it.
+- PG2 trends (recall ± 0.05, mean depth, confidence, unseen-IP mass) are read on §12's snapshot days {3, 5, 7, 10, 14, 21} outside the drift days, as defined; runs snapshot daily since round 3 and the checks had silently become day-to-day (daily recall dips are still reported). Confidence and U compare the same unchanged truth patterns on consecutive snapshot days (median paired change), so newly recovered patterns entering at a low confidence no longer read as a fall.
+- Precision and calibration count each distinct claim once (a statement rendered twice is one claim).
+- PG10 window: the learned edges are compared with the truth's window (central 99 %) or, when the statement states a coverage 0.5 ≤ c < 0.99, with some set of intervals of the truth law holding c, within ± 2 min; a correct 74 % window could never meet the 99 % edges.
+- Reproducibility: P12 / P15 decide on a deterministic price of each engine run's counted work (lib/pcost; cost_model 'wall' optional), and the evaluation entry points pin PYTHONHASHSEED; two runs of the same seed then make the same decisions.

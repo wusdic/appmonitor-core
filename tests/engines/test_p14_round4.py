@@ -295,3 +295,250 @@ def test_department_view_of_a_pool_states_its_prefix_level_statements():
                        "who": {"level": "prefix", "items": ["10.50.0.0/24", "10.50.1.0/24"], "group_name": "研发"}}}
     dv = VW.dept_view("研发", views, groups, {}, T0, {"oa": {"statements": [st]}})
     assert any(s["id"] == "p:13|class:grp:dept:研发" for s in dv["statements"])
+
+
+def test_an_ancestor_mixing_routes_is_folded_into_its_route_child():
+    """The finance root (90 % health checks, other routes 10 %) is rendered as
+    'GET /health' with the other routes' upload sizes; its http.route child
+    holds the health checks alone. Both state the same action for the same
+    monitor: the child is the primary statement, the root's is folded (pack O
+    seed 0 day 14: finance /health twice, mail root parts next to the TLS
+    child's)."""
+    tree = _tree({1: (0, "http.route"), 4: (1, "net.src")})
+    mon = {"level": "ip", "items": ["192.168.9.9"]}
+    sts = [_st("p:0", 0, 0, "GET /health", mon, depth=0), _st("p:1", 0, 1, "GET /health", mon)]
+    prim, folded = VW.fold_duplicates(sts, tree)
+    assert [s["id"] for s in prim] == ["p:1"]
+    assert [(s["id"], s["folded_into"]) for s in folded] == [("p:0", "p:1")]
+    # route then source splits: the group's part at the root folds into the deepest one
+    sts = [_st("p:0|grp:G11", 0, 0, "TLS mail", SALES, depth=0), _st("p:4|grp:G11", 0, 4, "TLS mail", SALES, 2)]
+    prim, folded = VW.fold_duplicates(sts, tree)
+    assert [s["id"] for s in prim] == ["p:4|grp:G11"]
+
+
+class _H:
+    """A hierarchy stub: ctx.think_s numeric with 7 log-edges (8 bins)."""
+
+    def kind(self, a):
+        return "num" if a in ("ctx.think_s", "net.pkts_down") else ("text" if a.startswith("hdr.") else "cat")
+
+    def _num_edges(self, a):
+        import math
+        import numpy as np
+        if a == "ctx.think_s":
+            return np.log(np.array([0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0])), True
+        return np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]), False
+
+
+def test_variant_conditions_are_rendered_readably():
+    h = _H()
+    # level 3 = 2 bins of 4: both values = every bin -> the request has a predecessor
+    assert VW._cond_phrase(h, "ctx.think_s", 3, ["0", "1"], False)[0] == "会话内后续请求"
+    assert VW._cond_phrase(h, "ctx.think_s", 3, [EV.ABSENT], False)[0] == "会话首个请求"
+    assert VW._cond_phrase(h, "net.pkts_down", 3, [0, 1], False)[0] == "有下行包数"
+    assert VW._cond_phrase(h, "net.pkts_down", 1, [EV.ABSENT], False)[0] == "无下行包数"
+    # level 1 bins 0-1 -> below the second edge; level 2 bin 1 (bins 2-3) -> a range
+    assert VW._cond_phrase(h, "ctx.think_s", 1, [0, 1], False)[0] == "距上一请求间隔 < 1 s"
+    assert VW._cond_phrase(h, "ctx.think_s", 2, [1], False)[0] == "距上一请求间隔 1 s–4 s"
+    assert VW._cond_phrase(h, "net.pkts_down", 1, [5, 6, 7], False)[0] == "下行包数 ≥ 5"
+    assert VW._cond_phrase(h, "hdr.user-agent", 1, ["U1 L6 / D1", "U1 L6 / D2"], False)[0] == \
+        "请求头 user-agent 为 2 种特定形态"
+    assert VW._cond_phrase(h, "http.method", 0, ["GET"], True)[0] == "非（方法 为 GET）"
+    # 'not absent' is 'present'; a numeric value without a trailing '.0'
+    assert VW._cond_phrase(h, "ctx.think_s", 3, [EV.ABSENT], True)[0] == "会话内后续请求"
+    assert VW._cond_phrase(h, "hdr.user-agent.len", 0, [111.0], False)[0] == "请求头 user-agent.len 为 111"
+    # route and source constraints are the action and the WHO, not conditions
+    zh, en, ev = VW.variant_condition(h, [("http.route", 0, ["GET oa /x"], False),
+                                          ("net.src", 1, ["10.50.0.0/24"], False),
+                                          ("ctx.think_s", 3, [EV.ABSENT], False)])
+    assert zh == "会话首个请求" and [e["attr"] for e in ev] == ["ctx.think_s"]
+
+
+def test_variants_of_an_action_state_their_condition(monkeypatch):
+    """Two children of GET /fin/ledger/{num} split on ctx.think_s (first
+    request of a session vs later ones) rendered the same 'who opens route'
+    sentence with different numbers: each now names its condition, so the
+    view shows variants, not duplicates."""
+    from app.engines.behavior.lib import ptree as PT
+    from app.models.schema import ORG, SYSTEM_ENTITY
+    fin = ["192.168.2.11", "192.168.2.12"]
+    m = PT.PTreeModel("finance")
+    tr = m.tree(EV.KIND_TXN, T0, create=True)
+    sp = tr.split(tr.root, "http.route", 0, [["GET fin /fin/ledger/{num}"]], T0)
+    act = sp.children[0]
+    sp2 = tr.split(act, "ctx.think_s", 3, [[EV.ABSENT], ["0", "1"]], T0)
+    nodes = [tr.nodes[tr.root], tr.nodes[act]] + [tr.nodes[c] for c in sp2.children]
+    t = T0
+    for d in range(21):
+        for k, ip in enumerate(fin):
+            t = T0 + d * 86400.0 + (10 * 60 + 7 * k) * 60.0
+            p = ip.split(".")
+            keys = [ip, ".".join(p[:3]) + ".0/24", ".".join(p[:2]) + ".0.0/16", "grp:G2", "reg:∅"]
+            for nd in nodes:
+                nd.update_core(t, 1.0, 1.0, keys, ip, 0, (t + 8 * 3600) % 86400 / 60.0,
+                               int((t + 8 * 3600) // 86400))
+    for nd in nodes:
+        nd.state = "confirmed"
+    m.t_last = t
+    st = make_store()
+    st.put_model("finance", SYSTEM_ENTITY, MP.PTREE, m, version=1)
+    st.put_model(ORG, ORG, MP.WHO_GROUPS, {"groups": {}, "ip2g": {}, "mode": {"finance": {"mode": "ip"}}})
+    v = VW.system_view(st, "finance", {"progressive": {"enabled": True}, "tz": "Asia/Shanghai"}, t + 3600.0)
+    by = {s["evidence"]["node"]: s for s in v["statements"] + v.get("folded", [])}
+    c0, c1 = sp2.children
+    assert "GET /fin/ledger/{num}（查看账簿）（条件：会话首个请求）" in by[c0]["text_zh"]
+    # (no registry here: the bins cannot be decoded, but no bin index is shown)
+    assert "（条件：距上一请求间隔 在特定区间）" in by[c1]["text_zh"]
+    assert by[c1]["evidence"]["condition"][0]["attr"] == "ctx.think_s"
+    assert "condition" not in by[act]["evidence"]       # the action node itself is no variant
+    assert "(when: first request of a session)" in by[c0]["text_en"]
+
+
+def test_a_pool_stated_by_its_configured_region_is_named_after_its_department():
+    """P12's 'reg' arm states 研发's DHCP pool as 'reg:研发 DHCP': resolved to the
+    scope's CIDR it lies inside the pool group's pool, so the statement is
+    labelled 研发 (group_name) and the department view can hold it."""
+    c = SimpleNamespace(config={"dhcp_scopes": [{"name": "研发 DHCP", "cidr": "10.50.0.0/22"}]},
+                        groups={"G5": {"id": "G5", "name": "研发", "name_source": "config",
+                                       "pool": "10.50.0.0/22"}})
+    assert VW.pool_label(c, ["reg:研发 DHCP"]) == ("研发", ["研发 DHCP"])
+    assert VW.pool_label(c, ["10.50.1.0/24"]) == ("研发", ["10.50.1.0/24"])
+    assert VW.pool_label(c, ["reg:public-0"])[0] is None
+    assert VW.pool_label(c, ["192.168.3.0/24"])[0] is None
+
+
+def _drift_tree(monkeypatch, drift: bool, fin=()):
+    from app.engines.behavior.lib import ptree as PT
+    from app.engines.behavior.lib import pnode as PN
+    from app.models.schema import ORG, SYSTEM_ENTITY
+    ga = ["192.168.1.21", "192.168.1.23", "10.168.7.121"]
+    m = PT.PTreeModel("oa")
+    tr = m.tree(EV.KIND_TXN, T0, create=True)
+    sp = tr.split(tr.root, "http.route", 0, [["GET oa.corp /home"]], T0)
+    node, root = tr.nodes[sp.children[0]], tr.nodes[tr.root]
+    t = T0
+    for d in range(14):
+        for k, (ip, g) in enumerate([(x, "G1") for x in ga] + [(x, "G2") for x in fin]):
+            t = T0 + d * 86400.0 + (9 * 60 + 7 * k) * 60.0
+            p = ip.split(".")
+            keys = [ip, ".".join(p[:3]) + ".0/24", ".".join(p[:2]) + ".0.0/16", f"grp:{g}", "reg:∅"]
+            for nd in (root, node):
+                nd.update_core(t, 1.0, 1.0, keys, ip, 0, (t + 8 * 3600) % 86400 / 60.0,
+                               int((t + 8 * 3600) // 86400))
+    for nd in (root, node):
+        nd.state = "confirmed"
+    orig = PN.Node.p_hold
+    monkeypatch.setattr(PN.Node, "p_hold", lambda self, _t: 0.8 if self is node else orig(self, _t))
+    m.t_last = t
+    st = make_store()
+    st.put_model("oa", SYSTEM_ENTITY, MP.PTREE, m, version=1)
+    st.put_model(ORG, ORG, MP.WHO_GROUPS, {
+        "groups": {"G1": {"id": "G1", "name": "综合部", "members": ga},
+                   "G2": {"id": "G2", "name": "财务部", "members": list(fin)}},
+        "ip2g": dict({ip: "G1" for ip in ga}, **{ip: "G2" for ip in fin}), "mode": {"oa": {"mode": "ip"}}})
+    rec = {"windows": [[540, 562]], "coverage": 0.9, "confidence": 0.3 if drift else 0.9,
+           "text_zh": "工作日 09:00–09:22", "text_en": "workdays 09:00-09:22"}
+    when = {"workday": [[540, 562]], "nonworkday": [], "coverage": 0.9,
+            "confidence": 0.3 if drift else 0.9}
+    if drift:
+        rec["drift"] = when["drift"] = {"workday": {"p": 0.001, "dates_after": 1}}
+    st.put_model("oa", SYSTEM_ENTITY, MP.PWIN, {"version": 1, "nodes": {EV.KIND_TXN: {node.id: {
+        "status": "fitted", "when": when, "by_daytype": {"wd": rec}}}}}, version=1)
+    v = VW.system_view(st, "oa", {"progressive": {"enabled": True}, "tz": "Asia/Shanghai"}, t + 3600.0)
+    return [s for s in v["statements"] if s["evidence"]["route"] == "GET oa.corp /home"
+            and s["evidence"]["node"] == node.id]
+
+
+def test_a_node_whose_windows_drift_is_stated_as_evolving(monkeypatch):
+    """Spec §6.9.2: a content change makes the node evolving and P09 fits
+    provisional constraints. P09 marks the windows 'drift' (a time-of-day
+    change younger than its acceptance period); the node statement used to
+    stay 'confirmed' at P04's hold rate (pack O seed 0 day 14: 综合部 home /
+    login stated confirmed 0.61-0.77 while holding 0.08-0.12)."""
+    sts = _drift_tree(monkeypatch, drift=True)
+    assert sts and all(s["state"] == "evolving" for s in sts)
+    assert all(s["confidence"] <= 0.3 + 1e-9 for s in sts)
+    assert all(s["evidence"]["when"].get("drift") for s in sts)
+    assert any("正在变化" in s["text_zh"] for s in sts)
+    # without the mark: confirmed at the node's held-out hold rate
+    sts = _drift_tree(monkeypatch, drift=False)
+    assert sts and all(s["state"] == "confirmed" for s in sts)
+    assert any(s["confidence"] == pytest.approx(0.8) for s in sts)
+
+
+def test_a_groups_part_leaves_violating_rows_out_of_its_windows(monkeypatch):
+    """P09 fits a node's windows without the rows P03 judged violations (P06's
+    ledger, content_bounds.point_ledger); a group's part (pwindows.part_when)
+    was fitted with them (content owner's open issue): the views now pass the
+    tree's ledger as `drop`."""
+    from app.engines.behavior import content_bounds as CB
+    from app.engines.behavior.lib import pwindows as PW
+    led = {(1234.5, "192.168.1.21")}
+    seen = []
+    monkeypatch.setattr(CB, "point_ledger", lambda store, key, kind: set(led))
+
+    def spy(when, members, tz=0.0, min_points=PW.MIN_POINTS, drop=None):
+        seen.append(drop)
+        return None
+    monkeypatch.setattr(PW, "part_when", spy)
+    _drift_tree(monkeypatch, drift=False, fin=("192.168.2.10", "192.168.2.11", "192.168.2.12"))
+    assert seen and all(d == led for d in seen)
+
+
+def test_a_groups_part_states_its_own_numeric_band(monkeypatch):
+    """Evaluator round 4: a group's part of a shared node states the GROUP's
+    numeric band (P04 keeps the stated numeric constraints' values per tracked
+    group, pnode meta 'gnum'; views.part_content refits them). Before, the part
+    stated the node's band: pack O, the 综合部 part of OA's login node (truth
+    1-2 KB) stated the node's 0.5-1.5 KB on every seed (PG10 day 11)."""
+    import numpy as np
+    from app.engines.behavior.lib import ptree as PT
+    from app.engines.behavior.lib import pnode as PN
+    from app.engines.behavior.lib import pbounds as PB
+    from app.engines.behavior.pattern_tree import PatternTreeEngine
+    from app.models.schema import ORG, SYSTEM_ENTITY
+    rng = np.random.default_rng(3)
+    ga = ["192.168.1.21", "192.168.1.23", "10.168.7.121"]
+    sales = [f"192.168.3.{i}" for i in range(20, 24)]
+    m = PT.PTreeModel("oa")
+    tr = m.tree(EV.KIND_TXN, T0, create=True)
+    sp = tr.split(tr.root, "http.route", 0, [["POST oa.corp /login"]], T0)
+    node, root = tr.nodes[sp.children[0]], tr.nodes[tr.root]
+    node.state = "confirmed"
+    node.ref = {"t": T0, "hold": {"body.len": ("num", 512.0, 1536.0, 0.9)}}
+    allv = PN.NumSummary(log=True)
+    t = T0
+    for d in range(14):
+        day = 739000 + d
+        for k, (ip, g, lo, hi) in enumerate([(x, "G1", 1024, 2048) for x in ga]
+                                            + [(x, "G2", 500, 1400) for x in sales]):
+            t = T0 + d * 86400.0 + (9 * 60 + k) * 60.0
+            v = float(rng.uniform(lo, hi))
+            p = ip.split(".")
+            keys = [ip, ".".join(p[:3]) + ".0/24", ".".join(p[:2]) + ".0.0/16", f"grp:{g}", "reg:∅"]
+            for nd in (root, node):
+                nd.update_core(t, 1.0, 1.0, keys, ip, 0, (t + 8 * 3600) % 86400 / 60.0, day)
+            allv.update(v, t, 1.0, 1.0, day=day)
+            PatternTreeEngine._hold_check(None, node, lambda a, v=v: v if a == "body.len" else EV.ABSENT,
+                                          keys, 0, 540.0, t, 1.0, 1.0, day)
+    root.state = "confirmed"
+    assert set((node.meta.get("gnum") or {})) == {"grp:G1", "grp:G2"}
+    m.t_last = t
+    now = t + 3600.0
+    rec = PB.fit_numeric(allv, now, PB.local_day(now, {"tz": "Asia/Shanghai"}), 200.0, 200.0, 0.0, "B")
+    st = make_store()
+    st.put_model("oa", SYSTEM_ENTITY, MP.PTREE, m, version=1)
+    st.put_model("oa", SYSTEM_ENTITY, MP.PBOUNDS, {"version": 1, "nodes": {EV.KIND_TXN: {node.id: {
+        "status": "fitted", "attrs": {"body.len": rec}}}}}, version=1)
+    st.put_model(ORG, ORG, MP.WHO_GROUPS, {
+        "groups": {"G1": {"id": "G1", "name": "综合部", "members": ga},
+                   "G2": {"id": "G2", "name": "销售部", "members": sales}},
+        "ip2g": dict({ip: "G1" for ip in ga}, **{ip: "G2" for ip in sales}),
+        "mode": {"oa": {"mode": "ip"}}})
+    v = VW.system_view(st, "oa", {"progressive": {"enabled": True}, "tz": "Asia/Shanghai"}, now)
+    parts = {s["evidence"]["who"]["name"]: s for s in v["statements"]
+             if (s["evidence"].get("who") or {}).get("part_of")}
+    b_ga = parts["综合部"]["evidence"]["content"]["body.len"]["band90"]
+    b_sa = parts["销售部"]["evidence"]["content"]["body.len"]["band90"]
+    assert 950 <= b_ga[0] <= 1300 and 1900 <= b_ga[1] <= 2150, b_ga      # not the node's
+    assert b_sa[1] <= 1450, b_sa

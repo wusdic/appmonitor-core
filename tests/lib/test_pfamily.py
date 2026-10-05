@@ -71,15 +71,36 @@ def test_family_forms_after_two_days_and_is_stable():
     assert r5["member"]["oa-r4"] == fid and ("oa-r4", fid) in r5["joined"]
 
 
-def test_non_consecutive_days_do_not_count_and_payload_mismatch_blocks():
+def test_a_contrary_or_stale_day_breaks_the_streak_and_payload_mismatch_blocks():
     st = {}
     a, b = sig_of(groups_for("x", "x.corp"), 0.3), sig_of(groups_for("x", "x.corp"), 0.9)
     PF.update_families(st, 1, {"a": a, "b": b})
     assert PF.update_families(st, 2, {"a": a, "b": b})["member"] == {}     # payload differs by 0.6
     st = {}
     b = sig_of(groups_for("x", "x.corp"), 0.3)
+    other = sig_of(groups_for("y", "y.corp"), 0.3)
     PF.update_families(st, 1, {"a": a, "b": b})
-    assert PF.update_families(st, 3, {"a": a, "b": b})["member"] == {}     # day 2 missing
+    PF.update_families(st, 2, {"a": a, "b": other})                        # both observed, no match
+    assert PF.update_families(st, 3, {"a": a, "b": b})["member"] == {}
+    st = {}
+    PF.update_families(st, 1, {"a": a, "b": b})
+    assert PF.update_families(st, 1 + PF.MATCH_GAP_DAYS + 1, {"a": a, "b": b})["member"] == {}   # stale
+
+
+def test_intermittent_replicas_join_on_their_observed_days():
+    """§16.12: a replica of a load-balanced family sees ~1 session a day and
+    is idle or uninformative on many days; its matches are counted on the days
+    both sides were observed (calendar-consecutive matches left 24 MB of
+    unjoined replicas at 300 systems)."""
+    st = {}
+    a, b = sig_of(groups_for("x", "x.corp")), sig_of(groups_for("x", "x.corp"))
+    thin = sig_of({"port": {"8080": 1.0}, "stack": {"chrome": 1.0}})               # no route seen that day
+    assert not thin["informative"]
+    PF.update_families(st, 1, {"a": a, "b": b})
+    PF.update_families(st, 2, {"a": a})                                     # b idle
+    PF.update_families(st, 3, {"a": a, "b": thin})                          # b uninformative
+    r = PF.update_families(st, 4, {"a": a, "b": b})
+    assert r["member"].get("a") and r["member"].get("a") == r["member"].get("b")
 
 
 def test_uninformative_signatures_never_match():
@@ -141,3 +162,4 @@ def test_family_pass_cost_is_linear_in_systems():
         assert len(r["families"]) == 12 and all(len(m) == per for m in r["families"].values())
     # per-system cost of the pass stays flat within a factor 3 (pairs only inside families)
     assert t[25] <= 3.0 * t[2] + 2e-3, t
+

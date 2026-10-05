@@ -209,11 +209,11 @@ def test_part_confidence_is_its_groups_own_held_out_record():
     nd.state = "confirmed"
     nd.ref = {"t": MON, "hold": {"when": ("win", {0: ((480.0, 600.0),)}, 0.9)}}
     t = MON
-    for k in range(4000):
+    for k in range(12000):                     # 42 days, 40 sources (a test is 100 source-days)
         t += 300.0
         g = "grp:G1" if k % 2 else "grp:G2"
         minute = 500.0 if g == "grp:G1" else (500.0 if k % 4 == 0 else 700.0)
-        keys = ["10.0.0.1", "10.0.0.0/24", "10.0.0.0/16", g, "reg:∅"]
+        keys = [f"10.0.{k % 40}.1", f"10.0.{k % 40}.0/24", "10.0.0.0/16", g, "reg:∅"]
         PatternTreeEngine._hold_check(None, nd, lambda a: None, keys, 0, minute, t, 1.0)
     assert nd.p_hold_group(["G1"]) > 0.9
     assert nd.p_hold_group(["grp:G2"]) < 0.1
@@ -317,3 +317,38 @@ def test_hold_prior_is_weak_when_the_records_cannot_tell_the_dispersion():
         assert pr is not None and sum(pr) <= 2.0, (n, pr)
     p = (12.0 + 0.5 * 2) / (12.0 + 2.0)
     assert p > 0.9
+
+
+def _clustered_hold(cover: float, seed: int = 5) -> float:
+    """20 sources a day, one session of 10 page views each at the SAME arrival
+    minute (a session's events share its time); the source's minute is inside
+    the stated 0.9 window with probability `cover`. Returns p_hold after 60 days."""
+    from app.engines.behavior.pattern_tree import PatternTreeEngine
+    rng = np.random.default_rng(seed)
+    nd = PN.Node(1, 0, 1, 0, (), MON)
+    nd.state = "confirmed"
+    nd.ref = {"t": MON, "hold": {"when": ("win", {0: ((480.0, 600.0),)}, 0.9)}}
+    t = MON
+    for d in range(60):
+        for i in range(20):
+            ip = f"10.0.{i}.1"
+            minute = rng.uniform(480, 600) if rng.random() < cover else rng.uniform(700, 900)
+            t0 = MON + d * DAY + i * 600.0
+            for j in range(10):
+                keys = [ip, f"10.0.{i}.0/24", "10.0.0.0/16", "grp:∅", "reg:∅"]
+                PatternTreeEngine._hold_check(None, nd, lambda a: None, keys, 0, minute, t0 + j * 30.0, 1.0)
+    return nd.p_hold(t0 + DAY)
+
+
+def test_held_out_tests_count_a_sources_day_as_one_unit():
+    """Evaluator round 4 (pnode.cluster_tol): the checks of one source's day are
+    one unit of evidence - a session's page views share its arrival minute. A
+    window that holds 0.9 of the SOURCES' arrivals failed ~1 test in 4 when the
+    100 views of 10 sessions were judged as 100 independent checks (p_hold
+    0.73; pack O seed 0, days 7-21: node statements stated 0.69 and held 0.91
+    on the evaluator's independent held-out events). A test is now 50
+    source-days judged at their cluster-robust error (2 sigma); a window
+    holding 0.75 or 0.6 still fails its tests."""
+    assert _clustered_hold(0.9) > 0.85              # 0.73 with event-level batches
+    assert _clustered_hold(0.75) < 0.4              # a quarter of the sources outside: still fails
+    assert _clustered_hold(0.6) < 0.2

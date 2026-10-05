@@ -11,8 +11,13 @@ idle tree shrinks to tier XS and, after 30 idle days, leaves memory entirely
 earned IPs of a system in bounded mode.
 
 Per tick (O(#trees + events of the tick + |active sets|), never O(#known IPs)):
-  1. costs: each engine's duration of its latest run (engine health, counted
-     once per run) into a 1-hour window -> P-core and lib-3 CPU shares;
+  1. costs: each engine's latest run (engine health, counted once per run)
+     into a 1-hour window -> P-core and lib-3 CPU shares. The cost is the
+     deterministic price of the run's counted work (lib/pcost; config
+     progressive.budget.cost_model 'counted', the default), so two identical
+     runs take the same ladder steps and P12 charges its arms the same costs;
+     the measured durations are kept beside it for operations (usage.*_wall_*,
+     ops.budget pcore_wall_ms_h; cost_model 'wall' decides on them instead);
      every 15 min the P-core memory (model nbytes per tree) and
      store.memory_report().
   2. idle trees: a tree without events for 30 d is checkpointed
@@ -57,6 +62,7 @@ from ...core.engine import Context, Engine
 from ...models.schema import ORG, SYSTEM_ENTITY, DerivedMetric, MetricKind, is_pseudo_entity
 from .lib import m_ptree as MP
 from .lib import pactive as PA
+from .lib import pcost as PC
 from .lib import pevent as EV
 from .lib import psketch as PS
 from .lib import pstrategy as PSt
@@ -65,6 +71,7 @@ STATE = "model.budget_state"
 DAY = PS.DAY
 HOUR = 3600.0
 MEM_EVERY_S = 900.0
+MEM_TREE_S = 3600.0              # a changed tree's deep size is re-measured at most hourly
 STORE_REPORT_S = 6 * 3600.0     # store.memory_report cadence (it is O(stored points))
 IDLE_XS_S = DAY                  # no event for a day -> tier XS
 IDLE_EVICT_S = 30 * DAY          # no event for 30 days -> checkpoint and release
@@ -108,6 +115,7 @@ class GovState:
         self.t_first: Optional[float] = None
         self.mem_t: Optional[float] = None
         self.mem_tree: Dict[str, int] = {}
+        self.mem_meas: Dict[str, float] = {}                         # tree key -> ts of its last deep size
         self.mem_pcore = 0
         self.mem_store: Dict[str, Any] = {}
         self.store_t: Optional[float] = None
@@ -123,7 +131,10 @@ class GovState:
         self.earn_low: Dict[str, Dict[str, int]] = {}
         self.earned: Dict[str, List[str]] = {}
         self.earn_day: Dict[str, int] = {}
-        self.engine_ms: Dict[str, Deque[Tuple[float, float]]] = {}
+        self.engine_ms: Dict[str, Deque[Tuple[float, float]]] = {}      # cost the decisions see (lib/pcost)
+        self.engine_wall_ms: Dict[str, Deque[Tuple[float, float]]] = {}  # measured, for operations
+        self.cpu_wall: Deque[Tuple[float, float, float]] = deque()       # (ts, pcore ms, lib3 ms) measured
+        self.tick_ev: "OrderedDict[float, float]" = OrderedDict()        # tick ts -> org events (2 h)
         self.regime: Dict[str, Tuple[float, Any]] = {}             # system -> (ts, IPs with a B28 regime event in 7 d)
         self.keep: Dict[str, "OrderedDict[str, float]"] = {}       # system -> ip -> last ts (7 d, bounded mode)
         self.released = 0
@@ -133,6 +144,8 @@ class GovState:
         n += sum(80 * len(v) for v in self.linger.values())
         n += sum(80 * len(v) for v in (getattr(self, "keep", None) or {}).values())
         n += sum(24 * len(v) for v in self.engine_ms.values())
+        n += sum(24 * len(v) for v in (getattr(self, "engine_wall_ms", None) or {}).values())
+        n += 24 * len(getattr(self, "cpu_wall", ()) or ()) + 32 * len(getattr(self, "tick_ev", ()) or ())
         return int(n)
 
 
@@ -168,7 +181,7 @@ class ResourceGovernorEngine(Engine):
         if st.t_first is None:
             st.t_first = now
         bud = _budget_cfg(cfg)
-        self._costs(store, st, now)
+        self._costs(store, st, now, bud)
         sources = self._tick_sources(store, now, dt)
         restored = self._restore(store, st, sources, now)
         self._activity(store, st, sources, now)
@@ -184,9 +197,12 @@ class ResourceGovernorEngine(Engine):
         old = store.get_model(ORG, ORG, MP.BUDGET)
         version = int((old or {}).get("version", 0)) + 1 if isinstance(old, Mapping) else 1
         cpu_p, cpu_l, span = self._cpu_share(st, now)
+        wall_p, wall_l, _ = self._cpu_share(st, now, wall=True)
         model = {"fmt": 1, "version": version, "t": now, "trees": trees, "systems": systems,
                  "ladder": ladder,
                  "usage": {"pcore_cpu_share": cpu_p, "lib3_cpu_share": cpu_l, "window_s": span,
+                           "cost_model": PC.mode(bud), "pcore_wall_share": wall_p,
+                           "lib3_wall_share": wall_l,
                            "pcore_mem_mb": st.mem_pcore / 1e6, "over": over, "frac": frac,
                            "store": dict(st.mem_store), "gov_bytes": st.nbytes()},
                  "budget": dict(bud), "evicted": dict(st.evicted)}
@@ -199,46 +215,84 @@ class ResourceGovernorEngine(Engine):
         return len(trees)
 
     # ---------------------------------------------------------------- costs
-    def _costs(self, store: Any, st: GovState, now: float) -> None:
-        pc = lc = 0.0
+    def _costs(self, store: Any, st: GovState, now: float, bud: Optional[Mapping[str, Any]] = None) -> None:
+        """Each engine's latest run (engine health, counted once per run) into
+        a 1-hour window: the cost the decisions see (lib/pcost: modelled from
+        the run's own count and the events of its tick in mode 'counted', the
+        default; the measured duration in mode 'wall') and, for operations,
+        the measured duration. Engines that ran before P15 in this tick carry
+        this tick's timestamp, the others the previous tick's."""
+        if getattr(st, "engine_wall_ms", None) is None:          # state from an older version
+            st.engine_wall_ms, st.cpu_wall, st.tick_ev = {}, deque(), OrderedDict()
+        ev = 0.0
+        for s in store.batch_systems(EV.EVT_BATCH):
+            b = store.batch_at(s, EV.EVT_BATCH, now)
+            if b is not None:
+                ev += float(b.n)
+        st.tick_ev[now] = ev
+        while st.tick_ev and next(iter(st.tick_ev)) <= now - 2 * HOUR:
+            st.tick_ev.popitem(last=False)
+        pc = lc = pw = lw = 0.0
         for eng, rec in store.health().items():
             ts = rec.get("ts")
             if ts is None or st.health_seen.get(eng) == ts:
                 continue
             st.health_seen[eng] = ts
-            ms = float(rec.get("duration_ms") or 0.0)
+            wall = float(rec.get("duration_ms") or 0.0)
+            ms = PC.run_cost_ms(eng, rec, st.tick_ev.get(ts, 0.0), bud)
             if eng in P_ENGINES:
                 pc += ms
+                pw += wall
             if eng.startswith("behavior."):
                 lc += ms
-            q = st.engine_ms.setdefault(eng, deque())
-            q.append((now, ms))
-            while q and q[0][0] <= now - HOUR:
-                q.popleft()
-        st.cpu.append((now, pc, lc))
-        while st.cpu and st.cpu[0][0] <= now - HOUR:
-            st.cpu.popleft()
+                lw += wall
+            for book, v in ((st.engine_ms, ms), (st.engine_wall_ms, wall)):
+                q = book.setdefault(eng, deque())
+                q.append((now, v))
+                while q and q[0][0] <= now - HOUR:
+                    q.popleft()
+        for cpu, p, l in ((st.cpu, pc, lc), (st.cpu_wall, pw, lw)):
+            cpu.append((now, p, l))
+            while cpu and cpu[0][0] <= now - HOUR:
+                cpu.popleft()
 
     @staticmethod
-    def _cpu_share(st: GovState, now: float) -> Tuple[float, float, float]:
+    def _cpu_share(st: GovState, now: float, wall: bool = False) -> Tuple[float, float, float]:
         span = min(HOUR, max(1.0, now - (st.t_first or now)))
-        if not st.cpu:
+        cpu = (getattr(st, "cpu_wall", None) or ()) if wall else st.cpu
+        if not cpu:
             return 0.0, 0.0, span
         span = max(span, 1.0)
-        p = sum(x[1] for x in st.cpu) / 1000.0 / span
-        l = sum(x[2] for x in st.cpu) / 1000.0 / span
+        p = sum(x[1] for x in cpu) / 1000.0 / span
+        l = sum(x[2] for x in cpu) / 1000.0 / span
         return float(p), float(l), float(span)
 
     def _memory(self, store: Any, st: GovState, now: float) -> None:
+        """P-core memory per tree. A tree's deep size is re-measured when it
+        changed (an event since its last measure) and its measure is older
+        than MEM_TREE_S, or when it is new: walking every tree every 15 min
+        was 83 % of P15's time on pack O (ptree / registry nbytes, §16.12) for
+        a figure that moves slowly (the ladder needs 3 ticks over budget)."""
         keys = set(st.last_event) | {MP.tree_key(store, s) for s in store.batch_systems(EV.EVT_BATCH)}
+        if getattr(st, "mem_meas", None) is None:
+            st.mem_meas = {}
         tot = 0
+        old = st.mem_tree
         st.mem_tree = {}
-        for k in keys:
+        for k in sorted(keys):
             if k in st.evicted:
                 continue
-            b = _tree_bytes(store, k)
+            t_m = st.mem_meas.get(k)
+            if k in old and t_m is not None and (st.last_event.get(k, -math.inf) <= t_m
+                                                 or now - t_m < MEM_TREE_S):
+                b = old[k]
+            else:
+                b = _tree_bytes(store, k)
+                st.mem_meas[k] = now
             st.mem_tree[k] = b
             tot += b
+        for k in [k for k in st.mem_meas if k not in st.mem_tree]:
+            st.mem_meas.pop(k, None)
         # store.memory_report() walks every stored point (O(all series), i.e. it
         # grows with the known IPs' retained data): taken every STORE_REPORT_S
         # only, its batch bytes carried in between
@@ -622,6 +676,8 @@ class ResourceGovernorEngine(Engine):
         store.ensure_retention(MP.OPS_BUDGET, max_age_s=8 * DAY)
         eng = {e: round(sum(x[1] for x in q), 3) for e, q in st.engine_ms.items() if q}
         pms = sum(v for e, v in eng.items() if e in P_ENGINES)
+        wms = sum(sum(x[1] for x in q) for e, q in (getattr(st, "engine_wall_ms", None) or {}).items()
+                  if e in P_ENGINES)
         tot_ev = sum(float(c.get("ev_day") or 0.0) for c in trees.values()) or 1.0
         for s in store.batch_systems(EV.EVT_BATCH):
             k = MP.tree_key(store, s)
@@ -632,7 +688,8 @@ class ResourceGovernorEngine(Engine):
             store.add_derived(DerivedMetric(
                 name=MP.OPS_BUDGET, value={"tier": c["tier"], "tree_bytes": st.mem_tree.get(k),
                                            "events_day": c.get("ev_day"), "share": round(share, 4),
-                                           "pcore_ms_h": round(pms * share, 3), "step": st.step},
+                                           "pcore_ms_h": round(pms * share, 3),
+                                           "pcore_wall_ms_h": round(wms * share, 3), "step": st.step},
                 ts=now, system=s, entity=SYSTEM_ENTITY, window_s=int(dt), kind=MetricKind.CATEGORICAL))
 
 

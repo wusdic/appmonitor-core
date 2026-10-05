@@ -1865,6 +1865,11 @@ class ExplainEngine(Engine):
                 day_en, day_zh = _day_label(tc_o)
             else:
                 attrs, deviation = self._attributions(store, s, k, t_star, dt, tc, grain=grain)
+        # (evaluator round 4) an incident opened by P03 pattern violations:
+        # its first reason is the violated constraint of the learned pattern
+        pv = None if is_class(k) else self._violation_attr(store, inc, now)
+        if pv is not None:
+            attrs = [pv] + [a for a in attrs if a.get("feature") != pv["feature"]]
         new_tokens = self._new_tokens(store, inc, now, dt)
         vanished = [] if is_class(k) else self._vanished(store, s, k, inc, now)
         stacks = {} if is_class(k) else self._stack_diff(store, s, k, inc, now, dt)
@@ -1976,6 +1981,49 @@ class ExplainEngine(Engine):
         return expl
 
     # ------------------------------------------------------------ helpers
+    @classmethod
+    def _violation_attr(cls, store, inc: Any, now: float) -> Optional[Dict[str, Any]]:
+        """The violated constraint of the P03 pattern violation that opened (or
+        last reopened) the incident, as its first attribution: feature
+        'conf_<type>' (the P03 detector: who / when / content / seq / novel),
+        the constraint (`constraint`: the attribute, the window, the
+        predecessor), observed vs expected (`observed_text`, `range`) and the
+        finding's statement. Why (evaluator round 4): under the progressive
+        decision chain the numeric attributions of such incidents were empty
+        and the explanation fell back to the entity's request count ('操作次数
+        n/a，常态 0–58') - PG6's 'B29 top reason = violated constraint' was 0
+        on every seed of rounds 2-3 although P03's finding says exactly what
+        was violated ('body.kv.username 与已学到的绑定不符')."""
+        t_open = cls._open_tick(inc, now)
+        best = None
+        for x in inc.evidence or ():
+            if not isinstance(x, Mapping) or x.get("source") != "event" \
+                    or x.get("kind") != "pattern_violation" or _f(x.get("ts")) > now:
+                continue
+            key = (abs(_f(x.get("ts")) - t_open), -_sev_rank(x.get("severity")))
+            if best is None or key < best[0]:
+                best = (key, x)
+        if best is None:
+            return None
+        try:
+            ev = store.get_event(str(best[1].get("event_id")))
+        except Exception:
+            ev = None
+        ex = (ev.extra if ev is not None and isinstance(ev.extra, Mapping) else None) or {}
+        typ = str(ex.get("type") or "")
+        if not typ:
+            return None
+        obs, exp = ex.get("observed"), ex.get("expected")
+        return {"feature": f"conf_{typ}", "group": "pattern", "share": 1.0, "z": None,
+                "p": _r(_f(ex.get("p")), 6), "rbc": None, "bh": True,
+                "pf": _r(_f(ex.get("p_day")), 6),
+                "constraint": str(obs) if typ == "content" else typ,
+                "observed": obs, "observed_text": str(obs) if obs is not None else "n/a",
+                "range": str(exp) if exp not in (None, "") else None,
+                "flags": list(ex.get("flags") or []), "pattern_id": ex.get("pattern_id"),
+                "route": ex.get("route"), "statement_zh": ex.get("statement_zh"),
+                "statement_en": ex.get("statement_en"), "unit": ""}
+
     @staticmethod
     def _open_tick(inc: Any, now: float) -> float:
         """The tick the incident last opened or reopened (B27's evidence mark),
@@ -2495,7 +2543,12 @@ class ExplainEngine(Engine):
                    if e_min == e_min and e_min > 0 else f"unusual for this {what}")
         rare_zh = f"约{_fmt_days_zh(1.0 / e_min)}一遇" if e_min == e_min and e_min > 0 else "异常"
         sev_zh = {"low": "低", "medium": "中", "high": "高", "critical": "严重"}.get(sev, sev)
-        if top is not None:
+        if top is not None and attrs and attrs[0].get("statement_zh"):
+            # a violated pattern constraint (P03): its own statement
+            top = attrs[0]
+            f_en = str(top.get("statement_en") or top["statement_zh"])
+            f_zh = str(top["statement_zh"])
+        elif top is not None:
             name = top["feature"]
             rng = top.get("range") or "n/a"
             ratio = top.get("ratio")

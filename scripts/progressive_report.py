@@ -577,4 +577,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    from app.eval.pscale import pin_hash_seed
+    pin_hash_seed()                       # identical runs are identical (§16.12)
     main()

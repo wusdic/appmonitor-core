@@ -77,6 +77,7 @@ from .lib import m_ptree as MP
 from .lib import pevent as EV
 from .lib import pdfg as PD
 from .lib import pfamily as PF
+from .lib import pcost as PC
 from .lib import psketch as PS
 from .lib import pstrategy as PSt
 from .lib.phier import GRP_NONE, REG_NONE, STAR, Regions, ip_prefix
@@ -1047,6 +1048,7 @@ class SystemProfileEngine(Engine):
         # evidence per day ~ learned rows per day (<= 1 unit each)
         meas["ev_day"] = ld
         eng_cost = _engine_costs(store, now)
+        bcfg = EV.pconfig(ctx.config).get("budget") or {}
         bud = MP.get_org_model(store, MP.BUDGET) or {}
         usage = (bud.get("usage") or {}) if isinstance(bud, Mapping) else {}
         share = (bud.get("budget") or {}).get("pcore_cpu_share") if isinstance(bud, Mapping) else None
@@ -1076,9 +1078,17 @@ class SystemProfileEngine(Engine):
                 gain = float(g["bits_per_event"])
             cost = eng_cost.get(ENGINE_OF[dim])
             if cost is None:
-                ms = g.get("ms")
-                cost = (float(ms) * 1000.0 * runs / max(ev_day, 1.0)) if (ms is not None and ev_day > 0) \
-                    else g.get("us_per_event")
+                # before P15 measured anything: the fitter's last run x its runs a
+                # day over the events of a day, priced by lib/pcost from the nodes
+                # it fitted (its own wall-clock 'ms' only in cost_model 'wall':
+                # identical runs must decide identically, §16.12)
+                if PC.mode(bcfg) == "wall":
+                    ms = g.get("ms")
+                    cost = (float(ms) * 1000.0 * runs / max(ev_day, 1.0)) if (ms is not None and ev_day > 0) \
+                        else g.get("us_per_event")
+                else:
+                    ms = PC.run_ms(ENGINE_OF[dim], g.get("nodes_fitted"), 0.0, PC.scale(bcfg))
+                    cost = ms * 1000.0 * runs / ev_day if ev_day > 0 else None
             cost = min(float(cost or 0.0), COST_CAP_US)
             meas[dim] = {"gain": float(gain), "cost": cost}
         meas["n_earned"] = self._n_earned(store, members)
@@ -1389,9 +1399,10 @@ def bindings_pending(model: Any) -> bool:
 
 
 def _engine_costs(store: Any, now: float) -> Dict[str, float]:
-    """µs per event of each engine over the last hour: P15's measured engine
-    time (model.budget_state) over the org's events of that hour ({} before
-    P15 ran)."""
+    """µs per event of each engine over the last hour: P15's engine cost
+    (model.budget_state engine_ms: the deterministic price of each run's
+    counted work, lib/pcost, unless cost_model = 'wall') over the org's events
+    of that hour ({} before P15 ran)."""
     gs = store.get_model(ORG, ORG, "model.budget_state")
     em = getattr(gs, "engine_ms", None)
     rates = getattr(gs, "rate", None)

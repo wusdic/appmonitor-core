@@ -59,7 +59,7 @@ def test_a_part_with_its_own_windows_is_not_more_confident_than_its_node(monkeyp
     class _When:
         res = _Res(rows)
 
-    monkeypatch.setattr(VW.PW, "part_when", lambda when, members, tz=0.0: real(_When, members, tz))
+    monkeypatch.setattr(VW.PW, "part_when", lambda when, members, tz=0.0, **kw: real(_When, members, tz, **kw))
     orig = PN.Node.p_hold
     monkeypatch.setattr(PN.Node, "p_hold", lambda self, _t: 0.31 if self is node else orig(self, _t))
     m.t_last = t

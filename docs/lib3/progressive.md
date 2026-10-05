@@ -1938,7 +1938,9 @@ with the number of servers, however cleverly it treats IPs. Three mechanisms rem
 cluster, fifty branch servers of one ERP, a fleet of API nodes. P12 computes daily, per
 system, a weighted MinHash signature (k = 64) over its route prefixes (ℓ2) and hosts, SNI
 eTLD+1, destination port, top client stacks and registered attribute names. LSH (16 × 4)
-proposes pairs; systems with weighted Jaccard ≥ 0.6 on two consecutive days and a
+proposes pairs; systems with weighted Jaccard ≥ 0.6 on two days on which both were observed
+with an informative signature, with no contrary day between and within 7 days (round 4,
+§16.12: calendar-consecutive days left sparse replicas unjoined), and a
 compatible channel mix (payload_vis within 0.2) form a family; config `system_families`
 can force or forbid membership. A family shares **one** pattern tree, attribute registry
 and attribute selection under the tree key `fam:<id>` (store key (`fam:<id>`,
@@ -2824,6 +2826,16 @@ confidence); false splits (learned splits on attributes independent of every tru
 constraint, identified on O-red where the generator adds 20 such attributes) reported per
 system-month, expected ≤ 1.
 
+*Measurement (round 4, §16.12):* the trend checks (recall within 0.05, depth, confidence, U)
+are read on the snapshot days {3, 5, 7, 10, 14, 21} outside the drift days [12, 15] — runs
+snapshot every day since round 3, which had silently turned them into day-to-day checks; the
+confidence and U trends compare the SAME unchanged truth patterns on consecutive snapshot
+days (the median of their paired changes), not the median over whatever is recovered on each
+day (a newly recovered pattern enters at a low confidence); the calibration error is the
+debiased RMS calibration error (Kumar et al. 2019, ≥ the population ECE) over every judged
+claim of days ≥ 7 pooled (one snapshot holds ~60 statements, where the plug-in ECE of a
+perfectly calibrated set is 0.11–0.16); a claim rendered twice counts once.
+
 **PG3 — Specificity reached.** GA login who = the 3 IPs (or the group whose members are those
 3) with 3/3 bindings; finance approval who = {192.168.2.10}; portal login who ∈ {prefix, reg,
 any}, no portal bindings, portal exceptions ≤ 1 % of portal IPs; DEV patterns who ∈ {grp,
@@ -2888,6 +2900,13 @@ n_rng ≥ 30, with its bound), and at day 21 the statement for the truth then va
 mike.w and contained in `[a-z.]{1,10}`, bindings jack, rose, mike.w with 192.168.1.21 still
 jack despite A2); the finance approval statement with the single IP; and the GA group view's
 negative statement for finance writes.
+
+*Measurement (round 4, §16.12):* "window ± 2 min" compares the edges with the truth's
+window (the central 99 % of the arrival law) or, for a statement stating a coverage
+0.5 ≤ c < 0.99, with SOME set of intervals of the law holding c (law mass of the windows
+shrunk by 2 min ≤ c ≤ law mass widened by 2 min, every edge inside the truth window ± 2 min):
+a correctly fitted 74 % window of the uniform 21-minute login law is ~15.5 min long and could
+never have both edges within 2 min of 08:30–08:51.
 
 **PG11 — Real-world robustness (pack O-real, §11.4).** Every R-item meets its expected
 adaptation in the table of §11.4 on ≥ 4 of 5 seeds; with all R-items on, PG1 overall recall at
@@ -4220,6 +4239,177 @@ truth (seeds 0 and 2) and portal comment / login windows on some seeds.
   (85 min) and the O-servers PG4 points were not re-run.
 
 ---
+
+### 16.12 Round 4: evaluation semantics, determinism, cost and scale (evaluation owner, 2026-10-05)
+
+Scope: the evaluator / truth / cost / scale owner's part of round 4 (files `eval/{pmetrics,pscale}.py`,
+`scripts/progressive_report.py`, P12 `system_profile.py`, P15 `resource_governor.py`, new
+`lib/pcost.py`, new `scripts/calibrate_costs.py`). The engines' round-4 changes (tree, content,
+conformity / views owners) are reported by their owners; the numbers below that use their runs
+say which runs. Every change has a regression test that fails on the round-3 code
+(`tests/engines/test_p12_p15_cost_model.py` (3 of 4), `test_p15_resource_governor.py::test_tree_memory_is_remeasured_only_when_changed_and_at_most_hourly`,
+`tests/eval/test_pmetrics.py::{test_calibration_error_is_debiased_for_small_statement_sets,
+test_pg2_confidence_trend_is_paired_on_a_fixed_cohort, test_pg2_calibration_pools_the_claims_of_days_7_on,
+test_pg2_trends_read_the_spec_snapshot_days, test_pg10_window_is_judged_at_the_coverage_it_states}`,
+`tests/eval/test_pscale.py::test_entry_points_pin_the_hash_seed`,
+`tests/eval/test_orggen.py::test_servers_curve_grows_servers_not_applications`,
+`tests/lib/test_pfamily.py::{test_intermittent_replicas_join_on_their_observed_days,
+test_a_contrary_or_stale_day_breaks_the_streak_and_payload_mismatch_blocks}`
+(the last replaces round 3's "non-consecutive days do not count"),
+`tests/eval/test_pmetrics.py::test_r13_ratio_reads_the_single_tree_before_it_joined`). The final
+code with `PYTHONHASHSEED` pinned: two 4-day runs differ only in wall-clock statistics
+(P11 `ms_tick_total`, P10 `us_per_row`), `round4_eval/determinism.json`.
+
+#### 16.12.1 Changes
+
+| # | Where | Was | Changed to | Why (measured) |
+|---|---|---|---|---|
+| E4-1 | new `lib/pcost.py`; P15 `_costs`, P12 `measurements` | P15's CPU shares and P12's per-arm costs from each engine's measured duration (`duration_ms`); P12's fallback from a fitter's own wall-clock `ms` | the price of the run's counted work: `ms = a_e + b_e x units + d_e x events` (units = the run's own count, health `last_count`; events = the organisation's events of its tick), per-engine coefficients fitted once by NNLS on hourly sums of pack O (5 days, `scripts/calibrate_costs.py`; modelled / measured per day 0.84–1.28 for P04, P06–P10 on days 2–5); `progressive.budget.cost_model = 'wall'` restores measured durations, `cost_scale` scales the price list to a machine; measured durations are still reported (`usage.pcore_wall_share`, `ops.budget.pcore_wall_ms_h`) | two runs of the same seed made different arm decisions (round 3: PG8 0.67 vs 0.83 on seed 1, §16.11.8 item 6). Pack O, 4 days, two processes with the SAME hash seed on the round-3 code: 421 `model.sysprof` differences (arm costs, utilities, Hedge weights, switch-margin histories, UCB state) and 19 in `model.budget`; on the round-4 code with DIFFERENT hash seeds: 0 in either (`reports/progressive/round4_eval/determinism.json`) |
+| E4-2 | `pscale.pin_hash_seed`, `scripts/progressive_report.py` | `PYTHONHASHSEED` random per process | the evaluation entry points re-execute themselves with it pinned (0); pool workers inherit it | the remaining cross-process differences are set-iteration order: P07's finance `body.kv.lines[]` optional values and P02's `set_keep` (substantive), P11's cover lists (order only), P08's bound shares (last bits) — open issues for their owners |
+| E4-3 | P15 `_memory` | every tree's deep size (`ptree.nbytes`, registry `nbytes`) every 15 min | a tree is re-measured when it changed, at most hourly (`MEM_TREE_S`) | 5.5 of P15's 6.6 s per 3 days of pack O (83 %) |
+| E4-4 | `pmetrics.calibration`, `pg2_convergence` (PG2 "ECE") | the plug-in ECE of the LAST snapshot (~60 statements) | the debiased RMS calibration error (Kumar et al. 2019) over the judged claims of days ≥ 7 pooled; the plug-in ECE, its null floor (perfect calibration, same confidences) and node / part splits reported | at n ≈ 60 the plug-in ECE of a perfectly calibrated set is 0.11–0.16 (so 0.05 was unmeasurable); the debiased estimator is ~0 for a calibrated set at any n and ≥ the population ECE |
+| E4-5 | `pg2_convergence` trends | recall ±0.05, depth, median confidence, median U checked day to day (daily snapshots since round 3) over whatever was recovered each day | on the snapshot days {3, 5, 7, 10, 14, 21} outside [12, 15] (§12's definition; daily violations kept as `recall_violations_daily`); confidence and U on a FIXED cohort: the median paired change of the unchanged truth patterns recovered on both days | round 3, seed 0, days 7 → 10: the median over recovered patterns fell 0.067 while the same patterns gained +0.05 (paired) — newly recovered patterns enter at a low confidence |
+| E4-6 | `pg1_snapshot` | each rendered statement judged | a claim rendered twice (same system, action, who, when, content, bindings, context) counts once in precision and calibration (`n_duplicate`) | 0 duplicates on the round-3 judged sets; the views' round-4 dedup makes it moot, the scorer no longer depends on it |
+| E4-8 | `orggen.build_servers_org(n_systems=…)` (PG4 servers curve) | 20 % of every point singletons + idle (4 / 8 / 30 singletons at 20 / 100 / 300 systems) | the distinct applications are fixed (12 families + 4 singletons + 4 idle) and only the families' member servers grow (sizes differ by ≤ 1) | the curve measured the number of distinct applications — each legitimately its own tree (round-4 final code on the old composition: system keys > 1 MB 16 / 8 / 30, slope 0.454) — not "systems at a fixed number of families" (§12 PG4) |
+| E4-9 | P12 `lib/pfamily.update_families` | a pair joined after matches on two CALENDAR-consecutive days; a pair LSH did not propose again lost its streak | matches counted on the days both systems were observed with an informative signature (an idle or uninformative day neither counts nor resets; a pair on a streak is judged even when LSH misses it; a match older than 7 days lapses) | O-servers-300 (fixed applications), day 7: 292 replicas of 6 load-balanced families (≈ 1 session per replica and day) held 24 MB of their own trees; after the third daily pass, 71 of the 250 members observed that day were unjoined — 28 uninformative that day, 43 similar (J ≥ 0.6) to a family member but with a streak broken by an earlier idle or uninformative day — and 42 members were idle that day (`prog4/eval/fam_diag.jsonl`) |
+| E4-11 | `pmetrics.family_size_ratio` (PG11 R13) | the family tree compared with `crm`'s tree on the last day | with `crm`'s own tree on the last snapshot that held one | when `crm` joins the family its key holds no tree and the ratio silently became "not measured" |
+| E4-7 | `pmetrics.window_edges_ok` (PG10) | both edges within 2 min of the 99 % window | or, for a statement stating 0.5 ≤ c < 0.99, within 2 min of SOME set of intervals of the truth law holding c (law mass shrunk ≤ c ≤ law mass widened, edges inside the truth window ± 2 min) | a correct 74 % window of the uniform 08:30–08:51 law is ~15.5 min long and can never pass the 99 % edge test (round 3, seed 4: 08:30–08:45 stated at 74 %, law mass 0.71) |
+
+Gates that did NOT change: the recall / precision / component definitions, the held-out law,
+targets (ECE ≤ 0.05 now reads the debiased calibration error), PG10's ± 2 min.
+
+#### 16.12.2 How much of ECE@14 = 0.23 is semantics
+
+Round-3 runs (`reports/progressive/runs`, 5 seeds), per-statement records replicated from
+`pg1_snapshot` (same held-out draws; day-14 ECE identical to the published one on every seed):
+
+| Seed | ECE@14 (n) | null floor @14 | pooled days ≥ 7: n / plug-in ECE / null floor / debiased CE | stated / held | nodes stated / held | parts stated / held |
+|---|---|---|---|---|---|---|
+| 0 | 0.231 (62) | 0.121 | 841 / 0.268 / 0.034 / 0.320 | 0.48 / 0.73 | 0.49 / 0.69 | 0.46 / 0.80 |
+| 1 | 0.220 (67) | – | 894 / 0.200 / 0.032 / 0.244 | 0.55 / 0.74 | 0.54 / 0.69 | 0.57 / 0.83 |
+| 2 | 0.233 (74) | – | 981 / 0.291 / 0.030 / 0.327 | 0.48 / 0.76 | 0.47 / 0.72 | 0.48 / 0.85 |
+| 3 | 0.246 (63) | – | 842 / 0.259 / 0.036 / 0.334 | 0.51 / 0.76 | 0.51 / 0.72 | 0.51 / 0.83 |
+| 4 | 0.265 (60) | – | 810 / 0.228 / 0.036 / 0.279 | 0.56 / 0.76 | 0.56 / 0.74 | 0.55 / 0.79 |
+
+Reading: almost none of it. With n ≈ 60 a perfectly calibrated set would show 0.12, but the
+floor does not add to a real bias (the expected plug-in ECE of a set biased by δ ≈ 0.2 is ≈ δ);
+pooled over days 7–21 (floor 0.03) the plug-in ECE is 0.20–0.29 and the debiased error 0.24–0.33.
+Duplicated claims: 0. Statements with no held-out event of their context (counted false; e.g.
+D3's renamed approval pages on day 14): 3 on day 14 of seed 0, pooled ECE 0.268 → 0.273 without
+them. What remains is genuine under-confidence: statements stated 0.48–0.56 and held 0.73–0.77,
+parts (stated like their node, held by their own members) more than nodes. The round-4 engines
+reduce it (below) but the pooled error is still 0.15–0.23 there: the gate remains failed for a
+reason the engines own (P04 `p_hold`, P14 part confidence).
+
+#### 16.12.3 Re-scored runs (round-3 scorer → round-4 scorer)
+
+Same pickles, PG2 and PG10 recomputed (`reports/progressive/round4_eval/rescore_pg2_pg10.json`):
+F4 = round-3 final runs (5 seeds); TF = the tree owner's round-4 final runs (seeds 0–2);
+C4 = the content owner's round-4 final runs (seeds 0–3, latest engines).
+
+| Check | F4 before → after | TF before → after | C4 before → after |
+|---|---|---|---|
+| PG2 calibration value (median) | ECE last day 0.344 → CE 0.320 | 0.159 → 0.198 | 0.158 → 0.176 |
+| (for reference) ECE@14 plug-in / pooled plug-in / null | 0.233 / 0.259 / 0.034 | 0.150 / 0.130 / 0.031 | 0.109 / 0.146 / 0.028 |
+| confidence non-decreasing | 0/5 → 2/5 | 0/3 → 3/3 | 0/4 → 3/4 |
+| unseen-IP mass non-increasing | 0/5 → 5/5 | 0/3 → 3/3 | 0/4 → 4/4 |
+| recall non-decreasing (±0.05) | 1/5 → 4/5 | 1/3 → 3/3 | 1/4 → 4/4 |
+| mean depth non-decreasing | 0/5 → 5/5 | 0/3 → 3/3 | 0/4 → 4/4 |
+| PG10 day 21 | 2/5 → 3/5 | 3/3 → 3/3 | 3/4 → 3/4 |
+| PG10 day 11 | 1/5 → 1/5 | 1/3 → 1/3 | 1/4 → 1/4 |
+
+What still fails, and why it is the engines: the confidence trend on F4 seeds 1–3 (paired
+changes −0.07 / −0.045 / −0.06 between days 5–10, fixed by the tree owner's frozen-prior and
+count-based forgetting, TF 3/3) and on C4 seed 2 (−0.016, days 7 → 10); F4 seed 4's recall
+(day 21 0.67 against day 10 0.73: D3 and the 01:00 backup, PG5 / §16.11.8); the calibration
+error everywhere (under-confidence, 16.12.2; the per-day CE of C4 is 0.04–0.15 on day 14 and
+0.21–0.32 on day 10); PG10 day 11 (the department part states the mixed node's 0.5–1.5 KB band
+on 4 of 5 seeds, P14) and day 21 on F4 seeds 1 / 3 (range, two windows: engines). The daily
+recall dips the old check counted (days 16–21) are kept as `recall_violations_daily`.
+
+#### 16.12.4 Cost: profile of pack O (3 days, portal 500, cProfile, round-4 code before E4-3)
+
+P-core engine seconds: P04 83.6, P05 67.1, P02 44.5, P08 20.3, P03 13.2, P00 9.1, P06 7.6,
+P10 6.8, P15 6.6, P12 6.6, P01 5.8, P11 3.4, P09 2.8, P14 2.8 (`round4_eval/profile_3d_O-scale-500.json`).
+Owned: P15 fixed (E4-3); P12's tracker spends 1.8 s in 109 k Space-Saving adds of the
+prequential behaviour code (each add must follow the previous key's code length — not batchable
+without changing the codes); P01's window events 2.0 s in `store.snapshot` (a per-name lookup
+per window IP; store API); P00 per-event dict building (`pevent.BatchBuilder.add` 1.5 s,
+`pparse.parse_l7` 1.7 s, `ValuePolicy.apply_all` 1.3 s, `_base` 1.5 s for 55 k events).
+Others' hot spots (cumulative s over the 3 days): `psketch.add` 20.5 (2.34 M calls, P02 / P04),
+P04 `_apply_target` 27.3 (759 k) → `pnode.update_target` 20.5, P04 `_note_source_extremes` 8.2
+(new in round 4), `psketch` `_flush` / `_compress` 13.7, P05 `pselect.evaluate` 49.9
+(`penalised_gain` 15.5, `w_plugin` 10.2, `same_source` 9.5, `gen_codes` 13.3), P02
+`pregistry.observe` 33.8, P08 `pfd.screen` 16.2 (`screen_pair` 9.5), P03 `_score_event` 10.7.
+
+#### 16.12.5 O-real and O-servers on the final code
+
+Code: the working tree after all four owners finished (snapshot `prog4/eval/final/code`,
+2026-10-05 02:35Z), `PYTHONHASHSEED=0`, resumable runner (checkpoint every ~15 min of wall
+time at a day end, ≤ 2 300 s per process).
+
+**O-real seed 0 (35 days; `reports/progressive/round4_eval/O-real_0.json`).** 4 894 s of wall time
+in two processes (4 checkpoints), peak RSS 3.1 GB, 0 exceptions; re-run after E4-8 / E4-9 (5 003 s):
+every score identical (R9's replica joins either way; R13's CRM branches form no family in
+both, 16.12.6). The JSON is the re-run.
+
+| | round 3 (code of 10-02 04:49Z) | round 4 (final) |
+|---|---|---|
+| PG11 R-items passing | R8, R10, R11 (3 of 12; R1 n/a) | R7, R8, R10, R11 (4 of 12; R1 n/a) |
+| recall / precision @14 | 0.446 / 0.173 | 0.492 / 0.262 |
+| recall / precision @35 | 0.253 / 0.361 | 0.304 / 0.397 |
+| anomalies detected | 4 / 10 (A1, A8, A9, A10) | 4 / 10 (same) |
+| FAR ≥ LOW / ≥ MEDIUM | 0.0051 / 0.0027 | 0.0033 / 0.0024 |
+| PG5 drifts passing | none | D3, D5 |
+| calibration (pooled, days ≥ 7) | – | CE 0.438: stated 0.73, held 0.33 (OVER-confident, n = 1 969) |
+
+On O-real the statements are over-confident where on pack O they are under-confident: the
+held-out law of an R-item system (NAT'd users, shared terminals, the SNAT'd OA of R1) is not
+the one P04's internal tests see — an open issue for the tree / views owners; R2–R5, R9, R12,
+R13 fail as in round 3 (per-item records in the JSON).
+
+**O-servers (PG4 servers curve, 7 days).** First on the round-3 composition, then with E4-8, then
+with E4-9 (`round4_eval/scale_servers/`, `scale_servers_fixed_apps/`, `scale_servers_final/`; gate
+record `round4_eval/pg4.json`):
+
+| Point | round 3 (r3 code) | round 4 final code, old composition | + fixed applications (E4-8) | + family join on observed days (E4-9) |
+|---|---|---|---|---|
+| 20 systems | 37.9 MB | 39.1 MB | 39.1 MB (same pack) | 39.1 MB |
+| 100 systems | 62.7 MB | 67.3 MB | 58.2 MB (families 47.4, singletons + idle 9.8, 92 members 0.3) | 58.4 MB (47.5 / 9.8 / 0.3) |
+| 300 systems | 132.3 MB | 137.0 MB | 92.3 MB (families 56.4, singletons + idle 9.5, 292 members 24.2) | 81.0 MB (56.9 / 9.5 / 12.4) |
+| memory slope vs systems (≤ 0.3) | 0.45 fail | 0.454 fail | 0.312 fail | **0.267 pass** |
+| idle system after 1 day (≤ 1 MB) | 0.48 | 0.46 | 0.44 | 0.44 |
+| largest tree (≤ 40 MB) | 7.9 | 8.3 | 8.5 | 8.5 |
+| scoring / learning p95 µs per event | 6 440 / 5 640 | 6 032 / 5 392 | 6 540 / 6 508 | 6 844 / 6 443 |
+
+From 100 to 300 systems the family trees grow 47 → 57 MB (slope 0.17) and the members still
+holding their own tree on day 7 fall from 24 MB (E4-8 alone) to 12 MB with E4-9. PG4 with these
+points and round 3's IP / attribute points (`round4_eval/pg4.json`): every memory / slope / idle /
+per-tree check passes; the per-event p95s (≤ 100 / 250 µs) stay failed — on the servers packs
+they are dominated by per-tick overhead (5–30 k events in 7 days spread over 300 systems), on the
+IP / attribute points (scale7, not re-run) they were 0.5–4 ms: absolute Python budgets the
+progressive core has never met (§16.11.7).
+
+#### 16.12.6 Open issues (round 4 → owners)
+
+- P07 / P02 (content, tree): value sketches whose retained values depend on set-iteration
+  order (`pgrammar` finance `body.kv.lines[]` optional values, `pregistry` hier `set_keep`) —
+  identical runs differ across processes unless `PYTHONHASHSEED` is pinned; P11 cover lists
+  unsorted; P08 bound shares summed in set order.
+- P12 (this owner, not fixed): O-real R13's twelve CRM branch servers never form their family —
+  they expose two route prefixes (`/crm/customer/*`, `/crm/visit`) and `pfamily.informative`
+  asks for three, although their pairwise Jaccard is 0.82–0.99 (`prog4/eval/r13_diag_before.jsonl`).
+  Admitting a named service with ≥ 1 route prefix was tried and REVERTED: the branches then
+  joined pack O's own `crm` (same host, same routes, different users) in one family; the merged
+  tree was 69 × a single CRM tree and the CRM systems' recall fell to 0 (overall O-real
+  recall@14 0.49 → 0.12; `prog4/eval/final/oreal4_e410/`). A family rule also has to respect
+  disjoint user populations (or the scorer has to map a family's statements back to all its
+  systems) before small applications can be admitted.
+- P04 / P14 (tree, views): calibration — under-confidence remains the whole of PG2's
+  calibration error (16.12.2), largest for group parts and for days 7–10.
+- Lead: the calibration target 0.05 now reads a pooled debiased error; at ~800 judged claims
+  per run its sampling standard deviation is 0.015–0.02 (simulation: a calibrated set reads
+  0.011, 95 % of runs below 0.038; a bias of 0.05 reads 0.046, of 0.15 reads 0.141).
 
 ## Appendix A. Review changes (adversarial review, 2026-09-29)
 

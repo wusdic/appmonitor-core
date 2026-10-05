@@ -339,6 +339,23 @@ def test_servers_org_shape():
     assert all(len(v) == 20 for v in spec.families.values())
     for n in (20, 100):
         assert len(G.build_servers_org(n_systems=n).systems) == n
+
+
+def test_servers_curve_grows_servers_not_applications():
+    """PG4's servers curve is 'memory against the number of systems at a fixed
+    number of families': along 20 / 100 / 300 systems only the families'
+    member servers may grow; the distinct applications (families, singletons,
+    idle systems) stay the same (§16.12; round 3 grew singletons 4 -> 30)."""
+    shapes = []
+    for n in (20, 100, 300):
+        spec = G.build_servers_org(n_systems=n)
+        assert len(spec.systems) == n and len(spec.families) == 12
+        fam = {s for v in spec.families.values() for s in v}
+        others = [s.id for s in spec.systems if s.id not in fam]
+        sizes = sorted(len(v) for v in spec.families.values())
+        assert sizes[-1] - sizes[0] <= 1
+        shapes.append((sorted(others), len(spec.config["idle_systems"])))
+    assert shapes[0] == shapes[1] == shapes[2]
     pack = P.get_pack("O-servers-20")
     pack.org.n_days = 2
     g, obs = _run(pack, 0, n=2 * 96)

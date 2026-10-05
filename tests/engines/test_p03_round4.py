@@ -127,3 +127,106 @@ def test_a_renamed_page_of_its_own_source_is_not_a_new_action():
     assert _novel_findings(fx, ["192.168.2.10"])["192.168.2.10"] == []
     assert "rename_candidate" in str(asg.get("flags", 0))
     assert "new_action" not in str(asg.get("flags", 0))
+
+
+# ------------------------------------------------- sequence: route-level re-scoring
+def _portal_flow(n: int = 300):
+    """P10 state of n portal visits: GET / opens every session, then login and
+    a few articles of the content variant #v11 (a P04 content split)."""
+    from app.engines.behavior.lib import pdfg as DF
+    st = DF.FlowState()
+    home, login, news = "GET www /", "POST www /login", "GET www /news/{num}#v11"
+    for k in range(n):
+        t = T0 + 600.0 * k
+        seq = [home, login, news, news, news]
+        ids = [st.acts.add(x, t, 1, 1)[0] for x in seq]
+        for x in ids:
+            st.cnt.add(("*", x), t, 1, 1)
+        st.starts.add(("*", ids[0]), t, 1, 1)
+        for x, y in zip(ids, ids[1:]):
+            st.add_edge("*", x, y, t, 1, 1, DF.delay_bin(60.0))
+    st.marg = None
+    return st, T0 + 600.0 * n
+
+
+def test_a_new_content_variant_of_the_same_route_is_not_a_sequence_anomaly():
+    """Pack O seed 1 D4 (days 12-18): P04 re-split GET /news/{num} and minted
+    variant ids (#v17-#v19) without transition history; a reader's next article
+    scored p_trans 6.5e-8 .. 0 and three readers of the growing public
+    population became conf_seq incidents. At the route level (the variants of
+    one route are one action for the session model) the hop is ordinary."""
+    from app.engines.behavior.lib import pdfg as DF
+    st, t = _portal_flow()
+    v19, _ = st.acts.add("GET www /news/{num}#v19", t, 1, 1)
+    st.cnt.add(("*", v19), t, 1, 1)
+    st.marg = None
+    a = st.acts.id_of("GET www /news/{num}#v11")
+    assert DF.p_trans(st, "*", a, v19, t) < 1e-3
+    assert CF.seq_coarse_p(st, a, v19, t) > 0.3
+
+
+def test_a_revisit_merged_into_the_session_is_scored_as_a_session_start():
+    """A reader back on the portal 5-28 minutes after the last article (P10's
+    30-minute gap merges the visits): news -> GET / scored p_trans 3e-8. GET /
+    opens every session, so the event is unsurprising as the start of a visit."""
+    from app.engines.behavior.lib import pdfg as DF
+    st, t = _portal_flow()
+    a = st.acts.id_of("GET www /news/{num}#v11")
+    home = st.acts.id_of("GET www /")
+    assert DF.p_trans(st, "*", a, home, t) < 1e-3
+    assert CF.seq_coarse_p(st, a, home, t) >= 0.49        # the only opener: HDR p 1/2 (tie with itself)
+
+
+def test_a_jump_to_a_route_that_neither_follows_nor_opens_stays_extreme():
+    """The coarser null keeps its power: a page that never follows an article
+    and never opens a session (an admin action) is still improbable."""
+    from app.engines.behavior.lib import pdfg as DF
+    st, t = _portal_flow()
+    adm, _ = st.acts.add("POST www /admin/delete", t, 1, 1)
+    st.cnt.add(("*", adm), t, 1, 1)
+    st.marg = None
+    a = st.acts.id_of("GET www /news/{num}#v11")
+    assert CF.seq_coarse_p(st, a, adm, t) < 0.01
+    assert math.isnan(CF.seq_coarse_p(st, None, adm, t))
+
+
+def test_p03_rescores_an_improbable_transition_at_the_route_level():
+    """Wiring: P03's p_seq of a revisit (docs -> home within P10's session gap)
+    is the route-level re-score, not 2 x p_trans."""
+    from test_p03_conformity import CFG, Fx, GA, ctx, workdays
+    from app.engines.behavior.workflow import WorkflowEngine
+    from app.engines.behavior.lib import m_ptree as MP
+    from app.engines.behavior.lib import pdfg as DF
+    from app.engines.behavior.lib import pevent as EV
+    from app.models.schema import SYSTEM_ENTITY
+    fx = Fx()
+    home, docs = "GET oa /home", "GET oa /docs"
+    for d in workdays(20):
+        for ip in GA:
+            fx.learn("oa", home, ip, d + 9 * 3600)
+            fx.learn("oa", docs, ip, d + 9 * 3600 + 60)
+    fx.tree("oa", [home, docs])
+    p10 = WorkflowEngine(mine_period_s=6 * 3600.0)
+    days = workdays(21)
+    for d in days[:20]:
+        for h in range(24):
+            t1 = d + (h + 1) * 3600.0
+            if h == 9:
+                b = EV.BatchBuilder("oa", EV.KIND_TXN)
+                for ip in GA:
+                    b.add(d + 9 * 3600 + 10, ip, {"http.route": home, "net.src": ip})
+                    for j in range(5):
+                        b.add(d + 9 * 3600 + 60 + 30 * j, ip, {"http.route": docs, "net.src": ip})
+                fx.st.add_batch("oa", EV.EVT_BATCH, t1, b.build(t1 - 3600, t1))
+            fx.st.ensure_retention("evt.", max_age_s=6 * 3600.0)
+            p10.safe_run(ctx(fx.st, t1, window_s=3600.0, config=CFG), None)
+    flow = fx.st.get_model("oa", SYSTEM_ENTITY, MP.PFLOW)
+    st = flow.state
+    t = days[20] + 9 * 3600
+    a, b = st.acts.id_of(docs), st.acts.id_of(home)
+    assert a is not None and b is not None
+    assert DF.p_trans(st, "*", a, b, t) < 0.01                 # docs is never followed by home
+    _, asg = fx.score("oa", [(t, GA[0], {"http.route": home, "http.method": "GET"}),
+                             (t + 60, GA[0], {"http.route": docs, "http.method": "GET"}),
+                             (t + 400, GA[0], {"http.route": home, "http.method": "GET"})])
+    assert asg.get("p_seq", 2) > 0.1                           # home opens every visit

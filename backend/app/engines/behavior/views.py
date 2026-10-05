@@ -275,6 +275,30 @@ class _Ctx:
         ix = store.get_model(key, SYSTEM_ENTITY, STATE)
         self.index: Optional[RouteIndex] = ix if isinstance(ix, RouteIndex) else None
         self._rd: Dict[int, Dict[int, Dict[str, float]]] = {}
+        self._ledger: Dict[int, set] = {}
+        self._hier: Any = None
+
+    def ledger(self, kind: int) -> set:
+        """{(ts, source)} of the rows P03 judged violations (P06's ledger), left
+        out of a part's windows as P09 leaves them out of the node's."""
+        if kind not in self._ledger:
+            from . import content_bounds as CB
+            try:
+                self._ledger[kind] = CB.point_ledger(self.store, self.key, kind)
+            except Exception:
+                self._ledger[kind] = set()
+        return self._ledger[kind]
+
+    @property
+    def hier(self) -> Any:
+        """The tree's generalisation hierarchies (decoding numeric bins of
+        variant conditions), built on first use."""
+        if self._hier is None:
+            try:
+                self._hier = MP.hierarchies(self.store, self.key, self.config, registry=self.reg)
+            except Exception:
+                self._hier = False
+        return self._hier or None
 
     def route_dist(self, kind: int) -> Dict[int, Dict[str, float]]:
         d = self._rd.get(kind)
@@ -331,6 +355,184 @@ def part_hold(nd: Any, gids: Sequence[str], p_node: float) -> float:
     return float((ps + m * p_node) / (n + m))
 
 
+def part_content(c: "_Ctx", nd: Any, ent: Optional[Mapping[str, Any]], gids: Sequence[str],
+                 t: float) -> Optional[Mapping[str, Any]]:
+    """P06's entry of a node with its numeric constraints refitted on ONE
+    group's part of it (evaluator round 4): P04 keeps the stated numeric
+    constraints' values of each tracked group's held-out rows (pnode meta
+    'gnum', <= HOLD_GROUPS_MAX groups per node); a part's band / range are
+    those of its groups' rows (pbounds.fit_numeric, the node's fit), an
+    attribute without group rows keeps the node's. Before, a part stated the
+    node's numeric constraints: pack O, the 综合部 part of OA's login node (GA's
+    truth 1-2 KB) stated the node's 0.5-1.5 KB band on every seed (PG10 day 11;
+    held 0.46-0.60 on the evaluator's events)."""
+    gn = (getattr(nd, "meta", None) or {}).get("gnum") or {}
+    if not ent or not gn:
+        return ent
+    sums = [gn.get(str(g) if str(g).startswith("grp:") else f"grp:{g}") for g in gids]
+    sums = [x for x in sums if x]
+    if not sums:
+        return ent
+    import copy as _copy
+    attrs = dict(ent.get("attrs") or {})
+    node_mass = float(nd.mass_at(t))
+    n_c, n_m = float(nd.n_c(t)), float(nd.n_m(t))
+    day = PB.local_day(t, c.config)
+    changed = False
+    for a, rec in list(attrs.items()):
+        if not isinstance(rec, Mapping) or rec.get("kind") != "num":
+            continue
+        ss = [d[a] for d in sums if a in d]
+        if not ss:
+            continue
+        m = _copy.deepcopy(ss[0])
+        for x in ss[1:]:
+            m.merge(x)
+        if m.td.total(t) <= 0 or node_mass <= 0:
+            continue
+        share = min(1.0, float(m.td.total(t)) / node_mass)
+        rr = c.reg.get(a) if c.reg is not None else None
+        approx = float(getattr(rr, "approx_share", 0.0) or 0.0) if rr is not None else 0.0
+        try:
+            g = PB.fit_numeric(m, t, day, n_c * share, n_m * share, approx, str(rec.get("unit") or ""),
+                               PB.pins_for(c.config, c.store, c.key, a),
+                               day_of=lambda ts: PB.local_day(ts, c.config))
+        except Exception:
+            g = None
+        if g is None:
+            continue
+        g["part"] = True
+        attrs[a] = g
+        changed = True
+    return dict(ent, attrs=attrs) if changed else ent
+
+
+# display names of the context attributes a lattice splits an action on (the
+# content-attribute names are prender's ATTR_NAMES)
+COND_LABELS: List[Tuple[str, str, str]] = [
+    ("ctx.think_s", "距上一请求间隔", "time since the previous request"),
+    ("ctx.sess_age_s", "会话已持续", "session age"),
+    ("ctx.sess_pos", "会话内序号", "position in session"),
+    ("ctx.prev_route", "上一页面", "previous page"),
+    ("net.pkts_down", "下行包数", "packets down"),
+    ("net.pkts_up", "上行包数", "packets up"),
+]
+COND_VALUES = 3                  # values listed in a condition, else a count
+# session-context attributes whose absence (⊥) means "nothing came before in the
+# session": (absent, present) phrases
+COND_SESSION = {a: (("会话首个请求", "first request of a session"),
+                    ("会话内后续请求", "later request in a session"))
+                for a in ("ctx.think_s", "ctx.prev_route")}
+COND_UNIT = {"ctx.think_s": " s", "ctx.sess_age_s": " s"}
+
+
+def _cond_phrase(h: Any, a: str, level: int, vals: Iterable[Any], neg: bool,
+                 labels: Any = None) -> Tuple[str, str]:
+    """One context constraint as a reader's condition ('距上一请求间隔 < 3.2 s',
+    '无 距上一请求间隔' = the session's first request, '请求头 user-agent 为
+    2 种特定形态'). Numeric bins (levels 1-3 = 8 / 4 / 2 learned bins) are
+    decoded through the attribute's hierarchy edges into a value range."""
+    lab = (PR.attr_label(a, "zh", list(labels or ()) + COND_LABELS),
+           PR.attr_label(a, "en", list(labels or ()) + COND_LABELS))
+    vals = list(vals)
+    absent = any(str(v) == EV.ABSENT for v in vals)
+    rest = [v for v in vals if str(v) != EV.ABSENT]
+    zh: List[str] = []
+    en: List[str] = []
+    sess = COND_SESSION.get(a)
+    if neg and absent and not rest:
+        # 'not absent' = present ('非（会话首个请求）' -> '会话内后续请求')
+        return ((sess[1][0], sess[1][1]) if sess else (f"有{lab[0]}", f"with {lab[1]}"))
+    if absent:
+        zh.append(sess[0][0] if sess else f"无{lab[0]}")
+        en.append(sess[0][1] if sess else f"no {lab[1]}")
+    if rest:
+        kind = h.kind(a) if h is not None else "other"
+        done = False
+        if kind == "num" and 1 <= int(level) <= 3 and h is not None:
+            edges, lg = h._num_edges(a)
+            if edges is not None:
+                w = (1, 2, 4)[int(level) - 1]
+                nb = len(edges) + 1
+                bins: Set[int] = set()
+                for v in rest:
+                    try:
+                        b = int(v)
+                    except (TypeError, ValueError):
+                        bins = set()
+                        break
+                    bins.update(range(b * w, min(nb, b * w + w)))
+                if bins:
+                    unit = PB.unit_of(a)
+                    sfx = COND_UNIT.get(a, "")
+                    lo_b, hi_b = min(bins), max(bins)
+
+                    def val(i: int) -> str:
+                        x = float(math.exp(edges[i])) if lg else float(edges[i])
+                        n_, u_ = PB.fmt_num(x, unit)
+                        return f"{n_} {u_}".strip() if unit else f"{n_}{sfx}"
+                    if lo_b == 0 and hi_b >= nb - 1:
+                        zh.append(sess[1][0] if sess else f"有{lab[0]}")
+                        en.append(sess[1][1] if sess else f"with {lab[1]}")
+                    elif lo_b == 0:
+                        zh.append(f"{lab[0]} < {val(hi_b)}")
+                        en.append(f"{lab[1]} < {val(hi_b)}")
+                    elif hi_b >= nb - 1:
+                        zh.append(f"{lab[0]} ≥ {val(lo_b - 1)}")
+                        en.append(f"{lab[1]} ≥ {val(lo_b - 1)}")
+                    else:
+                        zh.append(f"{lab[0]} {val(lo_b - 1)}–{val(hi_b)}")
+                        en.append(f"{lab[1]} {val(lo_b - 1)}-{val(hi_b)}")
+                    done = True
+        if not done:
+            if kind == "text" and int(level) >= 1:
+                # shapes ('U1 L6 / D1 . D1 SP ( …') say nothing to a reader
+                zh.append(f"{lab[0]} 为 {len(rest)} 种特定形态")
+                en.append(f"{lab[1]} of {len(rest)} specific shape(s)")
+            elif int(level) >= 1 and kind in ("num", "other") and all(str(v).lstrip("-").isdigit() for v in rest):
+                # bin indices without the hierarchy's edges (registry not typed yet)
+                zh.append(f"{lab[0]} 在特定区间")
+                en.append(f"{lab[1]} in specific ranges")
+            elif len(rest) <= COND_VALUES:
+                xs = [(PB._trim(float(v)) if isinstance(v, float) else str(v))[:32]
+                      for v in sorted(rest, key=str)]
+                zh.append(f"{lab[0]} 为 {PR.join_zh(xs)}")
+                en.append(f"{lab[1]} in {PR.join_en(xs)}")
+            else:
+                zh.append(f"{lab[0]} 为 {len(rest)} 个特定取值之一")
+                en.append(f"{lab[1]} one of {len(rest)} specific values")
+    z, e = "或".join(zh), " or ".join(en)
+    if neg:
+        return f"非（{z}）", f"not ({e})"
+    return z, e
+
+
+def variant_condition(h: Any, ctx: Iterable[Sequence[Any]], labels: Any = None
+                      ) -> Tuple[str, str, List[Dict[str, Any]]]:
+    """The conditions that make a node a VARIANT of its action: its context
+    constraints other than the route (the action itself) and the source
+    (rendered as WHO). Round 4 (readability): the lattice splits an action on
+    content / session attributes (ctx.think_s, net.pkts_down, the client's
+    user-agent shape); each child then rendered the same 'who opens route'
+    sentence with different numbers and nothing saying which requests it is
+    about - pack O seed 0 day 14 finance GET /fin/ledger/{num} for 财务部
+    three times (the node and its ctx.think_s children)."""
+    zh: List[str] = []
+    en: List[str] = []
+    ev: List[Dict[str, Any]] = []
+    for a, l, vals, neg in ctx:
+        a = str(a)
+        if a in ROUTE_ATTRS or a.startswith(WHO_SPLIT_ATTRS):
+            continue
+        z, e = _cond_phrase(h, a, int(l), vals, bool(neg), labels)
+        if z:
+            zh.append(z)
+            en.append(e)
+            ev.append({"attr": a, "level": int(l), "values": sorted(str(v) for v in vals),
+                       "neg": bool(neg), "text_zh": z})
+    return "，".join(zh), ", ".join(en), ev
+
+
 def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system",
                    subject: Optional[str] = None, restrict: Optional[Set[str]] = None,
                    part: Optional[Tuple[str, List[str], str, float]] = None,
@@ -384,10 +586,10 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
             if dn:
                 who_ev = dict(who_ev, dept=dn)
     elif who_ev.get("level") in ("prefix", "reg"):
-        # (round 3) a pool group's prefixes: '研发（10.50.0.0/24、…，约 97 个 IP）'
-        pn = _pool_group_of(c, [str(x) for x in who_ev.get("items") or []])
+        # (round 3) a pool group's prefixes: '研发（10.50.0.0/24、…，约 97 个 IP）';
+        # (round 4) or its configured region ('reg:研发 DHCP' -> the scope's CIDR)
+        pn, items = pool_label(c, [str(x) for x in who_ev.get("items") or []])
         if pn:
-            items = [str(x) for x in who_ev.get("items") or []]
             nd_ = who_ev.get("distinct")
             tail_zh = f"，约 {nd_} 个 IP" if nd_ else ""
             tail_en = f", ~{nd_} IPs" if nd_ else ""
@@ -399,12 +601,19 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     if part is not None:
         # the group's own arrival windows when the node's minute reservoir holds
         # enough of its arrivals, else the node's windows
-        pw = PW.part_when(nd.when, part[1], c.tz)
+        pw = PW.part_when(nd.when, part[1], c.tz, drop=c.ledger(kind))
         if pw is not None:
             by = pw.pop("by_daytype", None)
             wentry = {"status": "fitted", "when": pw, "by_daytype": by}
             own_when = True
     when_ev, when_zh, when_en, when_c = PR.when_block(wentry)
+    # (round 4) P09 marks windows whose latest dates contradict them ('drift':
+    # a time-of-day change younger than its acceptance period, §6.9.2): the
+    # pattern is evolving, stated with its provisional windows at the
+    # confidence the new arrivals support
+    drift = ((wentry or {}).get("when") or {}).get("drift") if when_ev else None
+    if drift:
+        when_ev["drift"] = drift
     skip = [a for a in list(((PB.lookup(c.pb, kind, nd.id) or {}).get("attrs") or {}))
             + list(((PB.lookup(c.pg, kind, nd.id) or {}).get("attrs") or {}))
             if a.startswith(SKIP_PREFIX)]
@@ -412,7 +621,10 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     if restrict is not None:
         g_ent = _restrict_closed(g_ent, PB.lookup(c.pbind, kind, nd.id) if isinstance(c.pbind, Mapping)
                                  else None, restrict)
-    content, czh, cen, c_c = PR.content_block(PB.lookup(c.pb, kind, nd.id), g_ent, c.labels, skip)
+    pb_ent = PB.lookup(c.pb, kind, nd.id)
+    if part is not None:
+        pb_ent = part_content(c, nd, pb_ent, list(part[4]) if len(part) > 4 else [part[0]], t)
+    content, czh, cen, c_c = PR.content_block(pb_ent, g_ent, c.labels, skip)
     bent = PB.lookup(c.pbind, kind, nd.id) if isinstance(c.pbind, Mapping) else None
     if bent and c.reg is not None:
         # a "binding" of an attribute with a handful of values system-wide (body
@@ -462,6 +674,10 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         # held 1.0 - the two ends of PG2's reliability diagram
         own = when_c if (when_c is not None and math.isfinite(float(when_c))) else 1.0
         conf = float(min(float(ph), float(own)))
+    if drift and when_c is not None and math.isfinite(float(when_c)):
+        # P04's hold rate is the windows' past record; a drifting window holds
+        # only as far as the young arrivals support it
+        conf = float(min(conf, float(when_c)))
     sys_label = c.key
     addr = ""
     root = c.ptm.kinds[kind].nodes.get(c.ptm.kinds[kind].root) if c.ptm is not None else None
@@ -483,7 +699,15 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     rt = PR.route_text(route)
     aw = action_word(route, c.config)
     rt_zh, rt_en = (f"{rt}（{aw[0]}）", f"{rt} ({aw[1]})") if aw else (rt, rt)
+    # (round 4) a variant of its action (content / session split below the
+    # route): say which requests it is about
+    cond_zh, cond_en, cond_ev = variant_condition(c.hier, nd.ctx, c.labels)
+    if cond_zh:
+        rt_zh = f"{rt_zh}（条件：{cond_zh}）"
+        rt_en = f"{rt_en} (when: {cond_en})"
     state = nd.state
+    if drift and state in ("confirmed", "stable"):
+        state = "evolving"
     if adopted_from is not None:
         # (round 4) a CONFIRMED rename (P10 detect_renames: the old page stopped
         # when the new one began, same sources, same place in the workflow,
@@ -492,7 +716,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         ot = PR.route_text(adopted_from)
         rt_zh = f"{rt_zh}（原 {ot}，页面已更名）"
         rt_en = f"{rt_en} (formerly {ot}, page renamed)"
-        state = "confirmed" if nd.state in ("stale", "confirmed", "stable") else nd.state
+        state = "confirmed" if state in ("stale", "confirmed", "stable") else state
     zh, _ = PR.sentence(sys_label, addr, when_zh, when_en, who_zh, who_en, rt_zh,
                         czh, cen, bzh, ben, fzh, fen, conf, first, last, nd.version, nd.cver, state,
                         support=sup_txt)
@@ -522,6 +746,8 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         "bindings": binds, "workflow": flow}
     if when_ev:
         ev["when"] = when_ev
+    if cond_ev:
+        ev["condition"] = cond_ev
     if adopted_from is not None:
         ev["adopted_from"] = adopted_from
         pid = f"{pid}|as:{route}"
@@ -555,6 +781,30 @@ def _configured_ips(config: Mapping[str, Any]) -> Dict[str, List[str]]:
     for it in (config or {}).get("who_group_names") or []:
         if isinstance(it, Mapping) and it.get("name") and it.get("ips"):
             out.setdefault(str(it["name"]), []).extend(str(x) for x in it["ips"])
+    return out
+
+
+def pool_label(c: Any, items: Sequence[str]) -> Tuple[Optional[str], List[str]]:
+    """(configured pool-group name, display items) of a prefix / region-level
+    who: prefixes inside a pool group's pool, or configured regions
+    ('reg:研发 DHCP', resolved to the scope's CIDR) inside it. Pack O seed 1:
+    code / mail stated 研发's pool as 'reg:研发 DHCP' (P12 'reg' arm), had no
+    group_name, and the 研发 department view left both actions out."""
+    nets = [n for x in items for n in (_region_cidrs(getattr(c, "config", None) or {}, x[4:])
+                                       if x.startswith("reg:") else [x])]
+    pn = _pool_group_of(c, nets) if nets else None
+    return pn, [x[4:] if x.startswith("reg:") else x for x in items]
+
+
+def _region_cidrs(config: Mapping[str, Any], name: str) -> List[str]:
+    """CIDRs of a configured region (dhcp_scopes / ip_classes name), [] if unknown."""
+    out: List[str] = []
+    for it in (config or {}).get("dhcp_scopes") or []:
+        if isinstance(it, Mapping) and str(it.get("name")) == name and it.get("cidr"):
+            out.append(str(it["cidr"]))
+    for it in (config or {}).get("ip_classes") or []:
+        if isinstance(it, Mapping) and str(it.get("name")) == name:
+            out.extend(str(x) for x in it.get("cidrs") or [])
     return out
 
 
@@ -908,14 +1158,15 @@ def fold_duplicates(stmts: Sequence[Dict[str, Any]], tree_of: Any = None
                     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """One statement per behaviour (round 4, readability): statements of the
     same action about the same WHO (_who_identity) at an ancestor node and at a
-    descendant reached through SOURCE splits only (net.src / client stack)
-    say the same thing twice - the descendant is the refinement the lattice
+    descendant reached through SOURCE splits (net.src / client stack) and
+    splits on the action's own route only say the same thing twice - the descendant is the refinement the lattice
     learned for those sources, so it is the PRIMARY statement of the
     behaviour and the ancestor's statement is FOLDED into it (returned apart
     with 'folded_into' = the primary's id; the view publishes it under
     'folded', not in its readable list). A descendant below a content or time
     split is a variant of the behaviour (its siblings hold the rest), not a
-    duplicate: both stay primary.
+    duplicate: both stay primary, and the variant's sentence names its
+    condition (variant_condition).
     Why fold, not drop: the folded statement is a second, independently fitted
     estimate of the same behaviour (the ancestor's longer history, e.g. its
     group's own windows); offline rescoring of seeds 0-1 (tree round-4 runs)
@@ -932,8 +1183,8 @@ def fold_duplicates(stmts: Sequence[Dict[str, Any]], tree_of: Any = None
     nodes = getattr(tree_of, "nodes", {}) or {}
 
     def anc(a: int, d: int) -> bool:
-        """d below a through SOURCE splits only (the same behaviour for a
-        subset of a's sources; a content / time split makes a variant)."""
+        """d below a through SOURCE (or route) splits only (the same behaviour
+        for a subset of a's sources; a content / time split makes a variant)."""
         x = nodes.get(d)
         seen = 0
         while x is not None and seen < 256:
@@ -945,7 +1196,13 @@ def fold_duplicates(stmts: Sequence[Dict[str, Any]], tree_of: Any = None
                 return False
             sp = getattr(pn, "split", None)
             attr = str(getattr(sp, "attr", "") or "") if sp is not None else ""
-            if not attr.startswith(WHO_SPLIT_ATTRS):
+            # a route split is transparent too: both statements already state
+            # the same action (same act node and route), so the child is that
+            # route's own events and the ancestor mixed them with other routes
+            # (pack O seed 0 day 14: the finance root, 90 % health checks,
+            # stated 'GET /health' with the other routes' upload sizes next to
+            # its /health child; mail's root parts repeated the TLS child's)
+            if not (attr.startswith(WHO_SPLIT_ATTRS) or attr in ROUTE_ATTRS):
                 return False
             if p == a:
                 return True

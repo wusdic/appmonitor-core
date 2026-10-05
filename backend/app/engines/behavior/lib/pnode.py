@@ -718,6 +718,40 @@ def batch_tol(nominal: float, n: float) -> float:
     return max(HOLD_EPS_MIN, 3.0 * math.sqrt(max(nom * (1.0 - nom), 1e-4) / max(float(n), 1.0)))
 
 
+CLUSTER_Z = 2.0                    # z of the cluster-robust error (cluster_tol)
+
+
+def cluster_tol(nominal: float, n: float, clusters: Optional[Mapping[Any, List[float]]]) -> float:
+    """Tolerance of a held-out test whose n checks come in clusters (evaluator
+    round 4): the checks of one source on one day are not independent (a
+    session's page views share its arrival minute, its connection its transport
+    measures), so the batch coverage varies more than batch_tol's binomial
+    error allows. The cluster-robust (sandwich) variance of the batch coverage,
+        v = C / (C - 1) * sum_c (h_c - p n_c)^2 / n^2   (C >= 2 clusters,
+                                                        p = the batch coverage),
+    sets the tolerance CLUSTER_Z sqrt(v) when it exceeds the binomial 3-sigma
+    one (a batch of one cluster cannot estimate its own clustering: the
+    binomial error, as before). z = 2, not 3: a test has ~50 units
+    (HOLD_BATCH_U), and at 3 sigma a window that misses a quarter of the
+    SOURCES (0.75 against 0.9) passed every test (synthetic, 40 sources);
+    at 2 sigma a correct 0.9 statement fails ~2 % of its tests. Measured on pack O seed 0 (days 7-21): node
+    statements stated 0.69 and held 0.91 on the evaluator's independent
+    held-out events, their internal tests failing on 'when' and transport
+    bands that held on the evaluator's draws."""
+    nom = min(max(float(nominal), 0.0), 1.0)
+    base = max(nom * (1.0 - nom), 1e-4) / max(float(n), 1.0)
+    tol = max(HOLD_EPS_MIN, 3.0 * math.sqrt(base))
+    if clusters:
+        C = len(clusters)
+        if C >= 2 and n > 0:
+            p = sum(h_c for _n, h_c in clusters.values()) / float(n)
+            ss = sum((h_c - p * n_c) ** 2 for n_c, h_c in clusters.values())
+            v = C / (C - 1.0) * ss / (float(n) ** 2)
+            tol = max(tol, CLUSTER_Z * math.sqrt(v))
+    return tol
+
+
+HOLD_BATCH_U = 50.0                # (evaluator round 4) ... or of >= 50 independent units (source-days)
 HOLD_BATCH_N = 100.0               # a held-out test is a batch of >= 100 checked events ...
 HOLD_BATCH_S = 7 * DAY             # ... or of a week, whichever comes first (M46)
 HOLD_TEST_HALF_DAYS = 14.0         # (round 3; kept for reference) the test record forgot at two weeks
@@ -749,7 +783,7 @@ class HoldRecord:
     ECE 0.37-0.41) although 35-45 % of them held; that product is kept as
     p_constraints() (diagnosis). O(constraints) floats per node."""
 
-    __slots__ = ("c", "L", "b", "bt0", "bn", "blast", "T", "F", "seg", "TF", "lite")
+    __slots__ = ("c", "L", "b", "bt0", "bn", "blast", "T", "F", "seg", "TF", "lite", "bc", "bu")
 
     def __init__(self, lite: bool = False) -> None:
         self.lite = bool(lite)                       # tests only: no per-constraint counts / facets
@@ -763,6 +797,8 @@ class HoldRecord:
         self.F: Dict[str, float] = {}                # key -> failed tests it caused (diagnosis)
         self.seg = 0                                 # confidence segment (drop(None) starts a new one)
         self.TF: Dict[str, List[float]] = {}         # facet -> [passes, tests] of its keys alone (diagnosis)
+        self.bc: Dict[str, Dict[Any, List[float]]] = {}   # current batch: key -> cluster -> [n, hits]
+        self.bu: set = set()                         # current batch: its independent units (clusters)
 
     def _f(self, t: float) -> float:
         if self.L is None:
@@ -781,7 +817,7 @@ class HoldRecord:
         T = getattr(self, "T", None)
         if T is None:
             T = self.T = [0.0, 0.0]
-            self.b, self.bt0, self.bn, self.blast = {}, None, 0.0, None
+            self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, set()
         return T
 
     def _close(self) -> None:
@@ -806,7 +842,10 @@ class HoldRecord:
         confidence dip on days without a test)."""
         T = self._T()
         if self.b and self.bn > 0 and self.blast is not None:
-            failed = [k for k, (n, h, nom) in self.b.items() if n > 0 and h / n < nom - batch_tol(nom, n)]
+            # (evaluator round 4) clustered checks: cluster_tol
+            cl = getattr(self, "bc", None) or {}
+            failed = [k for k, (n, h, nom) in self.b.items()
+                      if n > 0 and h / n < nom - cluster_tol(nom, n, cl.get(k))]
             lam = HOLD_TEST_LAMBDA
             T[0] *= lam
             T[1] *= lam
@@ -826,7 +865,7 @@ class HoldRecord:
             if TF is None:
                 TF = self.TF = {}
             if getattr(self, "lite", False):
-                self.b, self.bt0, self.bn, self.blast = {}, None, 0.0, None
+                self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, set()
                 return
             fac_fail = {hold_facet(k) for k in failed}
             # '~net': the statement without its transport measures (what a reader
@@ -839,7 +878,7 @@ class HoldRecord:
                     r = TF[fac] = [0.0, 0.0]
                 r[0] = r[0] * lam + (0.0 if fac in fac_fail else 1.0)
                 r[1] = r[1] * lam + 1.0
-        self.b, self.bt0, self.bn, self.blast = {}, None, 0.0, None
+        self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, set()
 
     def _F(self) -> Dict[str, float]:
         F = getattr(self, "F", None)
@@ -847,13 +886,19 @@ class HoldRecord:
             F = self.F = {}
         return F
 
-    def add(self, key: str, hit: bool, nominal: float, t: float, w: float = 1.0) -> None:
+    def add(self, key: str, hit: bool, nominal: float, t: float, w: float = 1.0,
+            cluster: Any = None) -> None:
         t = float(t)
         self._T()
         # a new event (later time) may close the batch first: the keys checked on
         # one event always belong to one test
+        # (evaluator round 4) a test is >= HOLD_BATCH_U independent UNITS (a
+        # source's day, pnode.cluster_tol) when the checks carry their cluster:
+        # 100 page views of 10 sessions are 10 units, not 100
+        bu = getattr(self, "bu", None)
+        units, need = (float(len(bu)), HOLD_BATCH_U) if bu else (self.bn, HOLD_BATCH_N)
         if self.bt0 is not None and self.blast is not None and t > self.blast and (
-                self.bn >= HOLD_BATCH_N or t - self.bt0 >= HOLD_BATCH_S):
+                units >= need or t - self.bt0 >= HOLD_BATCH_S):
             self._close()
         if not getattr(self, "lite", False):           # a group's record keeps its tests only
             f = self._f(t) * float(w)
@@ -876,6 +921,23 @@ class HoldRecord:
         if hit:
             bv[1] += float(w)
         bv[2] = float(nominal)
+        if cluster is not None:
+            bu = getattr(self, "bu", None)
+            if bu is None:
+                bu = self.bu = set()
+            bu.add(cluster)
+            bc = getattr(self, "bc", None)
+            if bc is None:
+                bc = self.bc = {}
+            kc = bc.get(key)
+            if kc is None:
+                kc = bc[key] = {}
+            cv = kc.get(cluster)
+            if cv is None:
+                cv = kc[cluster] = [0.0, 0.0]
+            cv[0] += float(w)
+            if hit:
+                cv[1] += float(w)
 
     def counts(self, t: float) -> Dict[str, Tuple[float, float, float]]:
         if self.L is None:
@@ -935,7 +997,7 @@ class HoldRecord:
         if keys is None:
             self.c.clear()
             self.L = None
-            self.b, self.bt0, self.bn, self.blast = {}, None, 0.0, None
+            self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, set()
             self.T = [0.0, 0.0]
             self.F = {}
             self.TF = {}
@@ -945,6 +1007,7 @@ class HoldRecord:
         for k in keys:
             self.c.pop(k, None)
             self.b.pop(k, None)
+            (getattr(self, "bc", None) or {}).pop(k, None)
 
     def nbytes(self) -> int:
         return int(64 + 80 * len(self.c) + 80 * len(getattr(self, "b", None) or ()) + 64)
@@ -1586,6 +1649,9 @@ class Node:
         hg = self.meta.get("hold_g") if self.meta else None
         if hg:
             b += sum(64 + hr.nbytes() for hr in hg.values())
+        gn = self.meta.get("gnum") if self.meta else None
+        if gn:
+            b += sum(64 + sum(sm.nbytes() for sm in d.values()) for d in gn.values())
         return int(b)
 
 

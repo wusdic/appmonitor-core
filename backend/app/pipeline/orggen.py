@@ -1132,18 +1132,27 @@ def _apply_real(spec: OrgSpec, real: Set[str], r1_trusted: bool) -> None:
             "expected": {"family": members, "memory_ratio_max": 2.0}}))
 
 
+SERVERS_CURVE_OTHERS = 4          # singletons and idle systems at every point of the PG4 servers curve
+
+
 def build_servers_org(n_days: int = 7, n_families: int = 12, members: int = 20,
                       singletons: int = 30, idle: int = 30,
                       n_systems: Optional[int] = None) -> OrgSpec:
     """Pack O-servers: families x members (replicas share users, branches have
     their own 5 IPs) + singleton systems + idle systems (traffic on day 1 only).
-    `n_systems` sizes the pack at a fixed number of families (PG4: 20, 100,
-    300 systems in 12 families): ~80 % family members, the rest split evenly
-    between singletons and idle systems."""
+    `n_systems` sizes the pack for PG4's servers curve (20, 100, 300 systems in
+    12 families): the distinct applications are FIXED - the 12 families plus
+    SERVERS_CURVE_OTHERS singletons and as many idle systems - and only the
+    families' member servers grow (n_systems - 8 spread over the 12 families,
+    sizes differing by at most one). Until round 3 the curve kept 20 % of
+    every point for singletons + idle (4 / 8 / 30 singletons at 20 / 100 / 300),
+    so it measured the number of distinct applications - each legitimately
+    its own tree - instead of the servers of a family (§16.12)."""
+    sizes: Optional[List[int]] = None
     if n_systems is not None:
-        members = max(1, int(round(0.8 * n_systems / n_families)))
-        rest = max(0, n_systems - members * n_families)
-        singletons, idle = rest - rest // 2, rest // 2
+        singletons = idle = min(SERVERS_CURVE_OTHERS, max(0, (int(n_systems) - n_families) // 2))
+        n_mem = max(n_families, int(n_systems) - singletons - idle)
+        sizes = [n_mem // n_families + (1 if f < n_mem % n_families else 0) for f in range(n_families)]
     systems: List[SystemSpec] = []
     depts: List[Department] = []
     acts: List[Activity] = []
@@ -1160,7 +1169,7 @@ def build_servers_org(n_days: int = 7, n_families: int = 12, members: int = 20,
         app = f"app{f:02d}"
         fam = f"fam{f:02d}"
         mem = []
-        for m in range(members):
+        for m in range(sizes[f] if sizes is not None else members):
             sid = f"{app}-{m:02d}"
             systems.append(SystemSpec(sid, f"10.200.{f}.{m + 1}:8080", "clear", f"{app}.corp.local",
                                       family=fam))

@@ -556,3 +556,150 @@ def test_login_bindings_ask_for_what_could_be_learned_by_the_day(org_run):
     late = M.truth_as_statements(pt, 21)               # mike.w, learned long after D2
     assert M.login_bindings(late, pt, ipc, 21) == (6, 6)
     assert M.login_bindings(before_d2, pt, ipc, 21)[0] < 6   # by day 21 the rename must be learned
+
+
+def test_calibration_error_is_debiased_for_small_statement_sets():
+    """§16.12: one snapshot judges ~60 statements; the plug-in ECE of a
+    perfectly calibrated set is ~0.1 there, so the gate reads the debiased
+    calibration error, which is ~0 for a calibrated set and finds a real bias."""
+    r = np.random.default_rng(5)
+    ces, eces = [], []
+    for k in range(40):
+        c = r.uniform(0.3, 0.95, 60)
+        o = (r.random(60) < c).astype(float)
+        cal = M.calibration(c, o)
+        ces.append(cal["ce"])
+        eces.append(cal["ece"])
+        assert cal["ece_null"] == pytest.approx(cal["ece_null"], abs=1e-12) and cal["ece_null"] > 0.05
+    assert np.median(eces) > 0.08                 # the plug-in's floor at n = 60
+    assert np.median(ces) < 0.05
+    c = r.uniform(0.3, 0.7, 600)                  # under-confident by 0.2 (round 3: 0.48 vs 0.73)
+    o = (r.random(600) < c + 0.2).astype(float)
+    cal = M.calibration(c, o)
+    assert 0.15 < cal["ce"] < 0.26 and cal["hold"] - cal["conf"] > 0.15
+    assert M.calibration([], [])["ce"] is None
+
+
+def test_pg2_confidence_trend_is_paired_on_a_fixed_cohort(org_run):
+    """A newly recovered pattern enters at a low confidence: the median over
+    whatever is recovered falls although every old pattern gained (round 3,
+    seed 0, days 7 -> 10). PG2 compares the same patterns across the spec's
+    snapshot days, outside the drift days, as recall."""
+    pack, g, pt = org_run
+    un = sorted(r["tid"] for r in pt.rows if int(r["valid_from_day"]) == 1
+                and int(r["valid_to_day"]) > pt.n_days)[:4]
+    assert len(un) == 4
+
+    def day(confs, us=None):
+        return {"recall": 0.8, "recall_by_period": {}, "mean_depth": 1.0, "ece": 0.1,
+                "stmt_conf": dict(zip(un, confs)), "who_U": us or {}}
+    pg1 = {7: day([0.6, 0.7]), 10: day([0.65, 0.75, 0.2, 0.25]), 13: day([0.1, 0.1, 0.1, 0.1]),
+           14: day([0.66, 0.76, 0.3, 0.3]), 21: day([0.7, 0.8, 0.35, 0.4])}
+    out = M.pg2_convergence(pg1, pt)
+    assert out["median_conf"][1][1] < out["median_conf"][0][1]      # the unpaired median dipped (7 -> 10)
+    assert out["conf_nondecreasing"] is True
+    assert [s[:3] for s in out["conf_steps"]] == [[7, 10, 2], [10, 21, 4]]   # 13 and 14: drift days
+    pg1[21] = day([0.7, 0.8, 0.1, 0.1])                              # the old patterns lose confidence
+    assert M.pg2_convergence(pg1, pt)["conf_nondecreasing"] is False
+    # the unseen-IP mass, paired the same way
+    pg1 = {7: day([0.5], {"a": 0.1}), 10: day([0.5], {"a": 0.05, "b": 0.3}), 21: day([0.5], {"a": 0.04, "b": 0.2})}
+    assert M.pg2_convergence(pg1, pt)["U_nonincreasing"] is True
+
+
+def test_pg2_calibration_pools_the_claims_of_days_7_on(org_run):
+    pack, g, pt = org_run
+    r = np.random.default_rng(2)
+    pg1 = {}
+    for d in (5, 7, 10, 14, 21):
+        c = r.uniform(0.4, 0.95, 60)
+        o = (r.random(60) < (c if d >= 7 else 0.0 * c)).astype(int)
+        pg1[d] = {"recall": 0.8, "recall_by_period": {}, "ece": M.ece(c, o),
+                  "calib": [[float(x), int(y), 0] for x, y in zip(c, o)]}
+    out = M.pg2_convergence(pg1, pt)
+    assert out["calibration"]["n"] == 240                            # day 5 not pooled
+    assert out["ece"] == out["calibration"]["ce"] < 0.05
+    assert out["ece_last_day"] == pg1[21]["ece"] > 0.05
+
+
+def test_pg10_window_is_judged_at_the_coverage_it_states(org_run):
+    """§16.12: PG10 asked both edges within 2 min of the 99 % window (08:30-
+    08:51); a window stated at 74 % coverage of that uniform law is ~15.5 min
+    long and could never pass (round 3, seed 4: 08:30-08:45 at 74 %). It is now
+    compared with the law's intervals holding the stated coverage."""
+    pack, g, pt = org_run
+    row = next(x for x in pt.valid_at_day(21) if x["activity"] == "GA.oa.login" and x["step"] == 0)
+    tw = row["windows"]["workday"]
+    a, b = tw[0]
+    assert b - a >= 15
+    assert M.window_edges_ok(row, "workday", [[a, b]], 0.99)
+    assert M.window_edges_ok(row, "workday", [[a + 1, b]], 0.74)          # under-claims: the 99 % edges
+    full = M.law_mass(row, "workday", [[a, b]])
+    assert full > 0.95
+    k = 0.74
+    w = [[a, a + k * (b - a)]]                                             # a 74 % interval, left-anchored
+    assert M.window_edges_ok(row, "workday", w, k)
+    assert not M.window_edges_ok(row, "workday", w, 0.99)                  # claims 99 %: edge 5 min short
+    assert not M.window_edges_ok(row, "workday", [[a, a + 0.4 * (b - a)]], k)   # too short for 74 %
+    assert not M.window_edges_ok(row, "workday", [[a, b], [b + 15, b + 25]], k)  # a window outside
+
+
+def test_pg2_trends_read_the_spec_snapshot_days(org_run):
+    """Runs snapshot every day since round 3; §12's trend checks are defined
+    on the snapshot days {3, 5, 7, 10, 14, 21}. A day-to-day dip between them
+    (seed 1: mean depth 1.0 on day 3, 0.9 on day 4) is reported, not judged."""
+    pack, g, pt = org_run
+    rec = {d: min(0.9, 0.1 * d) for d in range(1, 22)}
+    rec[8] = rec[7] - 0.2
+    dep = {d: 1.0 + 0.05 * d for d in range(1, 22)}
+    dep[4] = 0.9
+    pg1 = {d: {"recall": rec[d], "recall_by_period": {}, "mean_depth": dep[d]} for d in range(1, 22)}
+    out = M.pg2_convergence(pg1, pt)
+    assert out["trend_days"] == [3, 5, 7, 10, 14, 21]
+    assert out["recall_monotone"] is True and out["recall_violations_daily"] == [[7, 8]]
+    assert out["depth_nondecreasing"] is True
+    pg1[10]["recall"] = rec[7] - 0.2                                     # a dip ON a snapshot day
+    assert M.pg2_convergence(pg1, pt)["recall_monotone"] is False
+
+
+def test_r13_ratio_reads_the_single_tree_before_it_joined():
+    """§16.12: pack O's CRM may join R13's branch family (same application);
+    the memory ratio then compares with its own tree's last snapshot."""
+    t = lambda n: {"nodes": ["x" * 10] * n}                                      # noqa: E731
+    snaps = {5: {"systems": {"crm": {"model.ptree": t(10)}, "fam:1": {}}},
+             7: {"systems": {"crm": {"model.ptree": None}, "fam:1": {"model.ptree": t(15)}}}}
+    r = M.family_size_ratio(snaps, "fam:1", "crm")
+    assert r is not None and 1.0 < r < 2.0
+    assert M.family_size_ratio({7: {"systems": {"fam:1": {"model.ptree": t(5)}}}}, "fam:1", "crm") is None
+
+
+def test_statement_order_does_not_change_the_evaluators_draws(org_run, monkeypatch):
+    """Evaluator round 4 (views owner's open issue): the precision draws came
+    from one stream per snapshot, so a pure reordering or folding of statements
+    moved precision by up to 0.03. Each claim (and each truth pattern's
+    recovery) now draws from its own stream."""
+    pack, g, pt = org_run
+    ipc = M.ip_classes_of(pack.config)
+    seen = {}
+
+    def spy_holdout(s, valid, pt_, r, n, day):
+        seen.setdefault(M._claim_key(s), []).append(float(r.random()))
+        return {"ok": True}
+
+    real_recover = M.recover
+    rec_draws = {}
+
+    def spy_recover(row, stmts, edges, pt_, r):
+        rec_draws.setdefault(row["tid"], []).append(float(r.random()))
+        return real_recover(row, stmts, edges, pt_, r)
+
+    monkeypatch.setattr(M, "holdout_check", spy_holdout)
+    monkeypatch.setattr(M, "recover", spy_recover)
+    snap = M.truth_as_statements(pt, 14)
+    M.pg1_snapshot(snap, pt, ipc, 14, 0, precision_n=20)
+    rev = copy.deepcopy(snap)
+    for rec in rev["systems"].values():
+        rec["model.pviews"]["statements"].reverse()
+    M.pg1_snapshot(rev, pt, ipc, 14, 0, precision_n=20)
+    assert len(seen) >= 10
+    assert all(len(v) == 2 and v[0] == v[1] for v in seen.values())
+    assert all(len(v) == 2 and v[0] == v[1] for v in rec_draws.values())

@@ -270,10 +270,15 @@ def test_violating_arrivals_do_not_shape_the_windows():
         nd.when.update(1, float(m), ts, 1.0, 1.0, src=src)
         burst.add((round(ts, 3), src))
     now = _ts(D0 + 18, 1400)
-    raw = TW.TimeWindowEngine().fit_node(nd, now, OFF, None, {}, None)["when"]["nonworkday"]
-    clean = TW.TimeWindowEngine().fit_node(nd, now, OFF, None, {}, None, burst)["when"]["nonworkday"]
+    raw_w = TW.TimeWindowEngine().fit_node(nd, now, OFF, None, {}, None)["when"]
+    clean_w = TW.TimeWindowEngine().fit_node(nd, now, OFF, None, {}, None, burst)["when"]
+    raw, clean = raw_w["nonworkday"], clean_w["nonworkday"]
     assert sum(e - s for s, e in clean) >= 600, clean           # the day-long law
-    assert sum(e - s for s, e in raw) < 300, raw                  # the burst alone
+    assert not clean_w.get("drift")
+    # without the ledger the burst alone made the windows (09:00-11:40, a
+    # 'coordinated change' to regime_cut); since round 4's young-change rule a
+    # change of the last date is not fitted (fit_regime step 4): the law stays
+    assert sum(e - s for s, e in raw) >= 600, raw_w
 
 
 def test_p06_ledger_records_violating_arrivals_for_p09():
@@ -323,3 +328,124 @@ def test_a_groups_part_leaves_violating_arrivals_out():
     clean = PW.part_when(nd.when, GA, OFF, drop=burst)["workday"]
     assert len(clean) == 1 and abs(clean[0][0] - 512) <= 2 and clean[0][1] <= 524, clean
     assert raw != clean
+
+
+# ------------------------------------------------- recent drift (round 4, D1 lag)
+def _d1_rows(n_old, n_new, a2=False):
+    """综合部 logins: n_old workdays at 09:00-09:21, then n_new at 08:30-08:51
+    (D1); a2: one source's late login on the last date instead."""
+    r = np.random.default_rng(7)
+    out = []
+    for d in range(n_old + n_new):
+        lo = 540 if d < n_old else 510
+        for k, ip in enumerate(GA):
+            out.append((float(lo + r.integers(0, 21)), ip, d))
+    if a2:
+        out.append((550.0 + 30.0, GA[0], n_old + n_new - 1))
+    return out
+
+
+def _pts(rows):
+    return [(m, _ts(D0 + d, m), 1.0, ip) for m, ip, d in rows]
+
+
+def test_a_change_one_date_old_marks_the_windows_drifting():
+    """D1 on the last of 9 workdays (pack O seed 0, day 14: the login / home
+    statements kept 09:00-09:21 at 0.77-0.85 and held 0.08-0.13): the windows
+    stay (regime_cut needs 3 dates) but are marked drifting and their
+    confidence falls to what the arrivals since the change show."""
+    pts = _pts(_d1_rows(8, 1))
+    rec = PW.fit_regime(_hist(pts), float(len(pts)), pts, tz_offset_s=OFF)
+    assert rec.get("drift"), rec
+    assert rec["drift"]["n"] == 3 and rec["drift"]["k"] == 0
+    assert PW.confidence(rec) < 0.4 < rec["coverage"]
+    assert rec["provisional"]
+
+
+def test_one_sources_late_login_is_no_drift():
+    """A2's 09:40 login from one member on the last date: not a change of the
+    node's law (the persistence rule decides about one source's arrivals)."""
+    pts = _pts(_d1_rows(9, 0, a2=True))
+    rec = PW.fit_regime(_hist(pts), float(len(pts)), pts, tz_offset_s=OFF)
+    assert not rec.get("drift")
+
+
+def test_a_stable_law_rarely_reads_as_drift():
+    """Three sources, 1-2 arrivals a date, 10 % of them outside 09:00-09:21:
+    over 200 nodes, < 3 % carry a drift mark (alpha 0.01 per node)."""
+    r = np.random.default_rng(11)
+    flagged = 0
+    for rep in range(200):
+        pts = []
+        for d in range(10):
+            for ip in GA:
+                for _ in range(int(r.integers(1, 3))):
+                    m = float(r.uniform(540, 561)) if r.random() > 0.1 else float(r.uniform(420, 720))
+                    pts.append((m, _ts(D0 + d, m), 1.0, ip))
+        rec = PW.fit_regime(_hist(pts), float(len(pts)), pts, tz_offset_s=OFF)
+        flagged += bool(rec and rec.get("drift"))
+    assert flagged < 6, flagged
+
+
+def test_the_engine_fit_and_a_part_carry_the_drift_mark():
+    """TimeWindowEngine.fit_node: when['drift'] and the lowered confidence;
+    part_when likewise (a group's part of a shared node)."""
+    rows = _d1_rows(8, 1)
+    node = _node(range(9), lambda d: [(m, ip) for m, ip, dd in rows if dd == d])
+    now = _ts(D0 + 8, 1200)
+    e = TW.TimeWindowEngine().fit_node(node, now, OFF, None, {}, None)
+    assert e["when"].get("drift", {}).get("workday"), e["when"]
+    assert e["when"]["confidence"] < 0.4
+    pw = PW.part_when(node.when, GA, OFF)
+    assert pw.get("drift") and pw["confidence"] < 0.4
+
+
+def test_a_change_two_dates_old_states_no_union_window():
+    """Two dates after D1 (pack O seed 0, day 15): regime_cut, which needs 3
+    dates after a boundary, placed the change one date early and the windows
+    read the union of both laws (08:31-09:19, coverage 0.67); now the
+    established window stays, marked drifting - and with the third date the
+    new law is the window."""
+    def pts_of(n_new):
+        r = np.random.default_rng(5)
+        out = []
+        for d in range(11 + n_new):
+            lo = 540 if d < 11 else 510
+            for ip in GA:
+                for _ in range(2):
+                    m = float(lo + r.integers(0, 21))
+                    out.append((m, _ts(D0 + d, m), 1.0, ip))
+        return out
+    p2 = pts_of(2)
+    rec = PW.fit_regime(_hist(p2), float(len(p2)), p2, tz_offset_s=OFF)
+    assert len(rec["windows"]) == 1 and rec["windows"][0][0] >= 535, rec["windows"]
+    assert rec.get("drift") and PW.confidence(rec) < 0.3
+    p3 = pts_of(3)
+    rec = PW.fit_regime(_hist(p3), float(len(p3)), p3, tz_offset_s=OFF)
+    assert len(rec["windows"]) == 1 and rec["windows"][0][1] <= 535 and not rec.get("drift"), rec["windows"]
+
+
+def test_the_blocks_coverage_holds_for_every_stated_day_type():
+    """A narrow, dense workday law and a broad non-workday law seen on few
+    dates (pack O seed 1, day 21: portal's non-workday windows at 0.74-0.82
+    were stated at the workday-weighted 0.88-0.90 and held 0.68-0.79): the
+    one coverage of the when block is the smaller one (the evaluator and
+    P04's hold tests check every day type against it)."""
+    r = np.random.default_rng(2)
+    nd = PN.Node(1, None, 0, 0, (), _ts(D0, 0))
+    nd.when.want_minutes(True, R=4096, seed=0)
+    for d in range(14):
+        if d % 7 in (3, 4):                                     # non-work dates
+            for m in r.uniform(420, 1380, 8):
+                nd.when.update(1, float(m), _ts(D0 + d, m), 1.0, 1.0, src=f"10.60.0.{int(m) % 50}")
+        else:
+            for k in range(30):
+                m = float(r.uniform(540, 600))
+                nd.when.update(0, m, _ts(D0 + d, m), 1.0, 1.0, src=f"10.1.0.{k}")
+    now = _ts(D0 + 13, 1430)
+    e = TW.TimeWindowEngine().fit_node(nd, now, OFF, None, {}, None)
+    w = e["when"]
+    cov = {dk: e["by_daytype"][dk]["coverage"] for dk in ("wd", "nwd") if e["by_daytype"].get(dk)}
+    assert len(cov) == 2 and cov["nwd"] < cov["wd"], cov
+    assert abs(w["coverage"] - min(cov.values())) < 1e-9, (w["coverage"], cov)
+    assert w["coverage_by_daytype"]["nonworkday"] == cov["nwd"]

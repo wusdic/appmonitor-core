@@ -228,6 +228,9 @@ PSEUDO_SOURCE = {"@who": "net.src", "@when": "ctx.when"}
 # P03 components that, when less likely than the who, make a damped row an
 # outlier of its time / content / sequence rather than a foreign source (M41)
 HOLD_BIND_MAX = 16             # bound sources checked per node (M43)
+GNUM_SHARE = 0.01              # a group's own numeric summaries at a node it holds >= 1 % of: P14 states a
+                               # department's part (its role groups merged) from 5 % (PART_SHARE), and pack O's
+                               # 综合部 holds that as two role groups of 1-3 % each at OA's login node
 HOLD_GROUPS_MAX = 8            # learned groups with their own held-out record per node (round 4; = P14 PART_MAX)
 SUS_OTHER_P = ("p_when", "p_content", "p_seq", "p_novel")
 SUS_BIND_FLAGS = frozenset({"cross_binding", "concurrent_use", "readdress_candidate"})
@@ -790,7 +793,7 @@ class PatternTreeEngine(Engine):
             # (the held-out data of the requirement is the pattern's own events)
             if nd.ref is not None and nd.state in PN.CONFIDENT_STATES and not suspicious \
                     and factor >= 1.0 - 1e-9:
-                self._hold_check(lc, nd, get, keys, daytype, minute, ts, omega)
+                self._hold_check(lc, nd, get, keys, daytype, minute, ts, omega, mass / rho, day)
             if d < nlast and nd.meta.get("R") is not None:
                 self._rev_update(lc, tr, nd, path[d + 1], get, ip, ts, omega, day, kind)
         # exception node of the leaf's heavy source
@@ -809,7 +812,8 @@ class PatternTreeEngine(Engine):
 
     @staticmethod
     def _hold_check(lc: _LC, nd: PN.Node, get: Callable[[str], Any], keys: Sequence[Any],
-                    daytype: int, minute: float, ts: float, omega: float) -> None:
+                    daytype: int, minute: float, ts: float, omega: float,
+                    mass: Optional[float] = None, day: Optional[int] = None) -> None:
         """Held-out check of one learned event against the node's statement as
         of its last reference snapshot (built from earlier data only): the
         prequential record behind the node's calibrated confidence
@@ -861,13 +865,51 @@ class PatternTreeEngine(Engine):
                         heavy = {str(x) for x, *_ in lv3.items(ts, None, HOLD_GROUPS_MAX)}
                         for old_k in [x for x in recs if x not in heavy]:
                             del recs[old_k]
+                            (nd.meta.get("gnum") or {}).pop(old_k, None)
                 if len(recs) < HOLD_GROUPS_MAX:
                     hg = recs[gk] = PN.HoldRecord(lite=True)
         recs_add = (hr,) if hg is None else (hr, hg)
+        # (evaluator round 4) the group's own numeric summaries of the stated
+        # numeric constraints: P14 states a group's part of a shared node with
+        # the GROUP's bands (views.part_content). Before, a part stated the
+        # node's: pack O, the 综合部 part of OA's login node (who 192.168.1.21,
+        # .23, 10.168.7.121; truth 1-2 KB) stated the node's 0.5-1.5 KB band on
+        # every seed (PG10 day 11, held 0.46-0.60)
+        # Bounded: <= HOLD_GROUPS_MAX groups, only at a node shared by >= 2 groups
+        # of >= GNUM_SHARE of its mass each (refreshed daily), only the request's
+        # own numeric attributes (facet 'content', not transport measures)
+        gsum = None
+        if hg is not None:
+            dk = int(ts // 86400.0)
+            gq = nd.meta.get("gnum_q")
+            if gq is None or gq[0] != dk:
+                qual: frozenset = frozenset()
+                lv3 = nd.who.levels[3] if len(nd.who.levels) > 3 else None
+                tot = lv3.total(ts) if lv3 is not None else 0.0
+                if tot > 0:
+                    q = {str(x) for x, cnt, *_ in lv3.items(ts) if str(x).startswith("grp:")
+                         and str(x) not in TRANSIENT_VALUES and float(cnt) / tot >= GNUM_SHARE}
+                    qual = frozenset(q) if len(q) >= 2 else frozenset()
+                gq = nd.meta["gnum_q"] = (dk, qual)
+                gn0 = nd.meta.get("gnum")
+                if gn0:
+                    for old_k in [x for x in gn0 if x not in qual]:
+                        del gn0[old_k]
+            if gk in gq[1]:
+                gn = nd.meta.get("gnum")
+                if gn is None:
+                    gn = nd.meta["gnum"] = {}
+                gsum = gn.get(gk)
+                if gsum is None:
+                    gsum = gn[gk] = {}
+        # (evaluator round 4) the independent unit of a held-out test is a
+        # source's day (pnode.cluster_tol): its events share their session's
+        # arrival time and their connection's transport measures
+        cl = (keys[0] if keys else None, int(ts // 86400.0))
 
         def add(key: str, hit: bool, nom: float) -> None:
             for r in recs_add:
-                r.add(key, hit, nom, ts, omega)
+                r.add(key, hit, nom, ts, omega, cl)
 
         w = cons.get("who")
         if w is not None:
@@ -901,6 +943,13 @@ class PatternTreeEngine(Engine):
                     x = float(v)
                 except (TypeError, ValueError):
                     continue
+                if x == x and gsum is not None and "#" not in a and PN.hold_facet(a) == "content":
+                    gs = gsum.get(a)
+                    if gs is None:
+                        ns = nd.targets.get(a)
+                        gs = gsum[a] = PN.NumSummary(log=bool(getattr(ns, "log", False)))
+                    gs.update(x, ts, float(mass) if mass is not None else float(omega), float(omega),
+                              day=day)
                 if x == x:
                     # float-noise tolerant: a band fitted on log values comes back
                     # as exp(log v) (409.00000000000017 for a constant 409 B): the

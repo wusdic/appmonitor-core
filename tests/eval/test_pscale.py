@@ -109,3 +109,30 @@ def test_pcore_cpu_units_scored_and_learned_events():
     assert new["learning_p95_us"] == pytest.approx(100.0)
     assert new["scoring_p95_us"] == pytest.approx(5.0)
     assert new["learning_us_per_learned_event"] == pytest.approx(100.0)
+
+
+def test_entry_points_pin_the_hash_seed(tmp_path):
+    """Two processes of the same evaluation must iterate str sets in the same
+    order (§16.12): pin_hash_seed re-executes an unpinned script with
+    PYTHONHASHSEED set, so hash() agrees across processes."""
+    import os
+    import subprocess
+    import sys
+    backend = os.path.join(os.path.dirname(__file__), "..", "..", "backend")
+    script = tmp_path / "h.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {os.path.abspath(backend)!r})\n"
+        "from app.eval.pscale import pin_hash_seed\n"
+        "pin_hash_seed()\n"
+        "print(hash('progressive-core'), list({'a%d' % i for i in range(20)})[:5])\n")
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONHASHSEED"}
+    out = [subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True,
+                          timeout=120).stdout for _ in range(3)]
+    assert out[0] and out[0] == out[1] == out[2]
+    # unpinned processes disagree (the salt is random per process)
+    plain = tmp_path / "p.py"
+    plain.write_text("print(hash('progressive-core'))\n")
+    outs = {subprocess.run([sys.executable, str(plain)], env=env, capture_output=True, text=True,
+                           timeout=60).stdout for _ in range(4)}
+    assert len(outs) > 1

@@ -613,7 +613,8 @@ def cv_coverage(hist: np.ndarray, pts: Sequence[Sequence[Any]], tz_offset_s: flo
 
 
 def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offset_s: float = 0.0,
-               since0: Optional[float] = None, provisional0: bool = False) -> Optional[Dict[str, Any]]:
+               since0: Optional[float] = None, provisional0: bool = False,
+               young: bool = True) -> Optional[Dict[str, Any]]:
     """Windows of one node (or one group's part of it) and day type from its
     arrivals [(minute, ts, weight, source)]: P09's pipeline shared by the
     node fit (behavior.time_window) and part_when.
@@ -631,13 +632,34 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
         prior of strength FWD_PRIOR centred on the in-sample value) when that
         is smaller: the out-of-sample check reveals windows that hold less than
         their own sample says (edges and gaps chosen on it, a drifting law),
-        never more than the rank bound of the in-sample value."""
+        never more than the rank bound of the in-sample value;
+      4 (round 4) a change younger than REGIME_DATES dates - found by
+        regime_cut with one date allowed after the boundary, or, when its
+        arrivals are too few for the KS test, by testing the established law
+        (fitted without the node's last REGIME_DATES - 1 dates) on the young
+        dates (recent_drift) - is not fitted: the windows of the established
+        law are stated, marked 'drift' and provisional, at the confidence the
+        young arrivals show; regime_cut fits the new law once it has its
+        dates. `young` False: no step 4 (the recursive established fit)."""
     pts = list(pts)
     since, provisional, cut = since0, bool(provisional0), None
+    young_cut = None
     if since is None:
-        cut = regime_cut(pts, hist, tz_offset_s=tz_offset_s)
-        if cut is not None:
+        cut = regime_cut(pts, hist, tz_offset_s=tz_offset_s, min_after=1 if young else REGIME_DATES)
+        if cut is not None and cut["dates_after"] < REGIME_DATES:
+            young_cut, cut = cut, None          # 4 below: a change too young to fit
+        elif cut is not None:
             since, provisional = cut["since"], not cut["accepted"]
+    if young_cut is not None:
+        est = [p for p in pts if float(p[1]) < young_cut["since"]]
+        rec = fit_regime(hist, n, est, tz_offset_s=tz_offset_s, young=False)
+        if rec is not None:
+            dr = recent_drift(rec, [p for p in pts if float(p[1]) >= young_cut["since"]], tz_offset_s,
+                              alpha=1.0)
+            if dr is not None:
+                rec["drift"] = dict(dr, change={k: young_cut[k] for k in ("p", "dates_after", "sources_after")})
+                rec["provisional"] = True
+            return rec
     recent = [p for p in pts if float(p[1]) >= since] if since is not None else pts
     need = REGIME_POINTS if cut is not None else MIN_POINTS
     spans = cut is not None or len({_local_date(float(p[1]), tz_offset_s) for p in recent}) >= REGIME_DATES
@@ -661,7 +683,89 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
             rec["coverage_in"] = c_in
             rec["cv"] = [round(h, 3), round(m, 3)]
             rec["coverage"] = float(min(c_in, (h + FWD_PRIOR * c_in) / (m + FWD_PRIOR)))
+    if young and since0 is None:
+        # 4b a change whose arrivals are too few for the KS test (3 logins on
+        # one date): the established law (the dates before the young ones)
+        # tested on the young dates
+        yd = _young_dates(use, tz_offset_s)
+        if yd:
+            est_pts = [p for p in use if _local_date(float(p[1]), tz_offset_s) < yd]
+            est = fit_regime(hist, n, est_pts, tz_offset_s=tz_offset_s, young=False)
+            if est is not None:
+                dr = recent_drift(est, [p for p in use if _local_date(float(p[1]), tz_offset_s) >= yd],
+                                  tz_offset_s)
+                if dr is not None:
+                    est["drift"] = dr
+                    est["provisional"] = True
+                    return est
     return rec
+
+
+DRIFT_ALPHA = 0.01               # recent_drift: binomial lower tail of a date's in-window arrivals (Bonferroni)
+
+
+def _young_dates(pts: Sequence[Sequence[Any]], tz_offset_s: float) -> Optional[int]:
+    """The first of the node's last REGIME_DATES - 1 local dates (the dates a
+    change regime_cut could not yet fit falls on) when the node has >= 2
+    REGIME_DATES dates, else None."""
+    dates = sorted({_local_date(float(p[1]), tz_offset_s) for p in pts})
+    if len(dates) < 2 * REGIME_DATES:
+        return None
+    return int(dates[-(REGIME_DATES - 1)])
+
+
+def _binom_cdf(k: int, n: int, p: float) -> float:
+    p = min(1.0, max(0.0, float(p)))
+    return float(min(1.0, sum(math.comb(n, j) * p ** j * (1.0 - p) ** (n - j) for j in range(int(k) + 1))))
+
+
+def recent_drift(rec: Mapping[str, Any], young: Sequence[Sequence[Any]],
+                 tz_offset_s: float = 0.0, alpha: float = DRIFT_ALPHA) -> Optional[Dict[str, Any]]:
+    """Do the windows `rec` (fitted on the established dates) hold on the
+    `young` arrivals (the dates after them, < REGIME_DATES of them)? Per young
+    date, the number k of clean arrivals inside the windows is tested against
+    Binomial(n, coverage) - the windows' own claim; a date whose lower tail
+    p (x the dates tested) is <= alpha, with its outside arrivals from >= 2
+    sources (one source: an idiosyncrasy or an anomaly, the persistence
+    rule's business - unless every arrival has one source), shows the windows
+    no longer hold (alpha 1: regime_cut already found the change). Returns
+    {'date', 'p', 'k', 'n', 'sources', 'coverage'}: 'coverage' is the
+    posterior mean (k + FWD_PRIOR c) / (n + FWD_PRIOR) of the young arrivals,
+    the windows' stated confidence meanwhile (confidence()).
+    Why (pack O, round 4): D1 moved 综合部's logins from 09:00-09:21 to
+    08:30-08:51 on day 12; at the day-14 snapshot the login and home
+    statements read '08:49-09:21' (the young date's block joined the old one)
+    at 0.77-0.85 and held 0.08-0.13 (seed 0: 4 of 13 failing statements); at
+    day 15 regime_cut placed the change one date early (it needs 3 dates after
+    a boundary) and the parts read the union 08:32-09:21 until day 17."""
+    if rec.get("res") != "minute" or rec.get("all_day") or not rec.get("windows"):
+        return None
+    c = float(rec.get("coverage") or 0.0)
+    if not 0.0 < c < 1.0:
+        return None
+    clean = [(float(p[0]), _local_date(float(p[1]), tz_offset_s), str(p[3]) if len(p) > 3 else "")
+             for p in young if (float(p[2]) if len(p) > 2 else 1.0) >= CLEAN_W]
+    if not clean:
+        return None
+    dates = sorted({x[1] for x in clean})
+    single = len({x[2] for x in clean}) <= 1
+    wins = rec["windows"]
+    hit = None
+    for d in dates:
+        day = [x for x in clean if x[1] == d]
+        k = sum(1 for x in day if in_windows(x[0], wins))
+        out_src = {x[2] for x in day if not in_windows(x[0], wins)}
+        p = min(1.0, _binom_cdf(k, len(day), c) * len(dates))
+        if p <= alpha and out_src and (len(out_src) >= 2 or single):
+            hit = (d, p, len(out_src))
+            break
+    if hit is None:
+        return None
+    since = [x for x in clean if x[1] >= hit[0]]
+    k = sum(1 for x in since if in_windows(x[0], wins))
+    n = len(since)
+    return {"date": int(hit[0]), "p": float(hit[1]), "k": int(k), "n": int(n), "sources": int(hit[2]),
+            "coverage": float((k + FWD_PRIOR * c) / (n + FWD_PRIOR))}
 
 
 def _ks_sf(lam: float) -> float:
@@ -696,7 +800,7 @@ def _wks(ua: np.ndarray, wa: np.ndarray, ub: np.ndarray, wb: np.ndarray) -> Tupl
 
 def regime_cut(points: Sequence[Sequence[Any]], hist: np.ndarray, tz_offset_s: float = 0.0,
                alpha: float = REGIME_ALPHA, min_dates: int = REGIME_DATES,
-               min_points: int = REGIME_POINTS) -> Optional[Dict[str, Any]]:
+               min_points: int = REGIME_POINTS, min_after: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """The arrival-time change P09 owns (§6.9.2, §16.2 M8): the local date from
     which a node's arrivals of one day type follow a different time-of-day law.
 
@@ -710,19 +814,23 @@ def regime_cut(points: Sequence[Sequence[Any]], hist: np.ndarray, tz_offset_s: f
     for >= REGIME_SINGLE_DATES dates; otherwise it is provisional.
     points [(minute, ts, weight, source)]; returns {'since' (ts of the first
     local midnight of the new regime), 'p', 'dates_after', 'sources_after',
-    'accepted'} or None."""
+    'accepted'} or None. min_after (default min_dates): fewer dates allowed
+    after a boundary - fit_regime passes 1 to place a young change on its
+    real first date (with 3 dates required after it, a change two dates old
+    was placed one date early: pack O seed 0, day 15, the union 08:32-09:21)."""
     pts = [p for p in points if len(p) >= 2]
     if len(pts) < 2 * min_points:
         return None
     cut = unwrap_cut(np.asarray(hist, dtype=np.float64))
     dates = np.asarray([_local_date(p[1], tz_offset_s) for p in pts], dtype=np.int64)
     ud = np.unique(dates)
-    if ud.size < 2 * min_dates:
+    m_after = min_dates if min_after is None else max(1, int(min_after))
+    if ud.size < min_dates + m_after:
         return None
     u = np.asarray([(float(p[0]) - cut) % DAY_MIN for p in pts], dtype=np.float64)
     w = np.asarray([float(p[2]) if len(p) > 2 else 1.0 for p in pts], dtype=np.float64)
     cands = []
-    for k in range(min_dates, ud.size - min_dates + 1):
+    for k in range(min_dates, ud.size - m_after + 1):
         after = dates >= ud[k]
         if after.sum() < min_points or (~after).sum() < min_points:
             continue
@@ -769,6 +877,9 @@ def confidence(rec: Mapping[str, Any]) -> float:
     """Statement confidence of a when-constraint: coverage x day stability
     (§6.17.2); coverage alone when the stability is unknown (slot mode)."""
     c = float(rec.get("coverage") or 0.0)
+    dr = rec.get("drift")
+    if isinstance(dr, Mapping) and dr.get("coverage") is not None:
+        c = min(c, float(dr["coverage"]))       # recent_drift: the windows stopped holding
     st = rec.get("stability")
     return c * (float(st) if st is not None else 1.0)
 
@@ -836,6 +947,19 @@ def lookup(model: Any, kind: int, nid: int) -> Optional[Dict[str, Any]]:
     return sub.get(nid, sub.get(str(nid)))
 
 
+def block_coverage(by: Mapping[str, Optional[Mapping[str, Any]]]) -> Dict[str, Any]:
+    """The statement-contract coverage of a `when` block: ONE number that the
+    windows of EVERY stated day type hold (eval/pmetrics checks each day
+    type's held-out arrivals against it, P04's hold tests use min(nominal)
+    likewise) = the smallest day-type coverage; 'coverage_by_daytype' keeps
+    each. Was the evidence-weighted mean (round 4): pack O seed 1, day 21,
+    portal's non-workday windows (6 dates, coverage 0.74-0.82) were stated at
+    the workday-dominated 0.88-0.90 and held 0.68-0.79."""
+    cov = {DT_LONG[dk]: float(r["coverage"]) for dk, r in by.items()
+           if r and r.get("coverage") is not None and dk in DT_LONG}
+    return {"coverage": (min(cov.values()) if cov else None), "coverage_by_daytype": cov}
+
+
 def part_when(when: Any, members: Iterable[str], tz_offset_s: float = 0.0,
               min_points: int = MIN_POINTS, drop: Optional[set] = None) -> Optional[Dict[str, Any]]:
     """The statement-contract `when` block of ONE learned group's part of a
@@ -881,10 +1005,11 @@ def part_when(when: Any, members: Iterable[str], tz_offset_s: float = 0.0,
         return None
     out: Dict[str, Any] = {DT_LONG[dk]: (as_intervals(by[dk]["windows"]) if by.get(dk) else [])
                            for dk in DAYTYPES}
-    w = [len(r.get("windows") or []) and float(r.get("n_points") or r.get("n") or 1.0) for r in fitted]
-    tot = sum(w) or 1.0
-    out["coverage"] = float(sum(wi * float(r["coverage"]) for wi, r in zip(w, fitted)) / tot)
+    out.update(block_coverage(by))
     out["confidence"] = float(min(r["confidence"] for r in fitted))
+    drift = {DT_LONG[dk]: by[dk]["drift"] for dk in DAYTYPES if by.get(dk) and by[dk].get("drift")}
+    if drift:
+        out["drift"] = drift
     out["part"] = True
     out["n_points"] = int(sum(float(r.get("n_points") or 0) for r in fitted))
     out["by_daytype"] = by
