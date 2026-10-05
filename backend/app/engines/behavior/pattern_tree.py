@@ -2759,6 +2759,7 @@ class PatternTreeEngine(Engine):
                 if not cons or nd.state not in PN.CONFIDENT_STATES:
                     nd.meta.pop("hold_prior", None)
                     nd.meta.pop("hold_prior_seg", None)
+                    nd.meta.pop("hold_prior_n", None)
                     continue
                 k = PN.hold_kind(len(cons))
                 hr = nd.meta.get("hold")
@@ -2777,17 +2778,31 @@ class PatternTreeEngine(Engine):
                 # statement's birth instead, the pessimistic prior of the first
                 # days (few statements, few tests) stayed: pack O seed 0's GET /docs
                 # stated 0.40 after 3 passed tests of 3
+                #
+                # (evaluator round 4) ... until the statement's OWN record changes:
+                # at each of its tests it takes its kind's current prior. Frozen
+                # for the whole segment, the prior fitted on the first days' pool
+                # (few statements, young constraints still moving) stayed for good:
+                # pack O seed 0, day 14, priors of mean 0.6 and strength 4-16 fitted
+                # on days 4-7 while that day's pool fitted mean 0.80 - the node
+                # statements stated 0.73 and held 0.90 on the evaluator's held-out
+                # events. A drift elsewhere still cannot move a statement between
+                # its own tests.
                 seg = int(getattr(hr, "seg", 0)) if hr is not None else 0
-                tested = hr is not None and hr.tests()[1] > 0
-                if tested and nd.meta.get("hold_prior") is not None and nd.meta.get("hold_prior_seg") == seg:
+                n_own = float(hr.tests()[1]) if hr is not None else 0.0
+                tested = n_own > 0
+                if tested and nd.meta.get("hold_prior") is not None and nd.meta.get("hold_prior_seg") == seg \
+                        and abs(float(nd.meta.get("hold_prior_n", -1.0)) - n_own) <= 1e-9:
                     continue
                 pr = prior.get(k) or prior.get("*")
                 if pr is not None:
                     nd.meta["hold_prior"] = (round(float(pr[0]), 4), round(float(pr[1]), 4))
                     nd.meta["hold_prior_seg"] = seg
+                    nd.meta["hold_prior_n"] = n_own
                 else:
                     nd.meta.pop("hold_prior", None)
                     nd.meta.pop("hold_prior_seg", None)
+                    nd.meta.pop("hold_prior_n", None)
 
     def _normal_days_fn(self, lc: _LC, systems: Iterable[str]) -> Callable[[int, int], int]:
         cal: Dict[int, Any] = {}

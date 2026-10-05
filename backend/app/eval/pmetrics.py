@@ -2653,6 +2653,23 @@ def _share_check(name: str, scores: Sequence[Mapping[str, Any]], fn: Callable, t
     return check(name, m, f">= {target}", None if m is None else m >= target - 1e-12)
 
 
+def _ttr_ok(s: Mapping[str, Any], period: str, by_day: int) -> Optional[bool]:
+    """PG2 "80 % recall by day N" for one period: None (not measured) when no
+    truth pattern of that period was eligible on any snapshot day (§11.6's
+    opportunity rule: >= 20 events on >= 3 dates). Before (evaluator round 4)
+    a period with no eligible pattern read as never reaching 80 % - pack O's
+    only weekly pattern (SALES' Friday report) has 2 Fridays in 21 days (day 5
+    is a holiday), so "weekly patterns by day 21" failed on every seed of
+    rounds 2-4 without a single weekly pattern being judged."""
+    if not s.get("n_snapshots"):
+        return None
+    pg1 = s.get("pg1") or {}
+    if pg1 and not any(((v or {}).get("recall_by_period") or {}).get(period) is not None
+                       for v in pg1.values() if isinstance(v, Mapping)):
+        return None
+    return (s["pg2"]["days_to_80"].get(period) or 99) <= by_day
+
+
 def compute_pgates(scores: Sequence[Mapping[str, Any]],
                    scale: Optional[Mapping[str, Any]] = None,
                    pg9: Optional[Mapping[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
@@ -2689,11 +2706,9 @@ def compute_pgates(scores: Sequence[Mapping[str, Any]],
         _share_check("recall non-decreasing (±0.05, days 3-21) outside days 12-15", O,
                      lambda s: s["pg2"]["recall_monotone"]),
         _share_check("daily patterns: 80 % recall by day 7", O,
-                     lambda s: None if s["n_snapshots"] == 0 else
-                     (s["pg2"]["days_to_80"]["daily"] or 99) <= 7),
+                     lambda s: _ttr_ok(s, "daily", 7)),
         _share_check("weekly patterns: 80 % recall by day 21", O,
-                     lambda s: None if s["n_snapshots"] == 0 else
-                     (s["pg2"]["days_to_80"]["weekly"] or 99) <= 21),
+                     lambda s: _ttr_ok(s, "weekly", 21)),
         _share_check("mean depth non-decreasing before day 12 (days 3-10)", O,
                      lambda s: s["pg2"]["depth_nondecreasing"]),
         _share_check("confidence of unchanged patterns non-decreasing (paired, days 3-21 ex. drift)", O,

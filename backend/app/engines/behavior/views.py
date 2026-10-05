@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import time
 from typing import Callable, Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -65,6 +66,7 @@ from .lib import m_ptree as MP
 from .lib import pbounds as PB
 from .lib import pdfg as DF
 from .lib import pfd as FD
+from .lib import pgrammar as PG
 from .lib import pevent as EV
 from .lib import pnode as PN
 from .lib import psketch as PS
@@ -889,22 +891,57 @@ def _restrict_closed(g_ent: Optional[Mapping[str, Any]], bent: Optional[Mapping[
         if X != "net.src" or Y not in attrs:
             continue
         ga = attrs[Y]
-        if not isinstance(ga, Mapping) or ga.get("closed") is None:
+        if not isinstance(ga, Mapping):
             continue
         tab = rec.get("table") or {}
         vals = set()
+        lbs = []
         for m in members:
             ent = tab.get(m)
             if not isinstance(ent, Mapping) or not ent.get("bound") or ent.get("top") is None:
                 vals = None
                 break
             vals.add(str(ent["top"]))
-        closed = {str(v) for v in ga["closed"]}
-        if not vals or not vals <= closed or vals == closed:
+            lb = ent.get("LB")
+            if lb is not None and math.isfinite(float(lb)):
+                lbs.append(float(lb))
+        if not vals:
             continue
+        rx = ga.get("grammar")
+        if rx:
+            # a member's bound value outside the node's grammar is no member
+            try:
+                cre = re.compile(str(rx))
+            except re.error:
+                cre = None
+            if cre is not None and not all(cre.fullmatch(v) for v in vals):
+                continue
+        if ga.get("closed") is not None:
+            closed = {str(v) for v in ga["closed"]}
+            if not vals <= closed or vals == closed:
+                continue
+            g2 = dict(ga, closed=sorted(vals), part_of_closed=len(closed))
+        elif rx:
+            # (evaluator round 4) the node's set is open (other departments' and
+            # a DHCP pool's names keep arriving) but every member of the part
+            # is bound to one value: the part's values are its members' bound
+            # values, closed by the bindings, with the bindings' unseen mass
+            # (1 - their smallest lower bound). Before, the 财务部 part of OA's
+            # login node stated no closed set (FIN.oa.login missed on every seed)
+            u = max(0.0, 1.0 - min(lbs)) if lbs else float(ga.get("U_s", float("nan")))
+            g2 = dict(ga, closed=sorted(vals), U=u, closed_by="binding")
+        else:
+            continue
+        if rx:
+            # and the grammar of THOSE values, not the node's
+            fv = PG.fit_values(vals)
+            if fv is not None:
+                g2.update(grammar=fv["grammar"], mode=fv["mode"], charset=fv["charset"],
+                          alnum=fv["alnum"], len=fv["len"], skeletons=fv["skeletons"],
+                          part_grammar=True)
         if new is None:
             new = dict(attrs)
-        new[Y] = dict(ga, closed=sorted(vals), part_of_closed=len(closed))
+        new[Y] = g2
     return g_ent if new is None else dict(g_ent, attrs=new)
 
 

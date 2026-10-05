@@ -438,6 +438,53 @@ def fit_text(ts: Any, t: float, n_min: float = N_MIN, closed_n: float = CLOSED_N
     return rec
 
 
+def fit_values(values: Iterable[Any]) -> Optional[Dict[str, Any]]:
+    """Grammar of a small, fully known value set (evaluator round 4): the
+    values' level-1 shapes anti-unified per skeleton as fit_text does for a
+    node's tracked shapes (<= MAX_SKELETONS skeletons, else a charset grammar
+    over their classes and length range); None for no values or a grammar that
+    does not accept every value. Used for a group's part of a node whose value
+    set is closed by its members' bindings (views._restrict_closed): the part
+    states the grammar of ITS values, not the node's (pack O: the 财务部 part
+    of OA's login node stated the all-department '[a-z]{3,8}' for kate / lucy /
+    tom, truth '[a-z]{3,4}')."""
+    from .phier import shape as _shape_of
+    vals = sorted({str(v) for v in values if v is not None and str(v) != ""})
+    if not vals:
+        return None
+    shapes = [str(_shape_of(v)) for v in vals]
+    flags = [0, 0, 0]
+    for v in vals:
+        for ch in v:
+            if ch.isascii() and ch.isalpha():
+                flags[1 if ch.isupper() else 0] += 1
+            elif ch.isascii() and ch.isdigit():
+                flags[2] += 1
+    alnum = alnum_class(np.asarray(flags, dtype=np.float64))
+    skels = {skeleton(s) for s in shapes}
+    if len(skels) <= MAX_SKELETONS:
+        seqs: Dict[Tuple[str, ...], List[List[Token]]] = {}
+        for s in shapes:
+            toks = parse_shape(s)
+            seqs.setdefault(_key(toks), []).append(toks)
+        anti = [_merge_runs(v) for v in seqs.values()]
+        rx, mode = _build(anti, alnum), "shape"
+        classes = {c for a in anti for c, _, _ in a}
+    else:
+        classes = {c for s in shapes for c, _ in parse_shape(s)}
+        lens = [len(v) for v in vals]
+        rx, mode = charset_rx(classes, min(lens), max(lens), alnum), "charset"
+    try:
+        cre = re.compile(rx)
+    except re.error:
+        return None
+    if not rx or not all(cre.fullmatch(v) for v in vals):
+        return None
+    return {"grammar": rx, "mode": mode, "charset": sorted(classes), "alnum": alnum,
+            "len": [min(len(v) for v in vals), max(len(v) for v in vals)],
+            "skeletons": sorted(skels) if mode == "shape" else []}
+
+
 def _merge_keys(items: Sequence[Tuple[str, float]]) -> List[Tuple[str, float]]:
     out: Dict[str, float] = {}
     for k, g in items:

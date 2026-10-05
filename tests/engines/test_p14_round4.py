@@ -542,3 +542,54 @@ def test_a_groups_part_states_its_own_numeric_band(monkeypatch):
     b_sa = parts["销售部"]["evidence"]["content"]["body.len"]["band90"]
     assert 950 <= b_ga[0] <= 1300 and 1900 <= b_ga[1] <= 2150, b_ga      # not the node's
     assert b_sa[1] <= 1450, b_sa
+
+
+def _login_grammar(closed=None):
+    rec = {"kind": "text", "grammar": "[a-z]{3,8}", "mode": "shape", "charset": ["L"],
+           "alnum": "a-z", "len": [3, 8], "c_g": 1.0, "U_s": 0.005, "n": 380.0}
+    if closed is not None:
+        rec.update(closed=list(closed), U=0.004)
+    return {"attrs": {"body.kv.username": rec}}
+
+
+def _bound(tab):
+    return {"pairs": {"net.src->body.kv.username": {
+        "x": "net.src", "y": "body.kv.username",
+        "table": {ip: {"top": v, "bound": True, "LB": 0.999} for ip, v in tab.items()}}}}
+
+
+def test_a_part_whose_members_are_bound_states_their_values_as_a_closed_set():
+    """Evaluator round 4: OA's all-department login node holds an OPEN user-name
+    set (a DHCP pool's names keep arriving) but each of 财务部's three addresses
+    is bound to one name; the 财务部 part stated the node's '[a-z]{3,8}' and no
+    closed set, so FIN.oa.login was missed on every seed of pack O. The part's
+    values are its members' bound values (closed by the bindings, U = 1 - the
+    smallest lower bound) and its grammar is theirs."""
+    fin = {"192.168.2.10": "kate", "192.168.2.11": "lucy", "192.168.2.12": "tom"}
+    other = {"192.168.3.20": "amy", "192.168.3.32": "michelle"}
+    out = VW._restrict_closed(_login_grammar(), _bound({**fin, **other}), set(fin))
+    rec = out["attrs"]["body.kv.username"]
+    assert rec["closed"] == ["kate", "lucy", "tom"]
+    assert rec["grammar"] == "[a-z]{3,4}" and rec["len"] == [3, 4]
+    assert rec["U"] == pytest.approx(0.001)
+    # rendered as a closed set with the part's grammar
+    content, zh, _en, _c = PR.content_block(None, out)
+    assert content["body.kv.username"]["closed"] == ["kate", "lucy", "tom"]
+    assert any("[a-z]{3,4}" in z for z in zh)
+
+
+def test_a_part_with_an_unbound_member_keeps_the_nodes_value_constraints():
+    tab = {"192.168.2.10": "kate", "192.168.2.11": "lucy"}
+    bent = _bound(tab)
+    bent["pairs"]["net.src->body.kv.username"]["table"]["192.168.2.12"] = {"top": "tom", "bound": False}
+    g = _login_grammar()
+    assert VW._restrict_closed(g, bent, {"192.168.2.10", "192.168.2.11", "192.168.2.12"}) is g
+
+
+def test_a_closed_node_sets_restriction_also_states_the_parts_grammar():
+    names = ["amy", "brandon", "kate", "lucy", "michelle", "tom"]
+    fin = {"192.168.2.10": "kate", "192.168.2.11": "lucy", "192.168.2.12": "tom"}
+    out = VW._restrict_closed(_login_grammar(names), _bound(fin), set(fin))
+    rec = out["attrs"]["body.kv.username"]
+    assert rec["closed"] == ["kate", "lucy", "tom"] and rec["part_of_closed"] == 6
+    assert rec["grammar"] == "[a-z]{3,4}"

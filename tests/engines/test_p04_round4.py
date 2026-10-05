@@ -175,6 +175,46 @@ def test_statement_prior_is_kept_for_its_confidence_segment():
     assert p1 != p0 and p1[0] / sum(p1) < p0[0] / sum(p0)
 
 
+def test_a_statements_own_test_takes_its_kinds_current_prior():
+    """Evaluator round 4: the prior a statement took at its first test stayed
+    for its whole segment, so the first days' pessimistic pool (pack O seed 0:
+    mean 0.6, strength 4-16, fitted on days 4-7) set the confidence of
+    statements that kept passing for two weeks (stated 0.73, held 0.90 on the
+    evaluator's events, while day 14's pool fitted mean 0.80). At each of its
+    own tests a statement now takes its kind's current prior; between its
+    tests nothing moves it."""
+    from app.engines.behavior.lib import ptree as PT
+    from app.engines.behavior.pattern_tree import PatternTreeEngine
+    eng = PatternTreeEngine()
+    m = PT.PTreeModel("oa")
+    tr = m.tree(0, MON)
+    nodes = []
+    for i in range(12):
+        nd = PN.Node(200 + i, tr.root, 1, 0, (), MON)
+        nd.state = "confirmed"
+        nd.ref = {"hold": {"who": (0, frozenset({"1.1.1.1"}), 0.95)}}
+        hr = nd.meta["hold"] = PN.HoldRecord()
+        hr.T = [1.0, 2.0] if i % 2 else [2.0, 2.0]     # the first days: half fail
+        tr.nodes[nd.id] = nd
+        nodes.append(nd)
+    eng._hold_priors(m, 1, MON)
+    eng._hold_priors(m, 2, MON + DAY)
+    p0 = nodes[0].meta["hold_prior"]
+    for nd in nodes:                                # two weeks later: all pass
+        nd.meta["hold"].T = [9.0, 10.0]
+    eng._hold_priors(m, 3, MON + 2 * DAY)           # pool of the passing records
+    q = nodes[1].meta["hold_prior"]
+    nodes[0].meta["hold"].T = [10.0, 11.0]          # its next (passed) test
+    eng._hold_priors(m, 4, MON + 3 * DAY)           # refit on them; its record changed
+    p1 = nodes[0].meta["hold_prior"]
+    assert nodes[1].meta["hold_prior"] == q         # not tested since: not moved
+    assert p1[0] / sum(p1) > p0[0] / sum(p0) + 0.1, (p0, p1)
+    ph = nodes[0].p_hold(MON + 3 * DAY)
+    assert ph > 0.8, ph
+    eng._hold_priors(m, 5, MON + 4 * DAY)           # no new test: unchanged
+    assert nodes[0].meta["hold_prior"] == p1
+
+
 def test_who_nominal_is_the_share_of_the_listed_sources():
     """The who constraint's nominal is the share the listed heavy set holds
     (WhoSummary.stated_unseen), not 1 - U: a node whose heavy set covers 95 %

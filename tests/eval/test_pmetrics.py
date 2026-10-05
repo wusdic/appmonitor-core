@@ -703,3 +703,18 @@ def test_statement_order_does_not_change_the_evaluators_draws(org_run, monkeypat
     assert len(seen) >= 10
     assert all(len(v) == 2 and v[0] == v[1] for v in seen.values())
     assert all(len(v) == 2 and v[0] == v[1] for v in rec_draws.values())
+
+
+def test_a_period_without_an_eligible_pattern_is_not_measured():
+    """Evaluator round 4: pack O's only weekly pattern (SALES' Friday report)
+    has two Fridays in 21 days, so no weekly pattern is ever eligible (>= 3
+    dates); "weekly patterns: 80 % recall by day 21" read None as 'never' and
+    failed PG2 on every seed. With no eligible pattern of a period the check is
+    not measured; with one that never reaches 80 % it still fails."""
+    def sc(weekly):
+        pg1 = {d: {"recall_by_period": {"daily": 0.9, "weekly": weekly}} for d in (7, 14, 21)}
+        return {"pack": "O", "n_snapshots": 3, "pg1": pg1,
+                "pg2": {"days_to_80": {"daily": 7, "weekly": None}}}
+    assert M._ttr_ok(sc(None), "weekly", 21) is None
+    assert M._ttr_ok(sc(None), "daily", 7) is True
+    assert M._ttr_ok(sc(0.5), "weekly", 21) is False

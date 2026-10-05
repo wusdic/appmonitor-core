@@ -112,6 +112,7 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
     - Fault injection: disabling B04 degrades its family (NaN), not p = 1, and FAR does not rise.
 
 16. The design doc's §3.3 table is regenerated from eval_report.json. No accuracy claim is written by hand.
+
 PROGRESSIVE CORE (PG1–PG11): MEASUREMENT SEMANTICS (round 4)
 
 The PG gates are defined in progressive.md §12 and scored by backend/app/eval/pmetrics.py. Round 4 fixed what some checks measured (reasons and re-scored runs: progressive.md §16.12):
@@ -121,3 +122,6 @@ The PG gates are defined in progressive.md §12 and scored by backend/app/eval/p
 - Precision and calibration count each distinct claim once (a statement rendered twice is one claim).
 - PG10 window: the learned edges are compared with the truth's window (central 99 %) or, when the statement states a coverage 0.5 ≤ c < 0.99, with some set of intervals of the truth law holding c, within ± 2 min; a correct 74 % window could never meet the 99 % edges.
 - Reproducibility: P12 / P15 decide on a deterministic price of each engine run's counted work (lib/pcost; cost_model 'wall' optional), and the evaluation entry points pin PYTHONHASHSEED; two runs of the same seed then make the same decisions.
+- Random draws (evaluator, round 4): the held-out events of each truth pattern and the precision / calibration draws of each claim come from their own stream, a function of (seed, day, purpose, item) (pmetrics._stream); before, one stream per snapshot made precision depend on the ORDER of the statements (a pure reordering moved seed 0 day 7 from 0.771 to 0.743).
+- PG2 "patterns of a period reach 80 % recall by day N" is not measured (None) when no truth pattern of that period is eligible on any snapshot day (pmetrics._ttr_ok). Pack O's only weekly pattern (sales' Friday report) occurs on 2 Fridays in 21 days (day 5, a Friday, is a holiday) and was never eligible; rounds 2–4 had read that as a failure.
+- What did NOT change: the recall / precision / component definitions, the held-out law, the targets (ECE ≤ 0.05 now reads the pooled debiased error) and PG10's ± 2 min. Round-3 runs re-scored with these semantics: progressive.md §16.12.3 and reports/progressive/round4_eval/rescore_pg2_pg10.json.
