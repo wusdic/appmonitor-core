@@ -77,19 +77,20 @@ Library 3 has two parts that communicate only through the MetricStore by metric 
 
 `progressive_report.{json,html}`, per seed `runs/O_<seed>.json` (variants `runs/{O-red,O60,O-real}_0.json`); final
 code of 2026-10-05 (commit 303dac6 / cbe4f95 checkpoints + the four owners' round-4 changes T-1 – T-7, C-1 – C-6,
-G-1 – G-6, E4-1 – E4-11 + the evaluator's EV-1 – EV-9; `progressive.md` §16.12, each with a regression test that fails
+G-1 – G-6, E4-1 – E4-11 + the evaluator's EV-1 – EV-11; `progressive.md` §16.12, each with a regression test that fails
 without it); 21 days at 900 s, seeds 0–4 (0–1 development, 2 confirmation, 4 untouched before the final runs),
-`progressive_decision`, `PYTHONHASHSEED=0`, resumable runs, 36–38 min each, peak RSS 1.92–1.98 GB. Round 3 is shown
+`progressive_decision`, `PYTHONHASHSEED=0`, resumable runs, 33–35 min each, peak RSS 1.97–2.03 GB (O60 and O-real ran
+on the code before EV-10 / EV-11, O-red on the code before EV-7 / EV-8 — rendering-only differences, §16.12.7). Round 3 is shown
 **re-scored** by this round's scorer (same generator, truth and held-out law; this round changed how PG2 reads
 calibration and trends and how PG10 reads a window, §16.12.1) and, where it differs, as published.
 
 | Gate | Target | Round 4 (5 seeds) | Round 3 re-scored | Round 3 as published |
 |---|---|---|---|---|
-| PG1 recall / precision @ day 14 | ≥ 0.90 / ≥ 0.90 | 0.84 [0.82–0.92] / 0.86 [0.83–0.87] | 0.79 / 0.69 | 0.79 / 0.69 |
+| PG1 recall / precision @ day 14 | ≥ 0.90 / ≥ 0.90 | 0.84 [0.82–0.92] / 0.86 [0.84–0.87] | 0.79 / 0.69 | 0.79 / 0.69 |
 | PG1 components who / when / content / bindings / workflow | ≥ 0.85 each | 0.92 / 0.95 / 0.92 / 1.00 / 1.00 | 0.92 / 0.92 / 0.84 / 1.00 / 1.00 | same |
 | PG1 recall / precision @ day 21 | – | 0.85 / 0.92 | 0.71 / 0.81 | 0.71 / 0.79 |
 | PG1 recall over days 5 / 10 / 14 / 21 | rising | 0.39 / 0.78 / 0.84 / 0.85 | 0.35 / 0.73 / 0.79 / 0.71 | same |
-| PG2 calibration error (debiased, days ≥ 7 pooled); median confidence day 7 → 21 | ≤ 0.05; rising | 0.157 (stated 0.78, held 0.88); 0.65 → 0.91 | 0.324 (0.51 / 0.76); 0.55 → 0.62 | ECE@14 0.23 |
+| PG2 calibration error (debiased, days ≥ 7 pooled); median confidence day 7 → 21 | ≤ 0.05; rising | 0.157 (stated 0.78, held 0.87); 0.65 → 0.91 | 0.324 (0.51 / 0.76); 0.55 → 0.62 | ECE@14 0.23 |
 | PG3 GA login = 3 IPs / finance approval = 1 IP / portal at prefix / DEV pool one group / ARI | yes / ≥ 0.9 | 5/5 / 5/5 / 5/5 / 5/5 / 0.974 (pass) | same | same |
 | PG4 memory vs IPs / attributes / systems; per-event p95 | ≤ 0.15 / 0.2 / 0.3; ≤ 100 / 250 µs | 0.040 / 0.172 / **0.267** (pass); 6.8 / 6.4 ms | – | 0.040 / 0.172 / 0.45; 6.4 / 5.6 ms |
 | PG5 D1 / D2 / D3 / D4 / D5 / .21 still `jack` | yes | 3/5 / 5/5 / **5/5** / 3/5 / **5/5** / 5/5 | 3/5 / 5/5 / 0/5 / 0/5 / 1/5 / 5/5 | same |
@@ -109,7 +110,7 @@ with its form page, "财务部（192.168.2.10）" alone for finance approvals, a
 从未执行写操作 …；192.168.1.23 的尝试被判定为越权（未学习）". The one miss: seed 3's 90 % band (fitted 956–2 859 B on
 n_eff 25.6, shown 1–3 KB; sampling).
 
-Variants: O-red seed 0 (never tuned on) recall @ 14 0.57, precision 0.78, anomalies 9/10, false splits 0; O60 seed 0
+Variants: O-red seed 0 (never tuned on; statements rendered by the views before EV-7 / EV-8) recall @ 14 0.57, precision 0.78, anomalies 9/10, false splits 0; O60 seed 0
 day-8 recall 0.50 vs pack O's 0.55 (within 0.05); O-real once on the final code (recall @ 14 0.45, precision 0.27,
 4/10 anomalies, statements over-confident: stated 0.81, held 0.33).
 
@@ -134,22 +135,26 @@ passes, 12 and 13 are n/a, the other 12 gates fail.
 The default `full` registry gives the same results as round 4 after the progressive integration and its rounds 2,
 3 and 4 (packs A and E seed 0 re-run on each final code: identical to `reports/round4/runs` key for key, apart from timings).
 
-Tests: full suite 3 049 passed, 4 skipped, 0 failed, 23.5 min (the evaluator's run on the final round-4 tree before EV-9, a scorer-only change whose test file passes). The APPMON_SLOW Part B test `test_part_b_live_60_equals_900` is left failing on purpose
+Tests: full suite 3 052 passed, 4 skipped, 0 failed, 21 min (the evaluator's run on the final round-4 tree, EV-1 – EV-11, sharing the machine with two pack O runs). The APPMON_SLOW Part B test `test_part_b_live_60_equals_900` is left failing on purpose
 (60-s t-stream calibration).
 
 ## Top open issues (design doc §3.11.1, `progressive.md` §16.12.15–§16.12.16)
 
 1. Recall 0.84 / precision 0.86 (target 0.90): on day 14 most false statements are the drifts of days 12–14
    not yet followed (D1's window, D2's renamed user, D3's renamed pages; precision 0.91–0.98 on actions no drift
-   touched, seeds 0–3); on day 21 over-stated `when` coverage on wide windows and sparse group parts. Misses: the
+   touched, all 5 seeds); on day 21 over-stated `when` coverage on wide windows and sparse group parts. Misses: the
    17:00 report submission on day 14, DEV's ~60-name set (honestly open), the mail departments, FIN's approval
    content on seeds 1–4, the 01:00 backup.
 2. Calibration error 0.16 (target 0.05): nodes under-confident on pack O (0.77 stated / 0.89 held), statements
    over-confident on O-real (0.81 / 0.33).
-3. D1 confirms after 4–5 workdays on seeds 3–4 (≤ 3 required); D4 one LOW incident on seeds 3–4 (same portal source,
-   not diagnosed); PG10 day 11 1/5, day 21 3/5.
-4. Views keep old route names in the department and group action lists after a rename; group parts repeat other
-   members' clauses.
+3. D1 confirms after 4–5 workdays on seeds 3–4 (≤ 3 required); D4 one LOW incident on seeds 3–4: the AUTO health
+   monitor 192.168.9.9, whose all-zero B24 ring gives a score-0 tie a seeded random p = U — a single-tick alarm with no
+   P03 finding behind it (4–7 of ~70 incidents per seed are such conformity-only alarms; lib-3 decision chain owner);
+   PG10 day 11 1/5, day 21 3/5.
+4. Views: P11's sticky group label keeps the old page name after a rename (`综合部·oa GET /approval/list`); the
+   department view lists the old-route parts ("（近期未出现）（页面已更名为 …）") beside the renamed ones; health-monitor
+   parts are stated without held-out support. (Fixed in round 4: action lists now name the renamed pages, EV-10, and
+   a group's part states only its own members' bindings, EV-11.)
 5. PG8 0.83 (finance who arm `prefix` on seeds 1, 3, 4); per-event p95 10–60× the target (P04, P05, P02, P08 hot spots).
 6. O-real: 4 of 12 R items, one seed; R13 needs a family rule that respects disjoint user populations.
 7. Hash-order dependence in P07 / P02 / P11 value sketches (hidden by the pinned `PYTHONHASHSEED`).

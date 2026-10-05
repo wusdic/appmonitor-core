@@ -23,7 +23,7 @@ from app.engines.behavior.lib import m_ptree as MP
 from app.engines.behavior.lib import pevent as EV
 from app.engines.behavior.lib import prender as PR
 
-from test_p14_views import DAY, T0
+from test_p14_views import DAY, T0, store  # noqa: F401  (fixture)
 
 
 def _st(sid: str, act: int, node: int, route: str, who: Dict[str, Any], depth: int = 1,
@@ -593,3 +593,73 @@ def test_a_closed_node_sets_restriction_also_states_the_parts_grammar():
     rec = out["attrs"]["body.kv.username"]
     assert rec["closed"] == ["kate", "lucy", "tom"] and rec["part_of_closed"] == 6
     assert rec["grammar"] == "[a-z]{3,4}"
+
+
+def test_after_a_confirmed_rename_the_user_view_lists_the_new_page(store):
+    """EV-10. Pack O D3 (/approval/ -> /flow/ for the approver on day 14): P11's
+    action mix of the group decays slowly, so on day 21 the department view of
+    every seed listed '查看审批（GET /approval/list）[192.168.1.21]' while the
+    system view stated those pages '近期未出现（页面已更名为 …）'. Under P10's
+    confirmed renames an old page counts as its new page, merged with the new
+    page's own row."""
+    from app.models.schema import ORG, SYSTEM_ENTITY
+    old, new = "POST oa.corp /approval/{num}/approve", "POST oa.corp /flow/{num}/approve"
+    wg = dict(store.get_model(ORG, ORG, MP.WHO_GROUPS))
+    gr = dict(wg["groups"]["G1"])
+    gr["actions"] = {"oa": [
+        {"action": "POST oa.corp /login", "share": 0.5, "support": 1.0, "members": []},
+        {"action": old, "share": 0.3, "support": 0.333, "members": ["192.168.1.21"]},
+        {"action": new, "share": 0.2, "support": 0.333, "members": ["192.168.1.21"]}]}
+    wg["groups"] = dict(wg["groups"], G1=gr)
+    store.put_model(ORG, ORG, MP.WHO_GROUPS, wg)
+    store.put_model("oa", SYSTEM_ENTITY, MP.PFLOW,
+                    {"renamed": {new: {"from": old, "day": 0, "sources": ["192.168.1.21"]}}})
+    gv = VW.group_view(store, "G1", {"progressive": {"enabled": True}, "tz": "Asia/Shanghai"}, store.now)
+    act = next(s for s in gv["statements"] if s["evidence"].get("activity"))
+    assert "/approval/" not in act["text_zh"]
+    assert act["text_zh"].count("审批（POST /flow/{num}/approve）[192.168.1.21]") == 1
+    row = next(r for r in act["evidence"]["actions"] if r["action"] == new)
+    assert row["share"] == pytest.approx(0.5)
+    # the department view composes its roles' mixes under the same renames
+    groups = {
+        "G22": {"id": "G22", "name": "综合部·审批", "dept": "综合部", "members": ["192.168.1.21"],
+                "systems": {"oa": 1.0}, "cohesion": 1.0,
+                "actions": {"oa": [{"action": old, "share": 0.6, "members": []},
+                                   {"action": new, "share": 0.1, "members": []}]}},
+        "G10": {"id": "G10", "name": "综合部", "dept": "综合部", "members": ["10.168.7.121", "192.168.1.23"],
+                "systems": {"oa": 1.0}, "cohesion": 0.5,
+                "actions": {"oa": [{"action": "POST oa.corp /login", "share": 1.0, "members": []}]}}}
+    views = [{"group": "G22", "statements": []}, {"group": "G10", "statements": []}]
+    dv = VW.dept_view("综合部", views, groups, {}, T0, renames={"oa": VW.rename_map(
+        {"renamed": {new: {"from": old}}})})
+    act = next(s for s in dv["statements"] if (s.get("evidence") or {}).get("activity"))
+    assert "/approval/" not in act["text_zh"]
+    assert [r["action"] for r in act["evidence"]["actions"]].count(new) == 1
+
+
+def test_a_groups_part_states_only_its_own_members_bindings(store):
+    """EV-11. A part's binding text was rendered from the node's whole P08
+    table and only the evidence was restricted afterwards: pack O, the part
+    of 192.168.1.21 at OA's login node stated '10.168.7.121 → username=mike.w、
+    … username=rose 只来自 …' (the other members' bindings and reverse pairs)."""
+    from app.models.schema import SYSTEM_ENTITY
+    from test_p14_views import CFG
+    tree = MP.get_ptree(store, "oa").kinds[EV.KIND_TXN]
+    nid = tree.nodes[tree.root].split.children[0]
+    bind = store.get_model("oa", SYSTEM_ENTITY, MP.PBIND)
+    ent = bind["nodes"][0][nid]
+    ent["pairs"]["body.kv.username->client.stack"] = {
+        "x": "body.kv.username", "y": "client.stack", "dir": "rev",
+        "fd": {"g3": 0.0, "holds": True, "n": 180.0},
+        "table": {u: {"n": 60.0, "top": "-|chrome/126|win|128|w16", "bound": True, "LB": 0.95}
+                  for u in ("jack", "mike", "rose")}}
+    store.put_model("oa", SYSTEM_ENTITY, MP.PBIND, bind)
+    c = VW._Ctx(store, "oa", CFG, store.now)
+    nd = tree.nodes[nid]
+    full = VW.node_statement(c, EV.KIND_TXN, nd, "POST oa.corp /login")
+    assert "192.168.1.23 → username=rose" in full["text_zh"] and "username=rose 只来自" in full["text_zh"]
+    st = VW.node_statement(c, EV.KIND_TXN, nd, "POST oa.corp /login",
+                           part=("G1", ["192.168.1.21"], "综合部", 0.33))
+    zh = st["text_zh"]
+    assert "192.168.1.21 → username=jack" in zh and "username=jack 只来自" in zh
+    assert "rose" not in zh and "mike" not in zh

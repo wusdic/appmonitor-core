@@ -638,6 +638,8 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
             if FD.binding_stated(rec, FD.payload_card(c.reg, rec)):
                 keep[pk] = rec
         bent = dict(bent, pairs=keep)
+    if restrict is not None:
+        bent = _restrict_bind(bent, restrict)
     binds, bzh, ben, b_c = PR.binding_block(bent, c.labels)
     if restrict is not None:
         for a, b in binds.items():
@@ -869,6 +871,52 @@ def _pool_group_of(c: Any, prefixes: Sequence[str]) -> Optional[str]:
         if all(n.version == pn.version and n.subnet_of(pn) for n in nets):
             return str(gr.get("name") or g)
     return None
+
+
+def _restrict_bind(bent: Optional[Mapping[str, Any]], members: Set[str]) -> Optional[Mapping[str, Any]]:
+    """The bindings a group's part (or group view) of a node states: the
+    source pairs (net.src -> y) of ITS members, and the reverse pairs
+    ('username=jack 只来自 <client stack>') of the values those members are
+    bound to. Before, the text was rendered from the node's whole table and
+    only the evidence was restricted: pack O, 192.168.1.21's part of OA's login
+    node stated '10.168.7.121 → username=mike.w … username=rose 只来自 …' - the
+    other members' bindings (evaluator round 4, §16.12.13)."""
+    if not isinstance(bent, Mapping) or not members:
+        return bent
+    pairs = bent.get("pairs") or {}
+    vals: Dict[str, Set[str]] = {}
+    out: Dict[str, Any] = {}
+    for pk, rec in pairs.items():
+        if not isinstance(rec, Mapping) or rec.get("dir") == "rev":
+            continue
+        X, Y = rec.get("x"), rec.get("y")
+        if not X or not Y:
+            X, _, Y = str(pk).partition("->")
+        if X != "net.src":
+            out[pk] = rec
+            continue
+        tab = {x: e for x, e in (rec.get("table") or {}).items() if x in members}
+        for e in tab.values():
+            if not isinstance(e, Mapping):
+                continue
+            if e.get("top") is not None:
+                vals.setdefault(str(Y), set()).add(str(e["top"]))
+            vals.setdefault(str(Y), set()).update(str(v) for v in e.get("set") or [])
+        if tab:
+            out[pk] = dict(rec, table=tab)
+    for pk, rec in pairs.items():
+        if not isinstance(rec, Mapping) or rec.get("dir") != "rev":
+            continue
+        X, Y = rec.get("x"), rec.get("y")
+        if not X or not Y:
+            X, _, Y = str(pk).partition("->")
+        if str(X) not in vals:
+            out[pk] = rec
+            continue
+        tab = {y: e for y, e in (rec.get("table") or {}).items() if str(y) in vals[str(X)]}
+        if tab:
+            out[pk] = dict(rec, table=tab)
+    return dict(bent, pairs=out)
 
 
 def _restrict_closed(g_ent: Optional[Mapping[str, Any]], bent: Optional[Mapping[str, Any]],
@@ -1163,6 +1211,41 @@ def renamed_routes(pflow: Any, live: Set[str]) -> Dict[str, str]:
         if old and str(new) not in live:
             out[str(old)] = str(new)
     return out
+
+
+def rename_map(pflow: Any) -> Dict[str, str]:
+    """old route -> new route for every rename P10 confirmed (model.pflow
+    'renamed'), whether or not the new route has its own node yet."""
+    return renamed_routes(pflow, set())
+
+
+def renamed_actions(acts: Sequence[Mapping[str, Any]], rmap: Mapping[str, str]) -> List[Dict[str, Any]]:
+    """A group's action mix (P11 signatures) under P10's confirmed renames: an
+    old page counts as its new page, merged with the new page's own row (shares
+    added, members united; no listed members = all members). P11's signatures
+    decay slowly, so after pack O's D3 (/approval/ -> /flow/ on day 14) the
+    department view listed '查看审批（GET /approval/list）[192.168.1.21]' on day 21
+    while the system view stated the old pages '近期未出现（页面已更名为 …）'."""
+    if not rmap:
+        return [dict(a) for a in acts]
+    out: Dict[str, Dict[str, Any]] = {}
+    for a in acts:
+        k = str(a.get("action"))
+        k = rmap.get(k, k)
+        r = out.get(k)
+        mem = [str(m) for m in a.get("members") or []]
+        if r is None:
+            r = out[k] = dict(a)
+            r["action"] = k
+            r["members"] = mem
+            continue
+        for f in ("share", "mass"):
+            if a.get(f) is not None or r.get(f) is not None:
+                r[f] = float(r.get(f) or 0.0) + float(a.get(f) or 0.0)
+        if a.get("support") is not None:
+            r["support"] = max(float(r.get("support") or 0.0), float(a["support"]))
+        r["members"] = [] if not mem or not r["members"] else sorted(set(r["members"]) | set(mem))
+    return sorted(out.values(), key=lambda x: (-float(x.get("share") or 0.0), str(x["action"])))
 
 
 def _who_identity(st: Mapping[str, Any]) -> Tuple[Any, ...]:
@@ -1553,7 +1636,8 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
         if share_sys >= GROUP_SYS_SHARE:
             used.append(key)
             # confidence: how alike the members behave (P11's within-group similarity)
-            act_st = activity_statement(g, name, key, (gr.get("actions") or {}).get(key) or [],
+            act_st = activity_statement(g, name, key, renamed_actions((gr.get("actions") or {}).get(key) or [],
+                                                                     rename_map(c.pflow)),
                                         share_sys, members, subject, config,
                                         conf=float(gr.get("cohesion") or 0.0))
             if act_st is not None:
@@ -1600,6 +1684,7 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
         # '研发·oa POST /login 访问 oa：登录（POST /login）' next to '… 在 oa 中
         # 从未执行写操作（…登录（POST /login））'
         did = {str(a.get("action")) for a in (gr.get("actions") or {}).get(key) or []}
+        did |= {rename_map(c.pflow).get(a, a) for a in did}
 
         def reached(nd: Any, route: str) -> bool:
             return _group_mass(nd, g, members, now) > 0.0 or route in did or \
@@ -1728,7 +1813,8 @@ def _partial_negative(g: str, name: str, key: str, never: Sequence[Tuple[Any, st
 
 def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str, Mapping[str, Any]],
               config: Mapping[str, Any], now: float,
-              sys_views: Optional[Mapping[str, Mapping[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+              sys_views: Optional[Mapping[str, Mapping[str, Any]]] = None,
+              renames: Optional[Mapping[str, Mapping[str, str]]] = None) -> Optional[Dict[str, Any]]:
     """The user view of a configured department whose members P11 learned as
     several groups (its roles): "综合部 访问 oa：登录、文档、审批[192.168.1.21]、
     提交报告[192.168.1.23、10.168.7.121]；在 finance 中从未执行写操作".
@@ -1760,7 +1846,7 @@ def dept_view(name: str, views: Sequence[Mapping[str, Any]], groups: Mapping[str
         for key, sh in (gr.get("systems") or {}).items():
             sys_share[key] = sys_share.get(key, 0.0) + wg * float(sh)
         for key, lst in (gr.get("actions") or {}).items():
-            for a in lst:
+            for a in renamed_actions(lst, (renames or {}).get(key) or {}):
                 r = acts.setdefault(key, {}).setdefault(str(a.get("action")),
                                                         {"action": a.get("action"), "share": 0.0, "members": set()})
                 r["share"] += wg * float(a.get("share") or 0.0)
@@ -2006,7 +2092,8 @@ class ViewsEngine(Engine):
                 sv = store.get_model(key, SYSTEM_ENTITY, MP.PVIEWS)
                 if isinstance(sv, Mapping):
                     svs[key] = sv
-            dv = dept_view(name, gvs, groups, ctx.config, now, svs)
+            dv = dept_view(name, gvs, groups, ctx.config, now, svs,
+                           renames={key: rename_map(MP.get_model(store, key, MP.PFLOW)) for key in keys})
             if dv is None and isinstance(store.get_model(ORG, f"{GROUP_PREFIX}dept:{name}", MP.PVIEWS), Mapping):
                 # the department is one learned group again: retire its composed view
                 dv = {"fmt": 1, "view": "group", "subject": f"{GROUP_PREFIX}dept:{name}",

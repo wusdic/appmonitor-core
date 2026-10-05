@@ -24,7 +24,7 @@
   需求示例逐条核对 50 项中 49 项通过——5/5 个种子还原“综合部 3 个 IP 的登录节点 + `username=` 语法与封闭集 {jack, mike, mike.w, rose} + 3 条 IP→用户名绑定”、全部在 0.5–3 KB、.21 的审批（改名后仍在）、
   17 点报告、“财务部（192.168.2.10）”独占财务审批与用户视角“综合部在财务系统中从未执行写操作”，只差种子 3 的 90 % 带（抽样）。陈述置信度随时间上升（0.65 → 0.91），每句写出置信与依据；
   示例异常 50/50，≥ MEDIUM 误报 0.0014/实体·日，PG3、PG6、PG7 通过；D2、D3、D5 漂移 5/5；内存对 IP 数、属性数、服务器数（0.267）都次线性；同一种子的运行可复现。
-  验收仍**未通过**：召回、精确目标 0.90（第 14 天的错陈述多是第 12–14 天的漂移尚未跟上），池化校准误差 0.16（目标 0.05），D1、D4 3/5，场景策略 0.83，每事件耗时超目标数十倍；
+  验收仍**未通过**：召回、精确目标 0.90（第 14 天的错陈述多是第 12–14 天的漂移尚未跟上），池化校准误差 0.16（目标 0.05），D1、D4 3/5（D4 的告警来自健康监测源上 B24 对平局的随机 p，没有 P03 发现），场景策略 0.83，每事件耗时超目标数十倍；
   真实扰动包 O-real（35 天，1 个种子）12 个 R 项中 4 项通过且陈述过于自信，真实日志试点未做。
 - **统计引擎库**（A–E 包第四轮，`reports/eval_report.json`）：15 项门限中第 15 项（鲁棒性）通过，第 12、13 项 n/a，其余未通过；
   期限内威胁召回 0.71（目标 0.95），对照实体 FAR ≥ LOW 0.156、≥ MEDIUM 0.042（均达标），单包墙钟与实时 p95 远超 360 s / 80 ms 目标。
@@ -141,7 +141,7 @@ OMP_NUM_THREADS=1 ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8099
 - `progressive_report.py` 用 `backend/app/eval/pmetrics.py` 评分（门限 PG1–PG11，`docs/lib3/progressive.md` §12），并从每天的快照中抽取需求示例的
   系统视角与群组视角陈述、逐条核对真值，写 `progressive_report.{json,html}` 与每个种子的 `runs/O_<种子>.json`。
 - 组织包的默认注册模式是 `progressive_decision`（`full+progressive` 在约 700 个来源上需要每进程 7 GB 以上内存；`--registry` 可覆盖）；
-  第四轮每次运行约 36–38 分钟（3–4 个并行）、峰值 RSS 1.92–1.98 GB（含检查点序列化）；评估入口固定 `PYTHONHASHSEED`，同一种子的运行可复现。第一轮（提交 6001027）的运行保存在 `reports/progressive/round1/runs/`，第二轮在 `round2/runs/`（原样）与 `round2/rescored/`（用第三轮的真值与评分器重评），第三轮加 V10 之前的最终运行在 `round3_eval/pre_v10_runs/`，第三轮伸缩点在 `round3_eval/scale7/`，第三轮的运行与报告在 `round3/`，第四轮评估/成本/伸缩负责人的记录在 `round4_eval/`、合并后的伸缩点在 `scale_r4/`。其它参数：`--bounded`（统计引擎库有界模式）、`--keep-res`/`--rescore`（保存/重评运行结果）、`--assemble`、`--skip-existing`、`--checkpoint`/`--segment-s`/`--stop-after`（可续跑，`backend/app/eval/resumable.py`）。
+  第四轮最终代码每次运行约 33–35 分钟（2–3 个并行）、峰值 RSS 1.97–2.03 GB（含检查点序列化）；评估入口固定 `PYTHONHASHSEED`，同一种子的运行可复现。第一轮（提交 6001027）的运行保存在 `reports/progressive/round1/runs/`，第二轮在 `round2/runs/`（原样）与 `round2/rescored/`（用第三轮的真值与评分器重评），第三轮加 V10 之前的最终运行在 `round3_eval/pre_v10_runs/`，第三轮伸缩点在 `round3_eval/scale7/`，第三轮的运行与报告在 `round3/`，第四轮评估/成本/伸缩负责人的记录在 `round4_eval/`、合并后的伸缩点在 `scale_r4/`。其它参数：`--bounded`（统计引擎库有界模式）、`--keep-res`/`--rescore`（保存/重评运行结果）、`--assemble`、`--skip-existing`、`--checkpoint`/`--segment-s`/`--stop-after`（可续跑，`backend/app/eval/resumable.py`）。
 - 生成器 `backend/app/pipeline/orggen.py`，评估包 `backend/app/eval/packs.py`（O、O60、O-real、O-red、O-servers、O-scale）。
 
 ## 测试
@@ -150,7 +150,7 @@ OMP_NUM_THREADS=1 ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8099
 OMP_NUM_THREADS=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests
 ```
 
-- 全套约 24–30 分钟；渐进内核第四轮最终代码上为 `3049 passed, 4 skipped`（EV-9 之前；EV-9 只改评分，其测试文件全部通过）。
+- 全套约 21–30 分钟；第四轮最终代码（EV-1–EV-11）上为 `3052 passed, 4 skipped`（21 分钟，与两个包 O 运行共用机器）。
 - 目录：`tests/engines/`（逐引擎规格测试，渐进内核为 `test_p00_*` … `test_p15_*` 与 `test_progressive_integration_fixes.py`）、`tests/lib/`、`tests/core/`、`tests/eval/`（含包 O 生成器、PG 指标与收敛实验）、`tests/api/`（API v2），
   以及顶层的流水线端到端、tick 模式黄金、节拍不变性等测试。
 - 引擎/库/核心单元测试通过各目录的 `conftest.py` 以 v2 的 `tick` 模式运行；流水线、Runtime、评估与脚本默认 `canonical`（双粒度）模式。

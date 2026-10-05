@@ -1305,14 +1305,14 @@ O-real and the O-servers points not re-run on the final code.
 ## 16. Progressive profile core, round 4 (2026-10-05)
 
 Full record: `progressive.md` §16.12 (evaluation semantics, determinism, cost and scale E4-1 – E4-11; the
-evaluator's EV-1 – EV-9; the owners' T-1 – T-7, C-1 – C-6, G-1 – G-6; results on the final code; the
+evaluator's EV-1 – EV-11; the owners' T-1 – T-7, C-1 – C-6, G-1 – G-6; results on the final code; the
 requirement's example verbatim in both views; diagnosis and open issues); Chinese narrative: design doc §3.0
 (status per requirement sentence), §3.3 (the algorithm changes in place), §3.8.0–§3.8.0c (round 4; round 3
 kept as §3.8.0d, round 2 as §3.8.0e), §3.11.1. Four owners worked concurrently with strict file ownership
 (tree and calibration: P04, `pnode`, `ptree`; content / time: P06 – P10; conformity / groups / views: P03,
 P11, P14; evaluation / cost / scale: `pmetrics`, `pscale`, `orggen`, P12, P15, `pcost`) on top of commit
 c67c985; their work was checkpointed as commits e83b6e2, 303dac6 and cbe4f95 after usage limits and
-container restarts, and the evaluator measured one final code state (the owners' changes + EV-1 – EV-9).
+container restarts, and the evaluator measured one final code state (the owners' changes + EV-1 – EV-11).
 
 ### 16.1 What changed in the integrated system
 
@@ -1326,8 +1326,9 @@ container restarts, and the evaluator measured one final code state (the owners'
   and its ledger feeds P07 and P09 (C-5, C-6). P03 treats a source's renamed page as a rename (G-1), uses a
   predictive GPD tail (G-2) and re-scores improbable transitions at route level (G-3). P14 folds duplicate
   statements, states variant conditions, resolves configured pools, orders statements and ends each with
-  confidence and support (G-4 – G-6), states drifting windows as `evolving` (EV-2), and gives a group's part its
-  own windows, bands, closed sets and confidence (EV-3, EV-5, EV-7, T-7).
+  confidence and support (G-4 – G-6), states drifting windows as `evolving` (EV-2), gives a group's part its
+  own windows, bands, closed sets and confidence (EV-3, EV-5, EV-7, T-7), names P10's confirmed renamed pages in
+  the user views' action lists (EV-10) and states in a group's part only its own members' bindings (EV-11).
 - **Decision chain.** B29 explains a P03 pattern violation by the violated constraint (EV-6). B24 – B28 unchanged.
 - **Adaptation and cost.** P12 / P15 decide on a deterministic price of counted work (`lib/pcost.py`, E4-1),
   evaluation entry points pin `PYTHONHASHSEED` (E4-2), P15 re-measures changed trees at most hourly (E4-3),
@@ -1340,9 +1341,9 @@ container restarts, and the evaluator measured one final code state (the owners'
 ### 16.2 Results (all measured; `reports/progressive/`)
 
 - Pack O, seeds 0–4, 21 days, `progressive_decision` (after vs round 3's final runs re-scored by the same
-  scorer): PG1 recall @ 14 0.842 [0.816–0.921] vs 0.789, precision 0.857 [0.829–0.873] vs 0.689; @ 21 0.846 /
+  scorer): PG1 recall @ 14 0.842 [0.816–0.921] vs 0.789, precision 0.857 [0.842–0.873] vs 0.689; @ 21 0.846 /
   0.919 vs 0.714 / 0.812; components who 0.92 / when 0.95 / content 0.92 / bindings 1.00 / workflow 1.00; GA + FIN
-  6 bindings at day 14 on 5/5 seeds; pooled debiased calibration error 0.157 vs 0.324 (stated 0.78 / held 0.88;
+  6 bindings at day 14 on 5/5 seeds; pooled debiased calibration error 0.157 vs 0.324 (stated 0.78 / held 0.87;
   plug-in ECE @ 14 0.079 vs 0.233); median stated confidence rises 0.65 → 0.91 from day 7 to 21; anomalies
   50 / 50; FAR incidents ≥ LOW 0.0027, ≥ MEDIUM 0.0014 per entity-day (0.0048 / 0.0034); B29's top reason is the
   violated constraint in 0.92 of the incidents (0); PG5 D2, D3, D5 5/5, D1 and D4 3/5; PG8 0.83; PG10 day 11 1/5,
@@ -1358,13 +1359,15 @@ container restarts, and the evaluator measured one final code state (the owners'
   (pass); per-event p95 6.8 / 6.4 ms — fail.
 - Reproducibility: with `PYTHONHASHSEED` pinned two runs differ only in wall-clock statistics
   (`round4_eval/determinism.json`); round 3's code made 421 different `model.sysprof` decisions in 4 days.
-- Per run 36–38 min (resumable, 3–4 heavy processes on 4 cores), peak RSS 1.92–1.98 GB including checkpoint
-  serialisation; engine CPU 2 062–2 178 s per run (round 3: 2 020–2 110 s).
+- Per pack O run 33–35 min on the final tree (`code8`; resumable, 2–3 heavy processes on 4 cores), peak RSS
+  1.97–2.03 GB including checkpoint serialisation; engine CPU 1 924–2 032 s per run (round 3: 2 020–2 110 s).
+  O60 and O-real ran on the code before EV-10 / EV-11 and O-red seed 0 on the code before EV-7 / EV-8; those
+  changes only alter what P14 renders, so their pipelines are the final code's (`progressive.md` §16.12.7).
 - Non-regression: packs A and E seed 0 with the default registry are identical, key for key apart from
   timings, to `reports/round4/runs/{A,E}_0_full.json` (0 differences); `reports/eval_report.json` (round 4)
   stands.
-- Tests: 3 049 passed, 4 skipped, 0 failed (23.5 min) on the final tree before EV-9 (a scorer-only change whose
-  test file, `tests/eval/test_pmetrics.py`, passes). Existing test files edited this round:
+- Tests: 3 052 passed, 4 skipped, 0 failed (21 min, sharing the machine with two pack O runs) on the final tree
+  (EV-1 – EV-11). Existing test files edited this round:
   `tests/engines/test_p14_views.py` (T-2's batch tolerance), `test_p03_conformity.py` (G-2's predictive tail),
   `test_p06_p08_content.py`, `test_eval3_fixes.py`, `test_p15_resource_governor.py`, `tests/lib/test_pbounds.py`,
   `test_pfamily.py` (E4-9 replaces "non-consecutive days do not count"), `test_pgrammar.py`, `tests/eval/test_orggen.py`,
@@ -1376,10 +1379,13 @@ container restarts, and the evaluator measured one final code state (the owners'
 ### 16.3 Open (ordered by impact; details in design doc §3.11.1 and `progressive.md` §16.12.15–§16.12.16)
 
 Recall 0.84 / precision 0.86 against 0.90: the day-14 false statements are mostly D1–D3 not yet followed
-(precision on actions no drift touched 0.91–0.98, seeds 0–3), the day-21 ones over-stated `when` coverage and
+(precision on actions no drift touched 0.91–0.98 on all 5 seeds), the day-21 ones over-stated `when` coverage and
 sparse group parts; the 17:00 report submission is still late; DEV's 60-name closed set is honestly open. The
 calibration error 0.16 (nodes under-confident on pack O, over-confident on O-real). D1 confirms late on seeds 3–4
-and D4 has one LOW on seeds 3–4. The views keep old route names in action lists after a rename. PG8 0.83;
+and D4 has one LOW on seeds 3–4 — the AUTO health monitor 192.168.9.9, whose all-zero score ring makes B24 issue
+a seeded random p = U for a tie, so a coin flip with no P03 finding behind it can open a single-tick incident
+(4–7 of ~70 incidents per seed are such conformity-only alarms; lib-3 decision chain owner). P11's group label
+keeps the old page name after a rename (`综合部·oa GET /approval/list`). PG8 0.83;
 per-event cost 10–60× the target; O-real 4/12 R items on one seed (R13 needs a family rule that respects
 disjoint user populations); hash-order dependence in P07 / P02 / P11 hidden by the pinned seed; lead decisions
 on the round-4 gate readings (E4-4 – E4-7, EV-1, EV-9) and EV-4's 2 σ cluster tolerance.

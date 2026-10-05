@@ -111,7 +111,7 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
     - pipeline_degraded is never emitted on clean runs.
     - Fault injection: disabling B04 degrades its family (NaN), not p = 1, and FAR does not rise.
 
-16. The design doc's §3.3 table is regenerated from eval_report.json. No accuracy claim is written by hand.
+16. The design doc's A–E gate table (库三 §3.10.2) is regenerated from eval_report.json (design_table_md). No accuracy claim is written by hand.
 
 PROGRESSIVE CORE (PG1–PG11): MEASUREMENT SEMANTICS (round 4)
 
