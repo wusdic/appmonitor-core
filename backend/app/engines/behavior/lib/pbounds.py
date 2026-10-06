@@ -317,8 +317,13 @@ def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float
     # the band is a statement about the same rows as the range (round 4)
     pl, ph = clean_mass(td, ymin, ymax) if (rng is not None and approx <= APPROX_MAX) else (0.0, 1.0)
     span = ph - pl
-    q = td.quantile if (pl <= 0.0 and ph >= 1.0) else (lambda p: td.quantile(pl + p * span))
-    y05, y95, y01, y99 = q(BAND_LO), q(BAND_HI), q(BAND98_LO), q(BAND98_HI)
+    # every quantile of the fit in one pass over the digest (td_quantiles: the
+    # same floats as td.quantile(p) per p, the centroid cumsum taken once)
+    ps = [BAND_LO, BAND_HI, BAND98_LO, BAND98_HI, 0.9, 0.1] + [i / (QGRID - 1) for i in range(QGRID)]
+    if not (pl <= 0.0 and ph >= 1.0):
+        ps = [pl + p * span for p in ps]
+    qv = td_quantiles(td, ps)
+    y05, y95, y01, y99 = qv[0], qv[1], qv[2], qv[3]
     band90 = [_inv(y05, lg), _inv(y95, lg)]
     band98 = [_inv(y01, lg), _inv(y99, lg)]
     cov90 = min(1.0, closed_coverage(td, y05, y95) / span) if _fin(y05) and _fin(y95) else NAN
@@ -329,7 +334,7 @@ def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float
         "n_rng": float(n_rng), "n_eff": float(n_eff) if _fin(n_eff) else NAN,
         "n_c": float(n_c) if _fin(n_c) else NAN, "approx": approx,
         "mass": float(td.total(t)), "excluded_days": int(n_drop),
-        "qgrid": [float(q(i / (QGRID - 1))) for i in range(QGRID)],
+        "qgrid": [float(v) for v in qv[6:]],
     }
     if pin:
         if rng is not None:
@@ -361,8 +366,8 @@ def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float
             rec["hard"] = False
     else:
         rec["hard"] = False
-    rec["tail_hi"] = _tail(num, q(0.9), upper=True)
-    rec["tail_lo"] = _tail(num, q(0.1), upper=False)
+    rec["tail_hi"] = _tail(num, qv[4], upper=True)
+    rec["tail_lo"] = _tail(num, qv[5], upper=False)
     cdf_nat = (lambda x: min(1.0, max(0.0, (td.cdf(_fwd(x, lg)) - pl) / span))
                if (not lg or x > 0) else 0.0)
     rec["disp90"] = round_band(band90[0], band90[1], cdf_nat, unit,
@@ -553,6 +558,91 @@ def p_value(rec: Mapping[str, Any], v: Any, num: Any = None, t: Optional[float] 
     return pscore.conformal_rank_p(0.0 if y < vmin else 0.01 * nn, nn), flags
 
 
+# ------------------------------------------------- batched digest reads
+def td_quantiles(td: Any, ps: Sequence[float]) -> List[Any]:
+    """[td.quantile(p) for p in ps] for a psketch.TDigest with the centroid
+    cumsum computed once: the same branches and the same float operations as
+    TDigest.quantile (tests/lib/test_pbounds_batched_reads.py). Any other
+    digest is read p by p."""
+    if not (hasattr(td, "_mu") and hasattr(td, "_w") and hasattr(td, "_flush")):
+        return [td.quantile(p) for p in ps]
+    td._flush()
+    mu, w = td._mu, td._w
+    n = mu.size
+    if n == 0:
+        return [math.nan] * len(ps)
+    qs = [min(1.0, max(0.0, float(q))) for q in ps]
+    if n == 1:
+        return [float(mu[0])] * len(qs)
+    tot = float(w.sum())
+    cum = np.cumsum(w) - w / 2.0
+    c0, cl = cum[0], cum[-1]
+    vmin, vmax = td.vmin, td.vmax
+    m0, ml = float(mu[0]), float(mu[-1])
+    targets = [q * tot for q in qs]
+    js = np.searchsorted(cum, np.asarray(targets, dtype=np.float64), side="right").tolist()
+    out: List[Any] = []
+    for target, j in zip(targets, js):
+        if target <= c0:
+            frac = target / c0 if c0 > 0 else 0.0
+            out.append(vmin + (m0 - vmin) * frac)
+        elif target >= cl:
+            rest = tot - cl
+            frac = (target - cl) / rest if rest > 0 else 1.0
+            out.append(ml + (vmax - ml) * frac)
+        else:
+            a, b = cum[j - 1], cum[j]
+            frac = (target - a) / (b - a) if b > a else 0.0
+            out.append(float(mu[j - 1] + (mu[j] - mu[j - 1]) * frac))
+    return out
+
+
+def td_cdfs(td: Any, xs: Sequence[float]) -> List[Any]:
+    """[td.cdf(x) for x in xs] for a psketch.TDigest with the centroid cumsum
+    computed once (TDigest.cdf's branches and float operations)."""
+    if not (hasattr(td, "_mu") and hasattr(td, "_w") and hasattr(td, "_flush")):
+        return [td.cdf(x) for x in xs]
+    td._flush()
+    mu, w = td._mu, td._w
+    n = mu.size
+    if n == 0:
+        return [math.nan] * len(xs)
+    vmin, vmax = td.vmin, td.vmax
+    xs = [float(x) for x in xs]
+    tot = float(w.sum())
+    out: List[Any] = []
+    if n == 1:
+        for x in xs:
+            if x < vmin:
+                out.append(0.0)
+            elif x >= vmax:
+                out.append(1.0)
+            else:
+                span = vmax - vmin
+                out.append((x - vmin) / span if span > 0 else 0.5)
+        return out
+    cum = np.cumsum(w) - w / 2.0
+    m0, ml = float(mu[0]), float(mu[-1])
+    js = np.searchsorted(mu, np.asarray(xs, dtype=np.float64), side="right").tolist()
+    for x, j in zip(xs, js):
+        if x < vmin:
+            out.append(0.0)
+        elif x >= vmax:
+            out.append(1.0)
+        elif x < m0:
+            span = m0 - vmin
+            out.append(float(cum[0] * ((x - vmin) / span if span > 0 else 1.0) / tot))
+        elif x >= ml:
+            span = vmax - ml
+            frac = (x - ml) / span if span > 0 else 1.0
+            out.append(float((cum[-1] + (tot - cum[-1]) * frac) / tot))
+        else:
+            a, b = float(mu[j - 1]), float(mu[j])
+            frac = (x - a) / (b - a) if b > a else 0.5
+            out.append(float((cum[j - 1] + (cum[j] - cum[j - 1]) * frac) / tot))
+    return out
+
+
 # --------------------------------------------------------------------- gain
 def bin_gain(num: Any, sys_digest: Any, n_bins: int = 8) -> float:
     """Bits per event the node's distribution saves against the system's:
@@ -560,14 +650,11 @@ def bin_gain(num: Any, sys_digest: Any, n_bins: int = 8) -> float:
     A plug-in estimate (not prequential; P03 holds the losses)."""
     if sys_digest is None or sys_digest.total() <= 0 or num.td.total() <= 0:
         return 0.0
-    edges = [sys_digest.quantile(k / n_bins) for k in range(1, n_bins)]
+    edges = td_quantiles(sys_digest, [k / n_bins for k in range(1, n_bins)])
     lg = bool(num.log)
-    cdf = []
-    for e in edges:
-        if lg and e <= 0:
-            cdf.append(0.0)
-        else:
-            cdf.append(float(num.td.cdf(_fwd(e, lg))))
+    xs = [_fwd(e, lg) for e in edges if not (lg and e <= 0)]
+    cv = iter(td_cdfs(num.td, xs))
+    cdf = [0.0 if (lg and e <= 0) else float(next(cv)) for e in edges]
     c = np.clip(np.asarray([0.0] + cdf + [1.0]), 0.0, 1.0)
     p = np.maximum(np.diff(np.maximum.accumulate(c)), 0.0)
     s = p.sum()
@@ -631,12 +718,13 @@ def fit_digest(td: Any, t: float, unit: str = "", n: float = NAN) -> Optional[Di
     no daily ring, so no hard range."""
     if td is None or td.total() <= 0 or td.n_centroids() == 0:
         return None
-    q = td.quantile
+    qv = td_quantiles(td, [BAND_LO, BAND_HI, BAND98_LO, BAND98_HI, 0.99]
+                      + [i / (QGRID - 1) for i in range(QGRID)])
     rec = {"kind": "num", "log": False, "unit": unit,
-           "band90": [q(BAND_LO), q(BAND_HI)], "band98": [q(BAND98_LO), q(BAND98_HI)],
-           "p99": q(0.99), "hard": False, "mass": float(td.total(t)),
-           "qgrid": [float(q(i / (QGRID - 1))) for i in range(QGRID)],
-           "coverage_emp": closed_coverage(td, q(BAND_LO), q(BAND_HI))}
+           "band90": [qv[0], qv[1]], "band98": [qv[2], qv[3]],
+           "p99": qv[4], "hard": False, "mass": float(td.total(t)),
+           "qgrid": [float(v) for v in qv[5:]],
+           "coverage_emp": closed_coverage(td, qv[0], qv[1])}
     rec["coverage"] = coverage_lb(rec["coverage_emp"], n)
     rec["disp90"] = round_band(rec["band90"][0], rec["band90"][1], td.cdf, unit)
     rec["confidence"] = confidence(rec)

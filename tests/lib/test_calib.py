@@ -143,8 +143,10 @@ def test_add_rounds_to_float32_and_p_value_ties_consistently():
         ring.add(0.1, float(t))                     # 0.1 is not a float32
     assert ring.scores[0] == r32(0.1) != 0.1
     # the float64 score 0.1 ties with all 9 stored entries after rounding
-    assert ring.p_value(0.1, 0.5) == pytest.approx((0 + 0.5 * 10) / 10)
-    assert K.p_from_ring(ring, 0.1, 0.5) == ring.p_value(0.1, 0.5)
+    assert ring.p_value(0.1, 0.5, rand_atom=True) == pytest.approx((0 + 0.5 * 10) / 10)
+    assert K.p_from_ring(ring, 0.1, 0.5, rand_atom=True) == ring.p_value(0.1, 0.5, rand_atom=True)
+    # ... which is the ring's lowest level: the issued p is the block's upper p
+    assert ring.p_value(0.1, 0.5) == K.p_from_ring(ring, 0.1, 0.5) == 1.0
 
 
 def test_add_ignores_nan_inf_out_of_range_and_nan_ts():
@@ -315,11 +317,15 @@ def test_from_dict_repairs_foreign_layout():
 def test_p_value_is_randomized_conformal_on_the_ring():
     rng = np.random.default_rng(5)
     ring = make_ring(rng.normal(size=100))
-    for s in (-5.0, -0.3, 0.0, 0.7, 5.0, float(ring.scores[40])):
+    for s in (-5.0, -0.3, 0.0, 0.7, 5.0, float(ring.scores[40]), float(ring.scores[0])):
         for u in (0.01, 0.5, 0.99):
-            assert ring.p_value(s, u) == C.randomized_conformal_p(ring.scores, r32(s), u)
-            assert 0.0 < ring.p_value(s, u) < 1.0
-    assert K.Ring().p_value(1.0, 0.3) == 0.3
+            want = C.randomized_conformal_p(ring.scores, r32(s), u)
+            assert ring.p_value(s, u, rand_atom=True) == want
+            assert 0.0 < want < 1.0
+            # at or below the lowest level: 1 (lib/calib "Lower atom")
+            assert ring.p_value(s, u) == (1.0 if r32(s) <= ring.scores[0] else want)
+    assert K.Ring().p_value(1.0, 0.3, rand_atom=True) == 0.3
+    assert K.Ring().p_value(1.0, 0.3) == 1.0
     assert math.isnan(ring.p_value(NAN, 0.5))
     assert math.isnan(ring.p_value(1.0, NAN))
 
@@ -334,16 +340,19 @@ def test_nan_in_gives_nan_out():
     assert math.isnan(K.p_from_ring(ring, 10.0, NAN))       # conformal branch
 
 
-def _stream_ps(xs, warm: int = M, randomized: bool = True, tail: bool = True):
+def _stream_ps(xs, warm: int = M, randomized: bool = True, tail: bool = True,
+               rand_atom: bool = True):
     """B24 pipeline on one stream: score each tick against the current ring,
-    then admit it; refit the tail every GPD_REFIT_TICKS."""
+    then admit it; refit the tail every GPD_REFIT_TICKS. rand_atom: the fully
+    randomised p (exactly uniform; the calibration monitors' p), else the
+    issued p (1 at the ring's lowest level)."""
     ring = make_ring(xs[:warm])
     if tail:
         ring.gpd = K.fit_tail(ring)
     ps = []
     for k, x in enumerate(xs[warm:]):
         u = C.seeded_uniform("sys", "ent", "det", float(k)) if randomized else 1.0
-        ps.append(K.p_from_ring(ring, x, u))
+        ps.append(K.p_from_ring(ring, x, u, rand_atom=rand_atom))
         ring.add(x, float(warm + k))
         if tail and k % K.GPD_REFIT_TICKS == K.GPD_REFIT_TICKS - 1:
             ring.gpd = K.fit_tail(ring, now_ts=float(warm + k))
@@ -370,6 +379,13 @@ def test_sparse_detector_randomized_vs_deterministic(pwm):
     d_det = K.ks_uniform(_stream_ps(xs, randomized=False))
     assert d_rand < 0.03
     assert d_det > 0.5
+    # the issued p: the zeros (the lowest level) at exactly 1, the rest the
+    # randomised p - valid (P(p <= a) <= a), no coin flips at the atom
+    ps = _stream_ps(xs, rand_atom=False)
+    zero = xs[M:] == 0.0
+    assert np.all(ps[zero] == 1.0)
+    for a in (0.01, 0.05, 0.1, 0.5):
+        assert np.mean(ps <= a) <= a + 3.0 * math.sqrt(a * (1 - a) / ps.size)
 
 
 def test_p_from_ring_without_tail_is_conformal():
@@ -417,7 +433,8 @@ def test_p_from_ring_floors_at_1e_300_and_handles_infinite_scores():
     assert K.p_from_ring(ring, 11.5, 0.5, bounded) == 1e-300
     assert K.p_from_ring(ring, 1e30, 0.5, K.GPDTail(9.0, 0.3, 1.0, 0.1, 256)) >= 1e-300
     assert K.p_from_ring(ring, math.inf, 0.5, K.GPDTail(9.0, 0.3, 1.0, 0.1, 256)) == 1e-300
-    assert K.p_from_ring(ring, -math.inf, 0.5) == pytest.approx(256.5 / 257)
+    assert K.p_from_ring(ring, -math.inf, 0.5, rand_atom=True) == pytest.approx(256.5 / 257)
+    assert K.p_from_ring(ring, -math.inf, 0.5) == 1.0
 
 
 def test_p_from_ring_caps_tail_at_conformal_bound_beyond_ring_max():
@@ -806,13 +823,16 @@ def test_conformal_fast_path_is_bit_identical_to_combine():
     probes = np.r_[ring.scores[::7], rng.exponential(size=50), -1.0, 0.0, 1e6, np.inf, -np.inf]
     for s in probes.tolist():
         for u in (0.0, 1e-9, 0.37, 1.0):
-            want = C.randomized_conformal_p(ring.scores, r32(s) if abs(s) < 3e38 else s, u)
-            assert K.p_from_ring(ring, s, u) == want
-            assert ring.p_value(s, u) == want
+            x = r32(s) if abs(s) < 3e38 else s
+            want = C.randomized_conformal_p(ring.scores, x, u)
+            assert K.p_from_ring(ring, s, u, rand_atom=True) == want
+            assert ring.p_value(s, u, rand_atom=True) == want
+            # issued: the same except at or below the lowest level
+            assert ring.p_value(s, u) == (1.0 if x <= ring.scores[0] else want)
     assert math.isnan(ring.p_value(1.0, NAN)) and math.isnan(ring.p_value(NAN, 0.5))
     with pytest.raises(ValueError):
         ring.p_value(1.0, 1.5)
-    assert K.Ring().p_value(1.0, 0.3) == 0.3
+    assert K.Ring().p_value(1.0, 0.3, rand_atom=True) == 0.3
     # a hand-assigned array that breaks the invariant still goes through combine
     raw = K.Ring()
     raw.scores = np.array([1.0, 2.0, np.nan])

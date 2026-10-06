@@ -26,6 +26,26 @@ How:
      'meta_inst' | 'meta_all', ts)), GPD tail above q_0.90, and below 64
      entries the logit blend with the raw HMP p as prior, so B29 recomputes
      q from a ring snapshot with m_calib.p_from_snapshot(..., pm=p_raw).
+     Round 5 (lib/calib "Lower atom"): B24 issues p = 1 for a detector score
+     at its ring's lowest level (no evidence), where it issued a seeded coin
+     flip p = U before. B25 fuses TWO rows per tick: the issued row for every
+     decision (families, p_inst / p_all, q, e_day, the evidence CUSUM,
+     severity, axes) and the randomised row (rand_row: the issued row with
+     B24's randomised p of the atom detectors, model.calib['prand']) for the
+     meta rings' admission and for the monitors that test uniformity (ACI,
+     the CUSUM-input calibration _qcal; meta_q_rand). The rings therefore
+     hold exactly the null they held before, and since the issued p is
+     pointwise >= the randomised one and wHMP and the conformal rule are
+     monotone, every decision statistic is pointwise no more extreme than
+     before: q_dec >= q_rand, the CUSUM increment -ln q - 3 no larger. A tick
+     whose detectors are all at their atom fuses to p_all = 1, a meta score
+     of 0, below every ring entry: q = 1 (pack O's health monitor, PG5 D4).
+     Learning the rings from the issued row instead was measured worse:
+     without the coin flips the rings narrowed and the evidence CUSUM on the
+     (serially dependent) body detectors alarmed more (pack A seed 0, clean
+     control ticks: 10 -> 17 CUSUM alarms; seed 1: 5 -> 15), and a Q / H
+     meta ring filled at 900 s mis-scored the 60-s budget accumulators after
+     pack E's cadence switch (14 clean single-tick alarms, 0.2 expected).
      e_day = q_all * 86400 / dt.
      Tail shape: the tail is fitted with xi floored at 1/n_u (n_u = number
      of exceedances) instead of calib's plain floor at 0. -log10 of a
@@ -439,8 +459,40 @@ def meta_add(ring: calib.Ring, score: float, ts: float, count: int) -> int:
 
 def meta_q(ring: Optional[calib.Ring], score: float, u: float, p_raw: float) -> float:
     """q = B24's p rule on the meta ring (m_calib.p_value): conformal + tail,
-    blended with the raw HMP p below 64 entries. NaN score -> NaN."""
+    blended with the raw HMP p below 64 entries; 1 at or below the ring's
+    lowest level (lib/calib "Lower atom": an all-p = 1 tick of a quiet key is
+    no evidence, where the randomised rule issued a coin flip). NaN score ->
+    NaN."""
     return m_calib.p_value(ring, score, u, p_raw)
+
+
+def meta_q_rand(ring: Optional[calib.Ring], score: float, u: float, p_raw: float) -> float:
+    """The calibration MONITORS' q (ACI, the CUSUM-input calibration _qcal):
+    B24's fully randomised rule (rand_atom) on the tick's RANDOMISED meta
+    score (rand_row), exactly B25's q before round 5 - exactly uniform under
+    the null, so the monitors keep testing what they were built to test."""
+    return m_calib.p_value(ring, score, u, p_raw, rand_atom=True)
+
+
+def rand_row(model: Optional[Mapping[str, Any]], row: Optional[np.ndarray],
+             now: float) -> Optional[np.ndarray]:
+    """Round 5 (lib/calib "Lower atom"): B24 issues p = 1 for a score at its
+    ring's lowest level and keeps the randomised p of those detectors in
+    model.calib['prand'][ts] until the row's commit. This is the tick's p row
+    with them put back - the randomised row B25 learned from before round 5
+    - or None when no detector of the tick was at its atom (the issued row is
+    then the randomised one)."""
+    if row is None or not isinstance(model, Mapping):
+        return None
+    pr = model.get("prand")
+    alt = pr.get(now) if isinstance(pr, Mapping) else None
+    if not alt:
+        return None
+    r = np.array(row, dtype=np.float64)
+    for i, v in alt.items():
+        if 0 <= int(i) < r.size:
+            r[int(i)] = v
+    return r
 
 
 def meta_phase(entity: str, key: str) -> int:
@@ -1221,33 +1273,48 @@ class FusionEngine(Engine):
             store.add_vec(s, e, EVIDENCE, now, [S_prev], window_s=win)
             return None
 
-        # --- 1) families, p_inst, p_all
+        # --- 1) families, p_inst, p_all: the DECISION from the issued p
+        # (1 at a detector's atom); the meta rings and the monitors from the
+        # randomised row (rand_row), as before round 5, so q_dec >= q_rand
+        # pointwise: the decision is never more extreme than it was
         fz = fuse(row, sc.fw, sc.wm)
+        rr = rand_row(model, row, now)
+        fz_r = fz if rr is None else fuse(rr, sc.fw, sc.wm)
         degraded = self._degraded_families(store, s, e, now, fz)
         # --- 2) meta-calibration
         dp = self._daypart(store, s, e, now, sc.daypart)
         stratum = self._stratum(dp, cc)
         s_inst = meta_score(fz.p_inst)
         s_all = meta_score(fz.p_all)
+        s_inst_r = meta_score(fz_r.p_inst)
+        s_all_r = meta_score(fz_r.p_all)
         mrings = _mr(meta)[0]
-        q_inst = meta_q(mrings.get(self._ring_key(META_INST, stratum)), s_inst,
-                        m_calib.uniform(s, e, META_INST, now), fz.p_inst)
-        q_all = meta_q(mrings.get(self._ring_key(META_ALL, stratum)), s_all,
-                       m_calib.uniform(s, e, META_ALL, now), fz.p_all)
+        r_inst = mrings.get(self._ring_key(META_INST, stratum))
+        u_inst = m_calib.uniform(s, e, META_INST, now)
+        q_inst = meta_q(r_inst, s_inst, u_inst, fz.p_inst)
+        r_all = mrings.get(self._ring_key(META_ALL, stratum))
+        u_all = m_calib.uniform(s, e, META_ALL, now)
+        q_all = meta_q(r_all, s_all, u_all, fz.p_all)
         e_raw = combine.e_day(q_all, dt)
         akey = aci_key(None, cc)
         theta = aci_shift((sc.aci or {}).get("th"), (st.get(ACI) or {}).get("th"), akey,
                           SINGLE_E_DAY * dt / 86400.0)
         e_day = e_raw * 10.0 ** theta if e_raw == e_raw else _NAN
-        self._aci_observe(ctx, store, sc, e, st, now, dt, akey, e_raw,
-                          SINGLE_E_DAY * dt / 86400.0)
-        if s_inst == s_inst or s_all == s_all:
-            pend[now] = (s_inst, s_all, stratum,
+        if not ctx.training and sc.aci is not None:
+            # ACI observes the randomised q (meta_q_rand)
+            self._aci_observe(ctx, store, sc, e, st, now, dt, akey,
+                              combine.e_day(meta_q_rand(r_all, s_all_r, u_all, fz_r.p_all), dt),
+                              SINGLE_E_DAY * dt / 86400.0)
+        if s_inst_r == s_inst_r or s_all_r == s_all_r:
+            # the meta rings learn the randomised scores (their null as before)
+            pend[now] = (s_inst_r, s_all_r, stratum,
                          (e_raw, akey, SINGLE_E_DAY * dt / 86400.0, bool(ctx.training), dt))
         # --- 3) evidence CUSUM
         obs = self._qcal_observable(ctx, store, s, e, now, dt)
         S, updated, ev_alarm = evidence_update(
-            S_prev, self._qcal(sc.qcal, f"inst|{cc}", q_inst, obs, now), h)
+            S_prev, self._qcal(sc.qcal, f"inst|{cc}", q_inst, obs, now,
+                               meta_q_rand(r_inst, s_inst_r, u_inst, fz_r.p_inst)
+                               if obs else q_inst), h)
         st["S"] = S
         # --- writes
         store.add_vec(s, e, Q_INST, now, [m_calib.issued(q_inst)], window_s=win)
@@ -1319,6 +1386,9 @@ class FusionEngine(Engine):
         for i in prov_q:
             wm[i] = wm[i] * 0.5
         fz = fuse(row, sc.fw, wm)
+        rr = rand_row(store.get_model(s, e, MODEL), row, now)      # module docstring, round 5
+        rrl = rowl if rr is None else rr.tolist()
+        fz_r = fz if rr is None else fuse(rr, sc.fw, wm)
         degraded = self._degraded_families(store, s, e, now, fz)
         dp_t = self._daypart(store, s, e, now, sc.daypart)
         dp_tau = gx["dp_h"] if tau == "h" else gx["dp_q"] if tau == "q" else dp_t
@@ -1329,32 +1399,53 @@ class FusionEngine(Engine):
         p_t = _stream_p(rowl, _INST_T_IDX, sc.fw, wm)
         p_h = _stream_p(rowl, _INST_H_IDX, sc.fw, wm) if gx["h_due"] else _NAN
         s_t, s_h, s_all = meta_score(p_t), meta_score(p_h), meta_score(fz.p_all)
+        if rr is None:
+            p_t_r, p_h_r = p_t, p_h
+        else:
+            p_t_r = _stream_p(rrl, _INST_T_IDX, sc.fw, wm)
+            p_h_r = _stream_p(rrl, _INST_H_IDX, sc.fw, wm) if gx["h_due"] else _NAN
+        s_t_r, s_h_r, s_all_r = meta_score(p_t_r), meta_score(p_h_r), meta_score(fz_r.p_all)
         mrings = _mr(meta)[0]
         r_t = mrings.get(self._ring_key(META_INST_T, st_t))
-        q_t = meta_q(r_t, s_t, m_calib.uniform(s, e, META_INST, now),
-                     self._t_prior(st, META_INST_T, st_t, r_t, p_t))
-        q_h = meta_q(mrings.get(self._ring_key(META_INST_H, st_h)), s_h,
-                     m_calib.uniform(s, e, META_INST_H, now), p_h)
+        u_t = m_calib.uniform(s, e, META_INST, now)
+        pr_t = self._t_prior(st, META_INST_T, st_t, r_t, p_t)
+        q_t = meta_q(r_t, s_t, u_t, pr_t)
+        r_h = mrings.get(self._ring_key(META_INST_H, st_h))
+        u_h = m_calib.uniform(s, e, META_INST_H, now)
+        q_h = meta_q(r_h, s_h, u_h, p_h)
         r_all = mrings.get(self._ring_key(META_ALL, st_all))
-        q_all = meta_q(r_all, s_all, m_calib.uniform(s, e, META_ALL, now),
-                       self._t_prior(st, META_ALL, st_all, r_all, fz.p_all))
+        u_all = m_calib.uniform(s, e, META_ALL, now)
+        pr_all = self._t_prior(st, META_ALL, st_all, r_all, fz.p_all)
+        q_all = meta_q(r_all, s_all, u_all, pr_all)
         e_raw = q_all * gx["mult"] if q_all == q_all else _NAN
         akey = aci_key(tau, gx["cc"])
         theta = aci_shift((sc.aci or {}).get("th"), (st.get(ACI) or {}).get("th"), akey,
                           SINGLE_E_DAY / gx["mult"])
         e_day = e_raw * 10.0 ** theta if e_raw == e_raw else _NAN
-        self._aci_observe(ctx, store, sc, e, st, now, dt, akey, e_raw, SINGLE_E_DAY / gx["mult"])
-        if s_t == s_t or s_all == s_all or s_h == s_h:
-            pend[now] = (s_t, s_all, st_all, s_h, st_all, st_t, st_h,
+        if not ctx.training and sc.aci is not None:
+            # ACI observes the randomised q (meta_q_rand)
+            q_all_r = meta_q_rand(r_all, s_all_r, u_all,
+                                  self._t_prior(st, META_ALL, st_all, r_all, fz_r.p_all))
+            self._aci_observe(ctx, store, sc, e, st, now, dt, akey,
+                              q_all_r * gx["mult"] if q_all_r == q_all_r else _NAN,
+                              SINGLE_E_DAY / gx["mult"])
+        if s_t_r == s_t_r or s_all_r == s_all_r or s_h_r == s_h_r:
+            # the meta rings learn the randomised scores (their null as before)
+            pend[now] = (s_t_r, s_all_r, st_all, s_h_r, st_all, st_t, st_h,
                          (e_raw, akey, SINGLE_E_DAY / gx["mult"], bool(ctx.training), dt))
         # evidence CUSUMs: S_t every tick, S_h on H ticks
         obs = self._qcal_observable(ctx, store, s, e, now, dt)
-        S, upd_t, al_t = evidence_update(S_prev, self._qcal(sc.qcal, f"t|{gx['cc']}", q_t, obs, now),
-                                         h)
+        S, upd_t, al_t = evidence_update(
+            S_prev, self._qcal(sc.qcal, f"t|{gx['cc']}", q_t, obs, now,
+                               meta_q_rand(r_t, s_t_r, u_t,
+                                           self._t_prior(st, META_INST_T, st_t, r_t, p_t_r))
+                               if obs else q_t), h)
         st["S"] = S
         Sh, upd_h, al_h = Sh_prev, False, False
         if gx["h_due"]:
-            Sh, upd_h, al_h = evidence_update(Sh_prev, self._qcal(sc.qcal, "h", q_h, obs, now), h_h)
+            Sh, upd_h, al_h = evidence_update(
+                Sh_prev, self._qcal(sc.qcal, "h", q_h, obs, now,
+                                    meta_q_rand(r_h, s_h_r, u_h, p_h_r) if obs else q_h), h_h)
             st["S_h"] = Sh
         store.add_vec(s, e, Q_INST, now, [m_calib.issued(q_t)], window_s=win)
         store.add_vec(s, e, Q_ALL, now, [m_calib.issued(q_all)], window_s=win)
@@ -1421,7 +1512,7 @@ class FusionEngine(Engine):
 
     @staticmethod
     def _qcal(qc: Optional[Dict[str, Any]], stream: str, q: float, observe: bool,
-              now: float) -> float:
+              now: float, q_obs: float = _NAN) -> float:
         """Round 4: the evidence CUSUM input on the SYSTEM's calibrated live
         null. q_inst is meta-calibrated per key by a ring that lags a live
         shift (pack A seed 0: one control key's q_inst.h at <= 1e-3 on 3 % of
@@ -1435,13 +1526,16 @@ class FusionEngine(Engine):
         key's share of q <= 0.05 rose, v followed, the CUSUM never alarmed),
         where one key of a system moves the pooled share by ~1/n_keys; ticks
         inside an open incident / suspect regime are not observed at all.
-        The audit's solved h covers each key's own excess and dependence."""
+        The audit's solved h covers each key's own excess and dependence.
+        Round 5: the share is observed on `q_obs`, the tick's randomised q
+        (meta_q_rand; q itself when NaN), the power applied to the issued q."""
         if not q == q or qc is None:
             return q
         stats = qc.get(stream)
         out = m_calib.pcal_apply(q, m_calib.pcal_v(stats))
         if observe:
-            qc[stream] = m_calib.pcal_observe(stats, q <= m_calib.PCAL_X, now)
+            qo = q_obs if q_obs == q_obs else q
+            qc[stream] = m_calib.pcal_observe(stats, qo <= m_calib.PCAL_X, now)
         return out
 
     @staticmethod

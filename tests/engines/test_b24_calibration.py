@@ -79,6 +79,21 @@ def ks(ps) -> float:
     return calib.ks_uniform(np.asarray(ps, dtype=np.float64))
 
 
+def health_ps(rig: "Rig", d: str) -> np.ndarray:
+    """The p B24's health checks saw for detector d (trusted committed ticks):
+    the fully randomised p (lib/calib "Lower atom": the issued p is 1 at a
+    ring's lowest level, the monitors keep the exactly uniform one)."""
+    hs = rig.store.get_model(S, "__system__", m_calib.MODEL)[m_calib.HEALTH]
+    return np.asarray(list(hs["ks"][emit.DETECTORS.index(d)]), dtype=np.float64)
+
+
+def assert_valid(ps, levels=(0.01, 0.05, 0.1, 0.25, 0.5)) -> None:
+    """P(p <= a) <= a within 3 binomial sd at every level (valid / conservative)."""
+    ps = np.asarray(ps, dtype=np.float64)
+    for a in levels:
+        assert np.mean(ps <= a) <= a + 3.0 * np.sqrt(a * (1 - a) / ps.size), a
+
+
 # ---------------------------------------------------------------- (a)
 def test_a_null_exp1_is_uniform():
     """(a) 2000 null Exp(1) scores: KS D of the issued p < 0.03."""
@@ -89,8 +104,14 @@ def test_a_null_exp1_is_uniform():
         ts = rig.step({E: {"marg_int": float(x)}})
         ps.append(rig.p(E, "marg_int", ts))
     ps = np.asarray(ps)
-    assert np.all(np.isfinite(ps)) and np.all((ps > 0) & (ps < 1))
-    assert ks(ps) < 0.03
+    assert np.all(np.isfinite(ps)) and np.all((ps > 0) & (ps <= 1))
+    assert_valid(ps)
+    # issued p: 1 only at / below the ring's lowest level (empty ring included)
+    assert np.mean(ps == 1.0) < 0.05
+    # the health checks see the randomised p: exactly uniform
+    hp = health_ps(rig, "marg_int")
+    assert hp.size > 1500 and np.all((hp > 0) & (hp < 1))
+    assert ks(hp) < 0.03
     # rings are Mondrian by daypart: 20 days at 900 s visit all four dayparts
     keys = set(m_calib.rings(rig.model()))
     assert {k.split("@")[1].split("|")[0] for k in keys} >= {"wd_day", "wd_night"}
@@ -115,9 +136,16 @@ def test_b_sparse_detector_randomised_vs_deterministic():
         u = m_calib.uniform(S, E, "silence", ts)
         assert m_calib.issued(m_calib.p_from_snapshot(model, "silence", st, x, u)) == p
         p_det.append(m_calib.p_from_snapshot(model, "silence", st, x, 1.0))
-    assert ks(p_rand) < 0.03
     assert ks(p_det) > 0.5
-    assert max(p_rand) < 1.0
+    # issued: every zero at a ring holding zeros gets 1 (no coin flip), the
+    # rest the randomised p; valid at every level
+    p_rand = np.asarray(p_rand)
+    mature = np.arange(xs.size) >= 100
+    assert np.all(p_rand[(xs == 0.0) & mature] == 1.0)
+    assert_valid(p_rand)
+    # the health checks see the randomised p, uniform as before round 5
+    hp = health_ps(rig, "silence")
+    assert hp.size > 1500 and ks(hp) < 0.03 and hp.max() < 1.0
 
 
 # ---------------------------------------------------------------- (c)

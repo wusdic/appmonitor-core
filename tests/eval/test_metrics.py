@@ -282,6 +282,29 @@ def test_ks_uniform_and_rising_edges():
     assert M.rising_edges(np.array([1, 1, 0, 1, 0, 0, 1])) == 3
 
 
+def test_calibration_gate_reads_the_anti_conservative_side():
+    """Round 5 (§16.13): B24 issues p = 1 at a detector's atom (lower-atom
+    rule), so a valid detector's issued p has an atom at 1. Gate 7 bounds
+    the anti-conservative deviation D+ = max(F_n(x) - x) (validity); the
+    two-sided D, which reads the atom's mass, is reported as D_two. An
+    anti-conservative p (p / 2) still fails. Fails on the round-4 scorer,
+    whose D was two-sided."""
+    rng = np.random.default_rng(1)
+    n = TICKS.size
+    D = len(DETECTORS)
+    p = rng.uniform(size=(n, D)).astype(np.float32)
+    j = DETECTORS.index("marg_int")
+    p[: n // 2, j] = 1.0                                  # atom: nothing unusual
+    ser = {"ts": TICKS, "p": p, "e_day": rng.uniform(size=n) * 86400.0 / DT,
+           "p_family": np.full((n, len(FAMILIES)), 0.9, dtype=np.float32),
+           "alarm_path": [""] * n, "acc_alarm": np.zeros((n, D), dtype=np.int8), "risk": np.zeros(n)}
+    c = M.score_run(make_run(series={k("10.20.1.11"): ser}))["calibration"]
+    assert c["ks"]["marg_int"]["D"] < 0.15 and c["ks"]["marg_int"]["D_two"] > 0.4
+    x = (np.arange(400) + 0.5) / 400
+    assert M.ks_uniform(np.r_[x, np.ones(400)], side="upper")[0] == pytest.approx(0.0, abs=1e-9)
+    assert M.ks_uniform(x / 2.0, side="upper")[0] > 0.45
+
+
 def test_calibration_stats_counts_clean_control_ticks():
     rng = np.random.default_rng(0)
     n = TICKS.size

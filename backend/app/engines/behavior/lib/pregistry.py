@@ -96,6 +96,215 @@ def _num(v: Any) -> Optional[float]:
     return None
 
 
+_PLAIN_KEY = frozenset({str, float, int, bool, frozenset})   # AttrRecord.key(v) is v (non-text)
+
+
+def _classify(v: Any, is_time_name: bool) -> Tuple[Optional[float], Tuple[float, ...], Tuple[int, ...]]:
+    """(numeric value or None, type-evidence contributions of one row with
+    unit evidence, indices of the non-zero ones): the per-row branch of
+    AttrRegistry.observe's type evidence (_observe_rows_ref)."""
+    te = [0.0] * len(_TE)
+    te[0] = 1.0
+    x = _num(v)
+    if x is not None:
+        te[1] = 1.0
+        if x.is_integer():
+            te[2] = 1.0
+        if is_time_name and 1e9 <= x <= 4e9:
+            te[7] = 1.0
+    if isinstance(v, str):
+        te[8] = float(len(v))
+        if x is None:
+            te[10] = 1.0
+            if _ip_parse(v) is not None:
+                te[3] = 1.0
+            elif "=" in v and len(v) <= 4096 and _KV_RE.match(v):
+                te[5] = 1.0
+            elif v[:1] in "{[" and len(v) <= 4096:
+                try:
+                    json.loads(v)
+                    te[6] = 1.0
+                except ValueError:
+                    pass
+    elif isinstance(v, (frozenset, set, list)):
+        te[4] = 1.0
+    elif isinstance(v, tuple):
+        te[9] = 1.0
+    nz = tuple(i for i, a in enumerate(te) if a != 0.0 or i == 8 and isinstance(v, str))
+    return x, tuple(te), nz
+
+
+def _all_str(v: Any) -> bool:
+    """A hashable collection of str only (a memo keyed by such a value is
+    exact: 1 == 1.0 would merge two sets whose str forms differ)."""
+    if not isinstance(v, (frozenset, tuple)):
+        return False
+    return all(type(x) is str for x in v)
+
+
+def _distributions(ss: Any, t: float, chans: Sequence[int]) -> List[Tuple[List[Any], np.ndarray, float]]:
+    """[ss.distribution(t, ch) for ch in chans] of a psketch.DecayedSpaceSaving
+    in one pass over its slots (the same per-slot expression and sums)."""
+    if not all(hasattr(ss, a) for a in ("_keys", "_m", "_err", "_tot_m")):
+        return [ss.distribution(t, ch) for ch in chans]
+    keys, M, ERR, tot_m = ss._keys, ss._m, ss._err, ss._tot_m
+    tots = [tot_m[c] for c in chans]
+    if not keys:
+        return [([], np.zeros(0), 1.0 if tot > 0 else 0.0) for tot in tots]
+    lists: List[List[float]] = [[] for _ in chans]
+    live = [(j, c, tot) for j, (c, tot) in enumerate(zip(chans, tots)) if tot > 0]
+    for i in range(len(keys)):
+        m, e = M[i], ERR[i]
+        for j, c, tot in live:
+            lists[j].append(max(0.0, m[c] - e[c]) / tot)
+    out = []
+    for j, tot in enumerate(tots):
+        if tot <= 0:
+            out.append(([], np.zeros(0), 0.0))
+            continue
+        sh = np.asarray(lists[j])
+        out.append((list(keys), sh, float(max(0.0, 1.0 - sh.sum()))))
+    return out
+
+
+_CLS_MEMO: Tuple[Dict[Any, Any], Dict[Any, Any]] = ({}, {})     # by is_time_name
+_CLS_MAX = 1 << 14            # memoised value classifications (bounded, ~2 MB)
+_CLS_STR = 256
+
+
+_SS_ATTRS = ("_lm", "_idx", "_keys", "_m", "_err", "_e", "_tot_m", "_tot_e", "_evict_e", "_mh", "_eh",
+             "primary", "k", "_rescale_to")
+
+
+def ss_add_rows(ss: Any, keys: Sequence[Any], t: float, ws: Sequence[float], evs: Sequence[float]) -> None:
+    """`ss.add(keys[j], t, ws[j], evs[j])` for every j in order, at one time t,
+    for a psketch.DecayedSpaceSaving: the same float operations in the same
+    order (the growth factors 2^((t - L) / h) are computed once instead of per
+    row; a rescale can only happen at the first accepted row). Falls back to
+    the per-row adds for any other sketch."""
+    if not all(hasattr(ss, a) for a in _SS_ATTRS):
+        for key, w, ev in zip(keys, ws, evs):
+            ss.add(key, t, w, ev)
+        return
+    t = float(t)
+    mh, eh = ss._mh, ss._eh
+    nm, ne = len(mh), len(eh)
+    fm: Optional[List[float]] = None
+    fe: List[float] = []
+    tm, te_ = ss._tot_m, ss._tot_e
+    idx, kl, M, ERR, E, EE = ss._idx, ss._keys, ss._m, ss._err, ss._e, ss._evict_e
+    cap, p = ss.k, ss.primary
+    unrolled = nm == 3 and ne == 2
+    inf = math.inf
+    for key, w, ev in zip(keys, ws, evs):
+        w = float(w)
+        ev = float(ev)
+        if not (0.0 <= w < inf and 0.0 <= ev < inf) or (w == 0.0 and ev == 0.0):
+            continue
+        if fm is None:
+            L = ss._lm.L
+            if L is None:
+                ss._lm.L = L = t
+            elif (t - L) / ss._lm._hmin > PS.RESCALE_EXP:
+                ss._rescale_to(t)
+                L = t
+            dlt = t - L
+            fm = [2.0 ** (dlt / h) for h in mh]
+            fe = [2.0 ** (dlt / h) for h in eh]
+            if unrolled:
+                f0, f1, f2 = fm
+                e0, e1 = fe
+        if unrolled:
+            g0, g1, g2 = w * f0, w * f1, w * f2
+            h0, h1 = ev * e0, ev * e1
+            tm[0] += g0
+            tm[1] += g1
+            tm[2] += g2
+            te_[0] += h0
+            te_[1] += h1
+            i = idx.get(key)
+            if i is not None:
+                row = M[i]
+                row[0] += g0
+                row[1] += g1
+                row[2] += g2
+                er = E[i]
+                er[0] += h0
+                er[1] += h1
+                continue
+            gm = [g0, g1, g2]
+            ge = [h0, h1]
+        else:
+            gm = [w * f for f in fm]
+            ge = [ev * f for f in fe]
+            for c in range(nm):
+                tm[c] += gm[c]
+            for c in range(ne):
+                te_[c] += ge[c]
+            i = idx.get(key)
+            if i is not None:
+                row = M[i]
+                for c in range(nm):
+                    row[c] += gm[c]
+                er = E[i]
+                for c in range(ne):
+                    er[c] += ge[c]
+                continue
+        if len(kl) < cap:
+            idx[key] = len(kl)
+            kl.append(key)
+            M.append(gm)
+            ERR.append([0.0] * nm)
+            E.append(ge)
+            continue
+        col = [r[p] for r in M]
+        i = col.index(min(col))                # the first slot of least count, as min(range, key)
+        del idx[kl[i]]
+        kl[i] = key
+        idx[key] = i
+        old = M[i]
+        ERR[i] = list(old)
+        M[i] = [old[c] + gm[c] for c in range(nm)]
+        E[i] = ge
+        for c in range(ne):
+            EE[c] += ge[c]
+
+
+_H64: Dict[str, int] = {}
+_H64_MAX = 1 << 15            # memoised item hashes (items <= _CLS_STR characters; ~4 MB at most)
+
+
+def _hll_add_items(card: Any, items: Iterable[str], t: float) -> None:
+    """`card.add(item, t)` for every item (psketch.EpochHLL): one epoch
+    rotation at t, then each item's register max; the blake2b hash of an item
+    is memoised (bounded) across calls."""
+    if not items:
+        return
+    cur = getattr(card, "cur", None)
+    if not hasattr(card, "_rotate") or cur is None or not hasattr(cur, "reg"):
+        for it in items:
+            card.add(it, t)
+        return
+    card._rotate(float(t))
+    hll = card.cur
+    reg = hll.reg
+    wbits = 64 - hll.p
+    mask = (1 << wbits) - 1
+    cache = _H64
+    for it in items:
+        x = cache.get(it)
+        if x is None:
+            x = PS._h64(it)
+            if len(it) <= _CLS_STR:
+                if len(cache) >= _H64_MAX:
+                    cache.clear()
+                cache[it] = x
+        i = x >> wbits
+        rho = wbits + 1 - (x & mask).bit_length()
+        if rho > reg[i]:
+            reg[i] = rho
+
+
 class AttrRecord:
     """Registry record of one attribute (§5.3)."""
 
@@ -317,58 +526,112 @@ class AttrRegistry:
         rec.day_pres += tot_m
         if apm > 0:
             rec.approx.add(t, apm)
-        # type evidence (evidence-weighted: typing is about what was observed)
-        te = [0.0] * len(_TE)
-        nums: List[float] = []
-        num_m: List[float] = []
+        # type evidence (evidence-weighted: typing is about what was observed).
+        # Batched per call (bit-identical to the per-row form, which the
+        # equivalence test keeps as its reference, tests/lib/
+        # test_pregistry_batch_equivalence.py, on recorded pack O streams):
+        # each distinct value is classified once, and with unit evidence (P02's
+        # case) the fields are integer counts, so summing per distinct value
+        # gives the same floats as the per-row sums.
         is_time_name = rec.name.endswith("_ts") or rec.name.endswith(".ts")
-        for v, e, mm in zip(vals, ev, m):
-            te[0] += e
-            x = _num(v)
-            if x is not None:
-                nums.append(x)
-                num_m.append(mm)
-                te[1] += e
-                if x.is_integer():
-                    te[2] += e
-                if is_time_name and 1e9 <= x <= 4e9:
-                    te[7] += e
-            if isinstance(v, str):
-                te[8] += e * len(v)
-                if x is None:
-                    te[10] += e
-                    if _ip_parse(v) is not None:
-                        te[3] += e
-                    elif "=" in v and len(v) <= 4096 and _KV_RE.match(v):
-                        te[5] += e
-                    elif v[:1] in "{[" and len(v) <= 4096:
-                        try:
-                            json.loads(v)
-                            te[6] += e
-                        except ValueError:
-                            pass
-            elif isinstance(v, (frozenset, set, list)):
-                te[4] += e
-            elif isinstance(v, tuple):
-                te[9] += e
+        # (memo across calls, bounded: the classification is a function of the
+        # value and of is_time_name; values recur from tick to tick)
+        memo = _CLS_MEMO[1 if is_time_name else 0]
+        if len(memo) >= _CLS_MAX:
+            memo.clear()
+        classes = []
+        for v in vals:
+            try:
+                # (not for a float zero: 0.0 == -0.0, and the row's own value is
+                # kept; not for long strings)
+                cls = v.__class__
+                k = (cls, v) if ((cls is not float or v != 0.0)
+                                 and (cls is not str or len(v) <= _CLS_STR)) else None
+                c = memo.get(k) if k is not None else None
+            except TypeError:                              # unhashable (a list)
+                k = c = None
+            if c is None:
+                c = _classify(v, is_time_name)
+                if k is not None:
+                    memo[k] = c
+            classes.append(c)
+        te = [0.0] * len(_TE)
+        if all(e == 1.0 for e in ev):
+            cnt: Dict[int, List[Any]] = {}
+            for c in classes:
+                hit = cnt.get(id(c))
+                if hit is None:
+                    cnt[id(c)] = [c, 1]
+                else:
+                    hit[1] += 1
+            for c, k_ in cnt.values():
+                vec = c[1]
+                for i in c[2]:
+                    te[i] += k_ * vec[i]
+        else:
+            for c, e in zip(classes, ev):
+                vec = c[1]
+                for i in c[2]:
+                    te[i] += e * vec[i] if i == 8 else e
         rec.te.add(t, te)
-        # distinct values and level-1 keys
+        nums = [c[0] for c in classes if c[0] is not None]
+        num_m = [mm for c, mm in zip(classes, m) if c[0] is not None]
+        # distinct values: the HLL registers are a max over the hashed items,
+        # so each distinct item is hashed and folded in once (same registers)
         card = rec.card
+        items = set()
+        jm: Dict[Any, str] = {}
         for v in vals[:4096]:
-            card.add(v if not isinstance(v, (frozenset, set, list, tuple))
-                     else "|".join(sorted(str(x) for x in v)), t)
-        top = rec.top
-        key = rec.key
+            if isinstance(v, (frozenset, set, list, tuple)):
+                try:
+                    it = jm.get(v)
+                except TypeError:
+                    it = None
+                if it is None:
+                    it = "|".join(sorted(str(x) for x in v))
+                    if _all_str(v):                        # (equal sets of str: equal joins)
+                        jm[v] = it
+            else:
+                it = v if type(v) is str else str(v)
+            items.add(it)
+        _hll_add_items(card, items, t)
+        # level-1 keys and set elements (mass / evidence per row, in row order)
         dropped = rec.role_sys == "dropped"
-        for v, mm, e in zip(vals, m, ev):
-            top.add(key(v), t, mm, e)
-            if dropped:
-                continue
-            if isinstance(v, (frozenset, set, list)):
-                if rec.elem is None:
-                    rec.elem = PS.DecayedSpaceSaving(TOP_K)
-                for x in list(v)[:32]:
-                    rec.elem.add(str(x), t, mm, e)
+        if rec.type == "text":
+            km: Dict[Any, Any] = {}
+            keys = []
+            for v in vals:
+                if isinstance(v, str):
+                    kk = (v.__class__, v)
+                    x = km.get(kk)
+                    if x is None:
+                        x = km[kk] = shape(v)
+                    keys.append(x)
+                else:
+                    keys.append(rec.key(v))
+        else:
+            keys = [v if v.__class__ in _PLAIN_KEY else rec.key(v) for v in vals]
+        ss_add_rows(rec.top, keys, t, m, ev)
+        if not dropped:
+            ek, ew, ee = [], [], []
+            em: Dict[Any, List[str]] = {}
+            for v, mm, e in zip(vals, m, ev):
+                if isinstance(v, (frozenset, set, list)):
+                    if rec.elem is None:
+                        rec.elem = PS.DecayedSpaceSaving(TOP_K)
+                    try:
+                        xs = em.get(v)
+                    except TypeError:
+                        xs = None
+                    if xs is None:
+                        xs = [str(x) for x in set_elements(v)[:32]]
+                        if _all_str(v):
+                            em[v] = xs
+                    ek.extend(xs)
+                    ew.extend([mm] * len(xs))
+                    ee.extend([e] * len(xs))
+            if ek:
+                ss_add_rows(rec.elem, ek, t, ew, ee)
         # numeric summaries (not for a dropped attribute: registry-only)
         if nums and not dropped:
             if rec.num is None:
@@ -376,15 +639,28 @@ class AttrRegistry:
                 rec.mom = PS.DecayedVector([PS.H_M] * 9)
             xv = np.asarray(nums)
             mv = np.maximum(np.asarray(num_m), 1e-12)
-            xm = np.clip(xv, -1e30, 1e30)             # moments only (skewness test)
+            vmin = float(xv.min())
+            # moments only (skewness test): values clipped to +-1e30 (np.clip
+            # costs ~5 us a call; nothing to clip is the rule)
+            xm = xv if (vmin >= -1e30 and float(xv.max()) <= 1e30) else np.clip(xv, -1e30, 1e30)
             rec.num.add_many(xv, t, mv)
             pos = xv > 0
             lv = np.log(np.where(pos, xv, 1.0))
-            rec.mom.add(t, np.asarray([
-                mv.sum(), (mv * xm).sum(), (mv * xm ** 2).sum(), (mv * xm ** 3).sum(),
-                (mv * pos).sum(), (mv * lv * pos).sum(), (mv * lv ** 2 * pos).sum(),
-                (mv * lv ** 3 * pos).sum(), 0.0]))
-            vmin = float(xv.min())
+            # the 8 weighted moment sums as one row-wise reduction of a C-ordered
+            # (8, n) array: numpy sums each contiguous row pairwise exactly as
+            # the 1-d .sum() of that row (bit-identical, test)
+            M = np.empty((8, xv.size))
+            M[0] = mv
+            M[1] = mv * xm
+            M[2] = mv * xm ** 2
+            M[3] = mv * xm ** 3
+            M[4] = mv * pos
+            M[5] = mv * lv * pos
+            M[6] = mv * lv ** 2 * pos
+            M[7] = mv * lv ** 3 * pos
+            mo = np.zeros(9)
+            M.sum(axis=1, out=mo[:8])
+            rec.mom.add(t, mo)
             rec.hier["vmin"] = min(rec.hier.get("vmin", vmin), vmin)
         return n
 
@@ -475,13 +751,11 @@ class AttrRegistry:
         """Entropy (Chao-Shen on evidence), stability 1 - JSD(p_Hs, p_Hl),
         approx share, log flag."""
         for rec in self.records.values():
-            items = rec.top.items(t, PS.CH_M)
-            if items:
-                keys, sh, other = rec.top.distribution(t, PS.CH_M)
+            if len(rec.top):                       # (tracked keys: what top.items() tested)
+                (keys, sh, other), (_, sh_s, o_s), (_, sh_l, o_l) = \
+                    _distributions(rec.top, t, (PS.CH_M, PS.CH_S, PS.CH_L))
                 rec.entropy = entropy_from_top(sh, other, rec.card.count(), len(keys))
-                keys, sh_s, o_s = rec.top.distribution(t, PS.CH_S)
-                _, sh_l, o_l = rec.top.distribution(t, PS.CH_L)
-                rec.stability = 1.0 - pmdl.jsd(np.r_[sh_s, o_s], np.r_[sh_l, o_l])
+                rec.stability = 1.0 - pmdl.jsd(np.append(sh_s, o_s), np.append(sh_l, o_l))
             pm = float(rec.pres.read(t)[PS.CH_M])
             rec.approx_share = float(rec.approx.read(t)[0] / pm) if pm > 0 else 0.0
             if rec.mom is not None:
@@ -685,6 +959,22 @@ def _occupancy_jsd(td: PS.TDigest, old: np.ndarray, new: np.ndarray, lg: bool) -
     if o_new.size != o_old.size:
         o_new = np.full(o_old.size, 1.0 / o_old.size)
     return pmdl.jsd(o_old, o_new)
+
+
+def set_elements(v: Any) -> List[Any]:
+    """The elements of a set-typed value in a process-independent order: a
+    (frozen)set iterates in str-hash order, which Python salts per process
+    (PYTHONHASHSEED), so which 32 elements a large set contributes and the
+    order of the element sketch's slots (its eviction ties) differed between
+    two identical runs (§16.12.6). Sets are sorted by (str, type name); a
+    list keeps its own order."""
+    if isinstance(v, (set, frozenset)):
+        return sorted(v, key=_elem_key)
+    return list(v)
+
+
+def _elem_key(x: Any) -> Tuple[str, str]:
+    return str(x), type(x).__name__
 
 
 def value_policy_matches(name: str, globs: Iterable[str]) -> bool:

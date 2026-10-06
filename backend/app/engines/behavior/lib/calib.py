@@ -69,6 +69,30 @@ refit every 16 ticks, 2e5 null ticks; realised rate / nominal):
     1/ln 10, so the floor binds only through sampling noise
     (tests/lib/test_calib_sigma_floor.py).
 
+Lower atom (round 5, decision-chain owner): a score at or below the lowest
+level its ring has observed gets the upper p of its tie block, p = 1, not
+the randomised p. Many detectors have a point mass at their minimum (a
+silence or CUSUM statistic of 0, a JSD of 0, -log10 pm = 0 at pm = 1); on a
+ring that holds only that atom the randomised rule issued p = U, a seeded
+coin flip, so a perfectly normal source (the health monitor of pack O,
+192.168.9.9: conf_who score 0 and pm = 1 on every tick, ring all zeros)
+received p ~ 1e-4 by chance and opened incidents on every seed (§16.12.15
+item 4). "No more extreme than anything seen" is no evidence. Randomisation
+is kept within every genuinely tied level ABOVE the lowest one (a discrete
+detector's lattice values), where it is needed for resolution. Validity:
+the issued p is pointwise >= the randomised p, which is exactly uniform
+under exchangeability, so P(p <= a) <= a for every a (conservative only on
+the atom's block; tests/lib/test_calib_lower_atom.py simulates it). The
+calibration MONITORS that test exact uniformity (B24's KS health and rate,
+its live power correction, B25's ACI and CUSUM-input calibration) observe
+the fully randomised p (`rand_atom=True`): with the atom piled at 1 they
+would read a calibrated detector as miscalibrated and relax the thresholds
+to spend the null budget elsewhere. B25's meta rings also learn the fused
+randomised p (fusion.rand_row) while its decisions use the issued p: the
+coin flips had been part of the rings' null for every body detector, and
+rings learnt without them sharpened the evidence CUSUM on serially
+dependent detectors (pack A seed 0: 10 -> 17 clean CUSUM alarms).
+
 Round 4: B24 and B25 fit robust_tail - at most TRIM_EPS (2 %) of the ring
 trimmed as contamination (trim_count) and the predictive shape floor
 xi >= 1/n_u - because their rings now admit every row of a trusted period
@@ -305,13 +329,15 @@ class Ring:
             self.gpd = None
         return n_removed
 
-    def p_value(self, score: float, u: float) -> float:
-        """Randomised conformal p (combine.randomized_conformal_p) on this ring only.
+    def p_value(self, score: float, u: float, rand_atom: bool = False) -> float:
+        """Conformal p (_conformal_p) on this ring only: randomised within a
+        tied level, 1 at or below the lowest level (empty ring: 1; with
+        rand_atom: the fully randomised p, empty ring -> u).
 
         score is float32-rounded first, exactly as add() stores it. NaN score
-        or u -> NaN; empty ring -> u.
+        or u -> NaN.
         """
-        return _conformal_p(self.scores, _r32(score), u)
+        return _conformal_p(self.scores, _r32(score), u, rand_atom)
 
     def quantile(self, q: float) -> float:
         """Empirical quantile (numpy 'linear'); NaN on an empty ring.
@@ -662,7 +688,7 @@ def fit_tail(ring: Ring, now_ts: float = float("nan"),
 
 
 def p_from_ring(ring: Ring, s: float, u: float, tail: Optional[GPDTail] = None,
-                sigma_min: float = 0.0) -> float:
+                sigma_min: float = 0.0, rand_atom: bool = False) -> float:
     """Calibrated p of score s.
 
     1. s NaN -> NaN.
@@ -671,7 +697,11 @@ def p_from_ring(ring: Ring, s: float, u: float, tail: Optional[GPDTail] = None,
        and, with sigma_min > 0, at least tail.rate * exp(-(s - tail.u) / sigma_min)
        floored at 1e-300 (this is how p < 1/(M+1) is reached), and capped
        at 1/(n+1) when s is above every ring entry (see module docstring).
-    3. Otherwise the randomised conformal p on the ring.
+    3. Otherwise the conformal p on the ring: randomised within a tied
+       level, except at or below the ring's lowest level, where it is the
+       upper p of the tie block, 1 (`_conformal_p`, "lower atom" in the
+       module docstring); `rand_atom` = True gives the fully randomised p
+       there too (exactly uniform under the null: calibration monitors only).
     Complexity O(log M).
 
     `sigma_min` (round 4, evaluator): a lower bound on the tail scale for a
@@ -702,30 +732,59 @@ def p_from_ring(ring: Ring, s: float, u: float, tail: Optional[GPDTail] = None,
             if p > cap:
                 p = cap
         return p
-    return _conformal_p(ring.scores, x, u)
+    return _conformal_p(ring.scores, x, u, rand_atom)
 
 
-def _conformal_p(sc: np.ndarray, x: float, u: float) -> float:
-    """combine.randomized_conformal_p for a ring that holds its invariant
-    (float64, sorted, finite), bit-identical to it but ~3x cheaper: it skips
-    the generic dtype / NaN handling and uses the ndarray.searchsorted method
-    (np.searchsorted's dispatch alone costs ~0.7 us). This is the per (key,
-    detector) per tick hot path (B24 Perf: 40 x 31 bisects ~ 2 ms). Anything
-    else (e.g. arrays assigned by hand) goes through combine unchanged.
+def _conformal_p(sc: np.ndarray, x: float, u: float, rand_atom: bool = False) -> float:
+    """Conformal p of x on a sorted ring (module docstring "Lower atom"):
+
+        lo = #{c < x}, hi = #{c <= x}, n = |C|
+        lo == 0 (x at or below the lowest ring level, or an empty ring):
+                    p = 1                       (upper p of the tie block)
+        otherwise:  p = ((n - hi) + u (hi - lo + 1)) / (n + 1)   (randomised)
+
+    `rand_atom` = True: the randomised formula everywhere (combine.
+    randomized_conformal_p; empty ring -> u), exactly uniform under the null.
+
+    For a ring that holds its invariant (float64, sorted, finite) this is
+    the ~3x cheaper bisect form of combine.randomized_conformal_p (it skips
+    the generic dtype / NaN handling and uses the ndarray.searchsorted method;
+    np.searchsorted's dispatch alone costs ~0.7 us): the per (key, detector)
+    per tick hot path (B24 Perf: 40 x 31 bisects ~ 2 ms). Anything else
+    (e.g. arrays assigned by hand) goes through combine.
     """
     if x != x:
         return math.nan
     n = sc.size
     if not n or sc.dtype != np.float64 or sc[-1] != sc[-1]:
-        return combine.randomized_conformal_p(sc, x, u)
+        p = combine.randomized_conformal_p(sc, x, u)
+        if rand_atom or p != p or not _generic_at_floor(sc, x):
+            return p
+        return 1.0
     u = _f(u)
     if u != u:
         return math.nan
     if not 0.0 <= u <= 1.0:
         raise ValueError(f"randomized_conformal_p: u={u!r} outside [0, 1]")
     lo = int(sc.searchsorted(x, "left"))
+    if lo == 0 and not rand_atom:
+        return 1.0
     hi = int(sc.searchsorted(x, "right"))
     return ((n - hi) + u * ((hi - lo) + 1)) / (n + 1)
+
+
+def _generic_at_floor(sc: Any, x: float) -> bool:
+    """lo == 0 for an arbitrary ring array (combine.randomized_conformal_p's
+    conventions: trailing NaN dropped, a float32 ring compared at float32)."""
+    c = sc if isinstance(sc, np.ndarray) else np.asarray(sc, dtype=np.float64)
+    n = int(c.size)
+    if n and c[-1] != c[-1]:
+        n = int(np.searchsorted(c, np.nan, side="left"))
+    if n == 0:
+        return True
+    if c.dtype == np.float32:
+        x = float(np.float32(x)) if abs(x) < 3.4e38 else math.copysign(math.inf, x)
+    return not float(c[0]) < x
 
 
 def blend_small_sample(p_conf: float, p_model: float, n: int, n0: int = SMALL_N) -> float:

@@ -256,6 +256,97 @@ def screen_pair(xs: Sequence[Any], ys: Sequence[Any], w: Sequence[float]) -> Opt
             "fd": bool(fd), "set": bool(st), "n": len(xs)}
 
 
+def _factorize(vals: Sequence[Any]) -> Tuple[np.ndarray, List[Any]]:
+    """(codes, representatives): codes in first-appearance order with dict
+    key semantics (1 == 1.0 == True share a code, as they share a key in
+    screen_pair); None -> -1."""
+    cmap: Dict[Any, int] = {}
+    reps: List[Any] = []
+    out = np.empty(len(vals), dtype=np.int64)
+    for i, v in enumerate(vals):
+        if v is None:
+            out[i] = -1
+            continue
+        c = cmap.get(v)
+        if c is None:
+            c = cmap[v] = len(reps)
+            reps.append(v)
+        out[i] = c
+    return out, reps
+
+
+def _first_order(codes: np.ndarray, n_codes: int) -> Tuple[np.ndarray, int]:
+    """Local index of every element: codes renumbered in their order of first
+    appearance within `codes` (a dict's insertion order); and their number."""
+    n = codes.size
+    first = np.full(n_codes, n, dtype=np.int64)
+    np.minimum.at(first, codes, np.arange(n, dtype=np.int64))
+    present = np.flatnonzero(first < n)
+    order = present[np.argsort(first[present], kind="stable")]
+    lut = np.empty(n_codes, dtype=np.int64)
+    lut[order] = np.arange(order.size, dtype=np.int64)
+    return lut[codes], int(order.size)
+
+
+def _screen_pair_codes(xc: np.ndarray, yc: np.ndarray, w: np.ndarray, nx_all: int, ny_all: int,
+                       x_shared: np.ndarray) -> Dict[str, Any]:
+    """screen_pair on factorised values (xc, yc: codes >= 0 of _factorize,
+    x_shared: is_shared of each x code), float for float: per-cell, per-y
+    sums are accumulated in row order (np.bincount adds in input order, as
+    the dicts did) and every sum over cells is taken in the dicts' insertion
+    (first-appearance) order (tests/lib/test_pfd_screen_equivalence.py)."""
+    n = int(xc.size)
+    lx, nx = _first_order(xc, nx_all)
+    ly, ny = _first_order(yc, ny_all)
+    ym = np.bincount(ly, weights=w, minlength=ny).tolist()
+    rows = np.bincount(lx, minlength=nx)
+    pair = lx * ny + ly
+    if nx * ny <= DENSE_CELLS:
+        # dense (x, y) table: per-cell sums in row order, absent cells masked
+        cnt = np.bincount(pair, minlength=nx * ny).reshape(nx, ny)
+        dense = np.bincount(pair, weights=w, minlength=nx * ny).reshape(nx, ny)
+        mx = np.where(cnt > 0, dense, -np.inf).max(axis=1)
+        ncell = (cnt > 0).sum(axis=1)
+    else:
+        cell, cinv = np.unique(pair, return_inverse=True)
+        csum = np.bincount(cinv.ravel(), weights=w, minlength=cell.size)
+        cx = cell // ny
+        mx = np.full(nx, -np.inf)
+        np.maximum.at(mx, cx, csum)
+        ncell = np.bincount(cx, minlength=nx)
+    hy = _entropy_list(ym)
+    # x's shared flag by local index
+    xs_local = np.empty(nx, dtype=bool)
+    xs_local[lx] = x_shared[xc]
+    rows_l = rows.tolist()
+    ncell_l = ncell.tolist()
+    heavy = [i for i in range(nx) if rows_l[i] >= SCREEN_MIN_ROWS and not xs_local[i]]
+    N = sum(ym)
+    g3 = 1.0 - sum(mx.tolist()) / N if N > 0 else 1.0
+    med = float(_median([ncell_l[i] for i in heavy])) if heavy else math.inf
+    rep = float(_median([rows_l[i] / ncell_l[i] for i in heavy])) if heavy else 0.0
+    g3_0 = 1.0 - max(ym) / N if N > 0 else 0.0
+    lam = (g3_0 - g3) / g3_0 if g3_0 > 1e-12 else 0.0
+    fd = hy >= SCREEN_HY and len(heavy) >= 2 and g3 <= SCREEN_G3 and lam >= SCREEN_LAMBDA
+    st = (not fd) and hy >= SCREEN_HY_SET and len(heavy) >= 1 and med <= SCREEN_SET_MED \
+        and rep >= SCREEN_SET_REP
+    return {"hy": float(hy), "g3": float(g3), "lambda": float(lam), "heavy": len(heavy),
+            "med_set": med if math.isfinite(med) else None,
+            "fd": bool(fd), "set": bool(st), "n": n}
+
+
+def _entropy_list(vals: Sequence[float]) -> float:
+    """_entropy over a list of weights in a dict's value order."""
+    tot = sum(v for v in vals if v > 0)
+    if tot <= 0:
+        return 0.0
+    return float(-sum((v / tot) * math.log2(v / tot) for v in vals if v > 0))
+
+
+SCREEN_DICT_N = 48      # below this many rows the dict form (screen_pair) is the faster one
+DENSE_CELLS = 1 << 16   # (x, y) tables up to this size are dense in _screen_pair_codes
+
+
 def screen(rows: Sequence[Mapping[str, Any]], w: np.ndarray, x_cands: Sequence[Tuple[str, int]],
            y_cands: Sequence[str], gen: Callable[[str, int, Any], Any],
            q_pairs: int = Q_PAIRS, absent: Any = None,
@@ -270,10 +361,16 @@ def screen(rows: Sequence[Mapping[str, Any]], w: np.ndarray, x_cands: Sequence[T
     portal's random users dilutes it below the g3 bar. `card(attr)` (the
     registry's distinct count): a set binding needs its payload side to be an
     identifier-like attribute (>= SET_MIN_CARD distinct values system-wide);
-    'json is only sent by these two IPs' in an 8-row stratum is not one."""
+    'json is only sent by these two IPs' in an 8-row stratum is not one.
+
+    Cost (round 5): every column is factorised once per call and each
+    (X, Y, stratum) test runs on integer codes (_screen_pair_codes; the
+    dict form for small groups), the same statistics float for float as
+    the per-pair dict form (_screen_ref, tests/lib/test_pfd_screen_equivalence.py)."""
     out = []
-    # generalised X values once per row (not once per (X, Y) pair)
-    xcols: Dict[Tuple[str, int], List[Any]] = {}
+    n_rows = len(rows)
+    # generalised X values once per row (not once per (X, Y) pair), factorised
+    xcols: Dict[Tuple[str, int], Tuple[List[Any], np.ndarray, List[Any], np.ndarray]] = {}
     for (xa, xl) in x_cands:
         col = []
         memo: Dict[Any, Any] = {}
@@ -289,47 +386,57 @@ def screen(rows: Sequence[Mapping[str, Any]], w: np.ndarray, x_cands: Sequence[T
             except TypeError:                     # unhashable value
                 g = gen(xa, xl, xv)
             col.append(None if g is absent else g)
-        xcols[(xa, xl)] = col
-    wl = [float(x) for x in w]
+        codes, reps = _factorize(col)
+        xcols[(xa, xl)] = (col, codes, reps, np.asarray([is_shared(v) for v in reps], dtype=bool))
+    wa = np.asarray([float(x) for x in w], dtype=np.float64)
+    if strata is not None:
+        s_codes, _ = _factorize([str(strata[i]) for i in range(n_rows)])
     for yname in y_cands:
-        idx = []
-        yv_all = {}
-        for i, r in enumerate(rows):
+        yv = []
+        for r in rows:
             v = r.get(yname, absent)
             if v is not absent and v is not None and not isinstance(v, Shaped) \
                     and isinstance(v, (str, int, float, bool)):
-                idx.append(i)
-                yv_all[i] = v
-        if len(idx) < 2 * SCREEN_MIN_ROWS:
+                yv.append(v)
+            else:
+                yv.append(None)
+        y_codes, y_reps = _factorize(yv)
+        y_ok = y_codes >= 0
+        if int(y_ok.sum()) < 2 * SCREEN_MIN_ROWS:
             continue
+        y_shared = np.asarray([is_shared(v) for v in y_reps], dtype=bool)
+        id_like = card is None or float(card(yname)) >= SET_MIN_CARD
         for (xa, xl) in x_cands:
-            col = xcols[(xa, xl)]
-            xs, ys, ww = [], [], []
-            for i in idx:
-                g = col[i]
-                if g is None:
-                    continue
-                xs.append(g)
-                ys.append(yv_all[i])
-                ww.append(wl[i])
-            if len(xs) < 2 * SCREEN_MIN_ROWS:
+            col, x_codes, x_reps, x_shared = xcols[(xa, xl)]
+            sel_rows = np.flatnonzero(y_ok & (x_codes >= 0))
+            if sel_rows.size < 2 * SCREEN_MIN_ROWS:
                 continue
             xn = x_name(xa, xl)
-            groups: Dict[Optional[str], List[int]] = {None: list(range(len(xs)))}
+            xc_all, yc_all, w_all = x_codes[sel_rows], y_codes[sel_rows], wa[sel_rows]
+            groups: List[Tuple[Optional[str], np.ndarray]] = [(None, np.arange(sel_rows.size))]
             if strata is not None:
-                for j, i in enumerate(i for i in idx if col[i] is not None):
-                    groups.setdefault(str(strata[i]), []).append(j)
-            for gk, sel in groups.items():
-                if len(sel) < 2 * SCREEN_MIN_ROWS or (gk is not None and len(groups) == 2):
+                sc = s_codes[sel_rows]
+                ls, ns = _first_order(sc, int(s_codes.max()) + 1)
+                order = np.argsort(ls, kind="stable")
+                bounds = np.searchsorted(ls[order], np.arange(ns + 1))
+                for g_ in range(ns):
+                    mem = order[bounds[g_]:bounds[g_ + 1]]
+                    groups.append((str(strata[int(sel_rows[mem[0]])]), mem))
+            for gk, sel in groups:
+                if sel.size < 2 * SCREEN_MIN_ROWS or (gk is not None and len(groups) == 2):
                     continue                     # one stratum only: the pooled test is the same
-                gx = [xs[j] for j in sel]
-                gy = [ys[j] for j in sel]
-                gw = [ww[j] for j in sel]
-                id_like = card is None or float(card(yname)) >= SET_MIN_CARD
-                st = screen_pair(gx, gy, gw)
+                gxc, gyc, gw = xc_all[sel], yc_all[sel], w_all[sel]
+                if sel.size < SCREEN_DICT_N:
+                    gx = [x_reps[c] for c in gxc.tolist()]
+                    gy = [y_reps[c] for c in gyc.tolist()]
+                    gwl = gw.tolist()
+                    st = screen_pair(gx, gy, gwl)
+                    rs = screen_pair(gy, gx, gwl)
+                else:
+                    st = _screen_pair_codes(gxc, gyc, gw, len(x_reps), len(y_reps), x_shared)
+                    rs = _screen_pair_codes(gyc, gxc, gw, len(y_reps), len(x_reps), y_shared)
                 if st is not None and (st["fd"] or (st["set"] and id_like)):
                     out.append({"x": xn, "y": yname, "dir": "fwd", "stats": st, "strata": [gk]})
-                rs = screen_pair(gy, gx, gw)
                 if rs is not None and (rs["fd"] or (rs["set"] and id_like)):
                     out.append({"x": yname, "y": xn, "dir": "rev", "stats": rs, "strata": [gk]})
     out.sort(key=lambda d: (-(1.0 - d["stats"]["g3"]) * max(d["stats"].get("lambda", 0.0), 0.0)
@@ -372,7 +479,9 @@ def pair_counts(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, 
         U = tab.unseen(t)
         ex = (exclude or {}).get(str(x))
         if ex:
-            drop = {k for k in ys if str(_jv(k)) in ex}
+            # (a list in the sketch's order: a set of str keys would sum the
+            # dropped evidence in a per-process hash order, §16.12.6)
+            drop = [k for k in ys if str(_jv(k)) in ex]
             if drop and len(drop) < len(ys):
                 n = max(0.0, n - sum(ys[k] for k in drop))
                 ys = {k: e for k, e in ys.items() if k not in drop}
@@ -506,7 +615,9 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
     # (n_x >= n_bind): a DHCP pool whose personas show up on a new address every
     # day contributes many one-login sources that are neither bound nor
     # counter-examples, and must not veto 综合部's bindings at a shared login node
-    judged = {x for x in heavy if heavy[x]["n"] >= n_bind or table[_jx(x)].get("bound")}
+    # (a list in the sources' order, not a set: the masses below were summed
+    # in str-hash order, which differs between processes, §16.12.6)
+    judged = [x for x in heavy if heavy[x]["n"] >= n_bind or table[_jx(x)].get("bound")]
     ents = dict(zip(heavy, table.values()))
     tot_mass = sum(heavy[x]["mass"] for x in judged)
     set_mass = sum(heavy[x]["mass"] for x in judged if ents[x].get("set"))
@@ -804,7 +915,9 @@ def classify(hx: Optional[Mapping[str, Any]], values: Iterable[Any], t: float,
     alone, and at least one value always remains."""
     if not hx:
         return {}
-    vals = {str(_jv(y)) for y in values}
+    # (values in a fixed order: the verdict dict's order becomes the order of
+    # the 'superseded' / 'pending' lists on the fitted table entries)
+    vals = sorted({str(_jv(y)) for y in values})
     known = {y: hx["v"][y] for y in vals if y in hx["v"]}
     if len(known) < 2:
         return {}

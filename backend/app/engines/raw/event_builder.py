@@ -71,6 +71,7 @@ FIELD_ATTR: Dict[str, str] = {
 }
 _SKIP_FIELDS = frozenset({"ts", "system", "entity", "peer", "method", "extra", "http_path",
                           "reachability", "open_ports", "hop_count"})
+_FIELDS: Dict[type, Tuple[Tuple[str, str], ...]] = {}   # (field, attribute) per Observation class, in slot order
 _EXTRA_KNOWN = frozenset({"count", "ts_sample", "bytes_up_total", "bytes_down_total",
                           "retransmits_total", "l7", "meta", "ev_sample", "sample_rate", "ja4"})
 
@@ -193,13 +194,14 @@ class EventBuilderEngine(Engine):
               who_headers: Tuple[str, ...], headers: Optional[Mapping[str, Any]],
               tpl: Any) -> Dict[str, Any]:
         a: Dict[str, Any] = {}
-        for f in o.__slots__:
-            if f in _SKIP_FIELDS:
-                continue
+        fields = _FIELDS.get(type(o))
+        if fields is None:
+            fields = _FIELDS[type(o)] = tuple((f, FIELD_ATTR.get(f, "obs." + f)) for f in o.__slots__
+                                              if f not in _SKIP_FIELDS)
+        for f, nm in fields:
             v = getattr(o, f)
             if v is None or v == "" or v == 0 or v == 0.0:
                 continue
-            nm = FIELD_ATTR.get(f, "obs." + f)
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 a[nm] = float(v)
             else:
@@ -313,6 +315,7 @@ class EventBuilderEngine(Engine):
                 except Exception:
                     stats["parse_errors"] += 1
                     continue
+                rec_parsed = None              # the record's own l7 parsed once for all its rows
                 for r in rows:
                     e = dict(base)
                     ts = float(o.ts)
@@ -337,12 +340,24 @@ class EventBuilderEngine(Engine):
                     elif count > 1:
                         flags |= EV.FLAG_APPROX
                     if l7:
-                        try:
-                            pa, trunc = PP.parse_l7(l7, cookies, hkey, k_body, body_cap, parse_on)
+                        # rows without their own l7 view share the record's: it is
+                        # parsed once per record (parse_l7 is a pure function of its
+                        # arguments; its values are immutable and copied by update)
+                        if l7 is l7_rec and rec_parsed is not None:
+                            parsed = rec_parsed
+                        else:
+                            try:
+                                parsed = PP.parse_l7(l7, cookies, hkey, k_body, body_cap, parse_on)
+                            except Exception:
+                                parsed = None
+                            if l7 is l7_rec:
+                                rec_parsed = parsed if parsed is not None else False
+                        if parsed:
+                            pa, trunc = parsed
                             e.update(pa)
                             if trunc:
                                 flags |= EV.FLAG_TRUNC
-                        except Exception:
+                        else:
                             stats["parse_errors"] += 1
                     for nm, how in parse_as.items():
                         v = e.get(nm)

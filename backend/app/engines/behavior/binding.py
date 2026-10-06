@@ -101,6 +101,24 @@ def _stratum(get) -> str:
     return "ch=" + (str(v) if v is not EV.ABSENT else "?")
 
 
+def _stratum_of(s_cols: List[Tuple[str, Optional[List[Any]]]], ch_col: Optional[List[Any]], i: int,
+                ip: str, memo: Dict[Any, str]) -> str:
+    """_stratum of row i from the columns of STRATUM_KEYS (None: not a batch
+    or context attribute) and of ev.ch."""
+    for a, col in s_cols:
+        v = col[i] if col is not None else (ip if a == "net.src" else EV.ABSENT)
+        if v is not EV.ABSENT and v is not None:
+            if v.__class__ is not str:
+                return f"{a}={v}"
+            k = (a, v)
+            out = memo.get(k)
+            if out is None:
+                out = memo[k] = f"{a}={v}"
+            return out
+    v = ch_col[i] if ch_col is not None else EV.ABSENT
+    return "ch=" + (str(v) if v is not EV.ABSENT else "?")
+
+
 def _card(reg: Any, a: str) -> float:
     rec = reg.get(a) if reg is not None else None
     if rec is None:
@@ -250,9 +268,40 @@ class BindingEngine(Engine):
         damp = asg.dense("damp", 1.0) if (asg is not None and asg.n == b.n and asg.has("damp")) else None
         dmemo: Dict[int, int] = {}
         n = 0
-        dense = {a: b.dense(a) for a in list(cols) + [a for a in X_ATTRS if a in b.cols]}
-        for i in rows:
-            i = int(i)
+        dense = {a: b.dense(a).tolist() for a in list(cols) + [a for a in X_ATTRS if a in b.cols]}
+        dense_items = list(dense.items())
+        # column-wise forms of the per-row lookups (round 5; the values the
+        # former per-row `get` closure returned, tests/engines/
+        # test_p08_ingest_equivalence.py): an attribute of the batch, else of
+        # the row-aligned evt.ctx, else net.src = the row's address, else absent
+        n_b = int(b.n)
+        colcache: Dict[str, Optional[List[Any]]] = {}
+
+        def column(a: str) -> Optional[List[Any]]:
+            if a in colcache:
+                return colcache[a]
+            if a in b.cols:
+                out = [b.get(a, i) for i in range(n_b)]
+            elif cb is not None and a in cb.cols:
+                out = [cb.get(a, i) for i in range(n_b)]
+            else:
+                out = None                     # net.src (the row's address) or absent
+            colcache[a] = out
+            return out
+        s_cols = [(a, column(a)) for a in STRATUM_KEYS]
+        ch_col = column("ev.ch")
+        smemo: Dict[Any, str] = {}
+        pspecs = []
+        if specs and hier is not None:
+            for (X, Y) in specs:
+                xa, xl = FD.parse_x(X)
+                ya, yl = FD.parse_x(Y)
+                pspecs.append((xa, xl, ya, yl, pair_key(X, Y), column(xa), column(ya)))
+        ts_all = b.ts.tolist()
+        rid_all = b.rid.tolist()
+        damp_l = damp.tolist() if damp is not None else None
+        hist_all, track_all = st["hist"], st["track"]
+        for i in rows.tolist():
             ip = b.ip_of(i)
             q = qcache.get((s, ip))
             if q is None:
@@ -263,33 +312,23 @@ class BindingEngine(Engine):
                                            or (tr_v == tr_v and tr_v < TRUST_MIN))
             if q:
                 continue
-
-            def get(a: str, i: int = i) -> Any:
-                if a in b.cols:
-                    return b.get(a, i)
-                if cb is not None and a in cb.cols:
-                    return cb.get(a, i)
-                if a == "net.src":
-                    return b.ip_of(i)
-                return EV.ABSENT
-            clean_i = damp is None or not (float(damp[i]) < 1.0)
+            clean_i = damp_l is None or not (float(damp_l[i]) < 1.0)
             row = {"net.src": ip, CLEAN_COL: bool(clean_i)}
-            for a, arr in dense.items():
+            for a, arr in dense_items:
                 v = arr[i]
                 if v is not EV.ABSENT:
                     row[a] = v
-            ts = float(b.ts[i])
+            ts = float(ts_all[i])
             if len(row) > 2:
-                probe.offer(_stratum(get), row, float(mass[i]), ts,
-                            seeded_uniform("p08", s, ts, int(b.rid[i])))
+                probe.offer(_stratum_of(s_cols, ch_col, i, ip, smemo), row, float(mass[i]), ts,
+                            seeded_uniform("p08", s, ts, int(rid_all[i])))
                 n += 1
-            if not specs or hier is None:
+            if not pspecs:
                 continue
             day = None
-            for (X, Y) in specs:
-                xa, xl = FD.parse_x(X)
-                ya, yl = FD.parse_x(Y)
-                xv, yv = get(xa), get(ya)
+            for (xa, xl, ya, yl, pk, xcol, ycol) in pspecs:
+                xv = xcol[i] if xcol is not None else (ip if xa == "net.src" else EV.ABSENT)
+                yv = ycol[i] if ycol is not None else (ip if ya == "net.src" else EV.ABSENT)
                 if xv is EV.ABSENT or yv is EV.ABSENT or xv is None or yv is None:
                     continue
                 xg = hier.gen(xa, xl, xv)
@@ -303,16 +342,15 @@ class BindingEngine(Engine):
                         day = dmemo[mk] = TB.local_datetime(mk * 60.0, tz).date().toordinal()
                     is_normal = bool(normal.get(day, _dt.date.fromordinal(day) not in cal.holidays))
                     clean = clean_i
-                pk = pair_key(X, Y)
-                hist = st["hist"].get(pk)
-                tr = st["track"].get(pk)
+                hist = hist_all.get(pk)
+                tr = track_all.get(pk)
                 if tr is not None:
                     if str(xg) not in tr:
                         continue                # history only for sources some node tracks
                 elif hist is None or str(xg) not in hist.x:
                     continue                    # a screened pair no sketch holds yet: its seeded sources
                 if hist is None:
-                    hist = st["hist"][pk] = FD.ValueHistory()
+                    hist = hist_all[pk] = FD.ValueHistory()
                 hist.observe(str(xg), yg, ts, day, is_normal, clean)
         return n
 

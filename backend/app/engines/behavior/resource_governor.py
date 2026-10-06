@@ -350,7 +350,10 @@ class ResourceGovernorEngine(Engine):
             dv.add(now, [float(b.n), float(len(b.learned_rows()))])
         for s, ips in sources.items():
             lru = st.linger.setdefault(s, OrderedDict())
-            for ip in ips:
+            # sorted: a tick's sources are a set, and the linger LRU's order (the
+            # recency order 'recent[-4096:]' truncates) must not follow the
+            # per-process str-hash order (round 5, hash-seed check)
+            for ip in sorted(ips):
                 if ip in lru:
                     lru.move_to_end(ip)
                 lru[ip] = now
@@ -558,7 +561,7 @@ class ResourceGovernorEngine(Engine):
               cfg: Mapping[str, Any]) -> Dict[str, Any]:
         linger = PA.linger_s(cfg)
         out: Dict[str, Any] = {}
-        systems = set(st.linger) | set(sources)
+        systems = sorted(set(st.linger) | set(sources))
         for s in systems:
             lru = st.linger.get(s) or OrderedDict()
             while lru and next(iter(lru.values())) < now - linger:

@@ -107,6 +107,22 @@ def _shrink(t: float, L: float, hl: np.ndarray) -> np.ndarray:
 
 
 # ========================================================= decayed vector
+_DV_CACHE: Dict[Tuple[float, ...], Tuple[float, List[float]]] = {}
+
+
+def _dv_factors(d: float, hs: Tuple[float, ...]) -> List[float]:
+    """[2^(d / h) for h in hs], remembered for the last d per half-life tuple
+    (a row updates several vectors at the same t and landmark offset)."""
+    hit = _DV_CACHE.get(hs)
+    if hit is not None and hit[0] == d:
+        return hit[1]
+    f = [2.0 ** (d / h) for h in hs]
+    if len(_DV_CACHE) > 64:
+        _DV_CACHE.clear()
+    _DV_CACHE[hs] = (d, f)
+    return f
+
+
 class DecayedVector:
     """A small vector of forward-decayed sums, one half-life per entry (e.g.
     mass at (H_s, H_m, H_l), or several fields at one half-life)."""
@@ -139,8 +155,8 @@ class DecayedVector:
             # (P04 NumSummary moments, 9 entries, once per learned numeric target)
             d = t - self._lm.L
             v = self.v
-            for i, h in enumerate(self._hs):
-                v[i] += float(w[i]) * 2.0 ** (d / h)
+            cur = v.tolist()
+            v[:] = [x + float(wi) * f for x, wi, f in zip(cur, w, _dv_factors(d, self._hs))]
             return
         self.v += np.exp2((t - self._lm.L) / self.hl) * np.asarray(w, dtype=np.float64)
 
@@ -187,6 +203,9 @@ class DecayedVector:
 
 
 # ============================================================ Space-Saving
+_POW_CACHE: List[Any] = [None, None, None, None, None]   # [dlt, mass hl, ev hl, factors m, factors e]
+
+
 class DecayedSpaceSaving:
     """Space-Saving heavy hitters (Metwally, Agrawal & El Abbadi 2005) with
     forward decay, several mass channels and several evidence channels.
@@ -285,23 +304,58 @@ class DecayedSpaceSaving:
             self._rescale_to(t)
             L = t
         dlt = t - L
-        gm = [w * 2.0 ** (dlt / h) for h in self._mh]
-        ge = [ev * 2.0 ** (dlt / h) for h in self._eh]
-        tm = self._tot_m
-        for c in range(len(gm)):
-            tm[c] += gm[c]
-        te = self._tot_e
-        for c in range(len(ge)):
-            te[c] += ge[c]
+        # the growth factors 2^(dlt / h) of the last add are reused when the
+        # offset and half-lives repeat (a row's five who levels and its
+        # categorical targets share t and, mostly, the landmark): the same
+        # floats as computing them again
+        pc = _POW_CACHE
+        if pc[0] == dlt and pc[1] == self._mh and pc[2] == self._eh:
+            pm, pe = pc[3], pc[4]
+        else:
+            pm = [2.0 ** (dlt / h) for h in self._mh]
+            pe = [2.0 ** (dlt / h) for h in self._eh]
+            pc[0], pc[1], pc[2], pc[3], pc[4] = dlt, self._mh, self._eh, pm, pe
         i = self._idx.get(key)
-        if i is not None:
-            row = self._m[i]
+        if len(pm) == 3 and len(pe) == 2:
+            # the usual layout (mass at H_s, H_m, H_l; evidence at H_m, H_l),
+            # unrolled: the same additions as the loops below
+            g0, g1, g2 = w * pm[0], w * pm[1], w * pm[2]
+            e0, e1 = ev * pe[0], ev * pe[1]
+            tm = self._tot_m
+            tm[0] += g0
+            tm[1] += g1
+            tm[2] += g2
+            te = self._tot_e
+            te[0] += e0
+            te[1] += e1
+            if i is not None:
+                row = self._m[i]
+                row[0] += g0
+                row[1] += g1
+                row[2] += g2
+                erow = self._e[i]
+                erow[0] += e0
+                erow[1] += e1
+                return
+            gm = [g0, g1, g2]
+            ge = [e0, e1]
+        else:
+            gm = [w * f for f in pm]
+            ge = [ev * f for f in pe]
+            tm = self._tot_m
             for c in range(len(gm)):
-                row[c] += gm[c]
-            erow = self._e[i]
+                tm[c] += gm[c]
+            te = self._tot_e
             for c in range(len(ge)):
-                erow[c] += ge[c]
-            return
+                te[c] += ge[c]
+            if i is not None:
+                row = self._m[i]
+                for c in range(len(gm)):
+                    row[c] += gm[c]
+                erow = self._e[i]
+                for c in range(len(ge)):
+                    erow[c] += ge[c]
+                return
         if len(self._keys) < self.k:
             self._idx[key] = len(self._keys)
             self._keys.append(key)
@@ -618,8 +672,19 @@ def _sort_key(k: Any) -> str:
 # ================================================================== HLL
 def _h64(item: Any) -> int:
     s = item if type(item) is str else str(item)
-    return int.from_bytes(hashlib.blake2b(s.encode("utf-8", "surrogatepass"),
-                                          digest_size=8).digest(), "big")
+    x = _H64_CACHE.get(s)
+    if x is None:
+        if len(_H64_CACHE) >= _H64_CACHE_MAX:
+            _H64_CACHE.clear()
+        x = _H64_CACHE[s] = int.from_bytes(hashlib.blake2b(s.encode("utf-8", "surrogatepass"),
+                                                           digest_size=8).digest(), "big")
+    return x
+
+
+# blake2b of the same addresses again and again (every node of a learned row's
+# path counts its source in an HLL): a pure function of the text, memoised
+_H64_CACHE: Dict[str, int] = {}
+_H64_CACHE_MAX = 1 << 17
 
 
 class HLL:
@@ -783,6 +848,27 @@ class EpochHLL:
 
 
 # ============================================================== t-digest
+_K_MARGIN = 1e-7
+
+
+def _k_approx(q: float, c: float) -> float:
+    """k(q) in libm arithmetic (within a few ulp of TDigest._k's numpy value)."""
+    return c * math.asin(min(1.0, max(-1.0, 2.0 * q - 1.0)))
+
+
+def _k_threshold(k_left: float, c: float) -> Tuple[float, float]:
+    """(lo, hi): q_right < lo certainly passes k(q_right) - k_left <= 1 and
+    q_right > hi certainly fails (k(q) = c asin(2q - 1), monotone; the margin
+    is ~1e8 times numpy's arcsin error); in between k is evaluated."""
+    z = (k_left + 1.0) / c
+    if z >= math.pi / 2.0 - 1e-6:
+        return 1.0 - _K_MARGIN, math.inf                # every q <= 1 passes (checked near 1)
+    if z <= -math.pi / 2.0 + 1e-6:
+        return -math.inf, _K_MARGIN
+    qs = (math.sin(z) + 1.0) / 2.0
+    return qs - _K_MARGIN, qs + _K_MARGIN
+
+
 class TDigest:
     """Merging t-digest (Dunning & Ertl 2019) with forward-decayed centroid
     weights at one half-life (default H_m). Scale function k1:
@@ -868,6 +954,59 @@ class TDigest:
         self._compress(mu, w)
 
     def _compress(self, mu: np.ndarray, w: np.ndarray) -> None:
+        """Merge sorted centroids while their k-span stays <= 1.
+
+        The merge test k(q_right) - k_left <= 1 is decided on q_right against
+        the threshold q* = (sin((k_left + 1) / c) + 1) / 2 (k is monotone in q)
+        and evaluated with numpy's k only within 1e-7 of q*: bit-identical to
+        evaluating k at every centroid (the reference, `_compress_ref`), which
+        cost one numpy call per input centroid (5.2 s of P04's 74 s on 3 days
+        of pack O, through NumSummary's quantile refresh)."""
+        order = np.argsort(mu, kind="stable")
+        mu, w = mu[order], w[order]
+        tot = float(w.sum())
+        if tot <= 0 or mu.size <= 1:
+            self._mu, self._w = mu, w
+            return
+        mus = mu.tolist()
+        ws = w.tolist()
+        c = self.delta / (2.0 * math.pi)
+        out_mu: List[float] = []
+        out_w: List[float] = []
+        cum = 0.0
+        cur_mu, cur_w = mus[0], ws[0]
+        q_left = 0.0                    # k_left = k(q_left), evaluated by numpy only when needed
+        k_left: Optional[float] = None
+        lo, hi = _k_threshold(_k_approx(q_left, c), c)
+        for i in range(1, len(mus)):
+            wi = ws[i]
+            q_right = (cum + cur_w + wi) / tot
+            if q_right < lo:
+                ok = True
+            elif q_right > hi:
+                ok = False
+            else:
+                if k_left is None:
+                    k_left = float(self._k(np.asarray(q_left)))
+                ok = float(self._k(np.asarray(q_right))) - k_left <= 1.0
+            if ok:
+                cur_mu = cur_mu + (mus[i] - cur_mu) * wi / (cur_w + wi)
+                cur_w += wi
+            else:
+                out_mu.append(cur_mu)
+                out_w.append(cur_w)
+                cum += cur_w
+                q_left = cum / tot
+                k_left = None
+                lo, hi = _k_threshold(_k_approx(q_left, c), c)
+                cur_mu, cur_w = mus[i], wi
+        out_mu.append(cur_mu)
+        out_w.append(cur_w)
+        self._mu = np.asarray(out_mu)
+        self._w = np.asarray(out_w)
+
+    def _compress_ref(self, mu: np.ndarray, w: np.ndarray) -> None:
+        """Reference merge (k evaluated at every centroid); tests compare it with _compress."""
         order = np.argsort(mu, kind="stable")
         mu, w = mu[order], w[order]
         tot = float(w.sum())

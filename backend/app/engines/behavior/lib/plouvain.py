@@ -38,6 +38,8 @@ from typing import Any, Dict, Hashable, Iterable, List, Mapping, Optional, Seque
 
 import numpy as np
 
+from . import pminhash as MH
+
 COVER = 0.9
 COHESION_RATIO = 0.5        # merge_prefix: comparable within-similarity
 PURITY = 0.8
@@ -147,14 +149,14 @@ def modularity(labels: np.ndarray, edges: Mapping[Tuple[int, int], float], resol
     if m <= 0:
         return 0.0
     q = 0.0
-    for c in set(labels.tolist()):
+    for c in sorted(set(labels.tolist())):
         dc = float(deg[labels == c].sum())
         q += inside.get(c, 0.0) / m - resolution * (dc / (2 * m)) ** 2
     return float(q)
 
 
 def _wj(p: Mapping[Any, float], q: Mapping[Any, float]) -> float:
-    keys = set(p) | set(q)
+    keys = MH._ordered(set(p) | set(q))
     num = sum(min(p.get(k, 0.0), q.get(k, 0.0)) for k in keys)
     den = sum(max(p.get(k, 0.0), q.get(k, 0.0)) for k in keys)
     return num / den if den > 0 else 0.0
@@ -490,7 +492,9 @@ def prefix_covers(members: Iterable[str], active: ActiveIndex, cover: float = CO
     with purity >= purity; among prefixes covering the same members the most
     specific one. [] when no such set of <= max_prefixes prefixes exists
     (partial=True returns the prefixes chosen so far instead)."""
-    mem = [r for r in (_ip_int(s) for s in set(members)) if r is not None]
+    # sorted: the greedy's ties follow the candidates' order (round 5: it was
+    # the set's iteration order, so two runs covered a group differently)
+    mem = sorted({r for r in (_ip_int(s) for s in members) if r is not None})
     if not mem:
         return []
     need = cover * len(mem)

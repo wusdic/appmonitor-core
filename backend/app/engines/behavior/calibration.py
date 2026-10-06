@@ -16,7 +16,19 @@ How (docs/lib3/engines.md B24):
     compared with the day ring, and a 60-s score never with 900-s history.
   * Randomised conformal p = (#{c > s} + U (#{c == s} + 1)) / (|C| + 1),
     U = combine.seeded_uniform(s, e, d, ts) so replay (B29) is bit-exact.
-    Ties at a sparse detector's zero spread uniformly instead of piling at 1.
+    Round 5 (lib/calib "Lower atom"): a score at or below the ring's LOWEST
+    level is issued p = 1, the upper p of its tie block - a sparse
+    detector's zero is no evidence, and the randomised p = U there was a
+    seeded coin flip that opened incidents on perfectly normal sources (pack
+    O's health monitor, PG5 D4: conf_who 0 / pm 1 on an all-zero ring, p =
+    7.9e-5 on every seed). Ties at every higher level stay randomised. The
+    issued p is pointwise >= the randomised one, so it stays valid
+    (P(p <= a) <= a). The calibration MONITORS keep the randomised p, which
+    is exactly uniform: the pcal share below, and the health checks, which
+    read it from model.calib['prand'] at the row's commit (a detector piled
+    at 1 would read as miscalibrated; KS D = its atom mass). B25 reads the
+    same stash at the tick: it decides on the issued row and learns its meta
+    rings (and feeds its monitors) from the randomised one (fusion.rand_row).
   * GPD tail. Above u = q_0.90(C), with >= 10 exceedances, a PWM-GPD fit
     gives p far below 1/(M+1). The fit is refreshed once a ring has taken 16
     additions since its last fit, lazily: at the first later tick whose score
@@ -125,7 +137,8 @@ How (docs/lib3/engines.md B24):
   * A model.control version change resets the rings (the new regime starts
     its own null); rebase replays the held rows after the reset.
   * Health (per detector per system, behavior.calib_health@(s, __system__)):
-    KS D of the randomised p on trusted committed ticks (last 2048, needs
+    KS D of the randomised p (round 5: model.calib['prand'] where it differs
+    from the issued p) on trusted committed ticks (last 2048, needs
     >= 1024) and the realised rate of e_day <= 0.03 against its expectation
     on all committed ticks (decayed, half-life 14 d, needs >= 10 expected).
     The rate uses all admitted commits (period trust, round 4). KS D > 0.05 or a
@@ -190,6 +203,7 @@ CALIB_HEALTH = "behavior.calib_health"
 BASELINE = "model.baseline"
 LEARNER = "calibration"
 POOLED = "pooled"                       # bounded mode: the pool key whose rings this model uses
+PRAND = "prand"                         # {ts: {detector idx: randomised p}} until the row's commit
 
 SMALL_N = calib.SMALL_N                 # 64
 GPD_REFIT_TICKS = calib.GPD_REFIT_TICKS  # 16
@@ -254,7 +268,8 @@ class _Row(NamedTuple):
     e: str
     ts: float
     scores: np.ndarray          # behavior.score row (float32[35])
-    pvals: Optional[np.ndarray]  # behavior.p issued at ts (health)
+    pvals: Optional[np.ndarray]  # behavior.p issued at ts, with the randomised p of the
+                                 # rows at their ring's lowest level (health; PRAND)
     daypart: str
     tercile: int
     dt: float
@@ -366,6 +381,11 @@ def _ensure_layout(model: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     pend = model["pending"] or {}
     model["pending"] = {t: (tuple(int(x) for x in c) if isinstance(c, (list, tuple)) else int(c))
                         for t, c in sorted((float(k), c) for k, c in pend.items())}
+    pr = model.get(PRAND)
+    if pr:
+        model[PRAND] = {t: {int(i): (_NAN if v is None else float(v)) for i, v in c.items()}
+                        for t, c in sorted((float(k), c) for k, c in pr.items())
+                        if isinstance(c, Mapping)}
     for k, v in new_model().items():
         if isinstance(v, (int, float)) and not isinstance(model[k], (int, float)):
             model[k] = v
@@ -651,8 +671,18 @@ class CalibrationEngine(Engine):
                 grain = self._grain_ctx(store, s, e, ts, dt)
         # admission weight: the PERIOD's trust (lib/gating.period_weight /
         # release_weight, null_ring=True), never the row's own evidence
-        return _Row(s, e, ts, row, store.vec_at(s, e, P, ts), dp, terc, dt, grain,
-                    store.vec_at(s, e, PM, ts))
+        pv = store.vec_at(s, e, P, ts)
+        pr = model.get(PRAND) if isinstance(model, Mapping) else None
+        alt = pr.pop(ts, None) if pr else None
+        if alt and pv is not None:
+            # the health checks test exact uniformity: they see the randomised
+            # p of a score at its ring's lowest level (lib/calib "Lower atom"),
+            # not the issued 1 - exactly what B24 issued before round 5
+            pv = np.array(pv, dtype=np.float32)
+            for i, v in alt.items():
+                if 0 <= i < pv.size:
+                    pv[i] = v
+        return _Row(s, e, ts, row, pv, dp, terc, dt, grain, store.vec_at(s, e, PM, ts))
 
     def _update(self, model: Dict[str, Any], row: _Row, w: float) -> Dict[str, Any]:
         w = float(w)
@@ -850,6 +880,15 @@ class CalibrationEngine(Engine):
             if t0 >= cutoff:
                 break
             del pend[t0]
+        pr = model.get(PRAND)
+        if pr is not None:
+            while pr:
+                t0 = next(iter(pr))
+                if t0 >= cutoff:
+                    break
+                del pr[t0]
+            if not pr:
+                del model[PRAND]
         model["dt"] = dt
         store.put_model(s, e, MODEL, model, version=model["version"], ts=now)
         return n_out
@@ -913,6 +952,7 @@ class CalibrationEngine(Engine):
         pcal = self._pcal
         pkeys = _pcal_keys(cc, grain is not None) if pcal is not None else None
         observe = pcal is not None and self._pcal_observable(store, s, e, now, dt)
+        alt: Dict[int, float] = {}          # randomised p where it differs (PRAND)
         for i, x in enumerate(row.tolist()):
             if x != x:
                 continue                    # unscored / degraded: p stays NaN
@@ -930,26 +970,37 @@ class CalibrationEngine(Engine):
                     refit[key] = 0
                 # = m_calib.p_value without a prior; a p-score's tail is never
                 # steeper than its own pm (lib/calib, round 4 evaluator)
-                p = calib.p_from_ring(r, x, u, sigma_min=m_calib.tail_sigma_min(
-                    x, pm[i] if pm is not None and i < len(pm) else _NAN))
+                sig = m_calib.tail_sigma_min(x, pm[i] if pm is not None and i < len(pm) else _NAN)
+                p = calib.p_from_ring(r, x, u, sigma_min=sig)
+                # round 5: a score at the ring's lowest level issues 1 (lib/calib
+                # "Lower atom"); the monitors keep the randomised p (p_r)
+                p_r = calib.p_from_ring(r, x, u, sigma_min=sig, rand_atom=True) \
+                    if p >= 1.0 else p
             else:
                 self._xfer_hit = False
-                prior = self._prior(i, d, x, u, pm, pool, e, key, rings, dp, terc, cc, grain,
-                                    model.get(m_calib.XFER))
+                prior, prior_r = self._prior(i, d, x, u, pm, pool, e, key, rings, dp, terc, cc,
+                                             grain, model.get(m_calib.XFER))
                 p = m_calib.p_value(r, x, u, prior)
+                p_r = m_calib.p_value(r, x, u, prior_r, rand_atom=True)
                 if self._xfer_hit:
                     xfer_dg[d] = _XFER_CAUSE
             if pkeys is not None:
                 # round 4: the live power correction (m_calib.pcal_*), v from
-                # the evidence BEFORE this row, then this row observed
+                # the evidence BEFORE this row, then this row observed (its
+                # randomised p: the share of p <= x tests exact uniformity)
                 pk = pkeys[i]
                 st_p = pcal.get(pk)
-                p_ring = p
-                p = m_calib.pcal_apply(p, m_calib.pcal_v(st_p))
-                if observe and p_ring == p_ring:
-                    pcal[pk] = m_calib.pcal_observe(st_p, p_ring <= m_calib.PCAL_X, now)
+                v_p = m_calib.pcal_v(st_p)
+                p = m_calib.pcal_apply(p, v_p)
+                if observe and p_r == p_r:
+                    pcal[pk] = m_calib.pcal_observe(st_p, p_r <= m_calib.PCAL_X, now)
+                p_r = m_calib.pcal_apply(p_r, v_p)
             out[d] = p if p >= P_ISSUED_FLOOR else P_ISSUED_FLOOR   # float32 ring
+            if p_r != p:
+                alt[i] = float(np.float32(p_r if p_r >= P_ISSUED_FLOOR else P_ISSUED_FLOOR))
             sizes[d] = n
+        if alt:
+            model.setdefault(PRAND, {})[now] = alt
         if out:
             emit.write_pvalues(store, s, e, now, out, window_s=int(dt))
             if grain is not None and grain["prov"]:
@@ -989,7 +1040,7 @@ class CalibrationEngine(Engine):
     def _prior(self, i: int, d: str, x: float, u: float, pm: Optional[np.ndarray],
                pool: _PoolCache, e: str, key: str, rings: Mapping, dp: str, terc: int,
                cc: int = 0, grain: Optional[Mapping[str, Any]] = None,
-               xfer: Optional[Mapping] = None) -> float:
+               xfer: Optional[Mapping] = None) -> Tuple[float, float]:
         """Small-sample prior: the entity's own rings of the other dayparts at
         this cadence (pooled, >= 64 entries), else the pm prior (pm[d] with
         its atoms randomised over their mass in the entity's pm ring,
@@ -1003,12 +1054,18 @@ class CalibrationEngine(Engine):
         stationary tails); the entity's own null of the same score at the same
         cadence is a better prior than any of them. A cadence switch still
         falls through to pm (no ring of the new cadence exists; its pm ring
-        is new too, so the atoms use the Laplace mass for 16 admitted ticks)."""
+        is new too, so the atoms use the Laplace mass for 16 admitted ticks).
+
+        Returns (prior, prior_r): prior_r is the same source's p with the
+        fully randomised rule at the lowest level (lib/calib "Lower atom"),
+        recomputed only when the prior is 1 (the rule can only have fired
+        then); the source chosen is the same (both NaN or both finite)."""
         if cc and _XFER_OK[i] and (grain is None or _STREAM[i] == "t"):
             p, c_src = m_calib.xfer_prior(rings, xfer, d, dp, cc, x, u)
             if p == p:
                 self._xfer_hit = True
-                return p
+                return p, (m_calib.xfer_prior(rings, xfer, d, dp, cc, x, u, rand_atom=True)[0]
+                           if p >= 1.0 else p)
         if i != _ID_IDX and grain is not None and _STREAM[i] != "t":
             # spec v2.1: the other dayparts of the same grain stratum
             g = _STREAM[i]
@@ -1020,14 +1077,14 @@ class CalibrationEngine(Engine):
             if own:
                 p, _ = m_calib.pooled_p(own, x, u)
                 if p == p:
-                    return p
+                    return p, (m_calib.pooled_p(own, x, u, rand_atom=True)[0] if p >= 1.0 else p)
         elif i != _ID_IDX and cc:
             own = [r for r in (rings.get(self._ring_key(d, calib.stratum_key(p, cc)))
                                for p in timebins.DAYPARTS if p != dp) if r is not None]
             if own:
                 p, _ = m_calib.pooled_p(own, x, u)
                 if p == p:
-                    return p
+                    return p, (m_calib.pooled_p(own, x, u, rand_atom=True)[0] if p >= 1.0 else p)
         if pm is not None:
             pkey = _pm_keys(cc, grain is not None)[i]
             r_pm = rings.get(pkey)
@@ -1042,19 +1099,22 @@ class CalibrationEngine(Engine):
                     self._refit_cur[pkey] = 0
             v = m_calib.pm_prior(r_pm, float(pm[i]), u)
             if v == v:
-                return v
+                return v, (m_calib.pm_prior(r_pm, float(pm[i]), u, rand_atom=True)
+                           if v >= 1.0 else v)
         ck = pool.class_key(e)
         if ck is not None:
             p, _ = m_calib.pooled_p(pool.member_rings(ck, e, key), x, u)
-            if p == p:
-                return p
+            if p == p:     # (member_rings is a generator: re-created for the second pass)
+                return p, (m_calib.pooled_p(pool.member_rings(ck, e, key), x, u,
+                                            rand_atom=True)[0] if p >= 1.0 else p)
         if i == _ID_IDX and terc != 0:
             st0 = (calib.grain_stratum_key(grain["dp_h"], "h", tercile=0) if grain is not None
                    else calib.identity_stratum_key(dp, 0, cc))
             r0 = rings.get(self._ring_key(d, st0))
             if r0 is not None and len(r0) >= SMALL_N:
-                return m_calib.p_value(r0, x, u)
-        return _NAN
+                p = m_calib.p_value(r0, x, u)
+                return p, (m_calib.p_value(r0, x, u, rand_atom=True) if p >= 1.0 else p)
+        return _NAN, _NAN
 
     def _profile(self, store, s: str, e: str, now: float, model: Dict[str, Any], st: str,
                  st_id: str, sizes: Mapping[str, int], health_out: Mapping) -> None:

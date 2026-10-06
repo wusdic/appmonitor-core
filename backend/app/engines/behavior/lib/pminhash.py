@@ -325,9 +325,17 @@ def jaccard_est(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.mean(a == b)) if a.size else 0.0
 
 
+def _ordered(keys: Any) -> List[Any]:
+    """A set's keys in a process-independent order (float sums over them)."""
+    try:
+        return sorted(keys)
+    except TypeError:
+        return sorted(keys, key=repr)
+
+
 def weighted_jaccard(p: Dict[Any, float], q: Dict[Any, float]) -> float:
     """Exact Ruzicka similarity of two sparse non-negative vectors."""
-    keys = set(p) | set(q)
+    keys = _ordered(set(p) | set(q))
     num = sum(min(p.get(k, 0.0), q.get(k, 0.0)) for k in keys)
     den = sum(max(p.get(k, 0.0), q.get(k, 0.0)) for k in keys)
     return num / den if den > 0 else 0.0

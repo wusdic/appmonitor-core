@@ -62,6 +62,7 @@ from typing import Any, Dict, Hashable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from . import pmdl
+from . import pnumba as PNB
 
 TAU0 = 10.0               # bits
 DELTA = 1e-4              # rule (S) confidence, made time-uniform per check
@@ -309,6 +310,8 @@ class SplitStats:
         if not self.blk_open:
             self._open_block(np.asarray(p_leaf, dtype=np.float64))
             self.blk_day = None if day is None else int(day)
+        if PNB.enabled() and self._nb_ok():
+            return self._update_nb(a, jj, b, tp, p_leaf, w, d_out)
         if tp.size:
             bt = b[tp]
             bmf = self.bm.reshape(-1)
@@ -369,6 +372,39 @@ class SplitStats:
         pair = both > 0
         np.minimum(self.Rmin, np.where(pair, x, math.inf), out=self.Rmin)
         np.maximum(self.Rmax, np.where(pair, x, -math.inf), out=self.Rmax)
+        return d_out
+
+    def _nb_ok(self) -> bool:
+        """The numba path writes through flat views: every array it touches must
+        be C-contiguous float64 (bm float32), as built by __init__ / _clear."""
+        for x in (self.cnt, self.den, self.L1, self._gt(), self._gp(), self.S, self.G, self.n, self.rows,
+                  self.slot_ev, self.slot_pri, self.W, self.D1, self.Qaa, self.Qab, self.Rmin, self.Rmax):
+            if x.dtype != np.float64 or not x.flags.c_contiguous:
+                return False
+        return self.bm.dtype == np.float32 and self.bm.flags.c_contiguous and self.tmask.dtype == np.bool_
+
+    def _update_nb(self, a: np.ndarray, jj: np.ndarray, b: np.ndarray, tp: np.ndarray, p_leaf: Any,
+                   w: float, d_out: np.ndarray) -> np.ndarray:
+        """update()'s arithmetic in numba kernels (lib/pnumba), bit-identical to
+        the numpy path below it: the log2 of the code lengths stays in numpy."""
+        A = int(a.size)
+        d = np.zeros(A)
+        if tp.size:
+            bt = b[tp]
+            pla = np.asarray(p_leaf, dtype=np.float64)
+            arg = np.empty((A, tp.size))
+            pl = np.empty(tp.size)
+            cf = self.cnt.reshape(-1)
+            df = self.den.reshape(-1)
+            PNB.ss_gather(cf, df, pla, a, jj, tp, bt, self.alpha, self.kv, self.T, self.kb, arg, pl)
+            lc = -np.log2(arg)
+            ll = -np.log2(pl)
+            dt = np.empty((A, tp.size))
+            PNB.ss_scatter(cf, df, self.bm.reshape(-1), self.L1.reshape(-1), self._gt().reshape(-1),
+                           self._gp().reshape(-1), self.S.reshape(-1), self.tmask, a, jj, tp, bt, lc, ll,
+                           w, self.kv, self.T, self.kb, self.C, dt, d)
+        PNB.ss_tail(self.G, self.n, self.rows, self.slot_ev, self.slot_pri, 2.0 ** (-w / PRI_HALF_UNITS),
+                    a, jj, d, w, self.C, d_out, self.W, self.D1, self.Qaa, self.Qab, self.Rmin, self.Rmax)
         return d_out
 
     # ------------------------------------------------------------ reads

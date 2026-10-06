@@ -1150,11 +1150,20 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0, route: Optional
                                  and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING):
                     mem.append(m)
         if uk.startswith("dept:"):
-            # the department's configured addresses that P11 has not put in any
+            # the department's configured addresses: those P11 has not put in any
             # group (pack O: the finance approver 192.168.2.10 had no group, so
-            # 财务部's part of GET /docs listed .11 and .12 only)
+            # 财务部's part of GET /docs listed .11 and .12 only), and (round 5)
+            # those whose recurring use of the action is measured within this
+            # system - work on other systems does not dilute it (signature_share
+            # within_key; 192.168.2.12 and 财务部's comment part)
             for m in _configured_ips(getattr(c, "config", None) or {}).get(uk[5:], ()):
-                if m in mem or m in c.ip2g:
+                if m in mem:
+                    continue
+                if m in c.ip2g:
+                    if (use_sig and str(c.ip2g.get(m)) in u["gids"]
+                            and (not sig_ctx or _ctx_admits(nd, m, c.ip2g))
+                            and CF.signature_share(sigs, c.key, m, t, route, within_key=True) >= CF.SIG_STANDING):
+                        mem.append(m)
                     continue
                 if m in seen or (use_sig and (not sig_ctx or _ctx_admits(nd, m, c.ip2g))
                                  and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING):
@@ -1177,7 +1186,16 @@ def _walk(tree: Any, t: float, rd: Optional[Mapping[int, Mapping[str, float]]] =
     A node's route is the dominant route of its subtree in the route index
     (>= 90 % of its mass), else what its context / invariants fix (lib-level
     fallback when the index has no data for it). The action node is the
-    shallowest node on the path standing for that route."""
+    shallowest node on the path standing for that route.
+    A node split on the route (round 5) stands for no single action whatever
+    the shares: its children ARE the actions, and its own summaries mix every
+    route below it. Pack O, round 4, seeds 0-1: the OA and finance roots
+    (split on http.route) were stated as 'GET /health' because the 60-s
+    monitor held >= 90 % of their mass and burst evidence; the statement's
+    content mixed every route ('提交数据量 1–7 KB' on a GET), confidence
+    0.13-0.50, and its group parts (销售部 / 财务部 'GET /health', parts of
+    their whole OA / finance activity) had no held-out event of their
+    context (6 of 34 false claims at day 21, seeds 0-4)."""
     stack = [(tree.root, None, None)]
     while stack:
         nid, proute, pact = stack.pop()
@@ -1185,7 +1203,10 @@ def _walk(tree: Any, t: float, rd: Optional[Mapping[int, Mapping[str, float]]] =
         if nd is None:
             continue
         d = rd.get(nid) if rd else None
-        if d:
+        sp = getattr(nd, "split", None)
+        if sp is not None and getattr(sp, "attr", None) in ROUTE_ATTRS:
+            r = None
+        elif d:
             r = _dominant(d)
         else:
             r = _route_of_node(nd, t) if (_has_route_ctx(nd) or proute is None) else proute

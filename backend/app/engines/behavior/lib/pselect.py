@@ -110,7 +110,23 @@ ROLE_ORDER = ("invariant", "redundant", "split", "target", "shape", "dropped", "
 # ================================================================== helpers
 def same_source(a: str, b: str) -> bool:
     """True when b is derived from the same source field as a (the split
-    attribute's own hierarchy and its derivations are not targets, §6.5.3)."""
+    attribute's own hierarchy and its derivations are not targets, §6.5.3).
+    A pure function of the two names, memoised (P05 asks it ~500 times per
+    attribute and run, P04 for every coder target: 8.7 s of P05's 63 s on 3
+    days of pack O were these string tests)."""
+    r = _SAME_SOURCE.get((a, b))
+    if r is None:
+        if len(_SAME_SOURCE) >= _SAME_SOURCE_MAX:
+            _SAME_SOURCE.clear()
+        r = _SAME_SOURCE[(a, b)] = _same_source(a, b)
+    return r
+
+
+_SAME_SOURCE: Dict[Tuple[str, str], bool] = {}
+_SAME_SOURCE_MAX = 1 << 16
+
+
+def _same_source(a: str, b: str) -> bool:
     if a == b:
         return True
     if b.startswith(a + ".") or a.startswith(b + "."):
@@ -204,27 +220,51 @@ def codes_uniq(values: Sequence[Any]) -> Tuple[np.ndarray, List[Any]]:
     return out, uniq
 
 
-def _num_levels(hier: Any, a: str, level: int, uniq: Sequence[Any]) -> Optional[List[Any]]:
-    """Vectorised numeric bins (levels 1-3 of a numeric hierarchy) for the
-    distinct values; None when not applicable (the generic path is used)."""
+_NUM_T = (int, float, np.integer, np.floating)
+
+
+def _num_bins(hier: Any, a: str, level: int, uniq: Sequence[Any]
+              ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """(bins, ok) of the distinct values at numeric level 1-3, or None when the
+    vectorised path does not apply; bins are valid where ok (finite values)."""
     if level not in (1, 2, 3) or hier.kind(a) != "num" or not hasattr(hier, "_num_edges"):
         return None
     edges, lg = hier._num_edges(a)
     if edges is None:
         return None
-    x = np.full(len(uniq), np.nan)
-    for i, v in enumerate(uniq):
-        if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool):
-            x[i] = float(v)
+    nan = math.nan
+    x = np.array([float(v) if isinstance(v, _NUM_T) and not isinstance(v, bool) else nan for v in uniq],
+                 dtype=np.float64) if len(uniq) else np.full(0, np.nan)
     ok = np.isfinite(x)
     if lg:
         with np.errstate(divide="ignore", invalid="ignore"):
             x = np.where(x > 0, np.log(np.where(x > 0, x, 1.0)), -np.inf)
     b = np.searchsorted(edges, x, side="right") >> (level - 1)
+    return b, ok
+
+
+def _num_levels(hier: Any, a: str, level: int, uniq: Sequence[Any]) -> Optional[List[Any]]:
+    """Vectorised numeric bins (levels 1-3 of a numeric hierarchy) for the
+    distinct values; None when not applicable (the generic path is used)."""
+    nb = _num_bins(hier, a, level, uniq)
+    if nb is None:
+        return None
+    b, ok = nb
     out: List[Any] = [int(v) for v in b.tolist()]
     for i in np.flatnonzero(~ok).tolist():
         out[i] = hier.gen(a, level, uniq[i])
     return out
+
+
+def _first_occurrence_codes(b: np.ndarray) -> Tuple[np.ndarray, int]:
+    """Codes of an int array numbered by first occurrence (as a dict.setdefault
+    pass over its values numbers them)."""
+    if b.size == 0:
+        return np.asarray([0], dtype=np.int64), 0
+    u, first, inv = np.unique(b, return_index=True, return_inverse=True)
+    rank = np.empty(u.size, dtype=np.int64)
+    rank[np.argsort(first, kind="stable")] = np.arange(u.size, dtype=np.int64)
+    return rank[inv.reshape(-1)], int(u.size)
 
 
 _GEN_CACHE: Dict[Tuple, Dict[Any, Any]] = {}
@@ -247,8 +287,17 @@ def _gen_fingerprint(hier: Any, a: str, level: int) -> Tuple:
 def gen_codes(hier: Any, a: str, level: int, codes0: np.ndarray, uniq: Sequence[Any]) -> Tuple[np.ndarray, int]:
     """Codes of gen(a, level, .) computed on the distinct values only (memoised
     across runs per model fingerprint: the probe keeps most rows between runs)."""
-    fast = _num_levels(hier, a, level, uniq)
-    if fast is not None:
+    nb = _num_bins(hier, a, level, uniq)
+    if nb is not None:
+        b, ok = nb
+        if ok.all():
+            # every distinct value finite: its bin is an int, numbered by first
+            # occurrence (the dict pass below, vectorised)
+            lut0, k0 = _first_occurrence_codes(b.astype(np.int64, copy=False))
+            return (lut0[codes0] if codes0.size else codes0), k0
+        fast: List[Any] = [int(v) for v in b.tolist()]
+        for i in np.flatnonzero(~ok).tolist():
+            fast[i] = hier.gen(a, level, uniq[i])
         m0: Dict[Hashable, int] = {}
         lut0 = np.asarray([m0.setdefault(_hashable(g), len(m0)) for g in fast] or [0], dtype=np.int64)
         return (lut0[codes0] if codes0.size else codes0), len(m0)
@@ -261,20 +310,26 @@ def gen_codes(hier: Any, a: str, level: int, codes0: np.ndarray, uniq: Sequence[
     elif len(memo) > _GEN_CACHE_VALUES:
         memo.clear()
     m: Dict[Hashable, int] = {}
-    lut = np.empty(max(1, len(uniq)), dtype=np.int64)
-    for i, v in enumerate(uniq):
+    out: List[int] = []
+    append = out.append
+    get = memo.get
+    for v in uniq:
         hv = _hashable(v)
-        g = memo.get(hv, memo)
+        g = get(hv, memo)
         if g is memo:
             g = memo[hv] = _hashable(hier.gen(a, level, v))
-        lut[i] = m.setdefault(g, len(m))
+        append(m.setdefault(g, len(m)))
+    lut = np.asarray(out or [0], dtype=np.int64)      # the codes numpy filled one by one before
     return (lut[codes0] if codes0.size else codes0), len(m)
 
 
 def level_codes(hier: Any, a: str, col: Sequence[Any], text_values: bool = False,
-                raw: Optional[Tuple[np.ndarray, List[Any]]] = None) -> Tuple[int, np.ndarray, int]:
+                raw: Optional[Tuple[np.ndarray, List[Any]]] = None,
+                gen: Optional[Callable[..., Tuple[np.ndarray, int]]] = None) -> Tuple[int, np.ndarray, int]:
     """(level, codes, K) at the finest level with <= LEVEL_CARD distinct values
-    (numeric at bins, text at shape at the finest unless text_values)."""
+    (numeric at bins, text at shape at the finest unless text_values). `gen`
+    replaces gen_codes (a memoised one, evaluate)."""
+    gen_codes = gen if gen is not None else globals()["gen_codes"]
     c0, uniq = raw if raw is not None else codes_uniq(col)
     kind = hier.kind(a)
     L = hier.n_levels(a)
@@ -326,6 +381,41 @@ def w_plugin(codes: np.ndarray, w: np.ndarray) -> Tuple[float, int]:
     nz = tot[tot > 0]
     p = nz / s
     return float(-(p * np.log2(p)).sum()), int(nz.size)
+
+
+def w_plugin_many(codes: Sequence[np.ndarray], w: np.ndarray) -> List[Tuple[float, int]]:
+    """[w_plugin(c, w) for c in codes]. (A stacked single-bincount version was
+    measured slower at every probe size: its per-array slicing and the
+    stacking cost more than the bincounts it saves.)"""
+    return [w_plugin(c, w) for c in codes]
+
+
+def _pg_value(h_b: float, kb_occ: int, h_g: float, kg_occ: int, h_bg: float, n: int) -> float:
+    """penalised_gain's value from its entropies (the same expression)."""
+    mi = max(0.0, h_b + h_g - h_bg)
+    return mi - max(0, kb_occ - 1) * max(0, kg_occ - 1) * math.log2(n) / (2.0 * n)
+
+
+def penalised_gains_b(b: np.ndarray, hb: Tuple[float, int], gs: Sequence[Tuple[np.ndarray, int]],
+                      hgs: Sequence[Tuple[float, int]], w: np.ndarray, n: int) -> List[float]:
+    """[penalised_gain(b, ., g, kg, w, n, hb, hg) for (g, kg), hg in zip(gs, hgs)]:
+    one target b against several groupings (contexts), batched (w_plugin_many)."""
+    if n <= 1:
+        return [0.0] * len(gs)
+    h_b, kb_occ = hb
+    hbg = w_plugin_many([b * max(kg, 1) + g for g, kg in gs], w)
+    return [_pg_value(h_b, kb_occ, hg[0], hg[1], hj[0], n) for hg, hj in zip(hgs, hbg)]
+
+
+def penalised_gains_g(bs: Sequence[Tuple[np.ndarray, Tuple[float, int]]], g: np.ndarray, kg: int,
+                      hg: Tuple[float, int], w: np.ndarray, n: int) -> List[float]:
+    """[penalised_gain(b, ., g, kg, w, n, hb, hg) for b, hb in bs]: several targets
+    against one grouping, batched (w_plugin_many)."""
+    if n <= 1:
+        return [0.0] * len(bs)
+    k = max(kg, 1)
+    hbg = w_plugin_many([b * k + g for b, _ in bs], w)
+    return [_pg_value(hb[0], hb[1], hg[0], hg[1], hj[0], n) for (_, hb), hj in zip(bs, hbg)]
 
 
 def penalised_gain(b: np.ndarray, kb: int, g: np.ndarray, kg: int, w: np.ndarray, n: int,
@@ -652,10 +742,23 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
             r = rawcache[a] = probe.codes(rows, a)
         return r
 
+    # gen_codes of one attribute, level and code array, once per evaluation:
+    # lev() and the split-utility loop below ask for the same levels (a pure
+    # function of its inputs; the arrays are kept so their identity is the key)
+    gcache: Dict[Tuple[str, int], Tuple[Any, Any, Tuple[np.ndarray, int]]] = {}
+
+    def gcm(hier_: Any, a_: str, lv_: int, c0_: np.ndarray, uniq_: Sequence[Any]) -> Tuple[np.ndarray, int]:
+        hit = gcache.get((a_, lv_))
+        if hit is not None and hit[0] is c0_ and hit[1] is uniq_:
+            return hit[2]
+        r_ = gen_codes(hier_, a_, lv_, c0_, uniq_)
+        gcache[(a_, lv_)] = (c0_, uniq_, r_)
+        return r_
+
     def lev(a: str) -> Tuple[int, np.ndarray, int]:
         r = levcache.get(a)
         if r is None:
-            r = levcache[a] = level_codes(hier, a, col(a), raw=raw(a))
+            r = levcache[a] = level_codes(hier, a, col(a), raw=raw(a), gen=gcm)
         return r
 
     # context candidates C0: previous split attributes (top 5) + seeds present
@@ -694,7 +797,7 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
     if TIME_TARGET in present and TIME_TARGET not in tgt:
         tgt.append(TIME_TARGET)
     tgt_codes = [(b,) + lev(b)[1:] for b in tgt]
-    tknown = {b: np.fromiter((v is not MISSING for v in col(b)), dtype=bool, count=n) for b in tgt}
+    tknown = {b: np.array([v is not MISSING for v in col(b)], dtype=bool) for b in tgt}
     Hb = {b: w_plugin(cc, w)[0] for b, cc, _ in tgt_codes}
     Kb = {b: int(np.unique(cc).size) for b, cc, _ in tgt_codes}
     for a in names:
@@ -703,7 +806,7 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
         c_full = col(a)
         # rows where the attribute was recorded (a probe row keeps only the
         # attributes wanted when it was taken; unrecorded is not absent)
-        known = np.fromiter((v is not MISSING for v in c_full), dtype=bool, count=n)
+        known = np.array([v is not MISSING for v in c_full], dtype=bool)
         na = int(known.sum())
         if na < N_LOCAL:
             continue
@@ -717,7 +820,7 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
             c0 = [c_full[i] for i in ix]
             wa = w[ix]
             c0codes, uniq0 = codes_uniq(c0)
-            l, cc, k = level_codes(hier, a, c0, raw=(c0codes, uniq0))
+            l, cc, k = level_codes(hier, a, c0, raw=(c0codes, uniq0), gen=gcm)
 
         def sub(arr: np.ndarray) -> np.ndarray:
             return arr if ix is None else arr[ix]
@@ -735,14 +838,23 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
         hp0, _ = w_plugin(c0codes, wa)
         gain = 0.0
         gain0 = 0.0
+        # every context's penalised gain in one batch (penalised_gains_b: the same
+        # numbers as penalised_gain per context; K_b is np.unique's count, as
+        # penalised_gain takes it for a float hb)
+        cg: List[Tuple[np.ndarray, int]] = []
+        chg: List[Tuple[float, int]] = []
         for (ca, ccodes, ck), hc in zip(ctx_codes, ctx_h):
             if same_source(ca, a):
                 continue
             cs = sub(ccodes)
-            hg = hc if ix is None else w_plugin(cs, wa)
-            gain = max(gain, penalised_gain(cc, k, cs, ck, wa, na, hp, hg))
+            cg.append((cs, ck))
+            chg.append(hc if ix is None else w_plugin(cs, wa))
+        if cg:
+            for v in penalised_gains_b(cc, (hp, int(np.unique(cc).size)), cg, chg, wa, na):
+                gain = max(gain, v)
             if hp0 > 0:
-                gain0 = max(gain0, penalised_gain(c0codes, k0, cs, ck, wa, na, hp0, hg))
+                for v in penalised_gains_b(c0codes, (hp0, int(np.unique(c0codes).size)), cg, chg, wa, na):
+                    gain0 = max(gain0, v)
         CR = min(1.0, gain / hp) if hp > 1e-9 else 0.0
         CR0 = min(1.0, gain0 / hp0) if hp0 > 1e-9 else 0.0
         U_t = cov * S * gain - LAMBDA_C * cost
@@ -763,10 +875,11 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
             hpp, _ = w_plugin(ccp, wp)
             H_p = hpp
             gp = 0.0
-            for ca, ccodes, ck in ctx_codes:
-                if same_source(ca, a):
-                    continue
-                gp = max(gp, penalised_gain(ccp, kp, sub(ccodes)[pres], ck, wp, n_p, hpp))
+            cgp = [(sub(ccodes)[pres], ck) for ca, ccodes, ck in ctx_codes if not same_source(ca, a)]
+            if cgp:
+                for v in penalised_gains_b(ccp, (hpp, int(np.unique(ccp).size)), cgp,
+                                           [w_plugin(g_, wp) for g_, _ in cgp], wp, n_p):
+                    gp = max(gp, v)
             U_tc = cov_rows * S * gp - LAMBDA_C * cost
             CR_p = min(1.0, gp / hpp) if hpp > 1e-9 else 0.0
         elif n_p == na:
@@ -796,15 +909,18 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
             if lv == 0 and len(uniq0) > LEVEL_CARD:
                 card[0] = len(uniq0)
                 continue
-            gc, gk = gen_codes(hier, a, lv, c0codes, uniq0)
+            gc, gk = gcm(hier, a, lv, c0codes, uniq0)
             card[lv] = gk
             if gk > LEVEL_CARD or gk < 2:
                 continue
             s_ = 0.0
             hg = w_plugin(gc, wa)
+            # the targets recorded on every row of a: one batch (penalised_gains_g)
+            full = [(bc, hb_) for b, bc, bk, m_b, hb_ in tsub if m_b is None]
+            pg_full = iter(penalised_gains_g(full, gc, gk, hg, wa, na)) if full else iter(())
             for b, bc, bk, m_b, hb_ in tsub:
                 if m_b is None:
-                    s_ += max(0.0, penalised_gain(bc, bk, gc, gk, wa, na, hb_, hg))
+                    s_ += max(0.0, next(pg_full))
                 else:
                     s_ += max(0.0, penalised_gain(bc, bk, gc[m_b], gk, wa[m_b], int(m_b.sum()), hb_))
             U_s[lv] = s_
@@ -892,10 +1008,10 @@ def who_proxies(probe: StratifiedProbe, t: float, hier: Any, attrs: Sequence[str
         if a in WHO_ATTRS or not targetable(a):
             continue                                    # who, time / calendar context, bookkeeping
         col = probe.column(rows, a)
-        known = np.fromiter((v is not MISSING and v is not ABSENT for v in col), dtype=bool, count=len(col))
+        known = np.array([v is not MISSING and v is not ABSENT for v in col], dtype=bool)
         if known.sum() < N_LOCAL:
             continue
-        rec = np.fromiter((v is not MISSING for v in col), dtype=bool, count=len(col))
+        rec = np.array([v is not MISSING for v in col], dtype=bool)
         if known.sum() < min_cov * max(1, int(rec.sum())):
             continue                                    # an action's field, not a source property
         l, cc, k = level_codes(hier, a, [col[i] for i in np.flatnonzero(known)])

@@ -24,6 +24,7 @@ from helpers import put_model
 from app.engines.behavior import fusion as F
 from app.engines.behavior.lib import calib, m_calib
 from app.engines.behavior.lib import m_governor as MG
+from app.engines.behavior.lib.detectors import DETECTORS
 
 from test_b24_calibration import E, S, Rig as CalRig, ks
 from test_b25_fusion import Rig as FusRig
@@ -54,7 +55,11 @@ def test_pm_at_the_floor_on_every_null_tick_no_longer_floors_p():
 
 def test_accumulator_p_eq_atom_is_randomised_not_a_point_mass_at_one():
     """creep's stationary p_eq = 1 whenever its statistic is 0: the blend with
-    pm = 1 gave p ~ 1 on every zero tick of a small ring (creep KS D = 1.0)."""
+    pm = 1 gave p ~ 1 on every zero tick of a small ring (creep KS D = 1.0).
+    Round 5 (lib/calib "Lower atom"): the ISSUED p of a zero tick is 1 - a
+    statistic of 0 is no evidence, and its randomised p was a coin flip that
+    alarmed on perfectly normal sources - while the calibration health checks
+    keep seeing the randomised p, so creep's KS is not driven to 1."""
     rng = np.random.default_rng(8)
     rig = CalRig(daypart="wd_day")
     ps = []
@@ -68,28 +73,36 @@ def test_accumulator_p_eq_atom_is_randomised_not_a_point_mass_at_one():
             ps.append(rig.p(E, "creep", ts))
     ps = np.asarray(ps)
     assert ps.size >= 25
-    assert np.mean(ps > 0.99) < 0.2 and 0.25 < float(np.mean(ps)) < 0.75
+    assert np.all(ps == 1.0)
+    hs = rig.store.get_model(S, "__system__", m_calib.MODEL)[m_calib.HEALTH]
+    hp = np.asarray(list(hs["ks"][DETECTORS.index("creep")]), dtype=np.float64)
+    assert hp.size >= 40
+    assert np.mean(hp > 0.99) < 0.2 and 0.25 < float(np.mean(hp)) < 0.75
 
 
 def test_pm_prior_rules():
     u = 0.3
     assert m_calib.pm_prior(None, 0.2, u) == 0.2                  # the body: pm as is
     assert math.isnan(m_calib.pm_prior(None, float("nan"), u))
-    # the atom pm = 1 with no history: mid-p over the Laplace pi = 1/2
-    assert m_calib.pm_prior(None, 1.0, u) == 1.0 - 0.5 + u * 0.5
+    # the atom pm = 1 with no history: mid-p over the Laplace pi = 1/2 for
+    # the monitors (rand_atom); issued: 1, the lowest level's upper p
+    assert m_calib.pm_prior(None, 1.0, u, rand_atom=True) == 1.0 - 0.5 + u * 0.5
+    assert m_calib.pm_prior(None, 1.0, u) == 1.0
     # an unseen floor keeps its evidence
     assert m_calib.pm_prior(None, 0.0, u) == 0.0
     r = calib.Ring()
     for i in range(10):
         r.add(m_calib.pm_score(1.0), float(i))                   # 10 atoms, below min_n
     pi1 = 11.0 / 12.0
-    assert m_calib.pm_prior(r, 1.0, u) == 1.0 - pi1 + u * pi1
+    assert m_calib.pm_prior(r, 1.0, u, rand_atom=True) == 1.0 - pi1 + u * pi1
+    assert m_calib.pm_prior(r, 1.0, u) == 1.0
     for i in range(10, 40):
         r.add(m_calib.pm_score(0.0), float(i))                   # 30 floors (stored 0)
     assert m_calib.pm_score(1e-300) == m_calib.pm_score(0.0) == m_calib.PM_ATOM_FLOOR
     # >= min_n: the floor atom holds 30 / 40 of the history -> u * 0.75
     assert m_calib.pm_prior(r, 1e-40, u) == pytest.approx(u * 30 / 40)
-    assert m_calib.pm_prior(r, 1.0, u) == pytest.approx(1.0 - 10 / 40 + u * 10 / 40)
+    assert m_calib.pm_prior(r, 1.0, u, rand_atom=True) == pytest.approx(1.0 - 10 / 40 + u * 10 / 40)
+    assert m_calib.pm_prior(r, 1.0, u) == 1.0
     # round 4: the body is calibrated on the pm history - here 30 of 40 past
     # pm were at the float floor, so a body pm of 0.004 is no evidence at all
     v = (30 * m_calib.PM_ATOM_FLOOR * math.log(10.0) + m_calib.PM_POW_KAPPA) / (

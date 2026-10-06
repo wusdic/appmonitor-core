@@ -155,6 +155,7 @@ def run_pack_resumable(pack: Any, seed: int, ckpt: str, *, segment_s: float = 18
     plan, store, pipeline, gen = st["plan"], st["store"], st["pipeline"], st["gen"]
     rec, stale, col, snapper = st["rec"], st["stale"], st["col"], st["snapper"]
     p00 = next((e for e in st["registry"].ordered() if e.name == "raw.event"), None)
+    p04 = next((e for e in st["registry"].ordered() if e.name == "behavior.pattern_tree"), None)
     wall0 = float(st["wall_s"])
     t_seg = time.perf_counter()
 
@@ -193,7 +194,9 @@ def run_pack_resumable(pack: Any, seed: int, ckpt: str, *, segment_s: float = 18
             t2 = time.perf_counter()
             st["tap_events"].append(_org_events(gen) - e0)
             ls = (getattr(p00, "last_stats", None) or {}) if p00 is not None else {}
-            st["tap_batch"].append((float(ls.get("events", 0) or 0), float(ls.get("learned", 0) or 0)))
+            l4 = (getattr(p04, "last_stats", None) or {}) if p04 is not None else {}
+            st["tap_batch"].append((float(ls.get("events", 0) or 0), float(ls.get("learned", 0) or 0),
+                                    float(l4.get("learned", 0) or 0) if p04 is not None else float("nan")))
             if not ph.training:
                 st["scen_ticks"].append(now)
                 col.on_tick(now, ph.dt, record_series=record_series)

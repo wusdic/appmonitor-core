@@ -170,13 +170,20 @@ class AttributeRegistryEngine(Engine):
         q = 1.0 if len(rest) + n_kept <= A_EV else \
             min(1.0, max(REST_MIN, A_EV - n_kept) / max(1, len(rest)))
         used = 0
+        every = rr.size == b.n                 # every row learned: no row mask to apply
         for nm in kept + rest:
             c = cols[nm]
-            m = sel[c.rows]
-            if not m.any():
-                continue
-            r = c.rows[m]
-            vals = c.vals[m]
+            if every:
+                if not c.rows.size:
+                    continue
+                r = c.rows
+                vals = c.vals
+            else:
+                m = sel[c.rows]
+                if not m.any():
+                    continue
+                r = c.rows[m]
+                vals = c.vals[m]
             w = mass_all[r]
             qa = q if nm not in kept_set else 1.0
             if r.size * qa > ROW_CAP:
@@ -190,8 +197,10 @@ class AttributeRegistryEngine(Engine):
                 if not keep.any():
                     continue
                 r, vals, w = r[keep], vals[keep], w[keep] / qa
-            used += reg.observe(nm, list(vals), ts_b, w, None, (b.flags[r] & 1) > 0, kind,
-                                policy.get(nm))
+            # (a numeric column as Python floats: the registry reads float(v) of
+            # a numpy scalar anyway, and str / hash of the two are the same)
+            used += reg.observe(nm, vals.tolist() if vals.dtype != object else list(vals), ts_b, w,
+                                None, (b.flags[r] & 1) > 0, kind, policy.get(nm))
         return used
 
     # ------------------------------------------------------------- events

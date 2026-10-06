@@ -155,6 +155,40 @@ def test_pg3_and_groups(org_run):
     assert M.pg3_specificity(snap, pt, ipc)["ari"] < 0.5
 
 
+def test_d4_counts_only_incidents_that_involve_the_grown_population(org_run):
+    """Round 5 (lead decision, progressive.md §16.13): PG5 D4 judges the
+    adaptation to the PUB population's growth on portal. An incident of a
+    portal source outside the grown pattern (the AUTO health monitor's
+    alarm-only conformity incident, round 4 seeds 3/4) is a false alarm
+    for PG6's FAR, not a D4 failure; one of a PUB source, or with a P03
+    finding on a PUB route, still fails D4. Fails on the round-4 scorer,
+    which counted every incident of any portal source."""
+    pack, g, pt = org_run
+    snaps = {d: M.truth_as_statements(pt, d) for d in DAYS}
+    d4 = next(r for r in g.truth if r["scenario_id"] == "D4")
+    ts = float(d4["t_start"]) + 3 * 86400.0
+    pub_ip = next(ip for per in pt.who_log["portal"].values() for ip in per
+                  if ip.startswith(("10.60.", "10.61.", "172.16.")))
+
+    def inc(i, ent, evidence):
+        return {"id": f"inc{i}", "system": "portal", "entity": ent, "entities": [ent],
+                "severity": "low", "opened": ts, "evidence": evidence,
+                "history": [{"ts": ts, "severity": "low"}]}
+    alarm = [{"ts": ts, "source": "alarm", "path": "single_tick", "severity": "low",
+              "families": ["conformity"], "p_by_detector": {"conf_seq": 2.4e-4}}]
+    sbd = M._stmts_by_day(snaps, M.ip_classes_of(pack.config))
+    mon = _fake_run(pack, g, snaps, incidents=[inc(1, "192.168.9.9", alarm)])
+    out = M.pg5_drift(mon, pt, sbd)["D4"]
+    assert out["pass"] and out["incidents_low"] == 0 and out["incidents_low_other_sources"] == 1
+    pub = _fake_run(pack, g, snaps, incidents=[inc(2, pub_ip, alarm)])
+    assert M.pg5_drift(pub, pt, sbd)["D4"]["pass"] is False
+    pv_ev = {"id": "ev9", "system": "portal", "entity": "192.168.9.9", "kind": "pattern_violation",
+             "extra": {"route": "POST portal.corp.local /comment"}}
+    pv = [{"ts": ts, "source": "event", "kind": "pattern_violation", "event_id": "ev9"}]
+    on_route = _fake_run(pack, g, snaps, events=[pv_ev], incidents=[inc(3, "192.168.9.9", pv)])
+    assert M.pg5_drift(on_route, pt, sbd)["D4"]["pass"] is False
+
+
 def test_pg5_drift_with_oracle_snapshots(org_run):
     pack, g, pt = org_run
     snaps = {d: M.truth_as_statements(pt, d) for d in DAYS}

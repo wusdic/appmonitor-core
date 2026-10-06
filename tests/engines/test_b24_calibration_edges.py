@@ -84,7 +84,9 @@ def test_live_missing_trust_admits_nothing():
         ps.append(rig.p(E, "marg_int", ts))
     assert ring_n(rig) == 0                   # fail safe: trust 0 when B28 is silent
     assert rig.model()["n_admit"] == 0
-    assert all(0.0 < p < 1.0 for p in ps)     # empty ring: p = U, never 1
+    # empty ring, no prior: no evidence -> 1 (lib/calib "Lower atom"; it was a
+    # seeded coin flip p = U before round 5), never NaN
+    assert all(p == 1.0 for p in ps)
 
 
 def test_live_admission_ignores_the_row_trust_but_not_the_period():
@@ -226,7 +228,7 @@ def test_class_pseudo_entity_is_calibrated_without_tctx():
     rig = Rig(entities=(E, ck))               # a class key lives under a real system
     for _ in range(80):
         ts = rig.step({ck: {"class_int": float(rng.exponential())}})
-        assert 0.0 < rig.p(ck, "class_int", ts) < 1.0
+        assert 0.0 < rig.p(ck, "class_int", ts) <= 1.0
     assert ck in rig.store.pseudo_entities(S)
     rs = m_calib.rings(rig.model(ck))
     assert rs and all(k.startswith("class_int@") for k in rs)

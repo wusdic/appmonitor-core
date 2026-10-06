@@ -189,13 +189,13 @@ class WhoSummary:
             if g is None:
                 out[l] = np.nan
                 continue
-            n = ss.total_evidence(t)
-            U = ss.unseen(t)
             sh = ss.share(g, t) if g in ss else 0.0
             if sh > 0:
+                n = ss.total_evidence(t)
                 p = (sh * n + alpha / (ss.k + 1)) / (n + alpha)
                 out[l] = -math.log2(p) + float(space_bits[l])
             else:
+                U = ss.unseen(t)                    # only an unseen key's code needs it
                 out[l] = -math.log2(max(U, 1e-12)) + float(escape_bits[l]) + float(space_bits[l])
         return out
 
@@ -643,7 +643,10 @@ class SetSummary:
         except TypeError:
             return
         self.tpl.add(template if template is not None else st, t, mass, evidence)
-        for x in list(st)[:64]:
+        # elements in a process-independent order (a frozenset iterates in the
+        # salted string-hash order: which 64 elements are counted, and the
+        # Space-Saving eviction order, depended on PYTHONHASHSEED)
+        for x in sorted(st, key=PS._sort_key)[:64]:
             self.elem.add(x, t, mass, evidence)
         self.n.add(t, mass)
 
@@ -1144,6 +1147,36 @@ class SourceExtremes:
             e[0], e[1] = x, day
         if x > e[2] or e[3] <= day - RING_DAYS:
             e[2], e[3] = x, day
+
+    def note_many(self, key: str, items: Sequence[Tuple[str, float]], day: int, ts: float,
+                  rep: Optional[str] = None) -> None:
+        """note(key, a, x, day, ts, rep) for each (a, x) of items, in order (one
+        row's values: the same records, counts and extremes as the calls one
+        by one, P04 _note_source_extremes)."""
+        r = self.d.get(key)
+        ts = float(ts)
+        day = int(day)
+        lo_day = day - RING_DAYS
+        for attr, x in items:
+            x = float(x)
+            if not math.isfinite(x):
+                continue
+            if r is None:
+                if len(self.d) >= self.K:
+                    self._evict()
+                r = self.d[key] = [ts, 0, str(rep if rep is not None else key), {}]
+            r[1] += 1
+            if ts > r[0]:
+                r[0] = ts
+            ext = r[3]
+            e = ext.get(attr)
+            if e is None:
+                ext[attr] = [x, day, x, day]
+                continue
+            if x < e[0] or e[1] <= lo_day:
+                e[0], e[1] = x, day
+            if x > e[2] or e[3] <= lo_day:
+                e[2], e[3] = x, day
 
     def union(self, pred: Callable[[str], bool]) -> Dict[str, List[Any]]:
         """{attr: [lo, dlo, hi, dhi]} over the keys whose representative

@@ -111,6 +111,24 @@ def test_pcore_cpu_units_scored_and_learned_events():
     assert new["learning_us_per_learned_event"] == pytest.approx(100.0)
 
 
+def test_learning_p95_divides_p04_cpu_by_the_rows_p04_learned():
+    """Round 5 (§16.13): P04 learns the rows of t - D (D = 1 h), so its CPU of
+    a tick belongs to the rows IT learned then, not to the rows P00 sampled
+    in that tick. An evening tick where P00 samples 10 rows while P04 learns
+    the afternoon's 100 read 1 000 us per row; it is 100 us. Fails on the
+    round-4 pcore_cpu, which divided by P00's learned rows."""
+    t = {"engine_names": ["behavior.conformity", "behavior.pattern_tree"],
+         "engine_ms": [[5.0, 10.0]] * 20}
+    batch = [(1000.0, 100.0, 100.0)] * 16 + [(1000.0, 10.0, 100.0)] * 4
+    out = S.pcore_cpu(t, [1000.0] * 20, batch_per_tick=batch)
+    assert out["learning_p95_us"] == pytest.approx(100.0)
+    assert out["learning_p95_us_per_p00_row"] == pytest.approx(1000.0)
+    assert out["learning_us_per_learned_event"] == pytest.approx(100.0)
+    # without P04's count (old taps) the P00 rows are still the fallback
+    old = S.pcore_cpu(t, [1000.0] * 20, batch_per_tick=[b[:2] for b in batch])
+    assert old["learning_p95_us"] == pytest.approx(1000.0)
+
+
 def test_entry_points_pin_the_hash_seed(tmp_path):
     """Two processes of the same evaluation must iterate str sets in the same
     order (§16.12): pin_hash_seed re-executes an unpinned script with

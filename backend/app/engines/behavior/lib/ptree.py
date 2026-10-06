@@ -184,7 +184,10 @@ class Tree:
         # targets / pairs nid does not track are rebuilt from its direct
         # children, which partition nid's events since the split.
         direct = [self.nodes[c] for c in nd.split.all_children() if c in self.nodes]
-        missing = {a for cn in direct for a in cn.targets} - set(nd.targets)
+        # in the children's order (a set of names iterated in the salted hash
+        # order made the node's target dict order, and so which targets a later
+        # trim drops, depend on PYTHONHASHSEED)
+        missing = [a for a in dict.fromkeys(a for cn in direct for a in cn.targets) if a not in nd.targets]
         for a in missing:
             parts = [cn.targets[a] for cn in direct if a in cn.targets]
             base = parts[0]
@@ -192,7 +195,7 @@ class Tree:
                 if type(other) is type(base):
                     base.merge(other)
             nd.targets[a] = base
-        for key in {k for cn in direct for k in cn.pairs} - set(nd.pairs):
+        for key in [k for k in dict.fromkeys(k for cn in direct for k in cn.pairs) if k not in nd.pairs]:
             parts = [cn.pairs[key] for cn in direct if key in cn.pairs]
             base = parts[0]
             for other in parts[1:]:

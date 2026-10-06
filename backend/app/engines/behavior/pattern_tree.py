@@ -220,6 +220,7 @@ PH_MIN_N = 30.0
 PH_MIN_DAYS = 5                # daily means a node needs before its Page-Hinkley tests run
 DRIFT_EXPIRE_S = 14 * DAY
 T_PERSIST_DAYS = {"num": 1, "when": 3, "structural": 3}
+REF_MIN_W = 30.0               # events behind a structural alarm's pre-alarm loss level (per day type)
 SINGLE_IP_DAYS = 5
 SNAPSHOT_HOUR = 4
 ORDINAL0 = 719163              # date(1970, 1, 1).toordinal()
@@ -237,6 +238,9 @@ SUS_BIND_FLAGS = frozenset({"cross_binding", "concurrent_use", "readdress_candid
 FITTERS = (MP.PBOUNDS, MP.PGRAMMAR, MP.PBIND, MP.PWIN)
 EVENT_KINDS = ("pattern_confirmed", "pattern_retired", "pattern_replaced", "pattern_drift",
                "pattern_absent", "pattern_revived")
+
+
+_MISS = object()
 
 
 def _h(v: Any) -> Hashable:
@@ -408,27 +412,16 @@ class _LC:
         self.now = now
         self.config = config
         self.off = off
-        self.reg = MP.get_registry(store, key)
-        self.hier = MP.hierarchies(store, key, config, self.reg)
-        self.budget = MP.budget_for(store, key)
-        self.gone: Set[str] = {n for n, r in self.reg.records.items() if r.state == "gone"} \
-            if self.reg is not None else set()
+        # the tree's models are read on first use (_LC.__getattr__): a key whose
+        # tick learns nothing reads only what its maintenance needs (PG4's
+        # servers points: hundreds of trees, most without rows in a tick). The
+        # values are the ones an eager read at the start of the tick gives: P04
+        # writes none of these models.
         pc = EV.pconfig(config)
         d = pc.get("defaults") or {}
         self.s_mode = str(d.get("split_s_mode", "margin"))
         self.tau0 = float(d.get("tau0", PE.TAU0))
         self.sel: Dict[int, Dict[str, Any]] = {}
-        sp = MP.get_model(store, key, MP.SYSPROF)
-        who = ((sp or {}).get("chosen") or {}).get("who") if isinstance(sp, Mapping) else None
-        self.who_level: Optional[int] = WHO_LEVEL.get(who, 0) if who != "none" else None
-        wg = MP.who_groups(store)
-        self.n_groups = len(wg.get("groups") or {}) or len(set((wg.get("ip2g") or {}).values()))
-        gsize = Counter((wg.get("ip2g") or {}).values())
-        self.gsize = gsize
-        n_reg = len(self.hier.regions)
-        self.space_bits = [0.0, 8.0, 16.0, 0.0, 8.0]
-        self.escape_bits = [32.0, 24.0, 16.0, math.log2(self.n_groups + 1.0), math.log2(n_reg + 1.0)]
-        self.pairs, self.minutes, self.extra_targets = _read_pwant(store, key)
         self.tinfo: Dict[str, Tuple[str, str, bool]] = {}
         self.whokeys: Dict[str, List[Any]] = {}
         self.trust: Dict[Tuple[str, str, float], Tuple[float, bool]] = {}
@@ -440,6 +433,62 @@ class _LC:
         self.rpart_attrs: Dict[int, List[str]] = {}
         self.m: Any = None
         self.aux: Dict[str, Any] = {}
+
+    _LAZY = {"reg": "_l_reg", "hier": "_l_hier", "budget": "_l_budget", "gone": "_l_gone",
+             "who_level": "_l_who", "n_groups": "_l_groups", "gsize": "_l_groups",
+             "space_bits": "_l_bits", "escape_bits": "_l_bits",
+             "pairs": "_l_pwant", "minutes": "_l_pwant", "extra_targets": "_l_pwant"}
+
+    def __getattr__(self, name: str) -> Any:
+        fn = _LC._LAZY.get(name)
+        if fn is None:
+            raise AttributeError(name)
+        getattr(self, fn)()
+        return self.__dict__[name]
+
+    def _l_reg(self) -> None:
+        self.reg = MP.get_registry(self.store, self.key)
+
+    def _l_hier(self) -> None:
+        self.hier = MP.hierarchies(self.store, self.key, self.config, self.reg)
+
+    def _l_budget(self) -> None:
+        self.budget = MP.budget_for(self.store, self.key)
+
+    def _l_gone(self) -> None:
+        reg = self.reg
+        self.gone = {n for n, r in reg.records.items() if r.state == "gone"} if reg is not None else set()
+
+    def _l_who(self) -> None:
+        sp = MP.get_model(self.store, self.key, MP.SYSPROF)
+        who = ((sp or {}).get("chosen") or {}).get("who") if isinstance(sp, Mapping) else None
+        self.who_level = WHO_LEVEL.get(who, 0) if who != "none" else None
+
+    def _l_groups(self) -> None:
+        wg = MP.who_groups(self.store)
+        self.n_groups = len(wg.get("groups") or {}) or len(set((wg.get("ip2g") or {}).values()))
+        self.gsize = Counter((wg.get("ip2g") or {}).values())
+
+    def _l_bits(self) -> None:
+        n_reg = len(self.hier.regions)
+        self.space_bits = [0.0, 8.0, 16.0, 0.0, 8.0]
+        self.escape_bits = [32.0, 24.0, 16.0, math.log2(self.n_groups + 1.0), math.log2(n_reg + 1.0)]
+
+    def _l_pwant(self) -> None:
+        # parsed once per model version (P06 / P08 / P09 re-put model.pwant after
+        # every change, which bumps its version; P04 only reads the parse)
+        cache = self.eng.__dict__.setdefault("_c_pwant", {})
+        ver = self.store.model_version(self.key, SYSTEM_ENTITY, MP.PWANT)
+        obj = MP.get_model(self.store, self.key, MP.PWANT)
+        hit = cache.get(self.key)
+        if hit is not None and ver is not None and hit[0] == ver and hit[1] is obj:
+            parsed = hit[2]
+        else:
+            parsed = _read_pwant(self.store, self.key)
+            if len(cache) > 4096:
+                cache.clear()
+            cache[self.key] = (ver, obj, parsed)
+        self.pairs, self.minutes, self.extra_targets = parsed
 
     def selection(self, kind: int) -> Dict[str, Any]:
         s = self.sel.get(kind)
@@ -676,17 +725,36 @@ class PatternTreeEngine(Engine):
         mass = b.mass()
         n = 0
         aux = self.aux(m)
+        # row-aligned value lists per attribute, shared by the batch's rows
+        # (EventBatch._values; None = the batch has no such column): one dict
+        # lookup and one list index per get instead of two method calls
+        ABSENT = EV.ABSENT
+        blst: Dict[str, Optional[List[Any]]] = {}
+        clst: Dict[str, Optional[List[Any]]] = {}
+        b_values = b._values
+        c_values = cb._values if cb is not None else None
+        ts_all = b.ts.tolist()
         for i in rr.tolist():
             ip = b.ip_of(i)
-            ts = float(b.ts[i])
+            ts = ts_all[i]
 
             def get(nm: str, i: int = i, ip: str = ip) -> Any:
-                v = b.get(nm, i)
-                if v is EV.ABSENT and cb is not None:
-                    v = cb.get(nm, i)
-                if v is EV.ABSENT and nm == "net.src":
-                    return ip
-                return v
+                lst = blst.get(nm, _MISS)
+                if lst is _MISS:
+                    lst = blst[nm] = b_values(nm)
+                if lst is not None:
+                    v = lst[i]
+                    if v is not ABSENT:
+                        return v
+                if c_values is not None:
+                    lst = clst.get(nm, _MISS)
+                    if lst is _MISS:
+                        lst = clst[nm] = c_values(nm)
+                    if lst is not None:
+                        v = lst[i]
+                        if v is not ABSENT:
+                            return v
+                return ip if nm == "net.src" else ABSENT
             trust, quar = self._trust(lc, s, ip, ts_b)
             if quar:
                 self._hold(m, s, ip, ts, kind, b, cb, i, float(mass[i]))
@@ -834,7 +902,13 @@ class PatternTreeEngine(Engine):
         # failed on most events, and the confidence of the (by then right)
         # statement fell with time (pack O, median 0.35 -> 0.005 by day 21)
         seen = nd.meta.get("hold_fp")
-        rid = (id(nd.ref), nd.ref.get("t"))         # re-compared when unsure: idempotent
+        # the statement's identity: its serial number (not id(): an address can be
+        # reused by the next reference dict, and differs between processes, so the
+        # record's state depended on the allocator)
+        sn = nd.ref.get("sn")
+        if sn is None:
+            sn = nd.ref["sn"] = _next_ref_sn(lc)
+        rid = (sn, nd.ref.get("t"))                 # re-compared when unsure: idempotent
         if seen is None or seen.get("_ref") != rid:
             seen = seen if seen is not None else {}
             for k, c in cons.items():
@@ -1107,6 +1181,7 @@ class PatternTreeEngine(Engine):
         cur = nd.targets.get(a)
         if cur is not None and getattr(cur, "kind", k) != k:
             del nd.targets[a]                              # the registry re-typed it
+            cur = None
         if v is EV.ABSENT:
             if k != "cat":
                 return None
@@ -1118,17 +1193,36 @@ class PatternTreeEngine(Engine):
             if not isinstance(tpl, frozenset):
                 tpl = None
         try:
-            nd.update_target(a, v, ts, mass, omega, k, pol, lg, day, tpl, extreme)
+            if cur is None:
+                nd.update_target(a, v, ts, mass, omega, k, pol, lg, day, tpl, extreme)
+            elif isinstance(cur, PN.NumSummary):           # Node.update_target's dispatch, inlined
+                cur.update(v, ts, mass, omega, day, extreme)
+            elif isinstance(cur, PN.SetSummary):
+                cur.update(v, ts, mass, omega, tpl)
+            else:
+                cur.update(v, ts, mass, omega)
         except (TypeError, ValueError):
             return None
         return k
 
     def _update_targets(self, lc: _LC, tr: PT.Tree, nd: PN.Node, kind: int, sel: Mapping[str, Any],
                         get: Callable[[str], Any], ts: float, mass: float, omega: float, day: int) -> None:
+        ext = lc.row_factor >= 0.999
+        leafy = nd.split is None
+        ip = get("net.src") if leafy else None
+        # the leaf's per-source extremes of the row's numeric targets, noted in
+        # one call after the loop (SourceExtremes.note_many: the same records as
+        # _apply_target noting each value; nothing reads them in between)
+        notes: Optional[List[Tuple[str, float]]] = [] if (ext and ip is not None and day is not None
+                                                          and leafy and not nd.is_exc) else None
         for a in self._targets_of(lc, tr, nd, kind, sel):
             v = get(a)
-            k = self._apply_target(lc, nd, a, v, ts, mass, omega, day, lc.row_factor >= 0.999,
-                                   get("net.src") if nd.split is None else None)
+            if notes is not None and isinstance(v, (int, float, np.number)) \
+                    and not isinstance(v, (bool, np.bool_)):
+                x = float(v)
+                if x == x:
+                    notes.append((a, x))
+            k = self._apply_target(lc, nd, a, v, ts, mass, omega, day, ext, None)
             if k is None:
                 continue
             # content drift detectors run on leaves (and exception nodes) only: an
@@ -1136,6 +1230,24 @@ class PatternTreeEngine(Engine):
             # composition changes are not content drift (§6.5.1)
             if k == "num" and nd.split is None and nd.state in PN.CONFIDENT_STATES:
                 self._ph_num(lc, nd, a, v, ts, day, get("net.src"), get("ctx.daytype"))
+        if notes:
+            self._note_extremes_many(lc, nd, notes, ip, ts, int(day))
+
+    @staticmethod
+    def _note_extremes_many(lc: _LC, nd: PN.Node, items: Sequence[Tuple[str, float]], ip: Any,
+                            ts: float, day: int) -> None:
+        """_note_extreme for each (attr, value) of one row, in order (non-NaN values)."""
+        ip_s = str(ip)
+        sx = nd.meta.get("sext")
+        if sx is None:
+            sx = nd.meta["sext"] = PN.SourceExtremes()
+        sx.note_many(ip_s, items, day, ts)
+        ks = lc.who_keys(ip_s)
+        if len(ks) > 1 and isinstance(ks[1], str) and ks[1] != ip_s:
+            s24 = nd.meta.get("sext24")
+            if s24 is None:
+                s24 = nd.meta["sext24"] = PN.SourceExtremes()
+            s24.note_many(ks[1], items, day, ts, rep=ip_s)
 
     # ------------------------------------------------------ leaf learning
     def _coder_values(self, lc: _LC, coder: Coder, get: Callable[[str], Any], ip: str,
@@ -1536,6 +1648,9 @@ class PatternTreeEngine(Engine):
                 leaf.meta["adw_ver"] = hv
                 leaf.adwin = None
                 leaf.meta.pop("adwin_nwd", None)
+                # the pre-alarm loss levels are in the old encoding too (round 5)
+                leaf.meta.pop("loss_ew", None)
+                leaf.meta.pop("loss_ew_nwd", None)
             if ls:
                 # one ADWIN per day type: the weekday / weekend mix of a node changes
                 # every week, which is seasonality, not drift
@@ -1552,10 +1667,19 @@ class PatternTreeEngine(Engine):
                 if dr is not None:
                     dr["dsum"][day] = dr["dsum"].get(day, 0.0) + loss
                     dr["dn"][day] = dr["dn"].get(day, 0) + 1
+                    if daytype:
+                        dr.setdefault("nwd", {})[day] = 1
                 else:
-                    le = leaf.meta.get("loss_ew")
+                    # the pre-alarm loss level per day type, as the ADWINs are
+                    # (round 5): a 24x7 monitor's weekend loss sits above its
+                    # workday loss; one pooled level read every weekend day of
+                    # an open alarm as 'higher' (pack O seed 2: finance /health
+                    # 2.9-3.0 bits on weekends against a pooled 2.12) and kept
+                    # the node `evolving` from day 13 on
+                    lk = "loss_ew_nwd" if daytype else "loss_ew"
+                    le = leaf.meta.get(lk)
                     if le is None:
-                        le = leaf.meta["loss_ew"] = PS.DecayedVector([PS.H_M, PS.H_M])
+                        le = leaf.meta[lk] = PS.DecayedVector([PS.H_M, PS.H_M])
                     le.add(ts, [loss, 1.0])
                 if ad.add(loss) > 0:
                     self._structural_alarm(lc, tr, leaf, ts)
@@ -1869,10 +1993,16 @@ class PatternTreeEngine(Engine):
         192.168.1.21's 643 B login of day 2 reached the login node before
         body.len was one of its targets, so no record of the node held it and
         the 综合部 node created on day ~12 stated 'all within 1-2.8 KB'."""
+        items: List[Tuple[str, float]] = []
         for a in self._row_attrs(lc, kind):
             v = get(a)
             if isinstance(v, (int, float, np.number)) and not isinstance(v, (bool, np.bool_)):
-                self._note_extreme(lc, leaf, a, float(v), ip, ts, day)
+                x = float(v)
+                if x == x:
+                    items.append((a, x))
+        if items:
+            # the same records as _note_extreme per value (SourceExtremes.note_many)
+            self._note_extremes_many(lc, leaf, items, ip, ts, int(day))
 
     @staticmethod
     def _note_extreme(lc: _LC, nd: PN.Node, a: str, x: float, ip: Any, ts: float, day: int) -> None:
@@ -2334,9 +2464,14 @@ class PatternTreeEngine(Engine):
         if dr is None:
             le = leaf.meta.get("loss_ew")
             ref = le.read(ts) if le is not None else np.zeros(2)
+            le2 = leaf.meta.get("loss_ew_nwd")
+            ref2 = le2.read(ts) if le2 is not None else np.zeros(2)
+            # a level needs REF_MIN_W events of its day type (an encoding
+            # restart a few events before the alarm leaves no level)
             leaf.meta["drift"] = {"t0": ts, "last": ts, "kind": "structural", "dsum": {}, "dn": {},
-                                  "ref": float(ref[0] / ref[1]) if ref[1] > 0 else math.nan,
-                                  "prev_state": leaf.state}
+                                  "ref": float(ref[0] / ref[1]) if ref[1] >= REF_MIN_W else math.nan,
+                                  "ref_nwd": float(ref2[0] / ref2[1]) if ref2[1] >= REF_MIN_W else math.nan,
+                                  "nwd": {}, "prev_state": leaf.state}
         else:
             dr["last"] = ts
         leaf.meta["last_alarm"] = ts
@@ -2494,7 +2629,7 @@ class PatternTreeEngine(Engine):
             nd_days = normal_days(min(shifted), day + 1) if shifted else 0
             coordinated = len(st["ips"]) >= need_ips
             single = who_top <= 1 and nd_days >= SINGLE_IP_DAYS
-            quarantined = any(MG.is_quarantined(lc.store, s, ip, t) for ip in list(st["ips"])[:8])
+            quarantined = any(MG.is_quarantined(lc.store, s, ip, t) for ip in sorted(st["ips"])[:8])
             if len(shifted) >= persist + 1 and (coordinated or single) and not quarantined:
                 if a == "@when":
                     nd.when.reset_confidence(t)
@@ -2523,9 +2658,18 @@ class PatternTreeEngine(Engine):
             # accepted when the loss stayed above its pre-alarm level by >= 0.5 bit
             # on T_persist normal days (a real change of the node's distribution);
             # an alarm without such persistence expires without touching confidence
-            ref = dr.get("ref", math.nan)
+            def ref_of(d: int) -> float:
+                # each day against its own day type's pre-alarm level; a day
+                # whose type had no level when the alarm opened (none yet in
+                # the current encoding) is not judged: the other type's level
+                # is not its reference (pack O seed 3, day 13: portal's /health
+                # alarm of Friday carried a workday level only, its weekend
+                # judged against it)
+                if (dr.get("nwd") or {}).get(d):
+                    return dr.get("ref_nwd", math.nan)
+                return dr.get("ref", math.nan)
             higher = [d for d, sm in dr["dsum"].items()
-                      if dr["dn"].get(d) and ref == ref and sm / dr["dn"][d] >= ref + 0.5
+                      if dr["dn"].get(d) and ref_of(d) == ref_of(d) and sm / dr["dn"][d] >= ref_of(d) + 0.5
                       and normal_days(d, d + 1)]
             if len(higher) >= T_PERSIST_DAYS["structural"]:
                 nd.reset_confidence(t)
@@ -2538,13 +2682,19 @@ class PatternTreeEngine(Engine):
                            f"模式 {ctx_text(nd.ctx, lc.hier)} 的整体分布发生了已确认的变化，置信度从新状态重新累积",
                            {"kind": "structural", "since": dr["t0"]})
             elif t - dr["t0"] >= DRIFT_EXPIRE_S or (
-                    sum(1 for d, n_ in dr["dn"].items() if n_ and normal_days(d, d + 1) and d < day)
-                    >= T_PERSIST_DAYS["structural"] + 2 and not higher):
-                # an alarm whose loss never stayed higher on any of the >= 5 normal
-                # days since is a false alarm: the node leaves `evolving` at once
-                # instead of after 14 days (measured: numeric-bin refreshes of a
-                # monitor's duration target kept its node `evolving`, i.e. not a
-                # confirmed pattern, for most of pack O)
+                    sum(1 for d, n_ in dr["dn"].items() if n_ and normal_days(d, d + 1) and d < day
+                        and (not higher or d > max(higher)))
+                    >= T_PERSIST_DAYS["structural"] + 2):
+                # an alarm whose loss was not higher on any of the >= 5 normal days
+                # since its last higher day (fewer than T_persist higher days: the
+                # branch above) is a false alarm or a transient: the node leaves
+                # `evolving` at once instead of after 14 days (measured: numeric-bin
+                # refreshes of a monitor's duration target kept its node `evolving`,
+                # i.e. not a confirmed pattern, for most of pack O). Round 5: the
+                # quiet days are counted after the last higher day; before, ONE
+                # higher day kept the alarm open until expiry (pack O seed 2:
+                # finance /health 2 higher days on days 13 / 15, back at its level
+                # from day 16, `evolving` to day 21 - AUTO.monitor.finance missed)
                 nd.meta.pop("drift", None)
             else:
                 if higher and nd.state in ("confirmed", "stable"):
@@ -3211,7 +3361,7 @@ class PatternTreeEngine(Engine):
             targets = {a: _compact(sm, t) for a, sm in nd.targets.items()}
             fit = {name: _fitted_entry(mdl, kind, nd.id) for name, mdl in fitted.items()
                    if _fitted_entry(mdl, kind, nd.id) is not None}
-            nd.ref = {"t": t, "version": nd.version, "cver": nd.cver,
+            nd.ref = {"t": t, "version": nd.version, "cver": nd.cver, "sn": _next_ref_sn(lc),
                       "targets": targets,
                       "who": ref_who,
                       "when": {"wd": nd.when.density(0).astype(np.float32),
@@ -3233,6 +3383,21 @@ class PatternTreeEngine(Engine):
 
 
 # ================================================================ helpers
+def _next_ref_sn(lc: _LC) -> int:
+    """Serial number of a reference statement within its tree (P04 private state)."""
+    aux = getattr(lc, "aux", None) if lc is not None else None
+    if aux is None:                                  # called outside a tick (tests)
+        global _REF_SN
+        _REF_SN += 1
+        return _REF_SN
+    n = int(aux.get("ref_sn", 0)) + 1
+    aux["ref_sn"] = n
+    return n
+
+
+_REF_SN = 0
+
+
 def _is_rpart(nd: PN.Node) -> bool:
     """The node's split is the route-first partition (never pruned, merged or revised)."""
     return nd.split is not None and nd.split.attr == RPART_ATTR and "rpart" in nd.meta
@@ -3551,7 +3716,12 @@ def _dists_pairs(a: PN.Node, b: PN.Node, t: float, who_level: Optional[int],
     """Aligned (child-like, parent-like) distributions over the targets both
     nodes track, plus who (at the system's who level) and when."""
     out: List[Tuple[np.ndarray, np.ndarray]] = []
-    names = set(a.targets) & set(b.targets) if attrs is None else [x for x in attrs if x in a.targets and x in b.targets]
+    # process-independent orders (round 5): the pairs' order is the order the
+    # saving / JSD sums run in, and each pair's value order the order _kl and
+    # pmdl.jsd sum in; sets iterated in the salted hash order made both, and the
+    # prune / merge decisions near their thresholds, depend on PYTHONHASHSEED
+    names = [x for x in a.targets if x in b.targets] if attrs is None \
+        else [x for x in attrs if x in a.targets and x in b.targets]
     for x in names:
         sa, sb = a.targets[x], b.targets[x]
         if isinstance(sa, PN.NumSummary) and isinstance(sb, PN.NumSummary):
@@ -3562,7 +3732,7 @@ def _dists_pairs(a: PN.Node, b: PN.Node, t: float, who_level: Optional[int],
         da, db = _dist(sa, t), _dist(sb, t)
         if da is None or db is None:
             continue
-        keys = list(set(da) | set(db))
+        keys = list(dict.fromkeys(list(da) + list(db)))
         out.append((np.asarray([da.get(k, 0.0) for k in keys]), np.asarray([db.get(k, 0.0) for k in keys])))
     if who_level is not None and attrs is None:
         ka, sha, oa = a.who.levels[who_level].distribution(t)
@@ -3570,7 +3740,7 @@ def _dists_pairs(a: PN.Node, b: PN.Node, t: float, who_level: Optional[int],
         if len(ka) and len(kb):
             da = dict(zip(ka, sha.tolist()))
             db = dict(zip(kb, shb.tolist()))
-            keys = list(set(da) | set(db))
+            keys = list(dict.fromkeys(list(da) + list(db)))
             out.append((np.r_[[da.get(k, 0.0) for k in keys], oa], np.r_[[db.get(k, 0.0) for k in keys], ob]))
     if attrs is None:
         ha, hb = a.when.hist.ravel(), b.when.hist.ravel()

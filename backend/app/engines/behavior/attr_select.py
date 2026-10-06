@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import numpy as np
 
 from ...core.engine import Context, Engine
-from ...models.schema import SYSTEM_ENTITY, BehaviorEvent, Severity
+from ...models.schema import ORG, SYSTEM_ENTITY, BehaviorEvent, Severity
 from .lib import m_ptree as MP
 from .lib import pevent as EV
 from .lib import pselect as SEL
@@ -74,6 +74,7 @@ class AttributeSelectionEngine(Engine):
         self.eval_period_s = float(params.get("eval_period_s", PERIOD_S))
         self._want_cache: Dict[str, Tuple[int, Optional[set]]] = {}
         self._stab: Dict[str, Dict[str, Any]] = {}
+        self._last_fp: Dict[str, Tuple] = {}
 
     # ----------------------------------------------------------- probe
     def _stratum_fn(self, store: Any, key: str, kind: int, config: Mapping[str, Any]):
@@ -109,16 +110,22 @@ class AttributeSelectionEngine(Engine):
             cnames = cnames[:max(0, A_ROW - len(names))]
             want = set(names) | set(cnames)
         wid = pr.want_id(want)
+        # row-aligned value lists, read once per batch (EventBatch._values; the
+        # same values and dict order as b.get / cb.get per row and name)
+        ABSENT = EV.ABSENT
+        bl = [(nm, b._values(nm)) for nm in names]
+        cl = [(nm, cb._values(nm)) for nm in cnames]
         for i in rr.tolist():
             row = {}
-            for nm in names:
-                v = b.get(nm, i)
-                if v is not EV.ABSENT:
-                    row[nm] = v
-            for nm in cnames:
-                if nm not in row:
-                    v = cb.get(nm, i)
-                    if v is not EV.ABSENT:
+            for nm, lst in bl:
+                if lst is not None:
+                    v = lst[i]
+                    if v is not ABSENT:
+                        row[nm] = v
+            for nm, lst in cl:
+                if nm not in row and lst is not None:
+                    v = lst[i]
+                    if v is not ABSENT:
                         row[nm] = v
             row.setdefault("net.src", b.ip_of(i))
             if root is not None:
@@ -179,6 +186,8 @@ class AttributeSelectionEngine(Engine):
             if w is not None:
                 n += self._offer(store, s, key, EV.KIND_WIN, w, None, now, ctx.config, R)
         runs = 0
+        skipped = 0
+        skip_unchanged = bool((EV.pconfig(ctx.config).get("defaults") or {}).get("p05_skip_unchanged", False))
         for key, s in keys.items():
             # hourly while the selection is moving; once the roles have not changed
             # for STABLE_RUNS runs and no attribute appeared, every STABLE_PERIOD_S
@@ -192,10 +201,44 @@ class AttributeSelectionEngine(Engine):
             period = self.eval_period_s if stv["stable"] < STABLE_RUNS else STABLE_PERIOD_S
             if not self.entity_due(("attrsel", key, period), now, period):
                 continue
+            # (round 5, opt-in: progressive.defaults.p05_skip_unchanged) an
+            # evaluation reads the probe, the registry, the tree's structure and
+            # the learned hierarchies (groups, windows, families); when none of
+            # them changed since the key's last evaluation it would re-measure
+            # the same rows (the probe weights only decay, uniformly per stratum:
+            # every entropy and gain is scale-free), so it is skipped and does
+            # not count as a run. Measured on PG4's servers pack (100 systems,
+            # 1 day): 536 of 1 442 due evaluations skipped (P05 was 63 s of the
+            # P-core's 66 s). Off by default: on pack O seed 0 the slower
+            # rotation of the evaluated slice and the hysteresis counted in
+            # evaluations of new data changed the mail tree's first split
+            # (region instead of /16) and lost the finance / 综合部 mail parts
+            # (recall@21 0.82 -> 0.79; round-5 runs r5b vs r5c).
+            fp = self._fingerprint(store, key, reg) if skip_unchanged else None
+            if fp is not None and self._last_fp.get(key) == fp:
+                skipped += 1
+                continue
             if self.evaluate_key(store, key, s, now, ctx.config):
                 runs += 1
-        self.last_stats = {"offered": n, "evaluations": runs}
+                if fp is not None:
+                    self._last_fp[key] = fp
+        self.last_stats = {"offered": n, "evaluations": runs, "skipped_unchanged": skipped}
         return n + runs
+
+    def _fingerprint(self, store: Any, key: str, reg: Any) -> Tuple:
+        """What an evaluation of `key` depends on, as change counters: rows
+        offered to its probes, the registry version and size, each tree's
+        structure (node ids, last lineage entry) and the versions of the models
+        the hierarchies are built from (P11 groups, P09 windows, families)."""
+        offered = tuple(sorted((kd, p.n_offered, len(p)) for (k, kd), p in self.probes.items() if k == key))
+        pt = MP.get_ptree(store, key)
+        trees = ()
+        if pt is not None:
+            trees = tuple(sorted((kd, tr.next_id, len(tr.nodes), tuple(tr.lineage[-1][:3]) if tr.lineage else ())
+                                 for kd, tr in pt.kinds.items()))
+        mv = (store.model_version(ORG, ORG, MP.WHO_GROUPS), store.model_version(ORG, ORG, MP.SYSFAM),
+              store.model_version(key, SYSTEM_ENTITY, MP.PWIN))
+        return (offered, getattr(reg, "version", None), len(reg) if reg is not None else 0, trees, mv)
 
     # -------------------------------------------------------------- evaluate
     def evaluate_key(self, store: Any, key: str, s: str, now: float,

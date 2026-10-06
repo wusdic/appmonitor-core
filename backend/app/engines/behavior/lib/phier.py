@@ -375,6 +375,7 @@ class Hierarchies:
         self.dst_sites = dict(dst_sites or {})
         self.day_hours = tuple(day_hours)
         self._kind_memo: Dict[str, str] = {}
+        self._c_edges: Dict[str, Tuple[Any, Any, Optional[List[float]], bool]] = {}
 
     # ------------------------------------------------------------ kinds
     def _rec(self, a: str) -> Any:
@@ -538,9 +539,24 @@ class Hierarchies:
         return (None if e is None or len(e) == 0 else np.asarray(e, dtype=np.float64),
                 bool(hier.get("log", False)))
 
+    def _edges_list(self, a: str) -> Tuple[Optional[List[float]], bool]:
+        """_num_edges as a Python list, re-read only when the registry record's
+        edges object or log flag changes (P02 replaces the array on a refresh)."""
+        rec = self._rec(a)
+        hier = self._field(rec, "hier", {}) or {}
+        e = hier.get("edges")
+        lgv = hier.get("log", False)
+        hit = self._c_edges.get(a)
+        if hit is not None and hit[0] is e and hit[1] is lgv:
+            return hit[2], hit[3]
+        lst = None if e is None or len(e) == 0 else np.asarray(e, dtype=np.float64).tolist()
+        out = (lst, bool(lgv))
+        self._c_edges[a] = (e, lgv, out[0], out[1])
+        return out
+
     def num_bin(self, a: str, v: Any) -> Optional[int]:
         """Level-1 bin index 0..len(edges) of a numeric value (None without edges)."""
-        edges, lg = self._num_edges(a)
+        edges, lg = self._edges_list(a)
         if edges is None:
             return None
         try:
@@ -551,7 +567,7 @@ class Hierarchies:
             return None
         if lg:
             x = math.log(x) if x > 0 else -math.inf
-        return int(bisect.bisect_right(edges.tolist(), x))
+        return int(bisect.bisect_right(edges, x))
 
     def _gen_num(self, a: str, level: int, v: Any) -> Optional[Any]:
         b = self.num_bin(a, v)

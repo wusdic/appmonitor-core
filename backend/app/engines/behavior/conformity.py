@@ -254,12 +254,18 @@ NON_CONTENT_PREFIX = ("ctx.", "ev.", "sess.", "net.src", "net.peer", "net.dst", 
                       "http.method", "http.host", "http.route", "http.path", "tls.sni", "dns.qname")
 
 
-def signature_share(sigs: Any, key: str, ip: str, t: float, route: Optional[str] = None) -> float:
+def signature_share(sigs: Any, key: str, ip: str, t: float, route: Optional[str] = None,
+                    within_key: bool = False) -> float:
     """Share of an address's own P11 signature mass on tree `key` (or on one
     action `route` of it), 0 unless the signature spans >= CLOSED_DAYS active
     days: the address's own recurring use, independent of group ids and of
     the nodes' bounded IP-level summaries (shared by P03's colleague rule and
-    P14's group parts)."""
+    P14's group parts). `within_key` (P14, a configured department's members):
+    the action's share of the address's use of THIS tree, so that work on
+    other systems does not dilute it (pack O seed 0, day 17: 192.168.2.12 held
+    3.8 decayed comments on OA - its colleagues 5.0 / 6.5 - but 1.7 % of a
+    signature dominated by its finance ledger work, below SIG_STANDING, and
+    财务部's part of POST /docs/{num}/comment listed .10 and .11 only)."""
     sg = sigs.get(ip) if sigs is not None else None
     if sg is None or sg.days < PN.CLOSED_DAYS:
         return 0.0
@@ -269,13 +275,18 @@ def signature_share(sigs: Any, key: str, ip: str, t: float, route: Optional[str]
         return 0.0
     pre = f"{key}|"
     acc = 0.0
+    on_key = 0.0
     for i, x in zip(ids.tolist(), w.tolist()):
         it = sigs.items.key_of(int(i)) or ""
+        if it.startswith(pre) and not it[len(pre):].startswith("@"):
+            on_key += x
         if route is None:
             if it.startswith(pre) and not it[len(pre):].startswith("@"):
                 acc += x
         elif it == pre + route:
             acc += x
+    if within_key and route is not None:
+        return acc / on_key if on_key > 0 else 0.0
     return acc / tot
 
 
@@ -416,9 +427,12 @@ class HourSS:
     """Space-Saving over (ip, kind, node) pairs for one local hour (§6.16.4):
     exact while fewer than k pairs exist; beyond, count - err is a guaranteed
     lower bound and every pair above N / k is tracked. Min-replacement through
-    a lazy heap (entries are re-pushed on update; stale ones are skipped)."""
+    a lazy heap (entries are re-pushed on update; stale ones are skipped).
+    Ties of the minimum are broken by push order (round 5; was id(key), a
+    memory address: which pair a full sketch evicted differed between two
+    runs of the same seed)."""
 
-    __slots__ = ("k", "c", "e", "heap", "N", "hour", "tail")    # tail: pair -> hour's extreme
+    __slots__ = ("k", "c", "e", "heap", "N", "hour", "tail", "sq")    # tail: pair -> hour's extreme
 
     def __init__(self, k: int = K_INT, hour: int = -1) -> None:
         self.k = int(k)
@@ -428,17 +442,23 @@ class HourSS:
         self.N = 0.0
         self.hour = int(hour)
         self.tail: Dict[Hashable, float] = {}     # pairs whose hour count reached the tail
+        self.sq = 0
+
+    def _seq(self) -> int:
+        q = getattr(self, "sq", 0) + 1
+        self.sq = q
+        return q
 
     def add(self, key: Hashable, w: float = 1.0) -> float:
         self.N += w
         c = self.c.get(key)
         if c is not None:
             self.c[key] = c + w
-            heapq.heappush(self.heap, (c + w, id(key) & 0xFFFF, key))
+            heapq.heappush(self.heap, (c + w, self._seq(), key))
         elif len(self.c) < self.k:
             self.c[key] = w
             self.e[key] = 0.0
-            heapq.heappush(self.heap, (w, id(key) & 0xFFFF, key))
+            heapq.heappush(self.heap, (w, self._seq(), key))
         else:
             while True:
                 m, _, kk = heapq.heappop(self.heap)
@@ -448,9 +468,9 @@ class HourSS:
             del self.e[kk]
             self.c[key] = m + w
             self.e[key] = m
-            heapq.heappush(self.heap, (m + w, id(key) & 0xFFFF, key))
+            heapq.heappush(self.heap, (m + w, self._seq(), key))
         if len(self.heap) > 8 * self.k:
-            self.heap = [(v, id(k) & 0xFFFF, k) for k, v in self.c.items()]
+            self.heap = [(v, self._seq(), k) for k, v in self.c.items()]
             heapq.heapify(self.heap)
         return self.c[key]
 

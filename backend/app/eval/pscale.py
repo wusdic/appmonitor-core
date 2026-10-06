@@ -152,9 +152,18 @@ def pcore_cpu(timings: Mapping[str, Any], events_per_tick: Sequence[float],
     by = {names[i]: float(ms[:, i].sum()) for i in idx}
     total = float(sum(by.values()))
     scored, learned = ev, ev
+    learned_p00 = None
     if batch_per_tick is not None and len(batch_per_tick) >= k:
         bt = np.asarray(batch_per_tick, dtype=float)[:k]
         scored, learned = bt[:, 0], bt[:, 1]
+        if bt.shape[1] >= 3 and np.isfinite(bt[:, 2]).all():
+            # P04 learns the rows of t - D (D = 1 h), not the rows P00 sampled
+            # in the same tick: its CPU is divided by the rows IT learned in
+            # the tick (P04 last_stats['learned']; round 5, §16.13). Dividing
+            # by P00's rows of the tick read 3-8x the true cost per row on the
+            # evening ticks, where P00 samples few rows and P04 learns the
+            # busy afternoon's.
+            learned_p00, learned = learned, bt[:, 2]
 
     def p95(name: str, per: np.ndarray) -> Optional[float]:
         if name not in names:
@@ -173,6 +182,10 @@ def pcore_cpu(timings: Mapping[str, Any], events_per_tick: Sequence[float],
                     "learning_us_per_learned_event": (by.get(LEARNING_ENGINE, 0.0) * 1000.0
                                                       / float(learned.sum()) if learned.sum() else None),
                     "units": "scoring per scored (batch) event, learning per learned event"})
+        if learned_p00 is not None:
+            out.update({"learning_p95_us_per_p00_row": p95(LEARNING_ENGINE, learned_p00),
+                        "units": "scoring per scored (batch) event, learning per row P04 learned "
+                                 "in the tick (its rows of t - D)"})
     else:
         out["units"] = "per generator event (no batch tap)"
     return out
@@ -185,6 +198,16 @@ class _BatchTap:
 
     def __init__(self) -> None:
         self.rows: List[Tuple[float, float]] = []
+        self.p04: List[float] = []
+
+    def batch(self) -> Optional[List[Tuple[float, ...]]]:
+        """(P00 rows, P00 learned, P04 learned) per tick (the third only when
+        P04 ran in every tick)."""
+        if not self.rows:
+            return None
+        if len(self.p04) == len(self.rows):
+            return [(a, b, c) for (a, b), c in zip(self.rows, self.p04)]
+        return list(self.rows)
 
     def factory(self, base: Optional[Callable] = None) -> Callable:
         from .runner import _call_with_supported, default_registry_factory
@@ -202,6 +225,15 @@ class _BatchTap:
                         self.rows.append((float(st.get("events", 0) or 0), float(st.get("learned", 0) or 0)))
                         return out
                     eng.run = run
+                elif eng.name == LEARNING_ENGINE:
+                    run4 = eng.run
+
+                    def run_p04(ctx: Any, observations: Any = None, _run0=run4, _eng=eng) -> Any:
+                        out = _run0(ctx, observations)
+                        st = getattr(_eng, "last_stats", None) or {}
+                        self.p04.append(float(st.get("learned", 0) or 0))
+                        return out
+                    eng.run = run_p04
             return reg
         return make
 
@@ -246,7 +278,7 @@ def run_point(pack: Any, seed: int = 0, registry_factory: Optional[Callable] = N
                    keep_store=True, record_series=False, **run_kw)
     mem = pcore_memory(res.store, model_names)
     cpu = pcore_cpu(res.timings, holder["g"].per_tick if "g" in holder else [], engines,
-                    batch_per_tick=tap.rows if tap.rows else None)
+                    batch_per_tick=tap.batch())
     org = getattr(p, "org", None)
     n_meta = sum(1 for a in (getattr(org, "attr_schedule", None) or [])
                  if a.name.startswith("f"))

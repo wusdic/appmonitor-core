@@ -253,8 +253,15 @@ def _quantile(values: Iterable[Any], q: float) -> Optional[float]:
     return float(np.quantile(x, q)) if x else None
 
 
-def ks_uniform(p: np.ndarray) -> Tuple[Optional[float], int]:
-    """KS D of p-values against U(0,1) (NaN dropped); (None, n) if n < 2."""
+def ks_uniform(p: np.ndarray, side: str = "two") -> Tuple[Optional[float], int]:
+    """KS D of p-values against U(0,1) (NaN dropped); (None, n) if n < 2.
+    side='upper': the one-sided D+ = max_x (F_n(x) - x), the anti-conservative
+    deviation (P(p <= x) > x), which is what VALIDITY of a p-value bounds.
+    Round 5 (§16.13, B24's lower-atom rule): a detector at its atom (score 0,
+    nothing unusual) now issues p = 1 instead of a coin flip U; its issued p
+    is valid but not uniform (an atom at 1 of the atom's mass), so the two-
+    sided D reads that mass. Exact uniformity of the randomised p is still
+    checked inside B24 (health KS) on the randomised p it keeps for that."""
     x = np.sort(np.asarray(p, dtype=float))
     x = x[np.isfinite(x)]
     n = x.size
@@ -262,7 +269,10 @@ def ks_uniform(p: np.ndarray) -> Tuple[Optional[float], int]:
         return None, int(n)
     x = np.clip(x, 0.0, 1.0)
     i = np.arange(1, n + 1)
-    d = max(float(np.max(i / n - x)), float(np.max(x - (i - 1) / n)))
+    d_up = float(np.max(i / n - x))
+    if side == "upper":
+        return max(0.0, d_up), int(n)
+    d = max(d_up, float(np.max(x - (i - 1) / n)))
     return d, int(n)
 
 
@@ -1169,10 +1179,11 @@ def calibration_stats(view: RunView) -> Dict[str, Any]:
     ks: Dict[str, Dict[str, Any]] = {}
     for j, chunks in pooled.items():
         x = np.concatenate(chunks) if chunks else np.empty(0)
-        d, n = ks_uniform(x)
+        d, n = ks_uniform(x, side="upper")
+        d2, _ = ks_uniform(x)
         name = DETECTORS[j] if j < len(DETECTORS) else str(j)
         if n:
-            ks[name] = {"D": d, "n": n}
+            ks[name] = {"D": d, "D_two": d2, "n": n}
     e = np.concatenate(e_all) if e_all else np.empty(0)
     e = e[np.isfinite(e)]
     exceed = {}
@@ -1373,9 +1384,10 @@ def poisoning_checks(view: RunView, outcomes: Sequence[Dict[str, Any]]) -> Dict[
                 P = np.asarray(ser["p"], dtype=float).reshape(ts.size, -1)
                 xs.append(P[m].ravel())
         if xs:
-            d, n = ks_uniform(np.concatenate(xs))
+            d, n = ks_uniform(np.concatenate(xs), side="upper")
             if d is not None and n >= 50:
                 rec["null_ks"] = d
+                rec["null_ks_two"] = ks_uniform(np.concatenate(xs))[0]
         rows.append(rec)
     # legitimate accepts and long DRIFTING without a label-queue entry
     accepts = []
@@ -2177,7 +2189,7 @@ def gate_poisoning(scores: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
               bumps == 0 if recs else None),
         check("incident closed within max(8 ticks, 2 h) of attack end", frac("closed_ok"),
               1.0, _ge(frac("closed_ok"), 1.0)),
-        check("null KS D after attack (median)", _median(ks), TARGETS["ks_d"],
+        check("null KS D+ (anti-conservative side) after attack (median)", _median(ks), TARGETS["ks_d"],
               _le(_median(ks), TARGETS["ks_d"])),
         check("legit accepts within deadline (fraction)", _frac(a["ok"] for a in acc), 1.0,
               _ge(_frac(a["ok"] for a in acc), 1.0)),
@@ -2196,7 +2208,7 @@ def gate_calibration(scores: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
                 per_det.setdefault(d, []).append(v["D"])
     ks_med = {d: _median(v) for d, v in per_det.items()}
     worst = max(ks_med.values()) if ks_med else None
-    checks = [check("max over detectors of median KS D", worst, TARGETS["ks_d"],
+    checks = [check("max over detectors of median KS D+ (anti-conservative side)", worst, TARGETS["ks_d"],
                     _le(worst, TARGETS["ks_d"]))]
     lo, hi = TARGETS["exceed_ratio"]
     by_cc: Dict[int, Dict[str, List[float]]] = {}

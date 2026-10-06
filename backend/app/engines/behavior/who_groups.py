@@ -242,6 +242,33 @@ def _route_part(act: Any) -> Optional[str]:
     return DF.split_key(act)[0]
 
 
+def _item_renames(store: Any, keys: Iterable[str]) -> Dict[str, str]:
+    """'<tree key>|<old route>' -> '<tree key>|<new route>' for every rename P10
+    confirmed (model.pflow 'renamed': new -> {'from': old})."""
+    out: Dict[str, str] = {}
+    for key in sorted(k for k in keys if k):
+        try:
+            pf = MP.get_model(store, key, MP.PFLOW)
+        except Exception:
+            continue
+        rn = pf.get("renamed") if isinstance(pf, Mapping) else None
+        for new, rec in sorted((rn or {}).items()):
+            old = rec.get("from") if isinstance(rec, Mapping) else None
+            if old:
+                out[f"{key}|{old}"] = f"{key}|{new}"
+    return out
+
+
+def _mapped_item(key: str, rk: Mapping[str, str]) -> str:
+    """An item key under the confirmed renames (chains followed, bounded)."""
+    for _ in range(4):
+        nk = rk.get(key)
+        if nk is None or nk == key:
+            break
+        key = nk
+    return key
+
+
 def item_label(item: str) -> str:
     """'oa|POST oa.corp.local /login' -> 'oa POST /login' (host dropped)."""
     key, _, act = item.partition("|")
@@ -638,8 +665,8 @@ class WhoGroupsEngine(Engine):
             mi_ = _idset(members)
             preds_of[i] = {g for g, m in cand_ids_.items() if m and len(m & mi_) >= CONTAIN * len(m)}
         old_of: Dict[str, str] = {}
-        for g, m in prev.items():
-            for ip in m:
+        for g, m in sorted(prev.items()):
+            for ip in sorted(m):
                 old_of[ip] = g
         final: Dict[str, Set[str]] = {}
         lineage_new: Dict[str, Set[str]] = {}
@@ -688,6 +715,13 @@ class WhoGroupsEngine(Engine):
             final[g] |= ips
         # ---- group records
         gsum = sum(glob.values()) or 1.0
+        # labels read actions under P10's confirmed renames (round 5): an old
+        # page's item counts as its new page's
+        rk = _item_renames(store, {(sigs.items.key_of(k) or "").partition("|")[0] for k in glob})
+        globm: Dict[str, float] = {}
+        for k, v in glob.items():
+            key = _mapped_item(sigs.items.key_of(k) or f"#{k}", rk)
+            globm[key] = globm.get(key, 0.0) + v
         named = _named_sets(ctx.config, sigs.keys())
         # names are matched on the groups' ADDRESSES: prefix-mode pool sources
         # (one-shot visitors pooled per /24) are not people of the department -
@@ -707,22 +741,28 @@ class WhoGroupsEngine(Engine):
             members = sorted(final[g], key=_ip_key)
             mi = [idx[m] for m in members if m in idx]
             gp: Dict[int, float] = {}
-            has: Dict[int, int] = {}
             for i in mi:
                 p = prof[i]
                 s = sum(p.values())
                 for k, v in p.items():
                     gp[k] = gp.get(k, 0.0) + v / s
-                    has[k] = has.get(k, 0) + 1
             tot = sum(gp.values()) or 1.0
+            gpm: Dict[str, float] = {}
+            hasm: Dict[str, Set[int]] = {}
+            for i in mi:
+                p = prof[i]
+                s = sum(p.values())
+                for k, v in p.items():
+                    key = _mapped_item(sigs.items.key_of(k) or f"#{k}", rk)
+                    gpm[key] = gpm.get(key, 0.0) + v / s
+                    hasm.setdefault(key, set()).add(i)
             labels = []
-            for k, v in gp.items():
-                if (sigs.items.key_of(k) or "").partition("|")[2].startswith("@"):
+            for key, v in sorted(gpm.items()):
+                if key.partition("|")[2].startswith("@"):
                     continue                          # pattern items are not labels
-                lift = (v / tot) / max(glob.get(k, 0.0) / gsum, 1e-12)
-                sup = has[k] / max(1, len(mi))
+                lift = (v / tot) / max(globm.get(key, 0.0) / gsum, 1e-12)
+                sup = len(hasm[key]) / max(1, len(mi))
                 if lift >= LIFT_MIN:
-                    key = sigs.items.key_of(k) or f"#{k}"
                     labels.append({"item": key, "label": item_label(key), "lift": round(lift, 3),
                                    "support": round(sup, 3), "score": lift * math.sqrt(sup)})
             labels.sort(key=lambda x: (-x["score"], x["item"]))

@@ -167,8 +167,10 @@ class ContentBoundsEngine(Engine):
             if b is None or asg.n != b.n or not asg.has("leaf"):
                 continue
             leaf = asg.dense("leaf", float("nan"))
-            cols = [a for a in attrs if b.has(a)]
-            scols = [a for a in sattrs if b.has(a)]
+            # (sorted: a set iterates in a per-process str-hash order, and the
+            # ledger's value dicts are kept in this order, §16.12.6)
+            cols = [a for a in sorted(attrs) if b.has(a)]
+            scols = [a for a in sorted(sattrs) if b.has(a)]
             # violating rows, vectorised: any typed p <= 1e-3, damped, or an injection shape
             mask = np.zeros(b.n, dtype=bool)
             if asg.has("vtype"):

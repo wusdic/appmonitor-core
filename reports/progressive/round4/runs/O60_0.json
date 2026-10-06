@@ -1,0 +1,6122 @@
+{
+ "seed": 0,
+ "score": {
+  "pack": "O60",
+  "seed": 0,
+  "variant": "O60",
+  "aborted": null,
+  "n_snapshots": 8,
+  "pg1": {
+   "1": {
+    "day": 1,
+    "n_truth": 0,
+    "n_stmt": 0,
+    "n_confirmed": 0,
+    "recall": null,
+    "components": {
+     "who": null,
+     "when": null,
+     "content": null,
+     "bindings": null,
+     "workflow": null
+    },
+    "recall_by_period": {
+     "daily": null,
+     "weekly": null,
+     "continuous": null,
+     "sporadic": null,
+     "monthly": null
+    },
+    "precision": null,
+    "n_precision": 0,
+    "n_unjudged": 0,
+    "n_duplicate": 0,
+    "ece": null,
+    "calib": [],
+    "mean_depth": null,
+    "per_pattern": {}
+   },
+   "2": {
+    "day": 2,
+    "n_truth": 0,
+    "n_stmt": 0,
+    "n_confirmed": 0,
+    "recall": null,
+    "components": {
+     "who": null,
+     "when": null,
+     "content": null,
+     "bindings": null,
+     "workflow": null
+    },
+    "recall_by_period": {
+     "daily": null,
+     "weekly": null,
+     "continuous": null,
+     "sporadic": null,
+     "monthly": null
+    },
+    "precision": null,
+    "n_precision": 0,
+    "n_unjudged": 0,
+    "n_duplicate": 0,
+    "ece": null,
+    "calib": [],
+    "mean_depth": null,
+    "per_pattern": {}
+   },
+   "3": {
+    "day": 3,
+    "n_truth": 26,
+    "n_stmt": 2,
+    "n_confirmed": 2,
+    "recall": 0.0,
+    "components": {
+     "who": 0.038461538461538464,
+     "when": 0.0,
+     "content": 0.038461538461538464,
+     "bindings": 0.0,
+     "workflow": 0.0
+    },
+    "recall_by_period": {
+     "daily": 0.0,
+     "weekly": null,
+     "continuous": 0.0,
+     "sporadic": 0.0,
+     "monthly": null
+    },
+    "precision": 1.0,
+    "n_precision": 2,
+    "n_unjudged": 0,
+    "n_duplicate": 0,
+    "ece": 0.4607439667498311,
+    "calib": [
+     [
+      0.3333,
+      1,
+      0
+     ],
+     [
+      0.7452,
+      1,
+      0
+     ]
+    ],
+    "mean_depth": 0.5,
+    "per_pattern": {
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#3": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     }
+    }
+   },
+   "4": {
+    "day": 4,
+    "n_truth": 31,
+    "n_stmt": 23,
+    "n_confirmed": 23,
+    "recall": 0.16129032258064516,
+    "components": {
+     "who": 0.41935483870967744,
+     "when": 0.3870967741935484,
+     "content": 0.8387096774193549,
+     "bindings": 0.0,
+     "workflow": 0.8181818181818182
+    },
+    "recall_by_period": {
+     "daily": 0.19230769230769232,
+     "weekly": null,
+     "continuous": 0.0,
+     "sporadic": 0.0,
+     "monthly": null
+    },
+    "precision": 0.9130434782608695,
+    "n_precision": 23,
+    "n_unjudged": 0,
+    "n_duplicate": 0,
+    "ece": 0.4551856599019455,
+    "calib": [
+     [
+      0.5161,
+      1,
+      0
+     ],
+     [
+      0.3412,
+      1,
+      0
+     ],
+     [
+      0.283,
+      1,
+      0
+     ],
+     [
+      0.3216,
+      1,
+      0
+     ],
+     [
+      0.0,
+      1,
+      0
+     ],
+     [
+      0.3689,
+      0,
+      0
+     ],
+     [
+      0.3981,
+      1,
+      0
+     ],
+     [
+      0.001,
+      1,
+      0
+     ],
+     [
+      0.6602,
+      1,
+      0
+     ],
+     [
+      0.3333,
+      1,
+      0
+     ],
+     [
+      0.6667,
+      1,
+      0
+     ],
+     [
+      0.4018,
+      1,
+      0
+     ],
+     [
+      0.7257,
+      1,
+      0
+     ],
+     [
+      0.912,
+      1,
+      0
+     ],
+     [
+      0.8563,
+      1,
+      0
+     ],
+     [
+      0.0784,
+      1,
+      0
+     ],
+     [
+      0.0784,
+      1,
+      0
+     ],
+     [
+      0.7555,
+      1,
+      0
+     ],
+     [
+      0.7216,
+      1,
+      0
+     ],
+     [
+      0.7216,
+      1,
+      0
+     ],
+     [
+      0.7216,
+      0,
+      0
+     ],
+     [
+      0.6667,
+      1,
+      0
+     ],
+     [
+      0.001,
+      1,
+      0
+     ]
+    ],
+    "mean_depth": 0.8260869565217391,
+    "per_pattern": {
+     "GA.oa.approvals#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:5@1.0"
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:7@1.0"
+     },
+     "FIN.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:1@1.0"
+     },
+     "SALES.crm#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:3@1.0"
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:code:0:1@1.0"
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#2": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#3": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": null
+     }
+    }
+   },
+   "5": {
+    "day": 5,
+    "n_truth": 31,
+    "n_stmt": 29,
+    "n_confirmed": 29,
+    "recall": 0.3548387096774194,
+    "components": {
+     "who": 0.4838709677419355,
+     "when": 0.5806451612903226,
+     "content": 0.8387096774193549,
+     "bindings": 0.0,
+     "workflow": 0.8181818181818182
+    },
+    "recall_by_period": {
+     "daily": 0.3076923076923077,
+     "weekly": null,
+     "continuous": 1.0,
+     "sporadic": 0.0,
+     "monthly": null
+    },
+    "precision": 0.6666666666666666,
+    "n_precision": 27,
+    "n_unjudged": 2,
+    "n_duplicate": 0,
+    "ece": 0.3281917293646191,
+    "calib": [
+     [
+      0.5161,
+      1,
+      0
+     ],
+     [
+      0.3412,
+      1,
+      0
+     ],
+     [
+      0.283,
+      1,
+      0
+     ],
+     [
+      0.3216,
+      1,
+      0
+     ],
+     [
+      0.0,
+      1,
+      0
+     ],
+     [
+      0.3679,
+      0,
+      0
+     ],
+     [
+      0.3981,
+      1,
+      0
+     ],
+     [
+      0.0004,
+      0,
+      0
+     ],
+     [
+      0.681,
+      0,
+      0
+     ],
+     [
+      0.3333,
+      1,
+      0
+     ],
+     [
+      0.8671,
+      0,
+      0
+     ],
+     [
+      0.7013,
+      1,
+      0
+     ],
+     [
+      0.7013,
+      1,
+      1
+     ],
+     [
+      0.7013,
+      1,
+      1
+     ],
+     [
+      0.6667,
+      1,
+      0
+     ],
+     [
+      0.4018,
+      0,
+      0
+     ],
+     [
+      0.7018,
+      0,
+      0
+     ],
+     [
+      0.912,
+      1,
+      0
+     ],
+     [
+      0.8563,
+      1,
+      0
+     ],
+     [
+      0.0779,
+      1,
+      0
+     ],
+     [
+      0.0779,
+      1,
+      0
+     ],
+     [
+      0.7545,
+      1,
+      0
+     ],
+     [
+      0.756,
+      1,
+      0
+     ],
+     [
+      0.8373,
+      0,
+      0
+     ],
+     [
+      0.756,
+      1,
+      0
+     ],
+     [
+      0.7469,
+      0,
+      0
+     ],
+     [
+      0.0005,
+      0,
+      0
+     ]
+    ],
+    "mean_depth": 1.0689655172413792,
+    "per_pattern": {
+     "GA.oa.approvals#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:5@1.0"
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:7@1.0"
+     },
+     "FIN.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:1@1.0"
+     },
+     "SALES.crm#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:3@1.0"
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:code:0:1@1.0"
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "PUB.portal.visit#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:3@2.0"
+     },
+     "PUB.portal.visit#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:4@2.0"
+     },
+     "PUB.portal.visit#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:5@1.0"
+     },
+     "PUB.portal.visit#3": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:oa:0:1@1.0"
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:finance:0:1@1.0"
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:portal:0:1@1.0"
+     }
+    }
+   },
+   "6": {
+    "day": 6,
+    "n_truth": 32,
+    "n_stmt": 33,
+    "n_confirmed": 33,
+    "recall": 0.4375,
+    "components": {
+     "who": 0.46875,
+     "when": 0.6875,
+     "content": 0.84375,
+     "bindings": 0.0,
+     "workflow": 0.8181818181818182
+    },
+    "recall_by_period": {
+     "daily": 0.4074074074074074,
+     "weekly": null,
+     "continuous": 1.0,
+     "sporadic": 0.0,
+     "monthly": null
+    },
+    "precision": 0.7407407407407407,
+    "n_precision": 27,
+    "n_unjudged": 6,
+    "n_duplicate": 0,
+    "ece": 0.1745592592592593,
+    "calib": [
+     [
+      0.6994,
+      1,
+      0
+     ],
+     [
+      0.5925,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.65,
+      0,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.6283,
+      1,
+      0
+     ],
+     [
+      0.3667,
+      1,
+      0
+     ],
+     [
+      0.55,
+      0,
+      0
+     ],
+     [
+      0.0,
+      0,
+      1
+     ],
+     [
+      0.55,
+      0,
+      1
+     ],
+     [
+      0.8147,
+      1,
+      0
+     ],
+     [
+      0.3507,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.7,
+      1,
+      0
+     ],
+     [
+      0.7,
+      1,
+      0
+     ],
+     [
+      0.7,
+      0,
+      0
+     ],
+     [
+      0.7,
+      1,
+      0
+     ],
+     [
+      0.55,
+      0,
+      0
+     ],
+     [
+      0.7924,
+      1,
+      0
+     ],
+     [
+      0.8911,
+      0,
+      0
+     ],
+     [
+      0.7774,
+      1,
+      0
+     ],
+     [
+      0.8147,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ]
+    ],
+    "mean_depth": 1.1818181818181819,
+    "per_pattern": {
+     "GA.oa.approvals#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:5@1.0"
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:6@1.0"
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:7@1.0"
+     },
+     "FIN.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:1@1.0"
+     },
+     "SALES.crm#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:3@1.0"
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:code:0:1@1.0"
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.mail#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:mail:0:3@1.0"
+     },
+     "PUB.portal.visit#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:3@2.0"
+     },
+     "PUB.portal.visit#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:4@2.0"
+     },
+     "PUB.portal.visit#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:5@1.0"
+     },
+     "PUB.portal.visit#3": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:6@2.0"
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:oa:0:1@1.0"
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:finance:0:1@1.0"
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:portal:0:1@1.0"
+     }
+    }
+   },
+   "7": {
+    "day": 7,
+    "n_truth": 32,
+    "n_stmt": 43,
+    "n_confirmed": 43,
+    "recall": 0.5,
+    "components": {
+     "who": 0.625,
+     "when": 0.90625,
+     "content": 0.90625,
+     "bindings": 0.0,
+     "workflow": 0.9090909090909091
+    },
+    "recall_by_period": {
+     "daily": 0.4444444444444444,
+     "weekly": null,
+     "continuous": 1.0,
+     "sporadic": 0.5,
+     "monthly": null
+    },
+    "precision": 0.7352941176470589,
+    "n_precision": 34,
+    "n_unjudged": 9,
+    "n_duplicate": 0,
+    "ece": 0.11417837058495814,
+    "calib": [
+     [
+      0.6994,
+      1,
+      0
+     ],
+     [
+      0.5925,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.55,
+      0,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.6283,
+      1,
+      0
+     ],
+     [
+      0.3667,
+      1,
+      0
+     ],
+     [
+      0.55,
+      0,
+      0
+     ],
+     [
+      0.0,
+      0,
+      1
+     ],
+     [
+      0.55,
+      0,
+      1
+     ],
+     [
+      0.8147,
+      1,
+      0
+     ],
+     [
+      0.3507,
+      0,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.7,
+      1,
+      0
+     ],
+     [
+      0.8989,
+      1,
+      0
+     ],
+     [
+      0.8894,
+      1,
+      0
+     ],
+     [
+      0.7,
+      1,
+      0
+     ],
+     [
+      0.8989,
+      1,
+      0
+     ],
+     [
+      0.84,
+      0,
+      0
+     ],
+     [
+      0.7,
+      0,
+      0
+     ],
+     [
+      0.7,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
+      0.5666,
+      1,
+      0
+     ],
+     [
+      0.6143,
+      0,
+      0
+     ],
+     [
+      0.7142,
+      1,
+      0
+     ],
+     [
+      0.7935,
+      0,
+      0
+     ],
+     [
+      0.7928,
+      1,
+      0
+     ],
+     [
+      0.7834,
+      1,
+      0
+     ],
+     [
+      0.8426,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ]
+    ],
+    "mean_depth": 1.302325581395349,
+    "per_pattern": {
+     "GA.oa.approvals#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:oa:0:7@1.0"
+     },
+     "GA.oa.approvals#1": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.approvals#2": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:5@1.0"
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:6@1.0"
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:7@1.0"
+     },
+     "FIN.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:1@1.0"
+     },
+     "SALES.crm#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:3@1.0"
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:code:0:1@1.0"
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "sporadic",
+      "stmt": "p:oa:0:18@1.0"
+     },
+     "DEV.mail#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:mail:0:3@1.0"
+     },
+     "PUB.portal.visit#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:3@2.0"
+     },
+     "PUB.portal.visit#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:4@2.0"
+     },
+     "PUB.portal.visit#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:5@1.0"
+     },
+     "PUB.portal.visit#3": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:6@2.0"
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:oa:0:1@1.0"
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:finance:0:1@1.0"
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:portal:0:1@1.0"
+     }
+    }
+   },
+   "8": {
+    "day": 8,
+    "n_truth": 34,
+    "n_stmt": 44,
+    "n_confirmed": 44,
+    "recall": 0.5,
+    "components": {
+     "who": 0.5882352941176471,
+     "when": 0.8823529411764706,
+     "content": 0.8529411764705882,
+     "bindings": 0.0,
+     "workflow": 0.9166666666666666
+    },
+    "recall_by_period": {
+     "daily": 0.4482758620689655,
+     "weekly": null,
+     "continuous": 1.0,
+     "sporadic": 0.5,
+     "monthly": null
+    },
+    "precision": 0.8285714285714286,
+    "n_precision": 35,
+    "n_unjudged": 9,
+    "n_duplicate": 0,
+    "ece": 0.25098171123055246,
+    "calib": [
+     [
+      0.4511,
+      1,
+      0
+     ],
+     [
+      0.385,
+      1,
+      0
+     ],
+     [
+      0.7667,
+      1,
+      0
+     ],
+     [
+      0.7667,
+      1,
+      0
+     ],
+     [
+      0.7,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.4385,
+      1,
+      0
+     ],
+     [
+      0.2784,
+      1,
+      0
+     ],
+     [
+      0.4333,
+      1,
+      0
+     ],
+     [
+      0.4333,
+      1,
+      1
+     ],
+     [
+      0.381,
+      0,
+      1
+     ],
+     [
+      0.0671,
+      1,
+      1
+     ],
+     [
+      0.5639,
+      1,
+      0
+     ],
+     [
+      0.2623,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.8147,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.8147,
+      0,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.7,
+      0,
+      0
+     ],
+     [
+      0.7,
+      0,
+      0
+     ],
+     [
+      0.65,
+      0,
+      0
+     ],
+     [
+      0.65,
+      0,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
+      0.7687,
+      1,
+      0
+     ],
+     [
+      0.8547,
+      1,
+      0
+     ],
+     [
+      0.799,
+      1,
+      0
+     ],
+     [
+      0.893,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ]
+    ],
+    "mean_depth": 1.3181818181818181,
+    "per_pattern": {
+     "GA.oa.approvals#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:oa:0:7@1.0"
+     },
+     "GA.oa.approvals#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:oa:0:8@1.0"
+     },
+     "GA.oa.approvals#2": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "GA.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.approval#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.approval#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": false,
+       "bindings": null,
+       "workflow": false
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.finance.bookkeeping#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:5@1.0"
+     },
+     "FIN.finance.bookkeeping#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:6@1.0"
+     },
+     "FIN.finance.bookkeeping#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:finance:0:7@1.0"
+     },
+     "FIN.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "FIN.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": false,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": false,
+       "bindings": false,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.login#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#1": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.oa.documents#2": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "SALES.crm#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:1@1.0"
+     },
+     "SALES.crm#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:crm:0:3@1.0"
+     },
+     "SALES.mail#0": {
+      "recovered": false,
+      "components": {
+       "who": false,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": null
+     },
+     "DEV.code#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:code:0:1@1.0"
+     },
+     "DEV.oa.login#0": {
+      "recovered": false,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": false,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "sporadic",
+      "stmt": null
+     },
+     "DEV.oa.login#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "sporadic",
+      "stmt": "p:oa:0:18@1.0"
+     },
+     "DEV.mail#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:mail:0:3@1.0"
+     },
+     "PUB.portal.visit#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:3@2.0"
+     },
+     "PUB.portal.visit#1": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:4@2.0"
+     },
+     "PUB.portal.visit#2": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": true
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:5@1.0"
+     },
+     "PUB.portal.visit#3": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "daily",
+      "stmt": "p:portal:0:6@2.0"
+     },
+     "AUTO.monitor.oa#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:oa:0:1@1.0"
+     },
+     "AUTO.monitor.finance#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:finance:0:1@1.0"
+     },
+     "AUTO.monitor.portal#0": {
+      "recovered": true,
+      "components": {
+       "who": true,
+       "when": true,
+       "content": true,
+       "bindings": null,
+       "workflow": null
+      },
+      "period": "continuous",
+      "stmt": "p:portal:0:1@1.0"
+     }
+    }
+   }
+  },
+  "pg1_day14": {
+   "day": 8,
+   "n_truth": 34,
+   "n_stmt": 44,
+   "n_confirmed": 44,
+   "recall": 0.5,
+   "components": {
+    "who": 0.5882352941176471,
+    "when": 0.8823529411764706,
+    "content": 0.8529411764705882,
+    "bindings": 0.0,
+    "workflow": 0.9166666666666666
+   },
+   "recall_by_period": {
+    "daily": 0.4482758620689655,
+    "weekly": null,
+    "continuous": 1.0,
+    "sporadic": 0.5,
+    "monthly": null
+   },
+   "precision": 0.8285714285714286,
+   "n_precision": 35,
+   "n_unjudged": 9,
+   "n_duplicate": 0,
+   "ece": 0.25098171123055246,
+   "mean_depth": 1.3181818181818181
+  },
+  "pg1_last_by_system": {
+   "code": {
+    "recall": 1.0
+   },
+   "crm": {
+    "recall": 1.0
+   },
+   "finance": {
+    "recall": 0.6666666666666666
+   },
+   "mail": {
+    "recall": 0.25
+   },
+   "oa": {
+    "recall": 0.25
+   },
+   "portal": {
+    "recall": 1.0
+   }
+  },
+  "bindings_ga_fin_day14": [
+   0,
+   6
+  ],
+  "pg2": {
+   "recall": {
+    "1": null,
+    "2": null,
+    "3": 0.0,
+    "4": 0.16129032258064516,
+    "5": 0.3548387096774194,
+    "6": 0.4375,
+    "7": 0.5,
+    "8": 0.5
+   },
+   "precision": {
+    "1": null,
+    "2": null,
+    "3": 1.0,
+    "4": 0.9130434782608695,
+    "5": 0.6666666666666666,
+    "6": 0.7407407407407407,
+    "7": 0.7352941176470589,
+    "8": 0.8285714285714286
+   },
+   "recall_violations": [],
+   "recall_monotone": true,
+   "recall_violations_daily": [],
+   "trend_days": [
+    3,
+    5,
+    7
+   ],
+   "days_to_80": {
+    "daily": null,
+    "weekly": null
+   },
+   "depth_nondecreasing": true,
+   "median_conf": [
+    [
+     4,
+     0.3689
+    ],
+    [
+     5,
+     0.7017847371999743
+    ],
+    [
+     6,
+     0.6000000000000001
+    ],
+    [
+     7,
+     0.55
+    ],
+    [
+     8,
+     0.65
+    ]
+   ],
+   "conf_steps": [
+    [
+     5,
+     7,
+     11,
+     0.03749999999999998
+    ]
+   ],
+   "conf_nondecreasing": true,
+   "median_U": [
+    [
+     5,
+     0.0007198235418161586
+    ],
+    [
+     6,
+     0.0009972939129203565
+    ],
+    [
+     7,
+     0.0010101649443317985
+    ],
+    [
+     8,
+     0.0011584156404446564
+    ]
+   ],
+   "U_steps": [
+    [
+     5,
+     7,
+     6,
+     -0.00017928460144400816
+    ]
+   ],
+   "U_nonincreasing": true,
+   "calibration": {
+    "n": 69,
+    "ece": 0.1802057971014493,
+    "ece_null": 0.11509297101449276,
+    "ce": 0.19879714672098592,
+    "conf": 0.621144927536232,
+    "hold": 0.782608695652174
+   },
+   "calibration_by_kind": {
+    "node": {
+     "n": 64,
+     "ece": 0.18539999999999998,
+     "ece_null": 0.113990125,
+     "ce": 0.2196213127614367,
+     "conf": 0.6473062500000001,
+     "hold": 0.8125
+    },
+    "part": {
+     "n": 5,
+     "ece": 0.48612,
+     "ece_null": 0.31552060000000004,
+     "ce": 0.0,
+     "conf": 0.28628,
+     "hold": 0.4
+    }
+   },
+   "ece": 0.19879714672098592,
+   "ece_last_day": 0.25098171123055246
+  },
+  "false_splits": {
+   "n": null,
+   "per_system_month": null
+  },
+  "pg3": {
+   "ga_login_who": false,
+   "ga_bindings": null,
+   "fin_approval_who": false,
+   "portal_login_level": true,
+   "portal_bindings": 0,
+   "portal_exception_share": 0.0,
+   "dev_single_ip_patterns": 0,
+   "dev_who_ok": true,
+   "ari": 0.9744275710126682,
+   "dev_pool_grouped": true
+  },
+  "pg5": {},
+  "pg6": {
+   "anomalies": {},
+   "far": {
+    "entity_days": 2869,
+    "inc_low": 24,
+    "inc_medium": 22,
+    "pv_low": 89,
+    "far_low": 0.008365284071104914,
+    "far_medium": 0.007668177065179505,
+    "pv_far_low": 0.031021261763680724,
+    "ks_conf": null
+   }
+  },
+  "pg7": {
+   "registered_first_tick": 0.3333333333333333,
+   "type_correct": 1.0,
+   "role_within_24h": 0.0,
+   "informative_kept": 1.0,
+   "noise_dropped": null,
+   "constants_invariant": null
+  },
+  "pg8": {
+   "arms_ok_share": 0.6666666666666666,
+   "max_switches": 0,
+   "who_within_5pct": false,
+   "systems": {
+    "oa": {
+     "chosen": {
+      "who": "prefix",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "on",
+      "P08": "on",
+      "P10": "on",
+      "content": "on",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "on",
+      "p07": "on",
+      "p08": "on",
+      "p09": "on",
+      "p10": "on"
+     },
+     "ok": true,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 9347.621879406846,
+      "/24": 7497.645501480773,
+      "/16": 11712.635036922793,
+      "grp": 5009.111988261417,
+      "reg": 17796.07116630315,
+      "none": 21863.68955906299
+     },
+     "who_U": {
+      "ip": -0.6287020220600765,
+      "prefix": 0.30274951963503594,
+      "grp": 0.3614605327859966,
+      "reg": -0.5542089225530111,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": -0.6563157661981358,
+      "/24": 0.27090324783729086,
+      "/16": -0.5649513188154119,
+      "grp": 0.3239207899513058,
+      "reg": -0.562493611620471
+     },
+     "who_best": "grp",
+     "who_within_5pct": false
+    },
+    "finance": {
+     "chosen": {
+      "who": "prefix",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "on",
+      "P08": "on",
+      "P10": "on",
+      "content": "on",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "on",
+      "p07": "on",
+      "p08": "on",
+      "p09": "on",
+      "p10": "on"
+     },
+     "ok": false,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 439.80954027944796,
+      "/24": 1267.4005490282923,
+      "/16": 2176.645790987215,
+      "grp": 319.70197817670294,
+      "reg": 4316.540993373239,
+      "none": 4314.219065278352
+     },
+     "who_U": {
+      "ip": -0.8718131612333757,
+      "prefix": -0.8665485757494669,
+      "grp": -0.855547109231413,
+      "reg": -1.701726118667374,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": -0.9157075822227867,
+      "/24": -0.900835812499683,
+      "/16": -1.700726118667374,
+      "grp": -0.900835812499683,
+      "reg": -1.700726118667374
+     },
+     "who_best": "grp",
+     "who_within_5pct": true
+    },
+    "crm": {
+     "chosen": {
+      "who": "prefix",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "on",
+      "P08": "on",
+      "P10": "off",
+      "content": "on",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "on",
+      "p07": "on",
+      "p08": "on",
+      "p09": "on",
+      "p10": "off"
+     },
+     "ok": true,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 2202.5944974615936,
+      "/24": 2887.854729870911,
+      "/16": 5735.229995094171,
+      "grp": 1553.6552496752322,
+      "reg": 11432.302453635557,
+      "none": 11429.98052554067
+     },
+     "who_U": {
+      "ip": -1.3647786634426071,
+      "prefix": -0.07754425571083529,
+      "grp": -0.07170351957167775,
+      "reg": -0.11490207008884701,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": -1.4041363472281334,
+      "/24": -0.11390207008884701,
+      "/16": -0.11390207008884701,
+      "grp": -0.11390207008884701,
+      "reg": -0.11390207008884701
+     },
+     "who_best": "grp",
+     "who_within_5pct": true
+    },
+    "code": {
+     "chosen": {
+      "who": "reg",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "off",
+      "P08": "off",
+      "P10": "off",
+      "content": "off",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "class",
+      "p07": "off",
+      "p08": "off",
+      "p09": "on",
+      "p10": "off"
+     },
+     "ok": true,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 25935.699789047612,
+      "/24": 19812.225072357716,
+      "/16": 31554.474647603558,
+      "grp": 19718.235738956162,
+      "reg": 19717.972704550328,
+      "none": 63066.004970665104
+     },
+     "who_U": {
+      "ip": -2.620516169202929,
+      "prefix": 0.002310750783017624,
+      "grp": 0.0023852803548223703,
+      "reg": 0.002385488929997099,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": -2.648950254648819,
+      "/24": -0.15435609351018928,
+      "/16": -0.030978991491954058,
+      "grp": -0.030978991491954058,
+      "reg": -0.030978991491954058
+     },
+     "who_best": "reg",
+     "who_within_5pct": true
+    },
+    "mail": {
+     "chosen": {
+      "who": "reg",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "off",
+      "P08": "off",
+      "P10": "off",
+      "content": "off",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "class",
+      "p07": "off",
+      "p08": "off",
+      "p09": "on",
+      "p10": "off"
+     },
+     "ok": true,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 19557.656881130977,
+      "/24": 12269.003006634177,
+      "/16": 19313.510265713783,
+      "grp": 10597.923753625344,
+      "reg": 19772.987800299412,
+      "none": 36360.321103119
+     },
+     "who_U": {
+      "ip": 0.28813567929725065,
+      "prefix": 0.8613950825460542,
+      "grp": 0.8453000173346926,
+      "reg": 0.8692983878937631,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": 0.2660374188386473,
+      "/24": 0.7665685188562057,
+      "/16": 0.8292712106693327,
+      "grp": 0.8108775603518561,
+      "reg": 0.8474963171238268
+     },
+     "who_best": "reg",
+     "who_within_5pct": true
+    },
+    "portal": {
+     "chosen": {
+      "who": "prefix",
+      "P06": "on",
+      "P09": "on",
+      "win": "on",
+      "P07": "on",
+      "P08": "on",
+      "P10": "on",
+      "content": "on",
+      "tier": "S",
+      "e_max": "8",
+      "B10": "on",
+      "B11": "class",
+      "B12": "class",
+      "B09": "on",
+      "B15": "on",
+      "B13": "on",
+      "p07": "on",
+      "p08": "on",
+      "p09": "on",
+      "p10": "on"
+     },
+     "ok": false,
+     "switches_after_7": 0,
+     "code_bits": {
+      "ip": 56105.9259995897,
+      "/24": 83625.25554500242,
+      "/16": 80609.46420451078,
+      "grp": 144897.04310563847,
+      "reg": 81559.54696069089,
+      "none": 146358.5386297612
+     },
+     "who_U": {
+      "ip": -2.33092408912993,
+      "prefix": -0.1965646313198905,
+      "reg": -0.19688923202363268,
+      "none": -8.0
+     },
+     "who_gain": {
+      "ip": -2.360755208371798,
+      "/24": -2.497788896567739,
+      "/16": -0.21802398958225166,
+      "grp": 0.027300530469085572,
+      "reg": -0.21802398958225166
+     },
+     "who_best": "prefix",
+     "who_within_5pct": true
+    }
+   }
+  },
+  "pg10": {
+   "day11": null,
+   "day8": false,
+   "finance_single_ip": false,
+   "ga_negative_finance": true
+  },
+  "pg11": {},
+  "gen_stats": {
+   "events": 110522,
+   "records": 39269,
+   "benign": 110522,
+   "anomalous": 0,
+   "dropped": 0
+  },
+  "core_active": true,
+  "exceptions": 0,
+  "exception_samples": []
+ },
+ "example": {
+  "days": {
+   "7": {
+    "oa_statements": [
+     {
+      "pattern_id": "p:oa:0:14@1.0",
+      "route": "GET oa.corp.local /docs",
+      "state": "confirmed",
+      "confidence": 0.55,
+      "support": 36.50733879066458,
+      "who": {
+       "level": "ip",
+       "items": [
+        "10.168.7.121",
+        "192.168.3.21",
+        "192.168.3.28",
+        "192.168.3.32"
+       ],
+       "members": [
+        "10.168.7.121",
+        "192.168.3.21",
+        "192.168.3.28",
+        "192.168.3.32"
+       ],
+       "group": null
+      },
+      "when": {
+       "workday": [
+        [
+         570,
+         1050
+        ]
+       ],
+       "nonworkday": [],
+       "coverage": 1.0,
+       "confidence": 1.0
+      },
+      "content": {
+       "net.bytes_up": {
+        "band90": [
+         499.00000000000006,
+         509.9999999999999
+        ],
+        "coverage": 0.8144792149518851,
+        "band90_raw": [
+         499.00000000000006,
+         509.9999999999999
+        ],
+        "n_eff": 31.013863508779053,
+        "n_c": 35.555396795888726,
+        "approx": 0.0,
+        "confidence": 1.0,
+        "range": [
+         498.0,
+         510.0
+        ],
+        "range_raw": [
+         499.00000000000006,
+         509.9999999999999
+        ],
+        "n_rng": 23.0,
+        "cover": 0.19020396669201167,
+        "hard": false
+       },
+       "net.dur_ms": {
+        "band90": [
+         10.0,
+         80.0
+        ],
+        "coverage": 0.7644655775320852,
+        "band90_raw": [
+         15.108732969754827,
+         73.7701887430406
+        ],
+        "n_eff": 31.013863508779053,
+        "n_c": 35.555396795888726,
+        "approx": 0.0,
+        "confidence": 0.8494061972578725,
+        "range": [
+         5.0,
+         100.0
+        ],
+        "range_raw": [
+         9.220549377924018,
+         92.76430988040568
+        ],
+        "n_rng": 37.0,
+        "cover": 0.12190489818825372,
+        "hard": true
+       },
+       "net.pkts_down": {
+        "band90": [
+         7.0,
+         23.0
+        ],
+        "coverage": 0.7594817234517259,
+        "band90_raw": [
+         7.4506885426768426,
+         22.643454505577367
+        ],
+        "n_eff": 29.39330236897221,
+        "n_c": 33.69752783539886,
+        "approx": 0.0,
+        "confidence": 0.8438685816130288,
+        "range": [
+         6.0,
+         24.0
+        ],
+        "range_raw": [
+         6.999999999999999,
+         23.0
+        ],
+        "n_rng": 16.0,
+        "cover": 0.2639573972885685,
+        "hard": false
+       },
+       "net.resp_len": {
+        "band90": [
+         10000.0,
+         30000.0
+        ],
+        "coverage": 0.7594817476145221,
+        "band90_raw": [
+         8647.217742972236,
+         29654.601850423605
+        ],
+        "n_eff": 29.39330236897221,
+        "n_c": 33.69752783539886,
+        "approx": 0.0,
+        "confidence": 0.8438686084605801,
+        "range": [
+         5000.0,
+         30000.0
+        ],
+        "range_raw": [
+         8069.999999999996,
+         29967.99999999998
+        ],
+        "n_rng": 16.0,
+        "cover": 0.2639573972885685,
+        "hard": false
+       },
+       "rate.ip_h": {
+        "band90": [
+         1.0,
+         1.0
+        ],
+        "coverage": 0.7135555135642373,
+        "band90_raw": [
+         1.0,
+         1.0
+        ],
+        "n_eff": null,
+        "n_c": 35.555396795888726,
+        "approx": 0.0,
+        "confidence": 0.7928394595158192
+       },
+       "client.stack": {
+        "n": 34.57326615059297,
+        "closed": [
+         "-|edge/125|win|128|w16",
+         "-|edge/126|win|128|w16",
+         "-|safari/17|mac|64|w16"
+        ],
+        "U": 0.014055498808665492
+       },
+       "hdr.user-agent": {
+        "n": 34.016338105839644,
+        "grammar": "[A-Z][a-z]{6}/[0-9]\\.[0-9] \\(([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2} [A-Z][a-z]{2}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9]|[A-Za-z0-9]{9}; [A-Z][a-z]{4} [A-Z][a-z]{2} [A-Z]{2} [A-Z] [0-9]{2}_[0-9]\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{6}/[0-9]{2}\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]{2})",
+        "c_g": 1.0000000000000002,
+        "U_s": 0.05711619513025155,
+        "len": [
+         114,
+         125
+        ]
+       },
+       "hdr.user-agent.len": {
+        "n": 34.57326615059297,
+        "closed": [
+         "114.0",
+         "125.0"
+        ],
+        "U": 0.014055498808665492
+       },
+       "net.win": {
+        "n": 34.57326615059297,
+        "closed": [
+         "64240.0",
+         "65535.0"
+        ],
+        "U": 0.014055498808665492
+       }
+      },
+      "bindings": {},
+      "workflow": [
+       {
+        "from": "GET oa.corp.local /docs",
+        "to": "GET oa.corp.local /docs/{num}",
+        "dep": 0.9532,
+        "band": [
+         10.2,
+         55.5
+        ],
+        "confidence": 0.9532
+       },
+       {
+        "from": "GET oa.corp.local /docs/{num}",
+        "to": "GET oa.corp.local /docs",
+        "dep": 0.9532,
+        "band": [
+         191.5,
+         1782.3
+        ],
+        "confidence": 0.0695
+       },
+       {
+        "from": "GET oa.corp.local /docs",
+        "to": "GET oa.corp.local /docs/{num}",
+        "dep": 0.8722,
+        "band": [
+         9.0,
+         55.1
+        ],
+        "confidence": 0.5159
+       },
+       {
+        "from": "GET oa.corp.local /docs",
+        "to": "GET oa.corp.local /docs/{num}",
+        "dep": 0.9082,
+        "band": [
+         8.8,
+         52.6
+        ],
+        "confidence": 0.2943
+       }
+      ],
+      "context": [
+       [
+        "http.route",
+        0,
+        [
+         "GET oa.corp.local /docs"
+        ],
+        false
+       ],
+       [
+        "net.bytes_up",
+        1,
+        [
+         "2"
+        ],
+        false
+       ]
+      ],
+      "text_zh": "【oa】工作日 09:30–17:30（覆盖 100 %，4 个工作日），目前观测到 10.168.7.121、192.168.3.21、192.168.3.28、192.168.3.32（来源集合尚未封闭）访问 GET /docs（文档）（条件：上行字节 ≥ 499 B）：上行字节 90 % 在 499–510 B，观测范围 498–510 B（n = 23）；时长 90 % 在 10–80，全部在 5–100（n = 37，下次越界概率 ≤ 13 %）；net.pkts_down 90 % 在 7–23，观测范围 6–24（n = 16）；net.resp_len 90 % 在 10000–30000，观测范围 5000–30000（n = 16）；每 IP 每小时次数 90 % 在 1–1；客户端栈 取值集合封闭 {-|edge/125|win|128|w16, -|edge/126|win|128|w16, -|safari/17|mac|64|w16}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\(([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2} [A-Z][a-z]{2}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9]|[A-Za-z0-9]{9}; [A-Z][a-z]{4} [A-Z][a-z]{2} [A-Z]{2} [A-Z] [0-9]{2}_[0-9]\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{6}/[0-9]{2}\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]{2})`；请求头 user-agent.len 取值集合封闭 {114.0, 125.0}；net.win 取值集合封闭 {64240.0, 65535.0}。流程：GET /docs → GET /docs/{num}（间隔 10 秒–56 秒）；GET /docs/{num} → GET /docs（间隔 3 分钟–30 分钟）；GET /docs → GET /docs/{num}（间隔 9 秒–55 秒）；GET /docs → GET /docs/{num}（间隔 9 秒–53 秒）。置信 0.55 · 依据 39 次 · 首次 2025-09-04 · 最近 2025-09-06 · v1.0",
+      "text_en": "[oa] On workdays 09:30–17:30 (coverage 100 %, 4 dates), so far 10.168.7.121, 192.168.3.21, 192.168.3.28, 192.168.3.32 (source set not yet closed) opens GET /docs (documents) (when: bytes up ≥ 499 B): 90 % of bytes up within 499–510 B, observed range 498–510 B (n = 23); 90 % of duration within 10–80, all within 5–100 (n = 37, P(next outside) ≤ 13 %); 90 % of net.pkts_down within 7–23, observed range 6–24 (n = 16); 90 % of net.resp_len within 10000–30000, observed range 5000–30000 (n = 16); 90 % of events per IP-hour within 1–1; client stack in the closed set {-|edge/125|win|128|w16, -|edge/126|win|128|w16, -|safari/17|mac|64|w16}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\(([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2} [A-Z][a-z]{2}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9]|[A-Za-z0-9]{9}; [A-Z][a-z]{4} [A-Z][a-z]{2} [A-Z]{2} [A-Z] [0-9]{2}_[0-9]\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{6}/[0-9]{2}\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]{2})`; header user-agent.len in the closed set {114.0, 125.0}; net.win in the closed set {64240.0, 65535.0}. Workflow: GET /docs → GET /docs/{num}; GET /docs/{num} → GET /docs; GET /docs → GET /docs/{num}; GET /docs → GET /docs/{num}. Confidence 0.55, support 39 events, first seen 2025-09-04, last seen 2025-09-06, v1.0."
+     },
+     {
+      "pattern_id": "p:oa:0:9@1.0",
+      "route": "POST oa.corp.local /approval/{num}/approve",
+      "state": "confirmed",
+      "confidence": 0.56660013223754,
+      "support": 19.674971745084044,
+      "who": {
+       "level": "ip",
+       "items": [
+        "192.168.1.21"
+       ],
+       "members": [
+        "192.168.1.21"
+       ],
+       "group": null
+      },
+      "when": {
+       "workday": [
+        [
+         572,
+         672
+        ]
+       ],
+       "nonworkday": [],
+       "coverage": 0.8571428571428572,
+       "confidence": 0.8571428571428572
+      },
+      "content": {
+       "body.kv.viewstate.len": {
+        "band90": [
+         700.0,
+         1200.0
+        ],
+        "coverage": 0.509940119013786,
+        "band90_raw": [
+         684.0,
+         1178.0
+        ],
+        "n_eff": 4.4482599183161975,
+        "n_c": 5.522326263486356,
+        "approx": 0.0,
+        "confidence": 0.56660013223754,
+        "range": [
+         600.0,
+         1200.0
+        ],
+        "range_raw": [
+         684.0,
+         1178.0
+        ],
+        "n_rng": 5.5,
+        "cover": 0.6175478244747213,
+        "hard": false
+       },
+       "body.len": {
+        "band90": [
+         819.2,
+         1433.6000000000001
+        ],
+        "coverage": 0.6320961212195149,
+        "band90_raw": [
+         834.9559286965001,
+         1399.0651529081133
+        ],
+        "n_eff": 11.464101008026327,
+        "n_c": 14.232195790359393,
+        "approx": 0.0,
+        "confidence": 0.7023290235772387,
+        "range": [
+         819.2,
+         1536.0
+        ],
+        "range_raw": [
+         823.0,
+         1439.0
+        ],
+        "n_rng": 17.0,
+        "cover": 0.2501244518664762,
+        "hard": false
+       },
+       "net.bytes_up": {
+        "band90": [
+         1331.2,
+         1822.72
+        ],
+        "coverage": 0.509940119013786,
+        "band90_raw": [
+         1337.0000000000002,
+         1830.9999999999995
+        ],
+        "n_eff": 4.4482599183161975,
+        "n_c": 5.522326263486356,
+        "approx": 0.0,
+        "confidence": 0.56660013223754,
+        "range": [
+         1331.2,
+         1843.2
+        ],
+        "range_raw": [
+         1337.0000000000002,
+         1830.9999999999995
+        ],
+        "n_rng": 5.5,
+        "cover": 0.6175478244747213,
+        "hard": false
+       },
+       "net.dur_ms": {
+        "band90": [
+         10.0,
+         60.0
+        ],
+        "coverage": 0.6882493614060339,
+        "band90_raw": [
+         11.11846923620375,
+         59.610014773785466
+        ],
+        "n_eff": 16.129187322626734,
+        "n_c": 20.02370284022179,
+        "approx": 0.0,
+        "confidence": 0.764721512673371,
+        "range": [
+         5.0,
+         70.0
+        ],
+        "range_raw": [
+         8.71191384427287,
+         66.49659479957128
+        ],
+        "n_rng": 21.444444444444443,
+        "cover": 0.2028115761829479,
+        "hard": false
+       },
+       "net.pkts_down": {
+        "band90": [
+         3.0,
+         13.0
+        ],
+        "coverage": 0.509940119013786,
+        "band90_raw": [
+         3.0000000000000004,
+         13.0
+        ],
+        "n_eff": 4.4482599183161975,
+        "n_c": 5.522326263486356,
+        "approx": 0.0,
+        "confidence": 0.56660013223754,
+        "range": [
+         2.0,
+         14.0
+        ],
+        "range_raw": [
+         3.0000000000000004,
+         13.0
+        ],
+        "n_rng": 5.5,
+        "cover": 0.6175478244747213,
+        "hard": false
+       },
+       "net.resp_len": {
+        "band90": [
+         2000.0,
+         16000.0
+        ],
+        "coverage": 0.509940119013786,
+        "band90_raw": [
+         2585.0000000000005,
+         16529.000000000004
+        ],
+        "n_eff": 4.4482599183161975,
+        "n_c": 5.522326263486356,
+        "approx": 0.0,
+        "confidence": 0.56660013223754,
+        "range": [
+         2000.0,
+         18000.0
+        ],
+        "range_raw": [
+         2585.0000000000005,
+         16529.000000000004
+        ],
+        "n_rng": 5.5,
+        "cover": 0.6175478244747213,
+        "hard": false
+       },
+       "body.fmt": {
+        "n": 16.159420494829032,
+        "grammar": "[a-z]{4}",
+        "c_g": 1.0,
+        "U_s": 0.11655405266178408,
+        "len": [
+         4,
+         4
+        ],
+        "closed": [
+         "form"
+        ],
+        "U": 0.02913851316544602
+       },
+       "body.keys": {
+        "required": [
+         "id",
+         "opinion",
+         "sign",
+         "viewstate"
+        ],
+        "optional": [],
+        "p_new_key": 0.06784465315789029,
+        "n": 6.369777524492368
+       },
+       "body.kv.opinion": {
+        "n": 5.428087919159933,
+        "grammar": "[\\u0080-\\U0010ffff]{2,8}",
+        "c_g": 1.0,
+        "U_s": 0.3111345123389933,
+        "len": [
+         2,
+         8
+        ],
+        "closed": [
+         "同意",
+         "同意，请尽快办理"
+        ],
+        "U": 0.07778362808474833
+       },
+       "body.kv.viewstate": {
+        "n": 11.554668565885516,
+        "grammar": "[A-Za-z0-9\\-_]{511,2046}",
+        "c_g": 1.0,
+        "U_s": 0.15930328941016808,
+        "len": [
+         511,
+         2046
+        ]
+       },
+       "hdr.content-type": {
+        "n": 10.974529453435883,
+        "grammar": "[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}",
+        "c_g": 1.0,
+        "U_s": 0.16702117672157338,
+        "len": [
+         33,
+         33
+        ],
+        "closed": [
+         "application/x-www-form-urlencoded"
+        ],
+        "U": 0.041755294180393344
+       },
+       "hdr.user-agent": {
+        "n": 16.159420494829032,
+        "grammar": "[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}",
+        "c_g": 1.0,
+        "U_s": 0.11655405266178408,
+        "len": [
+         111,
+         111
+        ]
+       },
+       "net.pkts_up": {
+        "n": 20.130007014962136,
+        "closed": [
+         "2.0",
+         "3.0"
+        ],
+        "U": 0.023663030478217568
+       }
+      },
+      "bindings": {},
+      "workflow": [
+       {
+        "from": "GET oa.corp.local /approval/{num}",
+        "to": "POST oa.corp.local /approval/{num}/approve",
+        "dep": 0.83,
+        "band": [
+         60.2,
+         330.0
+        ],
+        "confidence": 0.7539
+       }
+      ],
+      "context": [
+       [
+        "http.route",
+        0,
+        [
+         "POST oa.corp.local /approval/{num}/approve"
+        ],
+        false
+       ]
+      ],
+      "text_zh": "【oa】工作日 09:32–11:12（覆盖 86 %，2 个工作日），综合部（192.168.1.21）访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 700–1200，观测范围 600–1200（n = 6）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 17）；上行字节 90 % 在 1.3–1.78 KB，观测范围 1.3–1.8 KB（n = 6）；时长 90 % 在 10–60，观测范围 5–70（n = 21）；net.pkts_down 90 % 在 3–13，观测范围 2–14（n = 6）；net.resp_len 90 % 在 2000–16000，观测范围 2000–18000（n = 6）；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 60 秒–6 分钟）。置信 0.57 · 依据 21 次 · 首次 2025-09-01 · 最近 2025-09-06 · v1.0",
+      "text_en": "[oa] On workdays 09:32–11:12 (coverage 86 %, 2 dates), 综合部 (192.168.1.21) opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 700–1200, observed range 600–1200 (n = 6); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 17); 90 % of bytes up within 1.3–1.78 KB, observed range 1.3–1.8 KB (n = 6); 90 % of duration within 10–60, observed range 5–70 (n = 21); 90 % of net.pkts_down within 3–13, observed range 2–14 (n = 6); 90 % of net.resp_len within 2000–16000, observed range 2000–18000 (n = 6); body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.57, support 21 events, first seen 2025-09-01, last seen 2025-09-06, v1.0."
+     },
+     {
+      "pattern_id": "p:oa:0:8@1.0",
+      "route": "GET oa.corp.local /approval/{num}",
+      "state": "confirmed",
+      "confidence": 0.6143277040982315,
+      "support": 19.608420677912154,
+      "who": {
+       "level": "ip",
+       "items": [
+        "192.168.1.21"
+       ],
+       "members": [
+        "192.168.1.21"
+       ],
+       "group": null
+      },
+      "when": {
+       "workday": [
+        [
+         567,
+         670
+        ]
+       ],
+       "nonworkday": [],
+       "coverage": 0.8571428571428572,
+       "confidence": 0.8571428571428572
+      },
+      "content": {
+       "net.bytes_up": {
+        "band90": [
+         505.6,
+         506.0
+        ],
+        "coverage": 0.6991980250399423,
+        "band90_raw": [
+         505.52536946367417,
+         506.0000000000001
+        ],
+        "n_eff": 11.612374286060831,
+        "n_c": 14.452142690566273,
+        "approx": 0.0,
+        "confidence": 0.7768866944888247,
+        "range": [
+         505.0,
+         506.0
+        ],
+        "range_raw": [
+         505.00000000000017,
+         506.0000000000001
+        ],
+        "n_rng": 15.891666666666666,
+        "cover": 0.26554767254254696,
+        "hard": false
+       },
+       "net.dur_ms": {
+        "band90": [
+         10.0,
+         90.0
+        ],
+        "coverage": 0.687390121198946,
+        "band90_raw": [
+         17.484515551860493,
+         87.37328891296055
+        ],
+        "n_eff": 16.034730847720716,
+        "n_c": 19.955972181697085,
+        "approx": 0.0,
+        "confidence": 0.7637668013321622,
+        "range": [
+         10.0,
+         100.0
+        ],
+        "range_raw": [
+         15.133029699017715,
+         91.23993029787248
+        ],
+        "n_rng": 21.391666666666666,
+        "cover": 0.2032685997408852,
+        "hard": false
+       },
+       "net.pkts_down": {
+        "band90": [
+         10.0,
+         30.0
+        ],
+        "coverage": 0.5528949336884084,
+        "band90_raw": [
+         8.137976623404448,
+         28.37041958231013
+        ],
+        "n_eff": 7.8255028948357435,
+        "n_c": 9.739204203688303,
+        "approx": 0.0,
+        "confidence": 0.6143277040982315,
+        "range": [
+         5.0,
+         30.0
+        ],
+        "range_raw": [
+         7.999999999999998,
+         29.000000000000004
+        ],
+        "n_rng": 11.533333333333333,
+        "cover": 0.3502058507788042,
+        "hard": false
+       },
+       "net.resp_len": {
+        "band90": [
+         10000.0,
+         40000.0
+        ],
+        "coverage": 0.6344499285305017,
+        "band90_raw": [
+         9471.583356816014,
+         35262.71555990444
+        ],
+        "n_eff": 11.612374286060831,
+        "n_c": 14.452142690566273,
+        "approx": 0.0,
+        "confidence": 0.7049443650338908,
+        "range": [
+         5000.0,
+         40000.0
+        ],
+        "range_raw": [
+         9293.999999999995,
+         38046.0
+        ],
+        "n_rng": 15.891666666666666,
+        "cover": 0.26554767254254696,
+        "hard": false
+       },
+       "hdr.user-agent": {
+        "n": 15.698191429752889,
+        "grammar": "[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}",
+        "c_g": 1.0,
+        "U_s": 0.11977345022146493,
+        "len": [
+         111,
+         111
+        ]
+       },
+       "http.ctype": {
+        "n": 8.826369811438187,
+        "closed": [
+         "text/html"
+        ],
+        "U": 0.05088349101394343
+       },
+       "http.sclass": {
+        "n": 10.270294622108164,
+        "closed": [
+         "2xx"
+        ],
+        "U": 0.04436441253445001
+       },
+       "net.pkts_up": {
+        "n": 14.6340199723539,
+        "closed": [
+         "2.0"
+        ],
+        "U": 0.03198153775447164
+       }
+      },
+      "bindings": {},
+      "workflow": [
+       {
+        "from": "GET oa.corp.local /approval/{num}",
+        "to": "POST oa.corp.local /approval/{num}/approve",
+        "dep": 0.83,
+        "band": [
+         60.2,
+         330.0
+        ],
+        "confidence": 0.7539
+       }
+      ],
+      "context": [
+       [
+        "http.route",
+        0,
+        [
+         "GET oa.corp.local /approval/{num}"
+        ],
+        false
+       ]
+      ],
+      "text_zh": "【oa】工作日 09:27–11:10（覆盖 86 %，2 个工作日），综合部（192.168.1.21）访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–90，观测范围 10–100（n = 21）；net.pkts_down 90 % 在 10–30，观测范围 5–30（n = 12）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 16）；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 60 秒–6 分钟）。置信 0.61 · 依据 21 次 · 首次 2025-09-01 · 最近 2025-09-06 · v1.0",
+      "text_en": "[oa] On workdays 09:27–11:10 (coverage 86 %, 2 dates), 综合部 (192.168.1.21) opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–90, observed range 10–100 (n = 21); 90 % of net.pkts_down within 10–30, observed range 5–30 (n = 12); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 16); header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.61, support 21 events, first seen 2025-09-01, last seen 2025-09-06, v1.0."
+     },
+     {
+      "pattern_id": "p:oa:0:7@1.0",
+      "route": "GET oa.corp.local /approval/list",
+      "state": "confirmed",
+      "confidence": 0.7141868676079811,
+      "support": 21.788014512913072,
+      "who": {
+       "level": "ip",
+       "items": [
+        "192.168.1.21"
+       ],
+       "members": [
+        "192.168.1.21"
+       ],
+       "group": null
+      },
+      "when": {
+       "workday": [
+        [
+         565,
+         667
+        ]
+       ],
+       "nonworkday": [],
+       "coverage": 0.8255398110661268,
+       "confidence": 0.8255398110661268
+      },
+      "content": {
+       "net.bytes_up": {
+        "band90": [
+         505.00000000000017,
+         505.00000000000017
+        ],
+        "coverage": 0.7816825345583455,
+        "band90_raw": [
+         505.00000000000017,
+         505.00000000000017
+        ],
+        "n_eff": 12.16262272597425,
+        "n_c": 15.935048257959261,
+        "approx": 0.0,
+        "confidence": 0.8685361495092727,
+        "range": [
+         505.00000000000017,
+         505.00000000000017
+        ],
+        "range_raw": [
+         505.00000000000017,
+         505.00000000000017
+        ],
+        "n_rng": 18.476190476190474,
+        "cover": 0.2321499580001688,
+        "hard": false
+       },
+       "net.dur_ms": {
+        "band90": [
+         10.0,
+         100.0
+        ],
+        "coverage": 0.6940708960832673,
+        "band90_raw": [
+         13.910736883850719,
+         100.10251579326236
+        ],
+        "n_eff": 16.794883855006937,
+        "n_c": 22.004076813532745,
+        "approx": 0.0,
+        "confidence": 0.7711898845369637,
+        "range": [
+         10.0,
+         120.0
+        ],
+        "range_raw": [
+         11.346845380996289,
+         101.75636463290704
+        ],
+        "n_rng": 23.976190476190474,
+        "cover": 0.183060035073753,
+        "hard": false
+       },
+       "net.pkts_down": {
+        "band90": [
+         6.0,
+         16.0
+        ],
+        "coverage": 0.6750361120428515,
+        "band90_raw": [
+         6.0,
+         15.0
+        ],
+        "n_eff": 7.6229445018037065,
+        "n_c": 9.987318626974606,
+        "approx": 0.0,
+        "confidence": 0.7500401244920573,
+        "range": [
+         6.0,
+         16.0
+        ],
+        "range_raw": [
+         6.0,
+         15.0
+        ],
+        "n_rng": 10.833333333333332,
+        "cover": 0.3690157896650149,
+        "hard": false
+       },
+       "net.resp_len": {
+        "band90": [
+         6000.0,
+         20000.0
+        ],
+        "coverage": 0.642768180847183,
+        "band90_raw": [
+         5777.561955032166,
+         19027.118867264016
+        ],
+        "n_eff": 12.16262272597425,
+        "n_c": 15.935048257959261,
+        "approx": 0.0,
+        "confidence": 0.7141868676079811,
+        "range": [
+         4000.0,
+         20000.0
+        ],
+        "range_raw": [
+         5163.999999999996,
+         19057.99999999999
+        ],
+        "n_rng": 18.476190476190474,
+        "cover": 0.2321499580001688,
+        "hard": false
+       },
+       "hdr.user-agent": {
+        "n": 15.039852835848494,
+        "grammar": "[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}",
+        "c_g": 1.0,
+        "U_s": 0.12468942330506126,
+        "len": [
+         111,
+         111
+        ]
+       },
+       "http.ctype": {
+        "n": 8.181482959251362,
+        "closed": [
+         "text/html"
+        ],
+        "U": 0.05445743375215815
+       },
+       "http.sclass": {
+        "n": 9.622567884720823,
+        "closed": [
+         "2xx"
+        ],
+        "U": 0.04706959799420861
+       },
+       "net.pkts_up": {
+        "n": 16.831754716988346,
+        "closed": [
+         "2.0"
+        ],
+        "U": 0.02803986528166233
+       }
+      },
+      "bindings": {},
+      "workflow": [],
+      "context": [
+       [
+        "http.route",
+        0,
+        [
+         "GET oa.corp.local /approval/list"
+        ],
+        false
+       ]
+      ],
+      "text_zh": "【oa】工作日 09:25–11:07（覆盖 83 %，3 个工作日），综合部（192.168.1.21）访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 24）；net.pkts_down 90 % 在 6–16，观测范围 6–16（n = 11）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 18）；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。置信 0.71 · 依据 24 次 · 首次 2025-09-01 · 最近 2025-09-06 · v1.0",
+      "text_en": "[oa] On workdays 09:25–11:07 (coverage 83 %, 3 dates), 综合部 (192.168.1.21) opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 24); 90 % of net.pkts_down within 6–16, observed range 6–16 (n = 11); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 18); header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Confidence 0.71, support 24 events, first seen 2025-09-01, last seen 2025-09-06, v1.0."
+     }
+    ],
+    "finance_statements": [],
+    "group_views": [
+     {
+      "group": "G10",
+      "name": "综合部",
+      "name_source": "config",
+      "members": [
+       "10.168.7.121",
+       "192.168.1.23"
+      ],
+      "header_zh": "综合部（2 个 IP）使用 mail、oa",
+      "header_en": "综合部 (2 IPs) uses mail, oa",
+      "statements": [
+       {
+        "text_zh": "综合部 在 crm 中从未执行写操作（5 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 5 天",
+        "text_en": "综合部 has never performed a write action on crm (5 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 1.00, support 5 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 在 finance 中从未执行写操作（7 天、0 次）（封闭的写操作：凭证（POST /fin/voucher/create））。置信 0.99 · 依据 7 天",
+        "text_en": "综合部 has never performed a write action on finance (7 days, 0 times) (closed write actions: vouchers (POST /fin/voucher/create)). Confidence 0.99, support 7 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 访问 mail（占其活动 5 %）：邮件（TLS mail.corp.local）。置信 0.67 · 依据 2 个成员",
+        "text_en": "综合部 uses mail (5 % of its activity): mail (TLS mail.corp.local). Confidence 0.67, support 2 members.",
+        "negative": false
+       },
+       {
+        "text_zh": "【mail】工作日 09:01–09:30、13:04–14:01（覆盖 97 %，2 个工作日），综合部（10.168.7.121、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 2–80 KB（n = 113，下次越界概率 ≤ 4.2 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 107，下次越界概率 ≤ 4.4 %）；时长 90 % 在 40–150，全部在 5–350（n = 107，下次越界概率 ≤ 4.4 %）；net.pkts_down 90 % 在 23–37，观测范围 5–50（n = 3）；net.pkts_up 90 % 在 4–11，观测范围 2–60（n = 3）；每 IP 每小时次数 90 % 在 2–7。置信 0.55 · 依据 65 次 · 首次 2025-09-04 · 最近 2025-09-06 · v1.0",
+        "text_en": "[mail] On workdays 09:01–09:30, 13:04–14:01 (coverage 97 %, 2 dates), 综合部 (10.168.7.121, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 2–80 KB (n = 113, P(next outside) ≤ 4.2 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 107, P(next outside) ≤ 4.4 %); 90 % of duration within 40–150, all within 5–350 (n = 107, P(next outside) ≤ 4.4 %); 90 % of net.pkts_down within 23–37, observed range 5–50 (n = 3); 90 % of net.pkts_up within 4–11, observed range 2–60 (n = 3); 90 % of events per IP-hour within 2–7. Confidence 0.55, support 65 events, first seen 2025-09-04, last seen 2025-09-06, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs/{num}）、文档（GET /docs）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、提交报告（POST /report/generate）、查看报告（GET /report/form）。置信 0.67 · 依据 2 个成员",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs/{num}), documents (GET /docs), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), submit reports (POST /report/generate), view report (GET /report/form). Confidence 0.67, support 2 members.",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 在 oa 中从未执行：审批（POST /approval/{num}/approve）（8 天、0 次）。置信 0.98 · 依据 8 天",
+        "text_en": "综合部 has never performed on oa: approve (POST /approval/{num}/approve) (8 days, 0 times). Confidence 0.98, support 8 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 在 portal 中从未执行写操作（7 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））。置信 1.00 · 依据 7 天",
+        "text_en": "综合部 has never performed a write action on portal (7 days, 0 times) (closed write actions: log in (POST /login), comments (POST /comment)). Confidence 1.00, support 7 days.",
+        "negative": true
+       }
+      ]
+     },
+     {
+      "group": "G33",
+      "name": "综合部·oa GET /approval/list",
+      "name_source": "config",
+      "members": [
+       "192.168.1.21"
+      ],
+      "header_zh": "综合部·oa GET /approval/list（1 个 IP）使用 oa",
+      "header_en": "综合部·oa GET /approval/list (1 IPs) uses oa",
+      "statements": [
+       {
+        "text_zh": "综合部·oa GET /approval/list 在 crm 中从未执行写操作（5 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 5 天",
+        "text_en": "综合部·oa GET /approval/list has never performed a write action on crm (5 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 1.00, support 5 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部·oa GET /approval/list 在 finance 中从未执行写操作（7 天、0 次）（封闭的写操作：凭证（POST /fin/voucher/create））。置信 0.99 · 依据 7 天",
+        "text_en": "综合部·oa GET /approval/list has never performed a write action on finance (7 days, 0 times) (closed write actions: vouchers (POST /fin/voucher/create)). Confidence 0.99, support 7 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部·oa GET /approval/list 访问 oa（占其活动 97 %）：文档（GET /docs/{num}）、文档（GET /docs）、审批（POST /approval/{num}/approve）、查看审批（GET /approval/{num}）、查看审批（GET /approval/list）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）。置信 0.66 · 依据 1 个成员",
+        "text_en": "综合部·oa GET /approval/list uses oa (97 % of its activity): documents (GET /docs/{num}), documents (GET /docs), approve (POST /approval/{num}/approve), view approve (GET /approval/{num}), view approve (GET /approval/list), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login). Confidence 0.66, support 1 members.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:25–11:07（覆盖 83 %，3 个工作日），192.168.1.21访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 24）；net.pkts_down 90 % 在 6–16，观测范围 6–16（n = 11）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 18）；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。置信 0.71 · 依据 24 次 · 首次 2025-09-01 · 最近 2025-09-06 · v1.0",
+        "text_en": "[oa] On workdays 09:25–11:07 (coverage 83 %, 3 dates), 192.168.1.21 opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 24); 90 % of net.pkts_down within 6–16, observed range 6–16 (n = 11); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 18); header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Confidence 0.71, support 24 events, first seen 2025-09-01, last seen 2025-09-06, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:27–11:10（覆盖 86 %，2 个工作日），192.168.1.21访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–90，观测范围 10–100（n = 21）；net.pkts_down 90 % 在 10–30，观测范围 5–30（n = 12）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 16）；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 60 秒–6 分钟）。置信 0.61 · 依据 21 次 · 首次 2025-09-01 · 最近 2025-09-06 · v1.0",
+        "text_en": "[oa] On workdays 09:27–11:10 (coverage 86 %, 2 dates), 192.168.1.21 opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–90, observed range 10–100 (n = 21); 90 % of net.pkts_down within 10–30, observed range 5–30 (n = 12); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 16); header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.61, support 21 events, first seen 2025-09-01, last seen 2025-09-06, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:32–11:12（覆盖 86 %，2 个工作日），192.168.1.21访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 700–1200，观测范围 600–1200（n = 6）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 17）；上行字节 90 % 在 1.3–1.78 KB，观测范围 1.3–1.8 KB（n = 6）；时长 90 % 在 10–60，观测范围 5–70（n = 21）；net.pkts_down 90 % 在 3–13，观测范围 2–14（n = 6）；net.resp_len 90 % 在 2000–16000，观测范围 2000–18000（n = 6）；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 60 秒–6 分钟）。置信 0.57 · 依据 21 次 · 首次 2025-09-01 · 最近 2025-09-06 · v1.0",
+        "text_en": "[oa] On workdays 09:32–11:12 (coverage 86 %, 2 dates), 192.168.1.21 opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 700–1200, observed range 600–1200 (n = 6); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 17); 90 % of bytes up within 1.3–1.78 KB, observed range 1.3–1.8 KB (n = 6); 90 % of duration within 10–60, observed range 5–70 (n = 21); 90 % of net.pkts_down within 3–13, observed range 2–14 (n = 6); 90 % of net.resp_len within 2000–16000, observed range 2000–18000 (n = 6); body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.57, support 21 events, first seen 2025-09-01, last seen 2025-09-06, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部·oa GET /approval/list 在 portal 中从未执行写操作（7 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））。置信 1.00 · 依据 7 天",
+        "text_en": "综合部·oa GET /approval/list has never performed a write action on portal (7 days, 0 times) (closed write actions: log in (POST /login), comments (POST /comment)). Confidence 1.00, support 7 days.",
+        "negative": true
+       }
+      ]
+     }
+    ],
+    "dept_views": [
+     {
+      "view": "class:grp:dept:综合部",
+      "name": "综合部",
+      "groups": [
+       "G10",
+       "G33"
+      ],
+      "members": [
+       "10.168.7.121",
+       "192.168.1.21",
+       "192.168.1.23"
+      ],
+      "header_zh": "综合部（3 个 IP，2 个行为群组）使用 oa",
+      "header_en": "综合部 (3 IPs, 2 behavioural groups) uses oa",
+      "statements": [
+       {
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs）、文档（GET /docs/{num}）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、查看报告（GET /report/form）[10.168.7.121、192.168.1.23]、提交报告（POST /report/generate）[10.168.7.121、192.168.1.23]、查看审批（GET /approval/list）[192.168.1.21]、查看审批（GET /approval/{num}）[192.168.1.21]、审批（POST /approval/{num}/approve）[192.168.1.21]。置信 0.67 · 依据 3 个成员",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs), documents (GET /docs/{num}), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), view report (GET /report/form) [10.168.7.121, 192.168.1.23], submit reports (POST /report/generate) [10.168.7.121, 192.168.1.23], view approve (GET /approval/list) [192.168.1.21], view approve (GET /approval/{num}) [192.168.1.21], approve (POST /approval/{num}/approve) [192.168.1.21]. Confidence 0.67, support 3 members.",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 在 crm 中从未执行写操作（5 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 5 天",
+        "text_en": "综合部 has never performed a write action on crm (5 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 1.00, support 5 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 在 finance 中从未执行写操作（7 天、0 次）（封闭的写操作：凭证（POST /fin/voucher/create））。置信 0.99 · 依据 7 天",
+        "text_en": "综合部 has never performed a write action on finance (7 days, 0 times) (closed write actions: vouchers (POST /fin/voucher/create)). Confidence 0.99, support 7 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 在 portal 中从未执行写操作（7 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））。置信 1.00 · 依据 7 天",
+        "text_en": "综合部 has never performed a write action on portal (7 days, 0 times) (closed write actions: comments (POST /comment), log in (POST /login)). Confidence 1.00, support 7 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "【mail】工作日 09:01–09:30、13:04–14:01（覆盖 97 %，2 个工作日），综合部（10.168.7.121、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 2–80 KB（n = 113，下次越界概率 ≤ 4.2 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 107，下次越界概率 ≤ 4.4 %）；时长 90 % 在 40–150，全部在 5–350（n = 107，下次越界概率 ≤ 4.4 %）；net.pkts_down 90 % 在 23–37，观测范围 5–50（n = 3）；net.pkts_up 90 % 在 4–11，观测范围 2–60（n = 3）；每 IP 每小时次数 90 % 在 2–7。置信 0.55 · 依据 65 次 · 首次 2025-09-04 · 最近 2025-09-06 · v1.0",
+        "text_en": "[mail] On workdays 09:01–09:30, 13:04–14:01 (coverage 97 %, 2 dates), 综合部 (10.168.7.121, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 2–80 KB (n = 113, P(next outside) ≤ 4.2 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 107, P(next outside) ≤ 4.4 %); 90 % of duration within 40–150, all within 5–350 (n = 107, P(next outside) ≤ 4.4 %); 90 % of net.pkts_down within 23–37, observed range 5–50 (n = 3); 90 % of net.pkts_up within 4–11, observed range 2–60 (n = 3); 90 % of events per IP-hour within 2–7. Confidence 0.55, support 65 events, first seen 2025-09-04, last seen 2025-09-06, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:25–11:07（覆盖 83 %，3 个工作日），192.168.1.21访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 24）；net.pkts_down 90 % 在 6–16，观测范围 6–16（n = 11）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 18）；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。置信 0.71 · 依据 24 次 · 首次 2025-09-01 · 最近 2025-09-06 · v1.0",
+        "text_en": "[oa] On workdays 09:25–11:07 (coverage 83 %, 3 dates), 192.168.1.21 opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 24); 90 % of net.pkts_down within 6–16, observed range 6–16 (n = 11); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 18); header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Confidence 0.71, support 24 events, first seen 2025-09-01, last seen 2025-09-06, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:27–11:10（覆盖 86 %，2 个工作日），192.168.1.21访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–90，观测范围 10–100（n = 21）；net.pkts_down 90 % 在 10–30，观测范围 5–30（n = 12）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 16）；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 60 秒–6 分钟）。置信 0.61 · 依据 21 次 · 首次 2025-09-01 · 最近 2025-09-06 · v1.0",
+        "text_en": "[oa] On workdays 09:27–11:10 (coverage 86 %, 2 dates), 192.168.1.21 opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–90, observed range 10–100 (n = 21); 90 % of net.pkts_down within 10–30, observed range 5–30 (n = 12); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 16); header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.61, support 21 events, first seen 2025-09-01, last seen 2025-09-06, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:32–11:12（覆盖 86 %，2 个工作日），192.168.1.21访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 700–1200，观测范围 600–1200（n = 6）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 17）；上行字节 90 % 在 1.3–1.78 KB，观测范围 1.3–1.8 KB（n = 6）；时长 90 % 在 10–60，观测范围 5–70（n = 21）；net.pkts_down 90 % 在 3–13，观测范围 2–14（n = 6）；net.resp_len 90 % 在 2000–16000，观测范围 2000–18000（n = 6）；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 60 秒–6 分钟）。置信 0.57 · 依据 21 次 · 首次 2025-09-01 · 最近 2025-09-06 · v1.0",
+        "text_en": "[oa] On workdays 09:32–11:12 (coverage 86 %, 2 dates), 192.168.1.21 opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 700–1200, observed range 600–1200 (n = 6); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 17); 90 % of bytes up within 1.3–1.78 KB, observed range 1.3–1.8 KB (n = 6); 90 % of duration within 10–60, observed range 5–70 (n = 21); 90 % of net.pkts_down within 3–13, observed range 2–14 (n = 6); 90 % of net.resp_len within 2000–16000, observed range 2000–18000 (n = 6); body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.57, support 21 events, first seen 2025-09-01, last seen 2025-09-06, v1.0.",
+        "negative": false
+       }
+      ]
+     }
+    ],
+    "ga_groups": {
+     "192.168.1.21": "G33",
+     "192.168.1.23": "G10",
+     "10.168.7.121": "G10"
+    }
+   },
+   "8": {
+    "oa_statements": [
+     {
+      "pattern_id": "p:oa:0:14@1.0",
+      "route": "GET oa.corp.local /docs",
+      "state": "confirmed",
+      "confidence": 0.65,
+      "support": 44.58781150981255,
+      "who": {
+       "level": "ip",
+       "items": [
+        "10.168.7.121",
+        "192.168.3.21",
+        "192.168.3.28",
+        "192.168.3.32"
+       ],
+       "members": [
+        "10.168.7.121",
+        "192.168.3.21",
+        "192.168.3.28",
+        "192.168.3.32"
+       ],
+       "group": null
+      },
+      "when": {
+       "workday": [
+        [
+         570,
+         1050
+        ]
+       ],
+       "nonworkday": [],
+       "coverage": 0.9999999999999998,
+       "confidence": 0.9999999999999998
+      },
+      "content": {
+       "net.bytes_up": {
+        "band90": [
+         499.00000000000006,
+         509.9999999999999
+        ],
+        "coverage": 0.8144792149518851,
+        "band90_raw": [
+         499.00000000000006,
+         509.9999999999999
+        ],
+        "n_eff": 23.63486865974334,
+        "n_c": 29.725045895564385,
+        "approx": 0.0,
+        "confidence": 0.978837045978411,
+        "range": [
+         498.0,
+         510.0
+        ],
+        "range_raw": [
+         499.00000000000006,
+         509.9999999999999
+        ],
+        "n_rng": 23.0,
+        "cover": 0.19020396669201167,
+        "hard": false
+       },
+       "net.dur_ms": {
+        "band90": [
+         10.0,
+         80.0
+        ],
+        "coverage": 0.7709157812170061,
+        "band90_raw": [
+         13.089374825970593,
+         70.61385029986974
+        ],
+        "n_eff": 33.35408491879594,
+        "n_c": 41.94868688669615,
+        "approx": 0.0,
+        "confidence": 0.8565730902411178,
+        "range": [
+         5.0,
+         100.0
+        ],
+        "range_raw": [
+         9.220549377924018,
+         92.76430988040568
+        ],
+        "n_rng": 45.0,
+        "cover": 0.10113378359391359,
+        "hard": true
+       },
+       "net.pkts_down": {
+        "band90": [
+         10.0,
+         25.0
+        ],
+        "coverage": 0.8339174074202984,
+        "band90_raw": [
+         7.608159014146821,
+         23.0
+        ],
+        "n_eff": 32.26478323691841,
+        "n_c": 40.57869651551731,
+        "approx": 0.0,
+        "confidence": 0.9265748971336649,
+        "range": [
+         6.0,
+         24.0
+        ],
+        "range_raw": [
+         6.999999999999999,
+         23.0
+        ],
+        "n_rng": 24.0,
+        "cover": 0.18289246975564633,
+        "hard": false
+       },
+       "net.resp_len": {
+        "band90": [
+         10000.0,
+         30000.0
+        ],
+        "coverage": 0.7680143428060426,
+        "band90_raw": [
+         8826.873149613535,
+         29709.442939556124
+        ],
+        "n_eff": 32.26478323691841,
+        "n_c": 40.57869651551731,
+        "approx": 0.0,
+        "confidence": 0.8533492697844918,
+        "range": [
+         5000.0,
+         30000.0
+        ],
+        "range_raw": [
+         8069.999999999996,
+         29967.99999999998
+        ],
+        "n_rng": 24.0,
+        "cover": 0.18289246975564633,
+        "hard": false
+       },
+       "rate.ip_h": {
+        "band90": [
+         1.0,
+         1.8408865263474237
+        ],
+        "coverage": 0.0635901800463039,
+        "band90_raw": [
+         1.0,
+         1.8408865263474237
+        ],
+        "n_eff": null,
+        "n_c": 41.94868688669615,
+        "approx": 0.0,
+        "confidence": 0.8019315403806438
+       },
+       "client.stack": {
+        "n": 41.962823733403376,
+        "closed": [
+         "-|edge/125|win|128|w16",
+         "-|edge/126|win|128|w16",
+         "-|safari/17|mac|64|w16"
+        ],
+        "U": 0.01163796874950872
+       },
+       "hdr.user-agent": {
+        "n": 41.42948193872733,
+        "grammar": "[A-Z][a-z]{6}/[0-9]\\.[0-9] \\(([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2} [A-Z][a-z]{2}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9]|[A-Za-z0-9]{9}; [A-Z][a-z]{4} [A-Z][a-z]{2} [A-Z]{2} [A-Z] [0-9]{2}_[0-9]\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{6}/[0-9]{2}\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]{2})",
+        "c_g": 1.0000000000000002,
+        "U_s": 0.04713703558502581,
+        "len": [
+         114,
+         125
+        ]
+       },
+       "hdr.user-agent.len": {
+        "n": 41.962823733403376,
+        "closed": [
+         "114.0",
+         "125.0"
+        ],
+        "U": 0.01163796874950872
+       },
+       "hdr.x-client-ver": {
+        "n": 5.98581111986238,
+        "grammar": "[0-9]\\.[0-9]\\.[0-9]",
+        "c_g": 1.0,
+        "U_s": 0.2862945999661382,
+        "len": [
+         5,
+         5
+        ],
+        "closed": [
+         "5.1.9",
+         "5.2.1"
+        ],
+        "U": 0.07157364999153455
+       },
+       "net.win": {
+        "n": 41.962823733403376,
+        "closed": [
+         "64240.0",
+         "65535.0"
+        ],
+        "U": 0.01163796874950872
+       }
+      },
+      "bindings": {},
+      "workflow": [
+       {
+        "from": "GET oa.corp.local /docs",
+        "to": "GET oa.corp.local /docs/{num}",
+        "dep": 0.9521,
+        "band": [
+         10.2,
+         55.5
+        ],
+        "confidence": 0.9521
+       },
+       {
+        "from": "GET oa.corp.local /docs/{num}",
+        "to": "GET oa.corp.local /docs",
+        "dep": 0.9521,
+        "band": [
+         191.5,
+         1782.3
+        ],
+        "confidence": 0.0691
+       },
+       {
+        "from": "GET oa.corp.local /docs",
+        "to": "GET oa.corp.local /docs/{num}",
+        "dep": 0.8718,
+        "band": [
+         9.0,
+         55.1
+        ],
+        "confidence": 0.3156
+       },
+       {
+        "from": "GET oa.corp.local /docs",
+        "to": "GET oa.corp.local /docs/{num}",
+        "dep": 0.9071,
+        "band": [
+         9.4,
+         55.9
+        ],
+        "confidence": 0.4998
+       },
+       {
+        "from": "GET oa.corp.local /docs",
+        "to": "GET oa.corp.local /docs/{num}",
+        "dep": 0.9396,
+        "band": [
+         14.0,
+         56.3
+        ],
+        "confidence": 0.5082
+       }
+      ],
+      "context": [
+       [
+        "http.route",
+        0,
+        [
+         "GET oa.corp.local /docs"
+        ],
+        false
+       ],
+       [
+        "net.bytes_up",
+        1,
+        [
+         "2"
+        ],
+        false
+       ]
+      ],
+      "text_zh": "【oa】工作日 09:30–17:30（覆盖 100 %，5 个工作日），10.168.7.121、192.168.3.21、192.168.3.28、192.168.3.32访问 GET /docs（文档）（条件：上行字节 ≥ 499 B）：上行字节 90 % 在 499–510 B，观测范围 498–510 B（n = 23）；时长 90 % 在 10–80，全部在 5–100（n = 45，下次越界概率 ≤ 11 %）；net.pkts_down 90 % 在 10–25，观测范围 6–24（n = 24）；net.resp_len 90 % 在 10000–30000，观测范围 5000–30000（n = 24）；每 IP 每小时次数 90 % 在 1–1.84；客户端栈 取值集合封闭 {-|edge/125|win|128|w16, -|edge/126|win|128|w16, -|safari/17|mac|64|w16}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\(([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2} [A-Z][a-z]{2}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9]|[A-Za-z0-9]{9}; [A-Z][a-z]{4} [A-Z][a-z]{2} [A-Z]{2} [A-Z] [0-9]{2}_[0-9]\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{6}/[0-9]{2}\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]{2})`；请求头 user-agent.len 取值集合封闭 {114.0, 125.0}；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`，请求头 x-client-ver 取值集合封闭 {5.1.9, 5.2.1}；net.win 取值集合封闭 {64240.0, 65535.0}。流程：GET /docs → GET /docs/{num}（间隔 10 秒–56 秒）；GET /docs/{num} → GET /docs（间隔 3 分钟–30 分钟）；GET /docs → GET /docs/{num}（间隔 9 秒–55 秒）；GET /docs → GET /docs/{num}（间隔 9 秒–56 秒）；GET /docs → GET /docs/{num}（间隔 14 秒–56 秒）。置信 0.65 · 依据 48 次 · 首次 2025-09-04 · 最近 2025-09-08 · v1.0",
+      "text_en": "[oa] On workdays 09:30–17:30 (coverage 100 %, 5 dates), 10.168.7.121, 192.168.3.21, 192.168.3.28, 192.168.3.32 opens GET /docs (documents) (when: bytes up ≥ 499 B): 90 % of bytes up within 499–510 B, observed range 498–510 B (n = 23); 90 % of duration within 10–80, all within 5–100 (n = 45, P(next outside) ≤ 11 %); 90 % of net.pkts_down within 10–25, observed range 6–24 (n = 24); 90 % of net.resp_len within 10000–30000, observed range 5000–30000 (n = 24); 90 % of events per IP-hour within 1–1.84; client stack in the closed set {-|edge/125|win|128|w16, -|edge/126|win|128|w16, -|safari/17|mac|64|w16}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\(([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2} [A-Z][a-z]{2}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9]|[A-Za-z0-9]{9}; [A-Z][a-z]{4} [A-Z][a-z]{2} [A-Z]{2} [A-Z] [0-9]{2}_[0-9]\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{6}/[0-9]{2}\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]{2})`; header user-agent.len in the closed set {114.0, 125.0}; header x-client-ver matching `[0-9]\\.[0-9]\\.[0-9]`, header x-client-ver in the closed set {5.1.9, 5.2.1}; net.win in the closed set {64240.0, 65535.0}. Workflow: GET /docs → GET /docs/{num}; GET /docs/{num} → GET /docs; GET /docs → GET /docs/{num}; GET /docs → GET /docs/{num}; GET /docs → GET /docs/{num}. Confidence 0.65, support 48 events, first seen 2025-09-04, last seen 2025-09-08, v1.0."
+     },
+     {
+      "pattern_id": "p:oa:0:9@1.0",
+      "route": "POST oa.corp.local /approval/{num}/approve",
+      "state": "confirmed",
+      "confidence": 0.65,
+      "support": 25.480994721683107,
+      "who": {
+       "level": "ip",
+       "items": [
+        "192.168.1.21"
+       ],
+       "members": [
+        "192.168.1.21"
+       ],
+       "group": null
+      },
+      "when": {
+       "workday": [
+        [
+         572,
+         693
+        ]
+       ],
+       "nonworkday": [],
+       "coverage": 0.9090909090909091,
+       "confidence": 0.9090909090909091
+      },
+      "content": {
+       "body.kv.viewstate.len": {
+        "band90": [
+         800.0,
+         1400.0
+        ],
+        "coverage": 0.5777450132626587,
+        "band90_raw": [
+         703.0758842141527,
+         1347.6914745293188
+        ],
+        "n_eff": 8.741977138122213,
+        "n_c": 11.126087070600533,
+        "approx": 0.0,
+        "confidence": 0.6419389036251764,
+        "range": [
+         600.0,
+         1400.0
+        ],
+        "range_raw": [
+         684.0,
+         1349.0
+        ],
+        "n_rng": 10.333333333333332,
+        "cover": 0.38371220594035643,
+        "hard": false
+       },
+       "body.len": {
+        "band90": [
+         819.2,
+         1433.6000000000001
+        ],
+        "coverage": 0.6769001522063919,
+        "band90_raw": [
+         851.3136518864843,
+         1462.344965026733
+        ],
+        "n_eff": 14.953204064126334,
+        "n_c": 19.031238331248254,
+        "approx": 0.0,
+        "confidence": 0.7521112802293243,
+        "range": [
+         819.2,
+         1536.0
+        ],
+        "range_raw": [
+         823.0,
+         1487.9999999999998
+        ],
+        "n_rng": 21.833333333333332,
+        "cover": 0.1995061234507157,
+        "hard": false
+       },
+       "net.bytes_up": {
+        "band90": [
+         1433.6000000000001,
+         2048.0
+        ],
+        "coverage": 0.5777450460318139,
+        "band90_raw": [
+         1347.0036324881614,
+         1998.091020066152
+        ],
+        "n_eff": 8.741977138122213,
+        "n_c": 11.126087070600533,
+        "approx": 0.0,
+        "confidence": 0.6419389400353487,
+        "range": [
+         1331.2,
+         2048.0
+        ],
+        "range_raw": [
+         1337.0000000000002,
+         2001.9999999999998
+        ],
+        "n_rng": 10.333333333333332,
+        "cover": 0.38371220594035643,
+        "hard": false
+       },
+       "net.dur_ms": {
+        "band90": [
+         10.0,
+         70.0
+        ],
+        "coverage": 0.7114017528200944,
+        "band90_raw": [
+         11.785811564357319,
+         67.57899903640468
+        ],
+        "n_eff": 19.083273340050678,
+        "n_c": 24.287659120906916,
+        "approx": 0.0,
+        "confidence": 0.7904463920223271,
+        "range": [
+         5.0,
+         80.0
+        ],
+        "range_raw": [
+         8.71191384427287,
+         72.76037839818451
+        ],
+        "n_rng": 26.27777777777778,
+        "cover": 0.1681628772063469,
+        "hard": false
+       },
+       "net.pkts_down": {
+        "band90": [
+         4.0,
+         14.0
+        ],
+        "coverage": 0.5777450134879223,
+        "band90_raw": [
+         3.1469547487457854,
+         13.952923129270028
+        ],
+        "n_eff": 8.741977138122213,
+        "n_c": 11.126087070600533,
+        "approx": 0.0,
+        "confidence": 0.6419389038754691,
+        "range": [
+         2.0,
+         14.0
+        ],
+        "range_raw": [
+         3.0000000000000004,
+         13.999999999999996
+        ],
+        "n_rng": 10.333333333333332,
+        "cover": 0.38371220594035643,
+        "hard": false
+       },
+       "net.resp_len": {
+        "band90": [
+         2800.0,
+         17400.0
+        ],
+        "coverage": 0.5777450381568033,
+        "band90_raw": [
+         2738.334922325175,
+         17446.228764393047
+        ],
+        "n_eff": 8.741977138122213,
+        "n_c": 11.126087070600533,
+        "approx": 0.0,
+        "confidence": 0.6419389312853371,
+        "range": [
+         2000.0,
+         18000.0
+        ],
+        "range_raw": [
+         2585.0000000000005,
+         17478.999999999993
+        ],
+        "n_rng": 10.333333333333332,
+        "cover": 0.38371220594035643,
+        "hard": false
+       },
+       "rate.ip_h": {
+        "band90": [
+         5.0,
+         5.0
+        ],
+        "coverage": 0.0498250553481518,
+        "band90_raw": [
+         5.0,
+         5.0
+        ],
+        "n_eff": null,
+        "n_c": 24.287659120906916,
+        "approx": 0.0,
+        "confidence": 0.055361172609057555
+       },
+       "body.fmt": {
+        "n": 21.91506716797611,
+        "grammar": "[a-z]{4}",
+        "c_g": 1.0,
+        "U_s": 0.08727881901192971,
+        "len": [
+         4,
+         4
+        ],
+        "closed": [
+         "form"
+        ],
+        "U": 0.02181970475298243
+       },
+       "body.keys": {
+        "required": [
+         "id",
+         "opinion",
+         "sign",
+         "viewstate"
+        ],
+        "optional": [],
+        "p_new_key": 0.037126305876505554,
+        "n": 12.467539745623126
+       },
+       "body.kv.opinion": {
+        "n": 11.558759068260283,
+        "grammar": "[\\u0080-\\U0010ffff]{2,8}",
+        "c_g": 1.0,
+        "U_s": 0.15925140287582987,
+        "len": [
+         2,
+         8
+        ],
+        "closed": [
+         "同意",
+         "同意，请尽快办理"
+        ],
+        "U": 0.03981285071895747
+       },
+       "body.kv.viewstate": {
+        "n": 17.471236044242026,
+        "grammar": "[A-Za-z0-9\\-_]{511,2046}",
+        "c_g": 1.0,
+        "U_s": 0.1082764572554663,
+        "len": [
+         511,
+         2046
+        ]
+       },
+       "hdr.content-type": {
+        "n": 16.91137086935721,
+        "grammar": "[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}",
+        "c_g": 1.0,
+        "U_s": 0.11166091164030341,
+        "len": [
+         33,
+         33
+        ],
+        "closed": [
+         "application/x-www-form-urlencoded"
+        ],
+        "U": 0.027915227910075852
+       },
+       "hdr.user-agent": {
+        "n": 21.91506716797611,
+        "grammar": "[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}",
+        "c_g": 1.0,
+        "U_s": 0.08727881901192971,
+        "len": [
+         111,
+         111
+        ]
+       },
+       "hdr.x-client-ver": {
+        "n": 1.828403702698008,
+        "grammar": "[0-9]\\.[0-9]\\.[0-9]",
+        "c_g": 1.0,
+        "U_s": 0.014354709153061319,
+        "len": [
+         5,
+         5
+        ]
+       },
+       "net.pkts_up": {
+        "n": 25.746894860308448,
+        "closed": [
+         "2.0",
+         "3.0"
+        ],
+        "U": 0.018693758756347614
+       }
+      },
+      "bindings": {},
+      "workflow": [
+       {
+        "from": "GET oa.corp.local /approval/{num}",
+        "to": "POST oa.corp.local /approval/{num}/approve",
+        "dep": 0.871,
+        "band": [
+         43.1,
+         279.1
+        ],
+        "confidence": 0.7275
+       }
+      ],
+      "context": [
+       [
+        "http.route",
+        0,
+        [
+         "POST oa.corp.local /approval/{num}/approve"
+        ],
+        false
+       ]
+      ],
+      "text_zh": "【oa】工作日 09:32–11:33（覆盖 91 %，3 个工作日），综合部（192.168.1.21）访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.65 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+      "text_en": "[oa] On workdays 09:32–11:33 (coverage 91 %, 3 dates), 综合部 (192.168.1.21) opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 800–1400, observed range 600–1400 (n = 10); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 22); 90 % of bytes up within 1.4–2 KB, observed range 1.3–2 KB (n = 10); 90 % of duration within 10–70, observed range 5–80 (n = 26); 90 % of net.pkts_down within 4–14, observed range 2–14 (n = 10); 90 % of net.resp_len within 2800–17400, observed range 2000–18000 (n = 10); 90 % of events per IP-hour within 5–5; body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; header x-client-ver matching `[0-9]\\.[0-9]\\.[0-9]`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.65, support 28 events, first seen 2025-09-01, last seen 2025-09-08, v1.0."
+     },
+     {
+      "pattern_id": "p:oa:0:8@1.0",
+      "route": "GET oa.corp.local /approval/{num}",
+      "state": "confirmed",
+      "confidence": 0.65,
+      "support": 24.92189864111498,
+      "who": {
+       "level": "ip",
+       "items": [
+        "192.168.1.21"
+       ],
+       "members": [
+        "192.168.1.21"
+       ],
+       "group": null
+      },
+      "when": {
+       "workday": [
+        [
+         567,
+         690
+        ]
+       ],
+       "nonworkday": [],
+       "coverage": 0.9090909090909091,
+       "confidence": 0.9090909090909091
+      },
+      "content": {
+       "net.bytes_up": {
+        "band90": [
+         505.6,
+         506.0
+        ],
+        "coverage": 0.6669032887944097,
+        "band90_raw": [
+         505.52536946367417,
+         506.0000000000001
+        ],
+        "n_eff": 9.880163621938578,
+        "n_c": 12.595792311421771,
+        "approx": 0.0,
+        "confidence": 0.7410036542160108,
+        "range": [
+         505.0,
+         506.0
+        ],
+        "range_raw": [
+         505.00000000000017,
+         506.0000000000001
+        ],
+        "n_rng": 15.891666666666666,
+        "cover": 0.26554767254254696,
+        "hard": false
+       },
+       "net.dur_ms": {
+        "band90": [
+         10.0,
+         100.0
+        ],
+        "coverage": 0.7108316457237772,
+        "band90_raw": [
+         14.09318108701945,
+         93.01697423926045
+        ],
+        "n_eff": 18.999641706142608,
+        "n_c": 24.221819605356252,
+        "approx": 0.0,
+        "confidence": 0.7898129396930857,
+        "range": [
+         5.0,
+         120.0
+        ],
+        "range_raw": [
+         9.502296419323178,
+         114.58448153898787
+        ],
+        "n_rng": 26.224999999999998,
+        "cover": 0.16847734243214751,
+        "hard": false
+       },
+       "net.pkts_down": {
+        "band90": [
+         10.0,
+         30.0
+        ],
+        "coverage": 0.513886036549654,
+        "band90_raw": [
+         8.137976623404448,
+         28.37041958231013
+        ],
+        "n_eff": 6.658177485524267,
+        "n_c": 8.488221854345468,
+        "approx": 0.0,
+        "confidence": 0.5709844850551712,
+        "range": [
+         5.0,
+         30.0
+        ],
+        "range_raw": [
+         7.999999999999998,
+         29.000000000000004
+        ],
+        "n_rng": 11.533333333333333,
+        "cover": 0.3502058507788042,
+        "hard": false
+       },
+       "net.resp_len": {
+        "band90": [
+         10000.0,
+         40000.0
+        ],
+        "coverage": 0.6034098949699737,
+        "band90_raw": [
+         9471.583356816014,
+         35262.71555990444
+        ],
+        "n_eff": 9.880163621938578,
+        "n_c": 12.595792311421771,
+        "approx": 0.0,
+        "confidence": 0.6704554388555263,
+        "range": [
+         5000.0,
+         40000.0
+        ],
+        "range_raw": [
+         9293.999999999995,
+         38046.0
+        ],
+        "n_rng": 15.891666666666666,
+        "cover": 0.26554767254254696,
+        "hard": false
+       },
+       "rate.ip_h": {
+        "band90": [
+         5.0,
+         5.0
+        ],
+        "coverage": 0.0498250553481518,
+        "band90_raw": [
+         5.0,
+         5.0
+        ],
+        "n_eff": null,
+        "n_c": 24.221819605356252,
+        "approx": 0.0,
+        "confidence": 0.055361172609057555
+       },
+       "hdr.user-agent": {
+        "n": 20.97073685695791,
+        "grammar": "[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}",
+        "c_g": 1.0,
+        "U_s": 0.09103017404564746,
+        "len": [
+         111,
+         111
+        ]
+       },
+       "http.ctype": {
+        "n": 8.517917465025095,
+        "closed": [
+         "text/html"
+        ],
+        "U": 0.05253250008074972
+       },
+       "http.sclass": {
+        "n": 9.911381893294363,
+        "closed": [
+         "2xx"
+        ],
+        "U": 0.04582371003871445
+       },
+       "net.pkts_up": {
+        "n": 14.122609517732002,
+        "closed": [
+         "2.0"
+        ],
+        "U": 0.033063076806534315
+       }
+      },
+      "bindings": {},
+      "workflow": [
+       {
+        "from": "GET oa.corp.local /approval/list",
+        "to": "GET oa.corp.local /approval/{num}",
+        "dep": 0.8301,
+        "band": [
+         24.5,
+         248.5
+        ],
+        "confidence": 0.6117
+       },
+       {
+        "from": "GET oa.corp.local /approval/{num}",
+        "to": "POST oa.corp.local /approval/{num}/approve",
+        "dep": 0.871,
+        "band": [
+         43.1,
+         279.1
+        ],
+        "confidence": 0.7275
+       }
+      ],
+      "context": [
+       [
+        "http.route",
+        0,
+        [
+         "GET oa.corp.local /approval/{num}"
+        ],
+        false
+       ]
+      ],
+      "text_zh": "【oa】工作日 09:27–11:30（覆盖 91 %，3 个工作日），综合部（192.168.1.21）访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–100，观测范围 5–120（n = 26）；net.pkts_down 90 % 在 10–30，观测范围 5–30（n = 12）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 16）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）；GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.65 · 依据 27 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+      "text_en": "[oa] On workdays 09:27–11:30 (coverage 91 %, 3 dates), 综合部 (192.168.1.21) opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–100, observed range 5–120 (n = 26); 90 % of net.pkts_down within 10–30, observed range 5–30 (n = 12); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 16); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}; GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.65, support 27 events, first seen 2025-09-01, last seen 2025-09-08, v1.0."
+     },
+     {
+      "pattern_id": "p:oa:0:7@1.0",
+      "route": "GET oa.corp.local /approval/list",
+      "state": "confirmed",
+      "confidence": 0.65,
+      "support": 27.709505584152133,
+      "who": {
+       "level": "ip",
+       "items": [
+        "192.168.1.21"
+       ],
+       "members": [
+        "192.168.1.21"
+       ],
+       "group": null
+      },
+      "when": {
+       "workday": [
+        [
+         565,
+         688
+        ]
+       ],
+       "nonworkday": [],
+       "coverage": 0.9259259259259259,
+       "confidence": 0.9259259259259259
+      },
+      "content": {
+       "net.bytes_up": {
+        "band90": [
+         505.00000000000017,
+         505.00000000000017
+        ],
+        "coverage": 0.7584082822516756,
+        "band90_raw": [
+         505.00000000000017,
+         505.00000000000017
+        ],
+        "n_eff": 10.83317240197775,
+        "n_c": 14.062518024276036,
+        "approx": 0.0,
+        "confidence": 0.8426758691685283,
+        "range": [
+         505.00000000000017,
+         505.00000000000017
+        ],
+        "range_raw": [
+         505.00000000000017,
+         505.00000000000017
+        ],
+        "n_rng": 18.476190476190474,
+        "cover": 0.2321499580001688,
+        "hard": false
+       },
+       "net.dur_ms": {
+        "band90": [
+         10.0,
+         100.0
+        ],
+        "coverage": 0.7224194407856568,
+        "band90_raw": [
+         11.336700251171997,
+         95.92711693720825
+        ],
+        "n_eff": 20.832804168766188,
+        "n_c": 27.043018725152304,
+        "approx": 0.0,
+        "confidence": 0.8026882675396186,
+        "range": [
+         10.0,
+         120.0
+        ],
+        "range_raw": [
+         10.093260035338174,
+         101.75636463290704
+        ],
+        "n_rng": 29.476190476190474,
+        "cover": 0.15107028712378637,
+        "hard": false
+       },
+       "net.pkts_down": {
+        "band90": [
+         6.0,
+         16.0
+        ],
+        "coverage": 0.6432532136890896,
+        "band90_raw": [
+         6.0,
+         15.0
+        ],
+        "n_eff": 6.789709247692961,
+        "n_c": 8.813707114810121,
+        "approx": 0.0,
+        "confidence": 0.7147257929878773,
+        "range": [
+         6.0,
+         16.0
+        ],
+        "range_raw": [
+         6.0,
+         15.0
+        ],
+        "n_rng": 10.833333333333332,
+        "cover": 0.3690157896650149,
+        "hard": false
+       },
+       "net.resp_len": {
+        "band90": [
+         6000.0,
+         20000.0
+        ],
+        "coverage": 0.6214924828783521,
+        "band90_raw": [
+         5777.561955032166,
+         19027.118867264016
+        ],
+        "n_eff": 10.83317240197775,
+        "n_c": 14.062518024276036,
+        "approx": 0.0,
+        "confidence": 0.690547203198169,
+        "range": [
+         4000.0,
+         20000.0
+        ],
+        "range_raw": [
+         5163.999999999996,
+         19057.99999999999
+        ],
+        "n_rng": 18.476190476190474,
+        "cover": 0.2321499580001688,
+        "hard": false
+       },
+       "rate.ip_h": {
+        "band90": [
+         5.0,
+         5.0
+        ],
+        "coverage": 0.0498250553481518,
+        "band90_raw": [
+         5.0,
+         5.0
+        ],
+        "n_eff": null,
+        "n_c": 27.043018725152304,
+        "approx": 0.0,
+        "confidence": 0.055361172609057555
+       },
+       "hdr.user-agent": {
+        "n": 18.56788621351629,
+        "grammar": "[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}",
+        "c_g": 1.0,
+        "U_s": 0.10220828035163672,
+        "len": [
+         111,
+         111
+        ]
+       },
+       "http.ctype": {
+        "n": 7.926030275177901,
+        "closed": [
+         "text/html"
+        ],
+        "U": 0.05601594265150918
+       },
+       "http.sclass": {
+        "n": 9.32211981117794,
+        "closed": [
+         "2xx"
+        ],
+        "U": 0.048439662506004275
+       },
+       "net.pkts_up": {
+        "n": 16.306212227743313,
+        "closed": [
+         "2.0"
+        ],
+        "U": 0.028891359554603056
+       }
+      },
+      "bindings": {},
+      "workflow": [
+       {
+        "from": "GET oa.corp.local /approval/list",
+        "to": "GET oa.corp.local /approval/{num}",
+        "dep": 0.8301,
+        "band": [
+         24.5,
+         248.5
+        ],
+        "confidence": 0.6117
+       }
+      ],
+      "context": [
+       [
+        "http.route",
+        0,
+        [
+         "GET oa.corp.local /approval/list"
+        ],
+        false
+       ]
+      ],
+      "text_zh": "【oa】工作日 09:25–11:28（覆盖 93 %，4 个工作日），综合部（192.168.1.21）访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 29）；net.pkts_down 90 % 在 6–16，观测范围 6–16（n = 11）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 18）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）。置信 0.65 · 依据 30 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+      "text_en": "[oa] On workdays 09:25–11:28 (coverage 93 %, 4 dates), 综合部 (192.168.1.21) opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 29); 90 % of net.pkts_down within 6–16, observed range 6–16 (n = 11); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 18); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}. Confidence 0.65, support 30 events, first seen 2025-09-01, last seen 2025-09-08, v1.0."
+     }
+    ],
+    "finance_statements": [],
+    "group_views": [
+     {
+      "group": "G10",
+      "name": "综合部",
+      "name_source": "config",
+      "members": [
+       "10.168.7.121",
+       "192.168.1.23"
+      ],
+      "header_zh": "综合部（2 个 IP）使用 mail、oa",
+      "header_en": "综合部 (2 IPs) uses mail, oa",
+      "statements": [
+       {
+        "text_zh": "综合部 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 6 天",
+        "text_en": "综合部 has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 1.00, support 6 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 在 finance 中从未执行写操作（8 天、0 次）（封闭的写操作：凭证（POST /fin/voucher/create））。置信 0.99 · 依据 8 天",
+        "text_en": "综合部 has never performed a write action on finance (8 days, 0 times) (closed write actions: vouchers (POST /fin/voucher/create)). Confidence 0.99, support 8 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 访问 mail（占其活动 5 %）：邮件（TLS mail.corp.local）。置信 0.67 · 依据 2 个成员",
+        "text_en": "综合部 uses mail (5 % of its activity): mail (TLS mail.corp.local). Confidence 0.67, support 2 members.",
+        "negative": false
+       },
+       {
+        "text_zh": "【mail】工作日 13:41–13:53（覆盖 69 %，2 个工作日），综合部（10.168.7.121、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 1–80 KB（n = 170，下次越界概率 ≤ 2.8 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 163，下次越界概率 ≤ 2.9 %）；时长 90 % 在 20–200，全部在 5–400（n = 163，下次越界概率 ≤ 2.9 %）；net.pkts_down 90 % 在 23–37，观测范围 5–50（n = 3）；net.pkts_up 90 % 在 4–11，观测范围 2–60（n = 3）；每 IP 每小时次数 90 % 在 2–8。置信 0.34 · 依据 69 次 · 首次 2025-09-04 · 最近 2025-09-08 · v1.0",
+        "text_en": "[mail] On workdays 13:41–13:53 (coverage 69 %, 2 dates), 综合部 (10.168.7.121, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 1–80 KB (n = 170, P(next outside) ≤ 2.8 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 163, P(next outside) ≤ 2.9 %); 90 % of duration within 20–200, all within 5–400 (n = 163, P(next outside) ≤ 2.9 %); 90 % of net.pkts_down within 23–37, observed range 5–50 (n = 3); 90 % of net.pkts_up within 4–11, observed range 2–60 (n = 3); 90 % of events per IP-hour within 2–8. Confidence 0.34, support 69 events, first seen 2025-09-04, last seen 2025-09-08, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs/{num}）、文档（GET /docs）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、提交报告（POST /report/generate）、查看报告（GET /report/form）。置信 0.67 · 依据 2 个成员",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs/{num}), documents (GET /docs), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), submit reports (POST /report/generate), view report (GET /report/form). Confidence 0.67, support 2 members.",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 在 oa 中从未执行：审批（POST /approval/{num}/approve）（9 天、0 次）。置信 0.98 · 依据 9 天",
+        "text_en": "综合部 has never performed on oa: approve (POST /approval/{num}/approve) (9 days, 0 times). Confidence 0.98, support 9 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 在 portal 中从未执行写操作（8 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））。置信 0.99 · 依据 8 天",
+        "text_en": "综合部 has never performed a write action on portal (8 days, 0 times) (closed write actions: log in (POST /login), comments (POST /comment)). Confidence 0.99, support 8 days.",
+        "negative": true
+       }
+      ]
+     },
+     {
+      "group": "G33",
+      "name": "综合部·oa GET /approval/list",
+      "name_source": "config",
+      "members": [
+       "192.168.1.21"
+      ],
+      "header_zh": "综合部·oa GET /approval/list（1 个 IP）使用 oa",
+      "header_en": "综合部·oa GET /approval/list (1 IPs) uses oa",
+      "statements": [
+       {
+        "text_zh": "综合部·oa GET /approval/list 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 6 天",
+        "text_en": "综合部·oa GET /approval/list has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 1.00, support 6 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部·oa GET /approval/list 在 finance 中从未执行写操作（8 天、0 次）（封闭的写操作：凭证（POST /fin/voucher/create））。置信 0.99 · 依据 8 天",
+        "text_en": "综合部·oa GET /approval/list has never performed a write action on finance (8 days, 0 times) (closed write actions: vouchers (POST /fin/voucher/create)). Confidence 0.99, support 8 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部·oa GET /approval/list 访问 oa（占其活动 97 %）：文档（GET /docs/{num}）、文档（GET /docs）、审批（POST /approval/{num}/approve）、查看审批（GET /approval/{num}）、查看审批（GET /approval/list）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）。置信 0.66 · 依据 1 个成员",
+        "text_en": "综合部·oa GET /approval/list uses oa (97 % of its activity): documents (GET /docs/{num}), documents (GET /docs), approve (POST /approval/{num}/approve), view approve (GET /approval/{num}), view approve (GET /approval/list), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login). Confidence 0.66, support 1 members.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:25–11:28（覆盖 93 %，4 个工作日），192.168.1.21访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 29）；net.pkts_down 90 % 在 6–16，观测范围 6–16（n = 11）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 18）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）。置信 0.65 · 依据 30 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 09:25–11:28 (coverage 93 %, 4 dates), 192.168.1.21 opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 29); 90 % of net.pkts_down within 6–16, observed range 6–16 (n = 11); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 18); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}. Confidence 0.65, support 30 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:27–11:30（覆盖 91 %，3 个工作日），192.168.1.21访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–100，观测范围 5–120（n = 26）；net.pkts_down 90 % 在 10–30，观测范围 5–30（n = 12）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 16）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）；GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.65 · 依据 27 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 09:27–11:30 (coverage 91 %, 3 dates), 192.168.1.21 opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–100, observed range 5–120 (n = 26); 90 % of net.pkts_down within 10–30, observed range 5–30 (n = 12); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 16); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}; GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.65, support 27 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:32–11:33（覆盖 91 %，3 个工作日），192.168.1.21访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.65 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 09:32–11:33 (coverage 91 %, 3 dates), 192.168.1.21 opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 800–1400, observed range 600–1400 (n = 10); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 22); 90 % of bytes up within 1.4–2 KB, observed range 1.3–2 KB (n = 10); 90 % of duration within 10–70, observed range 5–80 (n = 26); 90 % of net.pkts_down within 4–14, observed range 2–14 (n = 10); 90 % of net.resp_len within 2800–17400, observed range 2000–18000 (n = 10); 90 % of events per IP-hour within 5–5; body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; header x-client-ver matching `[0-9]\\.[0-9]\\.[0-9]`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.65, support 28 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部·oa GET /approval/list 在 portal 中从未执行写操作（8 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））。置信 0.99 · 依据 8 天",
+        "text_en": "综合部·oa GET /approval/list has never performed a write action on portal (8 days, 0 times) (closed write actions: log in (POST /login), comments (POST /comment)). Confidence 0.99, support 8 days.",
+        "negative": true
+       }
+      ]
+     }
+    ],
+    "dept_views": [
+     {
+      "view": "class:grp:dept:综合部",
+      "name": "综合部",
+      "groups": [
+       "G10",
+       "G33"
+      ],
+      "members": [
+       "10.168.7.121",
+       "192.168.1.21",
+       "192.168.1.23"
+      ],
+      "header_zh": "综合部（3 个 IP，2 个行为群组）使用 oa",
+      "header_en": "综合部 (3 IPs, 2 behavioural groups) uses oa",
+      "statements": [
+       {
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs）、文档（GET /docs/{num}）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、查看报告（GET /report/form）[10.168.7.121、192.168.1.23]、提交报告（POST /report/generate）[10.168.7.121、192.168.1.23]、查看审批（GET /approval/list）[192.168.1.21]、查看审批（GET /approval/{num}）[192.168.1.21]、审批（POST /approval/{num}/approve）[192.168.1.21]。置信 0.67 · 依据 3 个成员",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs), documents (GET /docs/{num}), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), view report (GET /report/form) [10.168.7.121, 192.168.1.23], submit reports (POST /report/generate) [10.168.7.121, 192.168.1.23], view approve (GET /approval/list) [192.168.1.21], view approve (GET /approval/{num}) [192.168.1.21], approve (POST /approval/{num}/approve) [192.168.1.21]. Confidence 0.67, support 3 members.",
+        "negative": false
+       },
+       {
+        "text_zh": "综合部 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 6 天",
+        "text_en": "综合部 has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 1.00, support 6 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 在 finance 中从未执行写操作（8 天、0 次）（封闭的写操作：凭证（POST /fin/voucher/create））。置信 0.99 · 依据 8 天",
+        "text_en": "综合部 has never performed a write action on finance (8 days, 0 times) (closed write actions: vouchers (POST /fin/voucher/create)). Confidence 0.99, support 8 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "综合部 在 portal 中从未执行写操作（8 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））。置信 0.99 · 依据 8 天",
+        "text_en": "综合部 has never performed a write action on portal (8 days, 0 times) (closed write actions: comments (POST /comment), log in (POST /login)). Confidence 0.99, support 8 days.",
+        "negative": true
+       },
+       {
+        "text_zh": "【mail】工作日 13:41–13:53（覆盖 69 %，2 个工作日），综合部（10.168.7.121、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 1–80 KB（n = 170，下次越界概率 ≤ 2.8 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 163，下次越界概率 ≤ 2.9 %）；时长 90 % 在 20–200，全部在 5–400（n = 163，下次越界概率 ≤ 2.9 %）；net.pkts_down 90 % 在 23–37，观测范围 5–50（n = 3）；net.pkts_up 90 % 在 4–11，观测范围 2–60（n = 3）；每 IP 每小时次数 90 % 在 2–8。置信 0.34 · 依据 69 次 · 首次 2025-09-04 · 最近 2025-09-08 · v1.0",
+        "text_en": "[mail] On workdays 13:41–13:53 (coverage 69 %, 2 dates), 综合部 (10.168.7.121, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 1–80 KB (n = 170, P(next outside) ≤ 2.8 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 163, P(next outside) ≤ 2.9 %); 90 % of duration within 20–200, all within 5–400 (n = 163, P(next outside) ≤ 2.9 %); 90 % of net.pkts_down within 23–37, observed range 5–50 (n = 3); 90 % of net.pkts_up within 4–11, observed range 2–60 (n = 3); 90 % of events per IP-hour within 2–8. Confidence 0.34, support 69 events, first seen 2025-09-04, last seen 2025-09-08, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:25–11:28（覆盖 93 %，4 个工作日），192.168.1.21访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 29）；net.pkts_down 90 % 在 6–16，观测范围 6–16（n = 11）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 18）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）。置信 0.65 · 依据 30 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 09:25–11:28 (coverage 93 %, 4 dates), 192.168.1.21 opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 29); 90 % of net.pkts_down within 6–16, observed range 6–16 (n = 11); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 18); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}. Confidence 0.65, support 30 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:27–11:30（覆盖 91 %，3 个工作日），192.168.1.21访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–100，观测范围 5–120（n = 26）；net.pkts_down 90 % 在 10–30，观测范围 5–30（n = 12）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 16）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；状态类别 取值集合封闭 {2xx}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）；GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.65 · 依据 27 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 09:27–11:30 (coverage 91 %, 3 dates), 192.168.1.21 opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–100, observed range 5–120 (n = 26); 90 % of net.pkts_down within 10–30, observed range 5–30 (n = 12); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 16); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; status class in the closed set {2xx}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}; GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.65, support 27 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "【oa】工作日 09:32–11:33（覆盖 91 %，3 个工作日），192.168.1.21访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.65 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 09:32–11:33 (coverage 91 %, 3 dates), 192.168.1.21 opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 800–1400, observed range 600–1400 (n = 10); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 22); 90 % of bytes up within 1.4–2 KB, observed range 1.3–2 KB (n = 10); 90 % of duration within 10–70, observed range 5–80 (n = 26); 90 % of net.pkts_down within 4–14, observed range 2–14 (n = 10); 90 % of net.resp_len within 2800–17400, observed range 2000–18000 (n = 10); 90 % of events per IP-hour within 5–5; body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; header x-client-ver matching `[0-9]\\.[0-9]\\.[0-9]`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.65, support 28 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "negative": false
+       }
+      ]
+     }
+    ],
+    "ga_groups": {
+     "192.168.1.21": "G33",
+     "192.168.1.23": "G10",
+     "10.168.7.121": "G10"
+    }
+   }
+  },
+  "checklist": [
+   {
+    "clause": "综合部 3 个 IP 登录 OA（who = 192.168.1.21、192.168.1.23、10.168.7.121）",
+    "measured": "who Jaccard 0.00",
+    "pass": false,
+    "statement": null
+   },
+   {
+    "clause": "工作日登录时间窗 09:00–09:21",
+    "measured": "IoU 0.00",
+    "pass": false
+   },
+   {
+    "clause": "提交数据量 90 % 在 1–2 KB",
+    "measured": "band None",
+    "pass": false
+   },
+   {
+    "clause": "100 % 在 0.5–3 KB",
+    "measured": "range None",
+    "data_range": [
+     1086.0,
+     2358.0
+    ],
+    "pass": false
+   },
+   {
+    "clause": "提交内容含 username=，取值不超过 10 个字符",
+    "measured": "grammar None",
+    "pass": false
+   },
+   {
+    "clause": "绑定 10.168.7.121→mike、192.168.1.21→jack、192.168.1.23→rose",
+    "measured": "0/3",
+    "pass": false
+   },
+   {
+    "clause": "192.168.1.21 访问业务审批页面",
+    "measured": "who Jaccard 1.00",
+    "pass": true,
+    "statement": "【oa】工作日 09:32–11:33（覆盖 91 %，3 个工作日），综合部（192.168.1.21）访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.65 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0"
+   },
+   {
+    "clause": "下午 5 点提交报告（.23、.121）",
+    "measured": "who Jaccard 0.00",
+    "pass": false,
+    "statement": null
+   },
+   {
+    "clause": "财务系统审批只有财务部 192.168.2.10 访问",
+    "measured": "who Jaccard 0.00",
+    "pass": false,
+    "statement": null
+   },
+   {
+    "clause": "用户视角：综合部在财务系统中从未执行写操作（否定陈述）",
+    "measured": "present",
+    "pass": true
+   }
+  ]
+ },
+ "anomalies": {},
+ "engine_s": {
+  "raw.action_token": 18.3,
+  "raw.client_stack": 1.3,
+  "raw.event": 8.2,
+  "derived.event_context": 5.9,
+  "behavior.resource_governor": 9.5,
+  "behavior.attr_registry": 63.8,
+  "behavior.attr_select": 74.2,
+  "behavior.conformity": 37.3,
+  "behavior.pattern_tree": 111.6,
+  "behavior.content_bounds": 11.9,
+  "behavior.payload_grammar": 1.4,
+  "behavior.binding": 17.8,
+  "behavior.time_window": 6.5,
+  "behavior.workflow": 7.3,
+  "behavior.who_groups": 3.8,
+  "behavior.system_profile": 11.0,
+  "behavior.calibration": 73.6,
+  "behavior.fusion": 228.3,
+  "behavior.risk": 113.4,
+  "behavior.incident": 11.8,
+  "behavior.governor": 200.0,
+  "behavior.explain": 0.1,
+  "behavior.facets": 2.6,
+  "behavior.views": 138.1
+ },
+ "wall_s": 1183.844637574,
+ "registry": "progressive_decision",
+ "resource_mode": "full",
+ "incidents": 24,
+ "events": 1745,
+ "job_s": 1201.9423139095306,
+ "peak_rss_mb": 1123.7
+}

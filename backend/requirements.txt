@@ -4,3 +4,6 @@ pydantic>=2.6
 numpy>=1.26
 scikit-learn>=1.4
 pyyaml>=6.0
+# optional accelerator of the pattern tree's split statistics (lib/pnumba.py);
+# without it the bit-identical pure-numpy path runs (APPMON_NO_NUMBA=1 forces it)
+numba>=0.60

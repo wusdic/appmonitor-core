@@ -45,7 +45,10 @@ DRIFTING / REJECTED), 2 re-learning (ACCEPTED), unless behavior.regime
 carries an explicit integer 'tercile' in 0..2 (`regime_tercile`).
 
 p-value (B24, engines.md B24; lib/calib docstring for the tail guards):
-    p = calib.p_from_ring(ring, s, u)       # randomised conformal, GPD tail
+    p = calib.p_from_ring(ring, s, u)       # conformal (randomised within a
+                                            # tied level; 1 at or below the
+                                            # ring's lowest level, round 5:
+                                            # lib/calib "Lower atom"), GPD tail
                                             # (xi >= 0 floor, <= 1/(n+1) cap
                                             # beyond the ring maximum)
     if |ring| < 64: p = calib.blend_small_sample(p, prior, |ring|)
@@ -101,6 +104,16 @@ Signatures (all pure; no store access):
     (B29 note: B24's issued p = pcal_apply(p_replay(...), pcal_v(model.calib@
     (s, __system__)['pcal'][pcal_key(d, class)])) with class 'h' / 'q' for a
     grain detector, else the cadence class.)
+
+Round 5 (lib/calib "Lower atom"): every p rule above issues 1 for a score at
+or below its ring's lowest level (pooled_p: no pooled entry below it; pm_prior:
+pm = 1); `rand_atom=True` (p_from_ring, p_value, pooled_p, pm_prior,
+xfer_prior) gives the fully randomised p for the calibration monitors only.
+B24 keeps a row's randomised p in model.calib['prand'] {ts: {detector index:
+p}} (only where it differs from the issued one) until the row is committed,
+where its health checks read it; B25 reads it at the same tick (fusion.
+rand_row: meta-ring admission and monitors on the randomised row, decisions
+on the issued one); replay (p_replay / p_from_snapshot) returns the issued p.
 
 Layout additions (round 4): model.calib@(s, e)['xfer'] {'<d>|<cc_src>><cc_dst>':
 [k, n]} (cadence-transfer counts); model.calib@(s, __system__)['pcal'] {'<d>|<class>':
@@ -337,7 +350,7 @@ def tail_sigma_min(score: Any, pm: Any) -> float:
 
 
 def pm_prior(pm_ring: Optional[calib.Ring], pm: Any, u: float,
-             min_n: int = PM_RING_MIN) -> float:
+             min_n: int = PM_RING_MIN, rand_atom: bool = False) -> float:
     """B24's small-sample prior from behavior.pm[d]: pm, with its two point
     masses randomised (engines.md B24, integration §8.2).
 
@@ -350,7 +363,10 @@ def pm_prior(pm_ring: Optional[calib.Ring], pm: Any, u: float,
     atom a with null mass pi: p = P(pm < a) + u P(pm = a), i.e.
         pm = 1      -> 1 - pi1 + u pi1
         pm = floor  -> u pi0
-    with u the score's own seeded U. pi is the atom's share of the entity's
+    with u the score's own seeded U. Round 5 (lib/calib "Lower atom"): pm = 1
+    is the LOWEST level of -log10 pm, so it gets the upper p of its block,
+    1 (no evidence; with pi1 ~ 1 the randomised rule was a coin flip
+    p = u); `rand_atom` = True keeps the randomised rule (monitors only). pi is the atom's share of the entity's
     admitted pm history (the pm ring of this detector and cadence) once it
     holds `min_n` entries, else the Laplace estimate (k + 1) / (n + 2) at
     the atom 1 (no history: 1 - u/2 ... 1) and, at the floor, pm itself (a
@@ -380,7 +396,7 @@ def pm_prior(pm_ring: Optional[calib.Ring], pm: Any, u: float,
     n = 0 if r is None else r.scores.size
     if n >= PM_CAL_N:
         # a pm ring holds -log10 pm: its tail never decays faster than pm's own
-        return calib.p_from_ring(r, x, u, sigma_min=calib.P_SCORE_SIGMA)
+        return calib.p_from_ring(r, x, u, sigma_min=calib.P_SCORE_SIGMA, rand_atom=rand_atom)
     if x != PM_ATOM_ONE and x != PM_ATOM_FLOOR:
         v = _valid_p(pm)
         if n >= PM_POW_N and v == v:
@@ -397,6 +413,8 @@ def pm_prior(pm_ring: Optional[calib.Ring], pm: Any, u: float,
     if uu != uu:
         return math.nan
     if x == PM_ATOM_ONE:
+        if not rand_atom:
+            return 1.0                      # the lowest level: upper p of its block
         pi1 = k / n if n >= int(min_n) else (k + 1.0) / (n + 2.0)
         return 1.0 - pi1 + uu * pi1
     if n < int(min_n) or k == 0:
@@ -469,12 +487,13 @@ def xfer_source(rings: Optional[Mapping], detector: str, daypart: str,
 
 
 def xfer_prior(rings: Optional[Mapping], xfer: Optional[Mapping], detector: str,
-               daypart: str, cc: int, score: float, u: float) -> Tuple[float, Optional[int]]:
+               daypart: str, cc: int, score: float, u: float,
+               rand_atom: bool = False) -> Tuple[float, Optional[int]]:
     """(prior p, cc_src) of the cadence transfer, (NaN, None) without a source."""
     c, r = xfer_source(rings, detector, daypart, cc)
     if r is None:
         return math.nan, None
-    p = calib.p_from_ring(r, score, u)
+    p = calib.p_from_ring(r, score, u, rand_atom=rand_atom)
     if p != p:
         return math.nan, None
     v = xfer_v((xfer or {}).get(xfer_key(detector, c, cc)))
@@ -558,15 +577,17 @@ def pcal_apply(p: float, v: float) -> float:
     return p if not (v > 1.0 and p == p and 0.0 < p < 1.0) else p ** (1.0 / v)
 
 
-def p_value(r: Optional[calib.Ring], score: float, u: float, prior: float = math.nan) -> float:
-    """B24's p for one ring: calib.p_from_ring (conformal + GPD tail), then the
-    small-sample logit blend with `prior` (weight n/(n+64)) when |ring| < 64
-    and the prior is a finite p. NaN score -> NaN."""
+def p_value(r: Optional[calib.Ring], score: float, u: float, prior: float = math.nan,
+            rand_atom: bool = False) -> float:
+    """B24's p for one ring: calib.p_from_ring (conformal + GPD tail; 1 at or
+    below the ring's lowest level unless `rand_atom`), then the small-sample
+    logit blend with `prior` (weight n/(n+64)) when |ring| < 64 and the prior
+    is a finite p. NaN score -> NaN."""
     s = _f(score)
     if s != s:
         return math.nan
     rr = _EMPTY_RING if r is None else r
-    p = calib.p_from_ring(rr, s, u)
+    p = calib.p_from_ring(rr, s, u, rand_atom=rand_atom)
     n = rr.scores.size
     if n < SMALL_N and prior == prior and prior is not None:
         pr = _f(prior)
@@ -595,9 +616,11 @@ def issued(p: float) -> float:
 
 
 def pooled_p(rs: Iterable[Any], score: float, u: float,
-             min_n: int = SMALL_N) -> Tuple[float, int]:
-    """Randomised conformal p of `score` against the union of several rings
-    (class pooling): (sum #{c > s} + u (sum #{c == s} + 1)) / (sum n + 1).
+             min_n: int = SMALL_N, rand_atom: bool = False) -> Tuple[float, int]:
+    """Conformal p of `score` against the union of several rings (class
+    pooling): (sum #{c > s} + u (sum #{c == s} + 1)) / (sum n + 1), and 1
+    when no pooled entry is below the score (the lowest level, lib/calib
+    "Lower atom"; `rand_atom` keeps the randomised formula there).
     Returns (p, n_pooled); p is NaN when n_pooled < min_n or score is NaN.
     O(k log M), no concatenation."""
     s = _f(score)
@@ -619,6 +642,8 @@ def pooled_p(rs: Iterable[Any], score: float, u: float,
     uu = _f(u)
     if uu != uu:
         return math.nan, n
+    if gt + eq == n and not rand_atom:
+        return 1.0, n
     return (gt + uu * (eq + 1)) / (n + 1), n
 
 

@@ -142,6 +142,29 @@ def month_end_days(y: int, m: int, cal: TB.Calendar) -> frozenset:
     return res
 
 
+def _ctx_cols(cols: Mapping[str, List[Any]], n: int) -> Dict[str, Any]:
+    """The evt.ctx columns straight from P01's per-name value lists: exactly
+    EV.cols_from_rows(n, [{k: cols[k][i] present} for each row]) (same
+    columns, same dict order: a column enters when its first row does, in
+    the lists' order within a row; same value arrays) without building one
+    dict per row and replaying it (tests/engines/test_p00_p01_cost_equivalence.py)."""
+    first: Dict[str, int] = {}
+    built: Dict[str, Any] = {}
+    for j, (k, lst) in enumerate(cols.items()):
+        rows = [i for i, v in enumerate(lst) if v is not EV.ABSENT and v is not None]
+        if not rows:
+            continue
+        vals = [lst[i] for i in rows]
+        if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
+            arr = np.asarray(vals, dtype=np.float64)
+        else:
+            arr = np.empty(len(vals), dtype=object)
+            arr[:] = vals
+        first[k] = rows[0] * (len(cols) + 1) + j
+        built[k] = EV.Col(np.asarray(rows, dtype=np.int32), arr)
+    return {k: built[k] for k in sorted(built, key=first.__getitem__)}
+
+
 class EventContextEngine(Engine):
     name = "derived.event_context"
     layer = "derived"
@@ -333,9 +356,7 @@ class EventContextEngine(Engine):
                     for k, v in tc.items():
                         cols[k][i] = v
                 self._sessions(s, batch, int(budget.get("s_sess", cap)), default_gap, cols)
-                rows = [{k: cols[k][i] for k in cols if cols[k][i] is not EV.ABSENT}
-                        for i in range(batch.n)]
-                cb = batch.aligned(EV.cols_from_rows(batch.n, rows))
+                cb = batch.aligned(_ctx_cols(cols, batch.n))
                 d_now = TB.local_datetime(now, tz).date()
                 day = d_now.toordinal()
                 normal_prev = self._calendar_update(store, s, day, day_class(d_now, cal),

@@ -757,7 +757,7 @@ def fit_set(ss: Any, t: float, n_min: float = N_MIN,
         miss[k] = float(min(1.0, (max(0.0, N - nk) + 0.5) / (N + 1.0)))
     conf = (1.0 - p_new) * (1.0 - max(miss.values()) if miss else 1.0)
     return {"kind": "set", "n": float(N), "required": req, "optional": opt,
-            "presence": {str(k): float(p) for k, p in pres.items()},
+            "presence": {str(k): float(p) for k, p in sorted(pres.items(), key=lambda kv: str(kv[0]))},
             "p_new_key": float(p_new), "p_missing": miss, "confidence": float(conf)}
 
 

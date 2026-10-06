@@ -89,8 +89,10 @@ Inert unless config['progressive']['enabled'].
 """
 from __future__ import annotations
 
+import functools
+import ipaddress
 import time
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -206,7 +208,8 @@ def _suspects(node: Any, t: Optional[float]) -> set:
 
 def _points(node: Any, d: int, since: Optional[float] = None,
             members: Optional[set] = None, t: Optional[float] = None,
-            drop: Optional[set] = None) -> List[Tuple[float, float, float, str]]:
+            drop: Optional[set] = None, admit: Optional[Callable[[str], bool]] = None
+            ) -> List[Tuple[float, float, float, str]]:
     """[(minute, ts, weight, source)] of the node's minute reservoir for day
     type d. The weight is the row's learning mass relative to the median
     point, capped at 1 (trust x outlier damping, §6.9.3): a damped row counts
@@ -239,6 +242,8 @@ def _points(node: Any, d: int, since: Optional[float] = None,
         src = str(it[2]) if len(it) > 2 else ""
         if members is not None and src not in members:
             continue
+        if admit is not None and not admit(src):
+            continue
         if src and src in sus:
             continue
         if drop and (round(float(ts), 3), src) in drop:
@@ -247,8 +252,56 @@ def _points(node: Any, d: int, since: Optional[float] = None,
     return out
 
 
+@functools.lru_cache(maxsize=65536)
+def _ip(s: str) -> Any:
+    try:
+        return ipaddress.ip_address(s)
+    except ValueError:
+        return None
+
+
+def _src_admit(extra: Sequence[Any], ip2g: Optional[Mapping[str, Any]]) -> Optional[Callable[[str], bool]]:
+    """The source predicate of the net.src restrictions a node adds to an
+    ancestor's context (single addresses, prefixes, learned groups through
+    P11's current address map); None when a restriction cannot be evaluated
+    on an address (a configured region, a group without the map)."""
+    conds = []
+    for c in extra:
+        vals = [str(v) for v in c[2]]
+        grps, nets, ips = set(), [], set()
+        for v in vals:
+            if v.startswith("grp:"):
+                if ip2g is None:
+                    return None
+                grps.add(v[4:])
+            elif v.startswith("reg:"):
+                return None
+            elif "/" in v:
+                try:
+                    nets.append(ipaddress.ip_network(v, strict=False))
+                except ValueError:
+                    return None
+            else:
+                ips.add(v)
+        conds.append((grps, nets, ips, bool(c[3])))
+    if not conds:
+        return None
+
+    def ok(src: str) -> bool:
+        for grps, nets, ips, neg in conds:
+            hit = src in ips or (bool(grps) and str((ip2g or {}).get(src)) in grps)
+            if not hit and nets:
+                a = _ip(src)
+                hit = a is not None and any(a.version == n.version and a in n for n in nets)
+            if hit == neg:
+                return False
+        return True
+    return ok
+
+
 def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, str]],
-             t: Optional[float] = None, drop: Optional[set] = None
+             t: Optional[float] = None, drop: Optional[set] = None,
+             ip2g: Optional[Mapping[str, Any]] = None
              ) -> Tuple[List[Tuple[float, float, float, str]], Optional[int]]:
     """A node created by a source split (P04 seeds its who summary, not its
     arrivals; its own minute reservoir starts when P09 asks for it) reads the
@@ -267,7 +320,14 @@ def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, 
     level - held .21 out after A2's 09:10 logins, the back-off then read two
     of the three sources, fell back to the node's own 2 pre-D1 dates, the
     regime test had no 3 dates before the change, and the window stayed the
-    stale 08:31-09:20, IoU 0.40)."""
+    stale 08:31-09:20, IoU 0.40).
+    Round 5: the node's sources are those its added context admits (an
+    address, a prefix, a learned group through P11's address map), not the
+    addresses its who summary happens to track at level 0 (a bounded
+    Space-Saving): pack O seed 0, day 21, the 销售部 part of OA's GET /docs
+    (context grp G10 | G7, 20 members) read the ancestor's arrivals of the 8
+    tracked members only, none after 16:59 of the department's 7 %, and
+    stated 09:31-16:59 at 0.98 against a held-out 0.91 (law to 17:30)."""
     if tree is None:
         return own, None
     try:
@@ -285,7 +345,12 @@ def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, 
         if any(c[0] != "net.src" for c in extra):
             break
         if anc.when.res is not None and len(anc.when.res):
-            pts = _points(anc, d, members=members - _suspects(node, t), drop=drop)
+            pred = _src_admit(extra, ip2g)
+            if pred is not None:
+                sus = _suspects(node, t)
+                pts = _points(anc, d, drop=drop, admit=lambda s_, p_=pred, x_=sus: s_ not in x_ and p_(s_))
+            else:
+                pts = _points(anc, d, members=members - _suspects(node, t), drop=drop)
             if len(pts) > len(own):
                 seen = {(round(p[0], 3), round(p[1], 3), p[3]) for p in pts}
                 pts += [p for p in own if (round(p[0], 3), round(p[1], 3), p[3]) not in seen]
@@ -359,6 +424,8 @@ class TimeWindowEngine(Engine):
             fits.pop(nid, None)
         n_fit, gain_num, gain_den, new_ev = 0, 0.0, 0.0, 0.0
         drop = CB.point_ledger(store, key, kind)
+        wg = MP.who_groups(store)
+        ip2g = (wg.get("ip2g") if isinstance(wg, Mapping) else None) or None
         for nid, node in tree.nodes.items():
             if node.last_seen is None:
                 continue
@@ -371,7 +438,7 @@ class TimeWindowEngine(Engine):
             else:
                 new_ev += n_tot
             regime = _regime(mk, node)
-            entry = self.fit_node(node, now, off, outn.get(nid), regime, tree, drop)
+            entry = self.fit_node(node, now, off, outn.get(nid), regime, tree, drop, ip2g)
             outn[nid] = entry
             fits[nid] = _mark(node, n_tot, now, regime)
             n_fit += 1
@@ -397,13 +464,13 @@ class TimeWindowEngine(Engine):
     # ------------------------------------------------------------- per node
     def fit_node(self, node: Any, now: float, off: float, old: Optional[Mapping[str, Any]],
                  regime: Optional[Mapping[str, Any]] = None, tree: Any = None,
-                 drop: Optional[set] = None) -> Dict[str, Any]:
+                 drop: Optional[set] = None, ip2g: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         by: Dict[str, Optional[Dict[str, Any]]] = {}
         rg = regime or {}
         since0 = rg.get("when_t0") if rg.get("when_t0") is not None else rg.get("regime_t0")
         for d, dk in enumerate(DT_KEYS):
             n_m = node.when.evidence(d, now, conf=False)
-            pts, anc = _backoff(tree, node, d, _points(node, d, t=now, drop=drop), now, drop)
+            pts, anc = _backoff(tree, node, d, _points(node, d, t=now, drop=drop), now, drop, ip2g)
             if n_m < N_FIT_MIN and len(pts) < PW.MIN_POINTS:
                 by[dk] = None
                 continue

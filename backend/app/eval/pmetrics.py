@@ -1757,6 +1757,67 @@ def _inc_max_sev_between(inc: Mapping[str, Any], t0: float, t1: float) -> int:
     return best
 
 
+def _d4_drift_incidents(run: Any, pt: "PTruth", dr: Mapping[str, Any],
+                        incs: Sequence[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+    """The incidents of `incs` whose evidence involves a population drift's
+    pattern (PG5 D4: the department `dr['dept']` grows on `dr['system']`).
+    The drifted pattern = the truth patterns of that department on that
+    system: its sources (the department's addresses / regions, which hold the
+    grown population) and its routes. An incident involves it when one of its
+    entities is such a source, or when one of its P03 findings
+    (`pattern_violation` evidence) is on one of those routes. Incidents opened
+    by injected attacks (an attack's entity during its window) are detections,
+    not drift false alarms."""
+    system, dept = dr.get("system"), dr.get("dept")
+    rows = [r for r in pt.rows if r.get("system") == system and (r.get("who") or {}).get("group") == dept]
+    nets, ips, routes = [], set(), set()
+    for r in rows:
+        w = r.get("who") or {}
+        for v in w.get("value") or []:
+            item = v[0] if isinstance(v, (list, tuple)) else v
+            if "/" in str(item):
+                n = _net(str(item))
+                if n is not None:
+                    nets.append(n)
+            else:
+                ips.add(str(item))
+        routes.add(_route_of(r))
+    nets = list(dict.fromkeys(nets))
+
+    def src(e: Any) -> bool:
+        if e is None:
+            return False
+        if str(e) in ips:
+            return True
+        a = _ip(str(e))
+        return a is not None and any(a in n for n in nets)
+
+    ev_route: Dict[str, Tuple[str, str]] = {}
+    for ev in getattr(run, "events", None) or []:
+        if ev.get("kind") == "pattern_violation":
+            rt = (ev.get("extra") or {}).get("route")
+            if rt:
+                ev_route[str(ev.get("id"))] = norm_route(rt)
+    attacks = [(set(a.get("entities") or []), _f(a.get("t_start")), _f(a.get("t_end")))
+               for a in getattr(run, "truth", None) or [] if a.get("label") == "malicious"]
+    out = []
+    for inc in incs:
+        ents = {inc.get("entity")} | set(inc.get("entities") or [])
+        t_open = _f(inc.get("opened"))
+        if any(ents & a_ents and a0 - 3600.0 <= t_open <= a1 + 86400.0 for a_ents, a0, a1 in attacks):
+            continue
+        hit = any(src(e) for e in ents)
+        if not hit:
+            for x in inc.get("evidence") or []:
+                if x.get("source") == "event" and x.get("kind") == "pattern_violation" \
+                        and ev_route.get(str(x.get("event_id"))) in routes:
+                    hit = True
+                    break
+        if hit:
+            out.append(inc)
+    return out
+
+
 def _incidents_on(run: Any, system: str, ips: Iterable[str]) -> List[Dict[str, Any]]:
     ips = set(ips)
     out = []
@@ -1866,14 +1927,24 @@ def pg5_drift(run: Any, pt: PTruth, sbd: Mapping[int, List[LStmt]]) -> Dict[str,
             continue
         t0, t1 = float(dr["t_start"]), float(dr["t_end"])
         if did == "D4":
+            # only incidents whose evidence involves the drifted pattern count
+            # (round 5, lead decision; §16.13): an incident of a source of the
+            # grown population, or one carrying a P03 finding on the grown
+            # population's routes. Other incidents on portal sources (e.g. the
+            # AUTO health monitor's) are not adaptation failures of D4; they
+            # stay in PG6's FAR, which counts every non-attack incident.
             ips = {ip for iso, per in (pt.who_log.get("portal") or {}).items() for ip in per}
-            incs = _incidents_on(run, "portal", ips)
+            all_incs = _incidents_on(run, system, ips)
+            incs = _d4_drift_incidents(run, pt, dr, all_incs)
+            n_all = sum(1 for i in all_incs if _inc_max_sev_between(i, t0, t1) >= SEV_RANK["low"])
         else:
             cidr = _net((pt.groups.get("DEV") or {}).get("cidr") or "0.0.0.0/32")
             incs = [i for i in getattr(run, "incidents", None) or []
                     if _ip(str(i.get("entity"))) is not None and _ip(str(i.get("entity"))) in cidr]
         n = sum(1 for i in incs if _inc_max_sev_between(i, t0, t1) >= SEV_RANK["low"])
         out[did] = {"incidents_low": n, "pass": n == 0}
+        if did == "D4":
+            out[did]["incidents_low_other_sources"] = n_all - n
     a2 = truth.get("A2")
     if a2 and a2.get("non_adoption") and days:
         na = a2["non_adoption"]
@@ -1988,7 +2059,7 @@ def pg6_far(run: Any, pt: PTruth) -> Dict[str, Any]:
         med += mx >= SEV_RANK["medium"]
     pv_low = sum(1 for e in _pv(run) if (e.get("system"), e.get("entity")) in days_of
                  and sev_rank(e.get("severity")) >= SEV_RANK["low"])
-    ks = None
+    ks = ks_two = None
     conf_idx = [i for i, d in enumerate(DETECTORS) if str(d).startswith("conf")]
     if conf_idx and getattr(run, "series", None):
         vals = []
@@ -2000,8 +2071,9 @@ def pg6_far(run: Any, pt: PTruth) -> Dict[str, Any]:
             if p.ndim == 2 and p.shape[1] > max(conf_idx):
                 vals.append(p[:, conf_idx].reshape(-1))
         if vals:
-            ks, _ = ks_uniform(np.concatenate(vals))
-    return {"entity_days": ed, "inc_low": low, "inc_medium": med, "pv_low": pv_low,
+            ks, _ = ks_uniform(np.concatenate(vals), side="upper")
+            ks_two, _ = ks_uniform(np.concatenate(vals))
+    return {"entity_days": ed, "ks_conf_two": ks_two, "inc_low": low, "inc_medium": med, "pv_low": pv_low,
             "far_low": low / ed if ed else None, "far_medium": med / ed if ed else None,
             "pv_far_low": pv_low / ed if ed else None, "ks_conf": ks}
 
@@ -2767,7 +2839,7 @@ def compute_pgates(scores: Sequence[Mapping[str, Any]],
                       lambda s: s["pg6"]["far"]["far_medium"], 0.02, ge=False),
            _med_check("pattern_violation >= LOW per entity-day", O,
                       lambda s: s["pg6"]["far"]["pv_far_low"], 0.05, ge=False),
-           _med_check("KS D of conf_* p on clean ticks", O, lambda s: s["pg6"]["far"]["ks_conf"],
+           _med_check("KS D+ (anti-conservative side) of conf_* p on clean ticks", O, lambda s: s["pg6"]["far"]["ks_conf"],
                       0.05, ge=False),
            check("B29 top reason = violated constraint", float(np.mean(tops)) if tops else None,
                  ">= 0.9", (float(np.mean(tops)) >= 0.9) if tops else None),
