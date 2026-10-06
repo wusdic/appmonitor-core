@@ -2083,6 +2083,7 @@ class ViewsEngine(Engine):
             self._put(store, key, SYSTEM_ENTITY, v, now)
             n += 1
             stats[key] = {"statements": len(v["statements"]), "ms": v["ms"]}
+        n += self._retire_members(store, now)
         wg = MP.who_groups(store)
         groups = wg.get("groups") or {}
         by_dept: Dict[str, List[Dict[str, Any]]] = {}
@@ -2124,6 +2125,35 @@ class ViewsEngine(Engine):
                 self._put(store, ORG, f"{GROUP_PREFIX}dept:{name}", dv, now)
                 n += 1
         self.last_stats = stats
+        return n
+
+    def _retire_members(self, store: Any, now: float) -> int:
+        """A system that joined a family (P12) is rendered under its family's
+        tree key; the system view it had under its own key is no longer
+        refreshed. Replace it by a retired stub that names the family, so the
+        store does not keep - and a reader of the system's own key does not
+        see - statements frozen at the join (evaluator round 5: O-real seed 0,
+        oa joined fam:1 on day 11; its own view kept 42 statements unchanged
+        and 'confirmed' to day 35, among them the approval pages D3 renamed on
+        day 14, so D3's old routes never went stale). A system that leaves the
+        family is rendered under its own key again (system_view)."""
+        n = 0
+        fam = store.get_model(ORG, ORG, MP.SYSFAM)
+        member = (fam.get("member") or {}) if isinstance(fam, Mapping) else {}
+        for s in sorted(member):
+            key = MP.tree_key(store, s)
+            if key == s:
+                continue
+            old = store.get_model(s, SYSTEM_ENTITY, MP.PVIEWS)
+            if not isinstance(old, Mapping) or (old.get("retired") and old.get("family") == key):
+                continue
+            self._put(store, s, SYSTEM_ENTITY,
+                      {"fmt": 1, "view": "system", "subject": s, "family": key, "retired": True,
+                       "updated": now,
+                       "header": {"text_zh": f"【{s}】已并入系统族 {key}，其模式见 {key} 的视图",
+                                  "text_en": f"[{s}] joined family {key}; its patterns are in {key}'s view"},
+                       "statements": []}, now)
+            n += 1
         return n
 
     @staticmethod

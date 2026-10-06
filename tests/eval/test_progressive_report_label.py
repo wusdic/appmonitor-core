@@ -49,3 +49,16 @@ def test_checklist_reads_the_most_specific_statement_of_the_department():
     rows = m.checklist({"oa_statements": [part, node], "finance_statements": []}, truth, 21)
     assert rows[0]["statement"] == "node"
     assert rows[1]["pass"]                                       # the node's window, IoU >= 0.7
+
+
+def test_example_reads_the_family_view_of_a_system_that_joined_one():
+    """Evaluator round 5 (EV5-7): after oa joined the engine family fam:1
+    (O-real), its own system view is a retired stub (EV5-6); the example
+    (oa_statements, the checklist) must read the family's view."""
+    m = _mod()
+    st = {"id": "p:fam:1:0:3@1.0", "text_zh": "【fam:1】… POST /login", "evidence": {"route": "POST /login"}}
+    snap = {"systems": {"oa": {"model.pviews": {"retired": True, "family": "fam:1", "statements": []}},
+                        "fam:1": {"model.pviews": {"statements": [st]}}},
+            "org": {"model.sysfam": {"member": {"oa": "fam:1", "oa-r2": "fam:1"}}}}
+    assert m._stmts(snap, "oa") == [st]
+    assert m._stmts({"systems": {"oa": {"model.pviews": {"statements": [st]}}}}, "oa") == [st]

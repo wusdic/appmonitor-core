@@ -752,3 +752,25 @@ def test_a_period_without_an_eligible_pattern_is_not_measured():
     assert M._ttr_ok(sc(None), "weekly", 21) is None
     assert M._ttr_ok(sc(None), "daily", 7) is True
     assert M._ttr_ok(sc(0.5), "weekly", 21) is False
+
+
+def test_engine_family_statements_are_judged_for_their_member_systems():
+    """Evaluator round 5 (EV5-7): P12's family keys are counters ('fam:1'),
+    the truth names a family after a system ('oa': [oa, oa-r2]). A statement
+    of the family tree matched no truth row of oa (O-real seed 0: oa's recall
+    0 from day 11 once its frozen pre-join view was retired, EV5-6)."""
+    st = {"id": "p:fam:1:0:3@1.0", "pattern_id": "p:fam:1:0:3@1.0", "state": "confirmed",
+          "confidence": 0.9, "text_zh": "【fam:1】… GET /docs", "view": "system",
+          "evidence": {"system": "fam:1", "method": "GET", "route": "/docs"}}
+    snap = {"systems": {"fam:1": {"model.pviews": {"view": "system", "statements": [st]}}},
+            "org": {"model.sysfam": {"member": {"oa": "fam:1", "oa-r2": "fam:1"},
+                                     "families": {"fam:1": ["oa", "oa-r2"]}}}}
+    stmts = M.statements(snap, {})
+    assert len(stmts) == 1 and stmts[0].members == {"oa", "oa-r2"}
+    fam = {"oa": {"oa", "oa-r2"}, "oa-r2": {"oa", "oa-r2"}}
+    pt = SimpleNamespace(family_of=lambda x: fam.get(x, {x}))
+    s = stmts[0]
+    assert M._sys_match(s.system, {"system": "oa"}, pt, s.members)
+    assert M._sys_match(s.system, {"system": "oa-r2"}, pt, s.members)
+    assert not M._sys_match(s.system, {"system": "crm"}, pt, s.members)
+    assert M._find(stmts, "oa", "GET", "/docs") == [s]       # the example / PG3 / PG10 lookups

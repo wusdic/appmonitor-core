@@ -1389,3 +1389,95 @@ keeps the old page name after a rename (`综合部·oa GET /approval/list`). PG8
 per-event cost 10–60× the target; O-real 4/12 R items on one seed (R13 needs a family rule that respects
 disjoint user populations); hash-order dependence in P07 / P02 / P11 hidden by the pinned seed; lead decisions
 on the round-4 gate readings (E4-4 – E4-7, EV-1, EV-9) and EV-4's 2 σ cluster tolerance.
+
+## 17. Progressive profile core, round 5 (2026-10-06)
+
+Full record: `progressive.md` §16.13 (the owners' T-1 – T-5, R-1 – R-4, C-1 – C-3, V-1 – V-5; the evaluator's EV5-1 –
+EV5-7; results on the final code, determinism under two hash seeds, cost, PG4, PG9, O-real on 3 seeds; diagnosis and
+open issues); Chinese narrative: design doc §3.0 (status per requirement sentence), §3.3 (the changes in place, numbered
+T5-*, R5-*, C5-*, V5-* there), §3.7 (cost), §3.8.0–§3.8.0c (round 5; round 4 kept as §3.8.0d, round 3 as §3.8.0e, round
+2 as §3.8.0f), §3.9.11–§3.9.12 (the lower-atom rule), §3.10.2 (packs A / E), §3.11. Four owners worked concurrently with
+strict file ownership on top of commit 180f1fc (tree: P04, P05, `pnode`, `ptree`, `psketch`, `pevalue`, new `pnumba`;
+registry / content / binding: P00 – P02, P06 – P08; lib-3 decision chain: B24, B25, `calib`, `m_calib`; time / groups /
+views: P03, P09 – P11, P14, P15); the lead checkpointed their work as commit 49263f5 after a container restart, and the
+evaluator measured that state (`code4`) and `code4` + EV5-5 / EV5-6 (`code5`).
+
+### 17.1 What changed in the integrated system
+
+- **Cost, bit-identical.** Optional numba kernels for `SplitStats.update` (`lib/pnumba.py`; they reproduce numpy's
+  pairwise sums and min / max NaN rules, keep log2 / exp2 in numpy and use no fastmath; without numba, or with
+  `APPMON_NO_NUMBA=1`, the numpy path runs; 111 → 46 µs). `TDigest._compress` 14× faster, Space-Saving / decayed-vector /
+  HLL fast paths, P04 batch getter and leaf notes, P05 memos and vectorised `gen_codes` (T-1, T-2). P02 observes per
+  call in batch (`ss_add_rows`, one row-wise moment reduction), P08 screens on integer codes (`_screen_pair_codes`),
+  P06 shares one digest cumsum, P00 parses a record's own l7 view once, P01 builds `evt.ctx` column-wise, P08 ingests
+  column-wise (R-1 – R-3). Every rewrite has an equivalence test on recorded pack O streams
+  (`tests/lib/test_pnumba_equivalence.py`, `test_ptree_perf_equivalence.py`, `test_pregistry_batch_equivalence.py`,
+  `test_pfd_screen_equivalence.py`, `test_pbounds_batched_reads.py`, `tests/engines/test_p04_p05_stream_equivalence.py`,
+  `test_p00_p01_cost_equivalence.py`, `test_p08_ingest_equivalence.py`); the tree owner's final code gives the same score
+  JSON as HEAD on seeds 0–2 apart from timing and memory. P05's skip of unchanged keys exists but is off
+  (`progressive.defaults.p05_skip_unchanged`): evaluation also depends on time decay (T-3).
+- **Determinism.** Set elements counted in sorted order (`pnode.SetSummary`, `pregistry.set_elements`), fixed collapse
+  and pair-sum orders, the reference statement identified by a serial number instead of `id()` (T-4, T-5); P08 / P07 /
+  P06 iterate in source / sorted order (R-4); P03 `HourSS` heap ties by push order, P11 covers / Jaccard / modularity
+  sums and P15 system order sorted (V-5); B27's per-tick incident events and P04's `hold_facets` sorted (EV5-5). Hash-seed
+  subprocess tests: `test_p04_p05_stream_equivalence.py`, `test_registry_hash_order.py`,
+  `test_round5_hash_order_views.py` (5 hash seeds each), `test_round5_eval_order.py`.
+- **Decision chain (lower-atom rule).** B24 issues p = 1 (the upper p of the tie block) for a score at or below the
+  lowest level its ring has seen — empty ring and pm = 1 included — instead of the seeded coin flip U; ties above the atom
+  stay randomised; the randomised p is kept in `model.calib['prand']` for the health KS / rate checks and pcal (C-1, C-2;
+  `lib/calib`, `lib/m_calib`, `calibration.py`). B25 fuses two rows per tick: decisions on the issued row, meta-ring
+  admission / ACI / qcal on the randomised row (C-3, `fusion.py`). `tests/data/tick_mode_golden.json.gz` was
+  re-recorded for this deliberate change (same 8 incidents, alarm ticks 241 → 236). Tests:
+  `tests/lib/test_calib_lower_atom.py`, `tests/engines/test_b24_b25_lower_atom.py`.
+- **Profile core behaviour.** P14: a route-split node stands for no action (V-1) and a department member busy on other
+  systems is judged on its share within this system (V-4); P11: labels follow P10's confirmed renames (V-2); P09: a
+  source-split child reads its ancestor's arrivals for every address its context admits (V-3); P04: structural drift
+  per day type, no cross-type fallback, transient alarms cleared 5 quiet days after the last higher day (EV5-4 a–c);
+  P14: a family member's own view is retired (EV5-6).
+- **Evaluation.** D4 counts only incidents of the grown department's sources or with a P03 finding on its routes (EV5-1,
+  lead decision); gate 7 and `ks_conf` read the anti-conservative D⁺ (EV5-2, `metrics.ks_uniform(side='upper')`); the PG4
+  learning p95 divides P04's CPU by the rows P04 learned (EV5-3); statements of an engine family are judged for its member
+  systems (EV5-7). No threshold changed.
+
+### 17.2 Results (all measured; `reports/progressive/`)
+
+- Pack O, seeds 0–4, 21 days (after vs round 4's final runs re-scored by the same scorer, `round4/rescored_r5/`): PG1
+  recall @ 14 0.842 [0.842–0.947] vs 0.842, precision 0.842 [0.833–0.877] vs 0.857 (0.926 vs 0.945 on claims whose truth
+  had an observable event by day 14); @ 21 0.872 / 0.908 vs 0.846 / 0.919; components who 0.895 / when 0.974 / content
+  0.921 / bindings 1.00 / workflow 1.00; pooled debiased calibration error 0.129 vs 0.157 (stated 0.807 / held 0.884);
+  paired confidence non-decreasing 5/5 (4/5); anomalies 50 / 50; FAR ≥ LOW 0.0022, ≥ MEDIUM 0.0014 per entity-day; PG5
+  D2 – D5 5/5, D1 3/5; PG8 0.833; PG10 day 11 1/5, day 21 3/5; the example's checklist 49 / 50. Gates passing: PG3, PG6,
+  PG7. PG4 fails the CPU / event slope vs attributes (0.216; HEAD 0.232 on the same pair) and the per-event p95 (6.9 / 2.3
+  ms).
+- Determinism: pack O seed 0 under `PYTHONHASHSEED` 0 and 1 — score JSON 0 differences in 15 735 leaves
+  (`reports/progressive/round5_eval/determinism_scores.txt`); the pickle deep diff found two emission orders, sorted by
+  EV5-5 (`determinism_pkl_diff.txt`).
+- Cost: P-core CPU per pack O run 1 166 → 880 s (median), whole-run wall 2 099 → 1 819 s, peak RSS 1 989 → 1 428 MB; PG4
+  points on `code5` in `reports/progressive/scale_r5/` (memory slopes vs IPs 0.028, attributes 0.180, systems 0.264).
+- O-red seed 0: recall / precision @ 14 0.622 / 0.780 (round 4 re-scored 0.568 / 0.776), anomalies 9/10, false splits 0.
+  O60 seed 0: day-8 recall 0.559 vs pack O's 0.545. O-real seeds 0–2 (35 days, `code5`, final scorer): R-items 4 / 4 / 3,
+  recall / precision @ 14 0.46–0.49 / 0.42–0.45, @ 35 0.34–0.41 / 0.75–0.82, anomalies 4/10, calibration error 0.20–0.27
+  (over-confident). `code4` on seed 0 (oa's frozen view still present) read 0.569 / 0.570 @ 14 and failed D3.
+- Non-regression, default registry (packs A and E seed 0, `round5_eval/ae/`): the differences from
+  `reports/round4/runs/{A,E}_0_full.json` are exactly the lower-atom rule plus gate 7's D⁺ — A: 12/12, control incidents
+  19 / 6 / 2 unchanged, reopened 5 → 9, L8 low → medium; E: LOW false alarms 8 → 6, T5′ high → critical, class ARI
+  0.755 → 0.551. `reports/eval_report.json` (round 4) was not regenerated.
+- PG9 (the decision-chain owner's runs, `round5_eval/pg9/`): bounded p95 at 35 entities 67 % (A) and 53 % (E) of full,
+  measured under load; detections unchanged on A, T5′ within deadline on E; gate 15 fails in bounded mode (as at HEAD).
+- Tests: 3 165 passed, 4 skipped, 0 failed (21 min) on the final tree. New test files this round: see `progressive.md`
+  §16.13.2 and §16.13.9; existing files updated for the lower-atom rule: `tests/lib/test_calib.py`,
+  `tests/engines/test_b24_calibration.py`, `test_b24_calibration_edges.py`, `test_b24_b25_tuning.py`; for the evaluator's
+  readings: `tests/eval/test_pmetrics.py`, `test_metrics.py`, `test_pscale.py`, `test_progressive_report_label.py`.
+- The report was assembled by the evaluator (`scripts/progressive_report.py --assemble --seeds 0,1,2,3,4 --variants
+  O-red,O60,O-real --scale reports/progressive/scale_r5`); round 4's runs and report are in `reports/progressive/round4/`.
+
+### 17.3 Open (ordered by impact; details in design doc §3.11 and `progressive.md` §16.13.11–§16.13.12)
+
+Precision and recall @ 14 0.842 against 0.90 — most of the precision gap is D2 / D3 claims that no engine could see by
+day 14 (0.926 without them; whether to judge them before a workday of the new behaviour is the lead's decision). The
+calibration error 0.129 (under-confident on pack O, over-confident on O-real). D1 late on seeds 3–4 (P09's 9-point
+window). AUTO.monitor.finance (a coder shared by both day types). Per-event cost 9–70× the targets and the attribute CPU
+slope 0.216 — further gains need non-equivalent cadence changes. PG8 0.833 (finance's switch rule). O-real 3–4 of 12 R
+items per seed; family trees restate members slowly; R13. `robust_tail` trimming small rings; B08 / B18 owners to confirm
+the lower-atom semantics; gate 15 in bounded mode; PG9 to be re-measured idle. numba installed in `.venv` and listed as an
+optional dependency in `backend/requirements.txt` (lead); ownership of `lib/pevalue.py`.

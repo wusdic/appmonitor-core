@@ -59,7 +59,7 @@ Values are medians over 5 seeds, with bootstrap 95% confidence intervals reporte
      - no entity stays DRIFTING for more than 14 days without entering the label queue.
 
 7. Calibration (clean control ticks)
-   - KS D of randomized behavior.p.<d> against U(0,1) ≤ 0.05 per detector, pooled over entities and strata.
+   - KS D of randomized behavior.p.<d> against U(0,1) ≤ 0.05 per detector, pooled over entities and strata. Round 5 (EV5-2): D is the one-sided anti-conservative D⁺ = maxₓ(Fₙ(x) − x), which is what validity of a p-value bounds; the two-sided D is reported beside it (`D_two`, `null_ks_two`). B24's lower-atom rule (round 5) issues p = 1 at a detector's atom, so the issued p is valid but not uniform and the two-sided D reads the atom's mass (pack A seed 0: 1.0); exact uniformity of the randomised p is still checked by B24's own health KS.
    - Empirical exceedance at e_day ∈ {0.03, 3e-3} within [0.5, 2]× nominal, for each cadence class.
    - Evidence-CUSUM realised alarm rate ≤ 0.045 per entity-day, i.e. an interval ≥ 22 entity-days against the 33-day design.
    - Each accumulator family's realised rate ≤ 2× its budget in architecture_md §4.
@@ -125,3 +125,12 @@ The PG gates are defined in progressive.md §12 and scored by backend/app/eval/p
 - Random draws (evaluator, round 4): the held-out events of each truth pattern and the precision / calibration draws of each claim come from their own stream, a function of (seed, day, purpose, item) (pmetrics._stream); before, one stream per snapshot made precision depend on the ORDER of the statements (a pure reordering moved seed 0 day 7 from 0.771 to 0.743).
 - PG2 "patterns of a period reach 80 % recall by day N" is not measured (None) when no truth pattern of that period is eligible on any snapshot day (pmetrics._ttr_ok). Pack O's only weekly pattern (sales' Friday report) occurs on 2 Fridays in 21 days (day 5, a Friday, is a holiday) and was never eligible; rounds 2–4 had read that as a failure.
 - What did NOT change: the recall / precision / component definitions, the held-out law, the targets (ECE ≤ 0.05 now reads the pooled debiased error) and PG10's ± 2 min. Round-3 runs re-scored with these semantics: progressive.md §16.12.3 and reports/progressive/round4_eval/rescore_pg2_pg10.json.
+
+PROGRESSIVE CORE: ROUND-5 READINGS (evaluator, progressive.md §16.13.3; no threshold changed)
+
+- PG5 D4 (lead decision, EV5-1): during the PUB growth on portal (days 12–18) only incidents whose evidence involves the drifted pattern count — an incident of a source of the grown department (its addresses / regions), or one with a P03 `pattern_violation` on one of the department's routes; incidents opened by injected attacks are detections. Other incidents of portal sources are reported as `incidents_low_other_sources` and stay in PG6's FAR. Round 4's failures on seeds 3–4 were one LOW incident each of the AUTO health monitor (B24's coin flip on a tie), not an adaptation failure.
+- PG6 `ks_conf` reads D⁺ like gate 7 (EV5-2); `ks_conf_two` is the two-sided D. Not measured on `--no-series` runs.
+- PG4 learning p95 (EV5-3): P04's CPU of a tick divided by the rows P04 itself learned in that tick (`last_stats['learned']`, the rows of t − D), not by the rows P00 sampled in that tick; the old figure is kept as `learning_p95_us_per_p00_row`.
+- Engine families (EV5-7): a statement of an engine family's tree (key `fam:<n>`, a P12 counter) is judged for every member system in the snapshot's `model.sysfam` (recall, precision hold-out rows, workflow edges, per-system recall, the example / PG3 / PG10 lookups); the truth names families after a system, so before this no family statement was ever judged (O-real: every one counted as unsupported).
+- Reported beside the PG1 headline, not a gate: precision on the claims whose truth had an observable event by the snapshot (`reports/progressive/round5_eval/precision_observable_r5.jsonl`; claims of a lineage whose version valid that day had no event yet are set aside, matched by who-overlap). Whether the headline should judge such claims is open (lead).
+- Before / after comparisons re-score the previous round's runs with the current scorer (`reports/progressive/round4/rescored_r5/`).

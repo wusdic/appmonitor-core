@@ -499,7 +499,7 @@ class IncidentEngine(Engine):
         for s in store.systems():
             n += self._system(store, st, s, now, dt, lo, training, fusion_failed, out, tok,
                               touched)
-        for inc_id in touched:
+        for inc_id in sorted(touched):
             inc = store.get_incident(inc_id)
             if inc is not None:
                 store.put_incident(inc)
@@ -507,8 +507,7 @@ class IncidentEngine(Engine):
             for inc, state, extra in out:
                 self._emit(store, inc, state, now, dt, extra)
                 n += 1
-            for s in set(tok) | set(st.pending):
-                n += self._flush(store, st, s, tok.get(s, []), now, dt, cap_e, cap_s)
+            n += self._flush_systems(store, st, tok, now, dt, cap_e, cap_s)
         self._prune(st, lo)
         st.last_run = now
         return n
@@ -1494,6 +1493,18 @@ class IncidentEngine(Engine):
                         out.append((inc, "update", {"campaign_id": cid, "reason": "campaign"}))
 
     # ------------------------------------------------------- notifications
+    def _flush_systems(self, store, st: _StoreState, tok: Dict[str, List[Tuple[str, str]]],
+                       now: float, dt: float, cap_e: float, cap_s: float) -> int:
+        """Release every system's queued notifications (_flush), systems in
+        sorted order: the buckets are per system, so the order changes no
+        decision, but it is the order of the emitted incident events (evaluator
+        round 5: two PYTHONHASHSEED runs of pack O seed 0 emitted the same
+        incident events of one tick in a different order - str-hash set order)."""
+        n = 0
+        for s in sorted(set(tok) | set(st.pending)):
+            n += self._flush(store, st, s, tok.get(s, []), now, dt, cap_e, cap_s)
+        return n
+
     def _flush(self, store, st: _StoreState, s: str, new: List[Tuple[str, str]], now: float,
                dt: float, cap_e: float, cap_s: float) -> int:
         """Token buckets (both must hold a token); overflow stays queued and

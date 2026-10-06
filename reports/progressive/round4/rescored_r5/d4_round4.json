@@ -1,0 +1,27 @@
+{
+ "O_0.res.pkl": {
+  "incidents_low": 0,
+  "pass": true,
+  "incidents_low_other_sources": 0
+ },
+ "O_1.res.pkl": {
+  "incidents_low": 0,
+  "pass": true,
+  "incidents_low_other_sources": 0
+ },
+ "O_2.res.pkl": {
+  "incidents_low": 0,
+  "pass": true,
+  "incidents_low_other_sources": 0
+ },
+ "O_3.res.pkl": {
+  "incidents_low": 0,
+  "pass": true,
+  "incidents_low_other_sources": 1
+ },
+ "O_4.res.pkl": {
+  "incidents_low": 0,
+  "pass": true,
+  "incidents_low_other_sources": 1
+ }
+}

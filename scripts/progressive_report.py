@@ -46,8 +46,16 @@ FIN_APPROVER = "192.168.2.10"
 
 # ------------------------------------------------------------------ helpers
 def _stmts(snap: Mapping[str, Any], system: str) -> List[Dict[str, Any]]:
-    pv = ((snap.get("systems") or {}).get(system) or {}).get("model.pviews") or {}
-    return list(pv.get("statements") or [])
+    """The system view's statements of `system`: its family's view when the
+    system joined an engine family (P12 model.sysfam; its own view is then a
+    retired stub, EV5-6)."""
+    sf = (snap.get("org") or {}).get("model.sysfam") or {}
+    key = str(((sf.get("member") or {}) if isinstance(sf, Mapping) else {}).get(system) or system)
+    out: List[Dict[str, Any]] = []
+    for k in dict.fromkeys((key, system)):
+        pv = ((snap.get("systems") or {}).get(k) or {}).get("model.pviews") or {}
+        out += list(pv.get("statements") or [])
+    return out
 
 
 def _who_ips(st: Mapping[str, Any]) -> List[str]:

@@ -483,6 +483,9 @@ class LStmt:
         self.text_zh = str(raw.get("text_zh") or "")
         self.text_en = str(raw.get("text_en") or "")
         self.pattern_id = str(raw.get("pattern_id") or raw.get("id") or "")
+        # the member systems of the engine family whose tree stated it (P12
+        # 'fam:<n>' keys; set by statements() from the snapshot's model.sysfam)
+        self.members: frozenset = frozenset()
         self.who = Who(ev.get("who") or {}, ip_classes)
         w = ev.get("when") or {}
         self.when = {"workday": _intervals(w.get("workday")),
@@ -532,6 +535,7 @@ def statements(snap: Mapping[str, Any], ip_classes: Mapping[str, List[str]],
                families: Optional[Mapping[str, List[str]]] = None) -> List[LStmt]:
     """Every system-view statement of one snapshot (group views excluded)."""
     out: List[LStmt] = []
+    fams = engine_families(snap)
     for key, rec in (snap.get("systems") or {}).items():
         raw: List[Dict[str, Any]] = []
         _collect(rec.get("model.pviews"), raw)
@@ -539,7 +543,22 @@ def statements(snap: Mapping[str, Any], ip_classes: Mapping[str, List[str]],
             ls = LStmt(st, key, ip_classes)
             if ls.view == "group":
                 continue
+            ls.members = fams.get(ls.system) or fams.get(str(key)) or frozenset()
             out.append(ls)
+    return out
+
+
+def engine_families(snap: Mapping[str, Any]) -> Dict[str, frozenset]:
+    """The engine's families in a snapshot (P12 model.sysfam): family tree key
+    ('fam:<n>', a counter) -> its member systems. (Evaluator round 5: the
+    engine's family ids are counters, the truth's families are named after a
+    system, so a 'fam:1' statement about oa / oa-r2 matched no truth row.)"""
+    sf = (snap.get("org") or {}).get("model.sysfam") or {}
+    fams = sf.get("families") if isinstance(sf, Mapping) else None
+    out: Dict[str, frozenset] = {}
+    for k, mem in (fams or {}).items():
+        if isinstance(mem, (list, tuple, set, frozenset)):
+            out[str(k)] = frozenset(str(m) for m in mem)
     return out
 
 
@@ -710,9 +729,11 @@ class PTruth:
         return out
 
 
-def _sys_match(stmt_sys: str, row: Mapping[str, Any], pt: PTruth) -> bool:
+def _sys_match(stmt_sys: str, row: Mapping[str, Any], pt: PTruth, members: Iterable[str] = ()) -> bool:
     if stmt_sys == row["system"] or stmt_sys in (row.get("systems") or []):
         return True
+    if members and (row["system"] in members or set(members) & pt.family_of(row["system"])):
+        return True                     # a statement of the engine family the row's system joined
     return stmt_sys in pt.family_of(row["system"]) or stmt_sys.startswith("fam:") and (
         row["system"] in pt.family_of(stmt_sys[4:]) or stmt_sys[4:] in pt.family_of(row["system"]))
 
@@ -959,13 +980,13 @@ def bindings_match(row: Mapping[str, Any], s: LStmt) -> Tuple[bool, int, int]:
 
 
 def _edges(stmts: Sequence[LStmt]) -> List[Tuple[str, Tuple[str, str], Tuple[str, str], float,
-                                                  Tuple[float, float]]]:
+                                                  Tuple[float, float], frozenset]]:
     out = []
     for s in stmts:
         for e in s.workflow:
             a, b = norm_route(e.get("from")), norm_route(e.get("to"))
             band = e.get("band") or [math.nan, math.nan]
-            out.append((s.system, a, b, _f(e.get("dep")), (_f(band[0]), _f(band[1]))))
+            out.append((s.system, a, b, _f(e.get("dep")), (_f(band[0]), _f(band[1])), s.members))
     return out
 
 
@@ -976,8 +997,8 @@ def workflow_match(row: Mapping[str, Any], edges: Sequence, pt: PTruth) -> bool:
             continue
         a, b = _route_of(fr), _route_of(row)
         ok = False
-        for sys_, ea, eb, dep, eband in edges:
-            if ea == a and eb == b and _sys_match(sys_, row, pt) and dep >= 0.8 and \
+        for sys_, ea, eb, dep, eband, mem in edges:
+            if ea == a and eb == b and _sys_match(sys_, row, pt, mem) and dep >= 0.8 and \
                     eband[0] <= band[1] and eband[1] >= band[0]:
                 ok = True
                 break
@@ -992,7 +1013,7 @@ def recover(row: Mapping[str, Any], stmts: Sequence[LStmt], edges: Sequence, pt:
     plus per-component recoveries (who, when, content, bindings, workflow)."""
     route = _route_of(row)
     cands = [s for s in stmts if s.confirmed and (s.method, s.route) == route
-             and _sys_match(s.system, row, pt)]
+             and _sys_match(s.system, row, pt, s.members)]
     comp = {"who": False, "when": False, "content": False,
             "bindings": None if not row.get("bindings") else False,
             "workflow": None if not row.get("workflow") else False}
@@ -1257,7 +1278,7 @@ def holdout_check(s: LStmt, rows_valid: Sequence[Mapping[str, Any]], pt: PTruth,
     """Every constraint of a statement against held-out events of its context
     (in the context's traffic mix up to `day` when HOLDOUT_TRAFFIC)."""
     rows = [row for row in rows_valid if _route_of(row) == (s.method, s.route)
-            and _sys_match(s.system, row, pt)]
+            and _sys_match(s.system, row, pt, s.members)]
     ctx_who = any(str(c[0]).startswith("net.src") for c in s.context if isinstance(c, (list, tuple)) and c)
     restrict = s.who if (ctx_who or s.is_exc) and (s.who.ipset() or s.who.prefixes) else None
     traffic = pt.traffic(day) if (HOLDOUT_TRAFFIC and day is not None and pt.opp) else None
@@ -1359,7 +1380,7 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
                  precision_n: int = 300) -> Dict[str, Any]:
     stmts = statements(snap, ip_classes)
     if systems is not None:
-        stmts = [s for s in stmts if s.system in systems]
+        stmts = [s for s in stmts if s.system in systems or s.members & systems]
     edges = _edges(stmts)
     rows = [row for row in pt.rows if eligible(row, pt, day)
             and (systems is None or row["system"] in systems)]
@@ -1606,7 +1627,7 @@ def login_bindings(snap: Mapping[str, Any], pt: PTruth, ipc: Mapping[str, List[s
         n = len(accept)
         best = 0
         for s in stmts:
-            if s.confirmed and (s.method, s.route) == _route_of(row) and _sys_match(s.system, row, pt) \
+            if s.confirmed and (s.method, s.route) == _route_of(row) and _sys_match(s.system, row, pt, s.members) \
                     and who_compatible(row["who"], s.who):
                 h = 0
                 for (attr, x), acc in accept.items():
@@ -1629,7 +1650,8 @@ REBIND_DATES = 2
 def _find(stmts: Sequence[LStmt], system: str, method: str, route: str) -> List[LStmt]:
     k = norm_route(method, route)
     return [s for s in stmts if s.confirmed and (s.method, s.route) == k and
-            (s.system == system or s.system.startswith(system + "-") or s.system == "fam:" + system)]
+            (s.system == system or s.system.startswith(system + "-") or s.system == "fam:" + system
+             or system in s.members)]
 
 
 def groups_from(who_groups: Any) -> Tuple[Dict[str, str], List[Any]]:

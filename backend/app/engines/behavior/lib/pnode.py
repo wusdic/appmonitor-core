@@ -875,7 +875,10 @@ class HoldRecord:
             # who sees only who / when / request content / bindings would judge)
             if fac_fail - {"net"}:
                 fac_fail.add("~net")
-            for fac in {hold_facet(k) for k in self.b} | {"~net"}:
+            # sorted: TF's key order must not follow str-hash set order (evaluator
+            # round 5: model.ptree hold_facets differed in key order between two
+            # PYTHONHASHSEED runs of pack O seed 0)
+            for fac in sorted({hold_facet(k) for k in self.b} | {"~net"}):
                 r = TF.get(fac)
                 if r is None:
                     r = TF[fac] = [0.0, 0.0]

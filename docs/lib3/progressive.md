@@ -7,8 +7,10 @@ O-red, O60; deviations M26–M46, H1–H6, G1–G7, C1–C2, E1–E11); round 3 
 final code, 5 seeds, O-red, O60, before / after on one scorer; deviations R3-1 – R3-14, R1 – R5, G8 – G15,
 E-T1 – E-T3, E-C1 – E-C2, V1 – V10); round 4 of 2026-10-05 in §16.12 (gate semantics, determinism, cost and
 scale E4-1 – E4-11; the owners' T-1 – T-7, C-1 – C-6, G-1 – G-6; the evaluator's EV-1 – EV-11; results on the final
-code, 5 seeds, O-red, O60, O-real, before / after on one scorer)). Sections §0–§15 are the specification as
-written; where the code differs, §16.2, §16.9, §16.10.1, §16.11.1, §16.12 and the as-built cards at the end of
+code, 5 seeds, O-red, O60, O-real, before / after on one scorer); round 5 of 2026-10-06 in §16.13 (cost, determinism
+and the lower-atom tie rule: the owners' T-1 – T-5, R-1 – R-4, C-1 – C-3, V-1 – V-5; the evaluator's EV5-1 – EV5-7;
+results on the final code, 5 seeds, O-red, O60, O-real 3 seeds, determinism under two hash seeds)). Sections §0–§15 are the specification as
+written; where the code differs, §16.2, §16.9, §16.10.1, §16.11.1, §16.12, §16.13 and the as-built cards at the end of
 `engines.md` say so.
 Measured status per requirement sentence: §3.1.
 Scope: library 3 (行为库) profile core, redesigned per the user requirement quoted
@@ -124,11 +126,12 @@ the changes made by the adversarial review of 2026-09-29 and why.
 内存/CPU 对 IP 数、指标数与服务器数的次线性、漂移适应延迟、示例异常（A1–A10，含慢速投毒）的检出与误报、
 以及真实环境扰动（O-real）下的稳健性。
 
-**实测状态（第四轮，2026-10-05，§16.12；包 O 种子 0–4、21 天）**：第 14 天模式召回 0.84 [0.82–0.92]、精确 0.86 [0.84–0.87]（目标 0.90；同一评分器下第三轮 0.79 / 0.69），
-第 21 天 0.85 / 0.92；分项：谁 0.92、时间 0.95、内容 0.92、绑定 1.00、流程 1.00；日模式第 10–11 天达到 80 % 召回。陈述置信度随时间上升（第 7 → 21 天中位数 0.65 → 0.91），
-池化去偏校准误差 0.16（第三轮 0.32；目标 0.05，节点仍偏保守：陈述 0.77、成立 0.89）。需求示例逐条核对 49/50（种子 3 的 90 % 带上沿 3 KB）；
-示例异常 50/50，≥ MEDIUM 误报 0.0014/实体·日；PG3、PG6、PG7 通过；D2、D3、D5 5/5，D1、D4 3/5；内存对 IP 数、属性数、服务器数（0.267）都次线性，每事件 p95 仍超目标；
-O-real（35 天）12 个 R 项中 4 项通过、陈述过于自信；真实日志试点未做。逐句状态见 §3.1，中文完整版见主设计文档库三 §3.0、§3.8.0（逐字学到的画像在 §3.8.0a）。
+**实测状态（第五轮，2026-10-06，§16.13；包 O 种子 0–4、21 天）**：第 14 天模式召回 0.842 [0.842–0.947]、精确 0.842 [0.833–0.877]（目标 0.90；同一评分器下第四轮 0.842 / 0.857）——
+精确的缺口多是第 12–14 天的漂移在第 14 天还没有任何新版本的事件，只计真值已可观测的陈述时为 0.926；第 21 天 0.872 / 0.908；分项：谁 0.895、时间 0.974、内容 0.921、绑定 1.00、流程 1.00；日模式第 10–12 天达到 80 % 召回。
+陈述置信度随时间上升（第 7 → 21 天中位数 0.65 → 0.91，同一批不变模式 5/5 个种子不降），池化去偏校准误差 0.129（第四轮 0.157；目标 0.05，仍偏保守：陈述 0.81、成立 0.88）。需求示例逐条核对 49/50（种子 3 的 90 % 带上沿 3 KB）；
+示例异常 50/50，≥ MEDIUM 误报 0.0014/实体·日；PG3、PG6、PG7 通过；D2–D5 5/5，D1 3/5（种子 3、4 的 P09 只用 9 个点拟合新时间窗）。第五轮只做数值等价的提速（P 内核每次运行 CPU −24 %、峰值内存 1.99 → 1.43 GB），
+去掉了散列顺序与内存地址依赖（两个散列种子下评分完全相同），并让 B24 对检测器原子上的平局发出 p = 1（平局的随机 p 不再单独开单）；内存对 IP 数、属性数、服务器数都次线性，每事件 CPU 对属性数的斜率 0.216（HEAD 同样）与每事件 p95 仍未达标；
+O-real（35 天，3 个种子）每个种子 12 个 R 项中 3–4 项通过、陈述过于自信 0.15–0.21；真实日志试点未做。逐句状态见 §3.1，中文完整版见主设计文档库三 §3.0、§3.8.0（逐字学到的画像在 §3.8.0a）。
 
 ---
 
@@ -215,37 +218,36 @@ legal factors out of scope (value retention is a switch, §5.1.3);
 libraries raw → derived → behaviour → signatures (P00 raw, P01 derived,
 P02–P15 behaviour; lib-4 optional input §9.3).
 
-### 3.1 Measured status per sentence (round 4, final code; §16.12)
+### 3.1 Measured status per sentence (round 5, final code; §16.13)
 
 Pack O, seeds 0–4, 21 days, `progressive_decision`; "a/5" = seeds passing; medians [min–max]. In
-parentheses: round 3 — its final runs re-scored by this round's scorer (the comparable figure; §16.12.7) and,
-where it differs, as published in §16.11. Status: **met** (the gate's check passes), **partial** (mechanism
-works on the example, gate not passed), **not met**, **not measured**. Round 3's table is kept in git history
-(commit c67c985).
+parentheses: round 4 — its final runs re-scored by this round's scorer (`reports/progressive/round4/rescored_r5/`, the comparable figure; §16.13.1).
+Status: **met** (the gate's check passes), **partial** (mechanism works on the example, gate not passed), **not met**, **not measured**.
+Round 4's table is kept in git history (commit 49263f5), round 3's in commit c67c985.
 
-| # | Measured (round 4) | Status |
+| # | Measured (round 5) | Status |
 |---|---|---|
-| S1 | memory slope vs IPs 0.040, vs attributes 0.172, CPU / event vs IPs −0.157, vs attributes 0.149 (round 3's 7-day points, not re-run); **memory vs systems 0.267** (20 / 100 / 300 systems at 12 fixed families: 39.1 / 58.4 / 81.0 MB; round 3 0.45 on a pack that also added applications, E4-8, plus family joins on observed days, E4-9); idle system 0.42 MB, largest tree 14.2 MB — every PG4 memory check passes; per-event p95 (max 6.8 ms scoring, 6.4 ms learning; target 100 / 250 µs) — not met | partial |
-| S2 | recall@14 0.842 [0.816–0.921] (0.789), precision 0.857 [0.842–0.873] (0.689); 综合部 login node = the 3 IPs + 3 bindings 5/5; finance approval = 192.168.2.10 only 5/5; portal at prefix 5/5; DEV pool one group 5/5; PG3 passes | not met (gain) |
-| S3 | median recall day 5 / 10 / 14 / 21: 0.39 / 0.78 / 0.84 / 0.85 (0.35 / 0.73 / 0.79 / 0.71); daily patterns 80 % on day 10–11 (11–17); median stated confidence day 7 → 21 0.65 → 0.91 on 5/5 seeds (paired check 4/5: seed 0 −0.007 on days 5 → 7); pooled debiased calibration error 0.157 [0.149–0.192] (0.324), stated 0.78 / held 0.87 | partial (rises with time; calibration not met) |
-| S4 | D1 3/5 (3/5), D2 5/5, **D3 5/5** (0/5), D4 3/5 (0/5; one LOW on seeds 3 and 4 each: B24's randomised p for a tie on the health monitor 192.168.9.9, no P03 finding behind it, §16.12.15 item 4), **D5 5/5** (1/5), .21 still `jack` 5/5 | partial |
-| S5 | before D1, day 11: seed 2's address-level node "工作日 09:00–09:20 …，综合部（10.168.7.121、192.168.1.21、192.168.1.23）访问 POST /login（登录）" (PG10 day 11 1/5; seed 1's department part has its own band 1–2.5 KB, seeds 0, 3, 4 no 综合部 login statement on day 11); day 21 window IoU ≥ 0.7 5/5 (4/5; seed 3 0.69 → 0.86); PG10 day 21 3/5 (seed 4's 08:30–08:45 stated at 85 %) | partial |
+| S1 | 7-day points on the round-5 code (`scale_r5/`): memory slope vs IPs 0.028, vs attributes 0.180, vs systems 0.264; idle system 0.42 MB, largest tree 21.5 MB — every PG4 memory check passes; CPU / event vs IPs −0.074 (pass), **vs attributes 0.216** (≤ 0.2; HEAD 180f1fc gives 0.232 on the same pair, round 4's 0.149 came from round-3 points); per-event p95 6.9 ms scoring, 2.3 ms learning per P04-learned row (EV5-3; target 100 / 250 µs) — not met; equivalent rewrites cut the P-core CPU of a pack O run 1 166 → 880 s (−24 %), peak RSS 1.99 → 1.43 GB | partial |
+| S2 | recall@14 0.842 [0.842–0.947] (0.842), precision 0.842 [0.833–0.877] (0.857); precision on claims whose truth had an observable event by day 14 0.926 [0.903–0.980] (0.945); @21 0.872 / 0.908 (0.846 / 0.919); 综合部 login node = the 3 IPs + 3 bindings 5/5; finance approval = 192.168.2.10 only 5/5; portal at prefix 5/5; DEV pool one group 5/5; PG3 passes | not met |
+| S3 | median recall day 5 / 10 / 14 / 18: 0.42 / 0.78 / 0.84 / 0.90 (0.39 / 0.78 / 0.84 / 0.87); daily patterns 80 % on day 10–12 (10–11); median stated confidence day 7 → 21 0.65 → 0.91, depth 1.33 → 1.60; paired confidence of unchanged patterns non-decreasing **5/5** (4/5); pooled debiased calibration error 0.129 [0.100–0.144] (0.157), stated 0.807 / held 0.884 | partial (rises with time; calibration not met) |
+| S4 | D1 3/5 (3/5; seeds 3, 4 confirm on workday 4 / 5: the tree confirms the new-regime node on workday 3, P09 fits its window from 9 points, IoU 0.62), D2 5/5, D3 5/5, **D4 5/5** (round-4 scorer 3/5: EV5-1 counts only incidents involving the grown population, and C-1's lower-atom rule removed the tie alarms), D5 5/5, .21 still `jack` 5/5; AUTO.monitor.portal recovered on seed 0 (EV5-4), AUTO.monitor.finance still missed on seeds 1, 4 at day 21 (shared weekday / weekend coder) | partial |
+| S5 | before D1, day 11: seed 2's node "工作日 09:00–09:20 …，综合部（10.168.7.121、192.168.1.21、192.168.1.23）访问 POST /login（登录）" (identical to round 4; PG10 day 11 1/5); day 21 window IoU ≥ 0.7 5/5 (0.90 / 0.95 / 0.95 / 0.86 / 0.71); PG10 day 21 3/5 | partial |
 | S6 | day 21: the 综合部 login node names exactly the 3 IPs 5/5 | met (example clause) |
-| S7 | 90 % in 1–2 KB 4/5 (4/5; seed 3 fitted 956–2 859 B on n_eff 25.6, sampling); all in 0.5–3 KB **5/5** (4/5; seed 1's 643 B day-2 login now kept by T-1) | partial |
+| S7 | 90 % in 1–2 KB 4/5 (seed 3 shown 1–3 KB, sampling); all in 0.5–3 KB 5/5 | partial |
 | S8 | `username=` required, `[a-z]{4}(\.[a-z])?` and the closed set {jack, mike, mike.w, rose} 5/5 | met (example clause) |
 | S9 | 3 bindings on day 21 5/5; GA + FIN 6 bindings at day 14 on 5/5 | met (example clause) |
-| S10 | .21's approvals 5/5, now under the renamed `/flow/` pages (G-1, views' `renamed_routes`); 17:00 report by .23 / .121 with the form page as required predecessor 5/5; A5 5/5; workflow component 1.00; the report submission is still not recovered on day 14 (5/5 seeds; recovered by day 21 on 4/5) | met (example clause) |
-| S11 | both views 5/5; department view lists the 3 IPs, who does what with confidence and support, the negatives; group parts state their own closed sets and bands (EV-5, EV-7); P11 still learns two groups for 综合部 | met (via the department view) |
-| S12 | PG3 passes; DEV pool one group covering 10.50.0.0/22 5/5; a pool stated by its configured region resolves to its CIDR and department (G-5); ARI 0.974 | met |
-| S13 | content component 0.921 [0.895–0.947] (0.842); finance's login patterns at day 14: in finance 5/5 (0/5), in OA 4/5 (0/5) — closed user-name sets through C-1 and, for the 财务部 part of OA's shared login node, EV-7; missed: FIN approval content on seeds 1–4, DEV's ~60-name set (honestly open) | partial |
-| S14 | department view "综合部 在 finance 中从未执行写操作 …；192.168.1.23 的尝试被判定为越权（未学习）" 5/5; A1 5/5; B29 explains a pattern violation by the violated constraint (0.92, EV-6) | met |
+| S10 | .21's approvals 5/5 under the renamed `/flow/` pages; 17:00 report by .23 / .121 with the form page as required predecessor 5/5; A5 5/5; workflow component 1.00; the report submission (`GA.oa.report#1`) still not recovered on day 14 on every seed | met (example clause) |
+| S11 | both views 5/5; department view lists the 3 IPs, who does what with confidence and support, the negatives; the approver group's name now follows the rename (`综合部·oa GET /flow/list`, V-2); P11 still learns two groups for 综合部 | met (via the department view) |
+| S12 | PG3 passes; DEV pool one group covering 10.50.0.0/22 5/5; ARI 0.974 | met |
+| S13 | content component 0.921 [0.895–0.947] (0.921); `FIN.oa.documents#2` recovered on every seed (V-4); missed: FIN approval content at day 14 on most seeds (opinion set left open), DEV's ~60-name set (honestly open) | partial |
+| S14 | department view "综合部 在 finance 中从未执行写操作 …；192.168.1.23 的尝试被判定为越权（未学习）" 5/5; A1 5/5; B29 top reason = violated constraint 0.92 | met |
 | S15 | "财务部（192.168.2.10）访问 POST /fin/approval/{num}/approve（审批）" 5/5 | met |
 | S16 | registered in the first tick 1.0; role within 24 h 1.0 | met |
 | S17 | type correct 1.0; informative kept 1.0; noise dropped and constants → invariants not measured | met (measured items) |
 | S18 | 16 P engines + B24–B29 run together on pack O | met (structure) |
 | S19 | 10 top facets, 22 default sub-facets; B15/B16/B13/B10 sub-facets not registered | met (structure) |
-| S20 | arms in truth 0.83 [0.83–1.00] (0.83 [0.67–1.00]); switches after day 7 ≤ 1; who level within 5 % 2/5; decisions now reproducible (deterministic price list, E4-1; pinned hash seed, E4-2); O-real (35 d, final code): 4 of 12 R items (R7, R8, R10, R11) | not met |
-| S21 | 5 seeds, O-red (never tuned on; recall@14 0.57 (0.59), precision 0.78 (0.57), anomalies 9/10 (8/10)), O60 and O-real (recall@14 0.45, precision 0.27, anomalies 4/10, statements over-confident: stated 0.81, held 0.33) on the final code; no real-log pilot | not measured (real world) |
+| S20 | arms in truth 0.833 [0.833–1.000] (same); switches after day 7 ≤ 1; who level within 5 % 2/5 (finance's who arm: the 3-consecutive-day switch rule delays the switch to day 18 on seed 1); O-real (35 d, 3 seeds, scored with EV5-7): R8, R10 3/3, R7, R9 2/3, R11 1/3, the rest 0 (4 / 4 / 3 items per seed) | not met |
+| S21 | 5 seeds; O-red (never tuned on; recall@14 0.622 (0.568), precision 0.780 (0.776), anomalies 9/10); O60; O-real 3 seeds (recall / precision @14 0.46–0.49 / 0.42–0.45, @35 0.34–0.41 / 0.75–0.82, anomalies 4/10, over-confident by 0.15–0.21 — round 4's "stated 0.81, held 0.33" was mostly the scorer defect EV5-7); pack O identical under two hash seeds; no real-log pilot | not measured (real world) |
 
 ---
 
@@ -3120,6 +3122,9 @@ numbers of §16.3–§16.8, which are kept as the round-1 record.**
 **Round 3 (2026-10-02): §16.11 (results on the final code of round 3: 5 seeds, O-red, O60,
 deviations R3-1 – R3-14, R1 – R5, G8 – G15, E-T1 – E-C2, V1 – V10; before / after on the same
 scorer) supersedes §16.10's numbers, which are kept as the round-2 record.**
+**Round 4 (2026-10-05): §16.12 supersedes §16.11's numbers. Round 5 (2026-10-06): §16.13 (cost, determinism,
+tie rule; results on the final code: 5 seeds, O-red, O60, O-real seeds 0–2, determinism; before / after on the round-5
+scorer) supersedes §16.12's numbers, which are kept as the round-4 record.**
 
 ### 16.1 Registration
 
@@ -4809,6 +4814,556 @@ weighting of non-full reservoirs, deleting (instead of folding) duplicate ancest
 - **Cost:** per-event p95 10–60× the target; hot spots in P04, P05, P02, P08 (16.12.4).
 - **Hash order:** P07 / P02 value sketches and P11 cover lists depend on set iteration order (pinned
   `PYTHONHASHSEED` hides it; 16.12.6).
+
+### 16.13 Round 5: results on the final code (2026-10-06)
+
+Four owners worked at the same time on top of 180f1fc. The tree owner covered P04, P05 and their libraries. The registry, content and binding owner covered P00–P02 and P06–P08. The lib-3 decision-chain owner covered B24, B25, `calib` and `m_calib`. The time, groups and views owner covered P03, P09–P11, P14 and P15. The round had three themes: per-event cost, determinism, and the lower-atom tie rule. After the owners finished, the evaluator measured the final code (16.13.1).
+
+- 16.13.1–16.13.3 cover the method, the owners' changes and the evaluator's changes (EV5-1 – EV5-7).
+- 16.13.4–16.13.10 cover the results.
+- 16.13.11–16.13.12 cover the diagnosis and the open issues.
+
+The Chinese narrative is the design doc §3.0 (status per requirement sentence), §3.3 (the round-5 changes in place, numbered T5-*, R5-*, C5-*, V5-* there to keep them apart from round 4's T-* / C-*), §3.8.0–§3.8.0c (round 5; round 4 kept as §3.8.0d, round 3 as §3.8.0e, round 2 as §3.8.0f), §3.9.11–§3.9.12 (the lower-atom rule) and §3.11.
+
+#### 16.13.1 What was measured
+
+**Code state.** Two engine states were measured; every score uses the final scorer.
+- **`code4`** is commit 49263f5 (the lead's round-5 checkpoint): HEAD 180f1fc plus three sets of changes.
+  - The four owners' round-5 work (16.13.2).
+  - The evaluator's EV5-1 to EV5-4 (16.13.3).
+  - The snapshot's `data/` directory (the signature library). The defect of round 4's owner snapshots (§16.12.7) did not recur.
+- **`code5`** is `code4` plus EV5-5 and EV5-6.
+  - EV5-5 changes only an emission order.
+  - EV5-6 changes only the view of a system that joined a family, and no pack O seed has one.
+
+**Which runs used which state.**
+- Pack O seeds 0–4 and the determinism run used `code4`.
+- O-real 0–2, O-red, O60, packs A / E and the PG4 points used `code5`.
+
+**The final scorer.** The final tree is `code5` plus EV5-7 (scorer only). Every O-real / O-red / O60 run, and round 4's pickles, were re-scored with it (`prog5/ev/rescore5.py`). Re-scoring pack O seed 0 with it changes nothing (0 of 15 735 leaves).
+
+**Runs.**
+- Pack O: seeds 0–4, 21 days at 900 s, registry `progressive_decision`, `--no-series`, `PYTHONHASHSEED=0`.
+- Pack O seed 0 once more with `PYTHONHASHSEED=1` (determinism, 16.13.6).
+- O-red and O60: seed 0.
+- O-real (35 days): seeds 0–2.
+- Packs A and E: seed 0 with the default registry (`scripts/evaluate.py`).
+- The PG4 points: the `scripts/progressive_scale.py` grid, 7 days.
+
+The pack runs use the resumable runner (`eval/resumable.run_pack_resumable`), which writes a checkpoint at a day end every ~15 min of wall time. The driver is the evaluator's scratch script `prog5/ev/drv5.py`: `run_pack_resumable` plus `progressive_report._score`, the same scorer as the report. At most two heavy processes ran at a time on the 4-core machine.
+
+**Before and after.** "Before" means round 4's final runs (`reports/progressive/round4/runs`, the pickles of §16.12) re-scored by this round's scorer. EV5-1 to EV5-3 change what D4, gate 7 / `ks_conf` and PG4 read, so the re-score is needed for a fair comparison. Round 4's published numbers stay in `reports/progressive/round4/`, and the re-scored report is in `reports/progressive/round4/rescored_r5/`.
+
+**HEAD did not reproduce round 4's runs.** The tree owner and the time / views owner ran HEAD in the same harness and got different results from `reports/progressive/runs/O_*.json`. For example, seed 2 had recall@14 0.816 against 0.842. The cause was state that depended on memory addresses, which `PYTHONHASHSEED` does not pin:
+- P03's `HourSS` broke heap ties by `id(key)`.
+- P04 kept the `id()` of its reference statement (`meta.hold_fp._ref`).
+
+Both are fixed this round (V-5 and T-5 below), and the determinism check (16.13.6) now passes. The owners' before/after tables compare against HEAD runs from their own harness. This section compares against round 4's own runs, re-scored.
+
+#### 16.13.2 The owners' round-5 changes (summary; details, measurements and tests in their files)
+
+| Owner | # | Change | Measured by the owner |
+|---|---|---|---|
+| tree (P04, P05, `pnode`, `ptree`, `psketch`, `pevalue`, new `pnumba`) | T-1 | optional numba kernels for `SplitStats.update` (`lib/pnumba.py`; they reproduce numpy's pairwise sums and NaN rules bit for bit; `APPMON_NO_NUMBA=1` or no numba runs the numpy path) | `SplitStats.update` 111 → 46 µs |
+| | T-2 | exact rewrites: `TDigest._compress` (14×), `DecayedSpaceSaving.add` (7.96 → 4.66 µs), `DecayedVector` list path, HLL hash memo, `code_lengths` U only for unseen keys, `SourceExtremes.note_many`, `phier` bin-edge cache; P04 batch value getter, batched leaf notes, inline target dispatch, lazy model reads, cached P09 request; P05 `same_source` memo, vectorised numeric `gen_codes`, batched penalised gains | pack O 3 days: P04 mean per own learned row 622 → 480 µs, p95 1 092 → 732 µs; P05 577 → 458 µs; servers-100: P05 45.1 → 28.8 s a day. Equivalence: numba = numpy = recorded golden digests on a recorded pack O stream (`test_p04_p05_stream_equivalence.py`), each rewrite against a reference (`test_ptree_perf_equivalence.py`, `test_pnumba_equivalence.py`); final vs HEAD in one harness: score JSON identical on seeds 0–2 |
+| | T-3 | P05 may skip re-evaluating an unchanged key — OFF by default (`progressive.defaults.p05_skip_unchanged`): evaluation also depends on time decay, and skipping lost FIN mail on seed 0 | servers-100: −37 % P05 CPU when on |
+| | T-4 | determinism: `SetSummary` counts set elements in sorted order; `ptree.collapse` rebuilds targets and pairs in a fixed order; ordered pair sums; drift quarantine check over sorted IPs | two processes with PYTHONHASHSEED 1 / 2 learn identical P04 / P05 models (new test) |
+| | T-5 | the reference statement is identified by a serial number, not `id()` (two identical runs differed in state) | `test_p04_round5.py` |
+| | — | tried and reverted: `SourceArrivals` (children of a source split started with their sources' dated arrivals) for D1 — D1 unchanged on seeds 3 / 4 (P09 fits from the ancestor's reservoir) and FIN mail windows lost on seed 0 | |
+| registry / content / binding (P00 – P02, P06 – P08) | R-1 | P02 `AttrRegistry.observe` batched per call (each distinct value classified once, bounded memo; HLL rotation once per call; `ss_add_rows`; one row-wise moment reduction; `update_stats` in one pass) | P02 −13 to −15 % |
+| | R-2 | P08 `pfd.screen` on integer codes (`_screen_pair_codes`, bincount in row order; dict form for < 48 rows) | 157 recorded calls 1.4 → 0.8 s; P08 −31 % |
+| | R-3 | P06 `td_quantiles` / `td_cdfs` share one cumsum; P00 parses a record's own l7 view once, precomputed field map; P01 `_ctx_cols` builds columns directly; P08 `_ingest` column-wise | P06 −18 %, P07 −11 %, P01 −8 % |
+| | R-4 | determinism: `pregistry.set_elements` sorts set elements by (str, type) (which 32 are counted, slot order, `set_keep`); P08 `judged` in source order, `pair_counts` in sketch order, sorted verdicts; P07 `fit_set` presence by sorted key; P06 ledger over sorted attributes | owned models differing between PYTHONHASHSEED 0 / 1 after 4 days: 13 → 1 (the last one, P07's `body.kv.lines[]`, was `pnode.SetSummary`, fixed by T-4) |
+| lib-3 decision chain (B24, B25, `calib`, `m_calib`) | C-1 | lower-atom rule: a score at or below the lowest level its ring has seen (an empty ring, pm = 1 included) issues the upper p of its tie block, p = 1, not the seeded coin flip U; ties above the atom stay randomised; the randomised p remains available (`rand_atom=True`) | validity proved by simulation (`test_calib_lower_atom.py`) |
+| | C-2 | B24 keeps the randomised p where it differs (`model.calib['prand']`, pruned after a day, survives a JSON restore); health KS / rate checks and the pcal share see the randomised p | `test_b24_b25_lower_atom.py` |
+| | C-3 | B25 fuses two rows per tick: decisions (families, p_inst / p_all, q, e_day, evidence CUSUM, severity) on the issued row; meta-ring admission, ACI and qcal on the randomised row | pack O seed 3: D4 passes, false-alarm incidents ≥ LOW 15 → 12; pack A: CUSUM clean-tick alarms 10 → 10, pack E: LOW false alarms 8 → 6 |
+| | — | tried and rejected: learning the meta rings from the issued row (pack A clean CUSUM alarms 10 → 17), adding the cadence to the Q / H meta strata (pack E false alarms worse) | |
+| time / groups / views (P03, P09 – P11, P14, P15) | V-1 | P14: a node split on the route no longer stands for an action (OA / finance roots had been stated as `GET /health` with unsupported department parts) | `test_p14_round5.py` |
+| | V-2 | P11: a group's labels and sticky display name follow P10's confirmed renames (the approver's group was still named `GET /approval/list` after D3) | `test_p11_round5.py` |
+| | V-3 | P09: a source-split child reads its ancestor's arrivals for every address its context admits (single address, prefix, or learned group via P11's map), not only the ≤ 8 tracked at level 0 (SALES docs were cut at 16:59) | `test_p09_round5.py` |
+| | V-4 | P14: in a configured department's part, a member busy on other systems is judged on its share of use within this system (192.168.2.12 now in 财务部's comment part) | `test_p14_round5.py` |
+| | V-5 | determinism: P03 `HourSS` breaks heap ties by push order, not `id(key)`; P11 prefix covers, Jaccard and modularity sums sorted; P11 pending moves and P15 system / linger order sorted | `test_round5_hash_order_views.py` (5 hash seeds) |
+
+#### 16.13.3 Evaluator changes (EV5-1 – EV5-7)
+
+Every row has a regression test that fails on the code before it (checked against the pre-change files in a
+scratch copy of HEAD, or of the merged tree for EV5-4).
+
+| # | Where | Was | Changed to | Why (measured) | Test |
+|---|---|---|---|---|---|
+| EV5-1 | `pmetrics.pg5_drift` (D4), new `_d4_drift_incidents` | D4 (PUB population grows 1.5× on portal, days 12–18) failed on ANY incident ≥ LOW of ANY portal source in the window | **lead decision:** only incidents whose evidence involves the drifted pattern count — an incident of a source of the grown department (its addresses / regions, which hold the grown population), or one with a P03 finding (`pattern_violation` evidence) on one of the department's routes; incidents opened by injected attacks (attack entity, attack window) are detections. Other incidents of portal sources are reported as `incidents_low_other_sources` and stay in PG6's FAR (which counts every non-attack incident) | round 4 seeds 3 / 4 failed D4 on one LOW incident of the AUTO health monitor 192.168.9.9 (B24's coin flip on a tie, §16.12.15 item 4) — not an adaptation failure of PUB's growth. Re-scored round-4 runs: D4 5/5 (other-source incidents: 0 / 0 / 0 / 1 / 1) | `tests/eval/test_pmetrics.py::test_d4_counts_only_incidents_that_involve_the_grown_population` |
+| EV5-2 | `metrics.ks_uniform(side=)`, gate 7 (`calibration.ks`, `null_ks`), `pmetrics.pg6_far` (`ks_conf`) | two-sided KS D of the issued p against U(0, 1) | the anti-conservative one-sided D⁺ = maxₓ(Fₙ(x) − x), which is what validity of a p-value bounds; the two-sided D reported beside it (`D_two`, `null_ks_two`, `ks_conf_two`) | C-1 issues p = 1 at a detector's atom, by design: the issued p is valid but has an atom at 1, and the two-sided D reads the atom's mass (pack A seed 0: 0.31 → 1.0; the calibration owner's open issue). Exact uniformity of the randomised p is still B24's own health check | `tests/eval/test_metrics.py::test_calibration_gate_reads_the_anti_conservative_side` |
+| EV5-3 | `pscale.pcore_cpu`, `_BatchTap`, `resumable` tap | PG4 learning p95 divided P04's CPU of a tick by the rows P00 sampled in that tick | by the rows P04 itself learned in the tick (its `last_stats['learned']`, the rows of t − D); the P00-row figure is kept as `learning_p95_us_per_p00_row` | P04 learns the rows of t − 1 h: evening ticks read 3–8× the true cost per row (tree owner: 1 659 µs under pscale vs 1 092 µs per P04 row on 3 days) | `tests/eval/test_pscale.py::test_learning_p95_divides_p04_cpu_by_the_rows_p04_learned` |
+| EV5-4 | P04 `pattern_tree` structural drift (`loss_ew` / `loss_ew_nwd`, `ref` / `ref_nwd`, `drift['nwd']`) | the pre-alarm loss level of a structural alarm pooled workdays and non-workdays, while ADWIN runs per day type; it was not restarted when the coder's encoding changed | one level per day type, each day compared with its own type's level; both levels restart with the ADWINs when the encoding changes (`adw_ver`) | tree owner's open issue: a 24×7 monitor's weekend loss sits above its workday loss (pack O seed 2: finance `/health` 2.9–3.0 bits on weekends against a pooled 2.12), so any alarm made every weekend day "higher" and the node `evolving` from day 13 (AUTO.monitor.finance unrecovered at days 14 / 21 on seeds 1–2). Seed 0, final code vs the merged tree without EV5-4: identical through day 15, then AUTO.monitor.portal recovered (recall@21 0.846 → 0.872) | `tests/engines/test_p04_round5_eval.py`; the recorded digest of `test_p04_p05_stream_equivalence.py` re-recorded (only the encoding restart changes that 4-day replay; checked by disabling it) |
+| EV5-4b | same (`ref_of` in `_drift_daily`, `REF_MIN_W`) | after EV5-4 a day whose type had no pre-alarm level fell back to the other type's level | no fallback: a day type is judged only against its own level, and a level needs ≥ `REF_MIN_W` = 30 events of its type in the current encoding | probe of the seed-3 day-13 checkpoint: portal's `/health` alarm of Friday 12 carried a workday level only (`ref_nwd` NaN after an encoding restart), so its weekend was judged against the workday level, the defect EV5-4 removes | `test_p04_round5_eval.py::test_a_day_type_without_its_own_level_is_not_judged` (fails on the code with EV5-4 only) |
+| EV5-4c | same (expiry of a structural alarm) | an alarm with fewer than T_persist = 3 higher days was cleared early (after ≥ 5 normal days) only when NO day had been higher; one higher day kept it open to the 14-day expiry, the node `evolving` all along | the ≥ 5 quiet normal days are counted after the last higher day | probe of the seed-2 day-20 checkpoint: finance `/health` daily mean loss Sat 13 2.99, Sun 2.76, Mon 2.62, Tue 2.27, then ≈ 2.0 (below its level); higher days {13, 15} (2 < 3), yet the node stayed `evolving` to day 21. Seed 2, final vs EV5-4b: only day 21 changes, AUTO.monitor.finance recovered (recall@21 0.833 → 0.857, precision@21 0.957 → 0.944); seeds 0, 1, 3: identical | `test_p04_round5_eval.py::test_a_transient_structural_change_clears_after_quiet_days` |
+| EV5-5 | B27 `incident` (`_flush_systems`, `touched`), `pnode.HoldRecord._close` | systems' queued notifications released, and touched incidents re-stored, in str-hash set order; the per-facet hold records (`TF`, rendered as `hold_facets`) created in set order | sorted order | determinism check (16.13.6): the two hash seeds gave identical scores, but the incident events of one tick came out in a different order and 196 `hold_facets` dicts differed in key order. Order only: the buckets are per system, the facet records independent. Not in `code4` | `tests/engines/test_round5_eval_order.py` (2 tests; fail on `code4` under hash seeds 0, 1, 2) |
+| EV5-6 | P14 `views.ViewsEngine._retire_members` | a system that joined a family (P12) is rendered under the family's tree key; the view stored under the system's own key was never refreshed again (of the P models only it and `model.sysprof` stay under a member's key) | the member's own view is replaced by a retired stub naming the family (`retired`, `family`, no statements); a system that leaves its family is rendered under its own key again | O-real seed 0 (`code4`): oa joined `fam:1` on day 11; its own `model.pviews` kept 42 statements unchanged and `confirmed` from day 11 to day 35 (`d3probe.py`, `orealoa.py`). Among them were the three approval pages that D3 renames on day 14, so D3's old routes never went stale (D3 failed on O-real), and the frozen claims entered precision. The API was unaffected (it reads views by tree key); the evaluator's snapshot reads every system key. Pack O has no family member on any seed (checked on the five final pickles), so pack O is unaffected. O-real seed 0, `code4` → `code5`, both scored with EV5-7: D3 fail → pass. Recall @14 / @35 0.569 / 0.392 → 0.462 / 0.354, precision 0.570 / 0.770 → 0.450 / 0.747. The frozen pre-join statements were mostly still true for oa's unchanged patterns, and the family tree, 3 days old at day 14, states fewer patterns — the price of not stating frozen claims (16.13.9) | `tests/engines/test_p14_round5_eval.py` (2 tests; fail on `code4`) |
+| EV5-7 | `pmetrics.statements` / `_sys_match` (new `engine_families`, `LStmt.members`) | a statement of an engine family's tree (key `fam:<n>`, a P12 counter) matched a truth row only if the truth named the family `<n>` | a family statement is judged for every member system of that family in the snapshot's `model.sysfam` (recall, precision hold-out rows, workflow edges, per-system recall) | O-real truth names the replica family `oa` = [oa, oa-r2], the engine calls it `fam:1`: none of its 49 statements matched an oa / oa-r2 row; every one counted as "unsupported" in precision, and they were most of O-real's "over-confidence". O-real seed 0, round 4's pickle re-scored: precision @35 0.406 → 0.754, pooled CE 0.522 → 0.261 (stated 0.81, held 0.33 → 0.64). Pack O (no family): score JSON identical (seed 0 re-scored, 0 of 15 735 leaves differ) | `tests/eval/test_pmetrics.py::test_engine_family_statements_are_judged_for_their_member_systems` |
+
+#### 16.13.4 Gates (pack O, 5 seeds; status from `compute_pgates`, `reports/progressive/progressive_report.json`)
+
+**How the report was assembled.** The command was `scripts/progressive_report.py --assemble --seeds 0,1,2,3,4 --variants O-red,O60,O-real --scale reports/progressive/scale_r5`, over these final runs:
+- `reports/progressive/runs/O_<seed>.json` (code4);
+- `O-red_0.json`, `O60_0.json` and `O-real_<0–2>.json` (code5).
+
+Round 4's runs and report stay in `reports/progressive/round4/`. The same runs re-scored by this round's scorer are in `reports/progressive/round4/rescored_r5/`.
+
+| Gate | Status | Failing checks | Not measured |
+|---|---|---|---|
+| PG1 | **fail** (round 4 re-scored: **fail**) | recall@14 (0.842); precision@14 (0.842); recall@14 (O-red) (0.622); precision@14 (O-red) (0.78); recall_when@14 (O-red) (0.811); recall_content@14 (O-red) (0.703); recall_bindings@14 (O-red) (0.333); GA+FIN bindings 6/6 at day 14 (O-red) (0.0) | – |
+| PG2 | **fail** (round 4 re-scored: **fail**) | daily patterns: 80 % recall by day 7 (0.0); calibration error (debiased, claims of days >= 7) (0.129) | weekly patterns: 80 % recall by day 21 |
+| PG3 | pass (round 4 re-scored: pass) | – | – |
+| PG4 | **fail** (round 4 re-scored: **fail**) | CPU/event slope vs attributes (0.216); scoring p95 us/event (6940.67); learning p95 us/event (2342.09) | – |
+| PG5 | **fail** (round 4 re-scored: **fail**) | D1 (0.6) | portal rate.ip_h p99 within 10 % of pre-A7 |
+| PG6 | pass (round 4 re-scored: pass) | – | KS D+ (anti-conservative side) of conf_* p on clean ticks |
+| PG7 | pass (round 4 re-scored: pass) | – | noise dropped; constants -> invariants |
+| PG8 | **fail** (round 4 re-scored: **fail**) | chosen arms in strategy truth (day 14) (0.833); who level code length within 5 % of best (0.4) | – |
+| PG9 | not measured (round 4 re-scored: not measured) | – | comparison |
+| PG10 | **fail** (round 4 re-scored: **fail**) | OA statement day 11 (before D1) (0.2); OA statement day 21 (0.6) | – |
+| PG11 | **fail** (round 4 re-scored: **fail**) | R1 expected adaptation (>= 4 of 5 seeds) (0); R11 expected adaptation (>= 4 of 5 seeds) (1); R12 expected adaptation (>= 4 of 5 seeds) (0); R13 expected adaptation (>= 4 of 5 seeds) (0); R2 expected adaptation (>= 4 of 5 seeds) (0); R3 expected adaptation (>= 4 of 5 seeds) (0); R4 expected adaptation (>= 4 of 5 seeds) (0); R5 expected adaptation (>= 4 of 5 seeds) (0); R7 expected adaptation (>= 4 of 5 seeds) (2); R9 expected adaptation (>= 4 of 5 seeds) (2); PG1 recall drop at day 21 vs O (0.337) | – |
+
+The table below gives each check as the median [min–max] over the 5 seeds. "After" is round 5. "Before" is round 4's final runs re-scored by this round's scorer, on the same generator, truth and held-out law.
+
+| Check | After (round 5) | Before (round 4 re-scored) |
+|---|---|---|
+| PG1 recall @14 | 0.842 [0.842–0.947] | 0.842 [0.816–0.921] |
+| PG1 precision @14 | 0.842 [0.833–0.877] | 0.857 [0.842–0.873] |
+| … on the claims whose truth had an observable event by the snapshot (`precobs.py`, 16.13.11 item 1) | 0.926 [0.903–0.980] | 0.945 [0.897–0.964] |
+| PG1 who / when / content / bindings / workflow @14 | 0.895 / 0.974 / 0.921 / 1.000 / 1.000 | 0.921 / 0.947 / 0.921 / 1.000 / 1.000 |
+| PG1 GA + FIN bindings (of 6) @14 | 6 on 5/5 seeds | 6 on 5/5 seeds |
+| PG1 recall @21 | 0.872 [0.762–0.881] | 0.846 [0.762–0.857] |
+| PG1 precision @21 | 0.908 [0.882–0.944] | 0.919 [0.873–0.922] |
+| PG2 calibration error (debiased, claims of days ≥ 7 pooled) | 0.129 [0.100–0.144] | 0.157 [0.149–0.192] |
+| … pooled plug-in ECE / its null floor | 0.077 / 0.026 | 0.099 / 0.026 |
+| … stated / held (pooled) | 0.807 / 0.884 | 0.777 / 0.874 |
+| PG2 plug-in ECE @14 / @21 (one snapshot, ~60–70 claims) | 0.072 / 0.096 | 0.079 / 0.133 |
+| PG2 confidence of unchanged patterns non-decreasing (paired) | **5/5** | 4/5 |
+| PG2 recall non-decreasing / U non-increasing / depth non-decreasing | 5/5 / 5/5 / 5/5 | 5/5 / 5/5 / 4/5 |
+| PG2 daily patterns reach 80 % recall on day | 10–12 | 10–11 |
+| PG3 GA login = 3 IPs + 3 bindings / finance approval = {.2.10} / portal level / DEV pool one group / ARI | 5/5 / 5/5 / 5/5 / 5/5 / 0.974 | same |
+| PG5 D1 / D2 / D3 / D4 / D5 / .21 still jack | 3/5 / 5/5 / 5/5 / **5/5** / 5/5 / 5/5 | 3/5 / 5/5 / 5/5 / 5/5 (round-4 scorer: 3/5) / 5/5 / 5/5 |
+| PG5 D1 workdays to confirm (s0–s4) | 3 / 3 / 3 / 4 / 5 | 3 / 3 / 3 / 4 / 5 |
+| PG6 anomalies | 50/50 | 50/50 |
+| PG6 FAR incidents ≥ LOW / ≥ MEDIUM per entity-day | 0.0022 [0.0018–0.0034] / 0.0014 [0.0012–0.0027] | 0.0027 [0.0019–0.0034] / 0.0014 [0.0012–0.0025] |
+| PG6 pattern_violation ≥ LOW per entity-day | 0.0079 [0.0070–0.0142] | 0.0101 [0.0076–0.0134] |
+| PG7 type correct | 1.0 | 1.0 |
+| PG8 arms in truth / max switches / who within 5 % | 0.833 [0.833–1.000] / 1 / 2/5 | 0.833 [0.833–1.000] / 1 / 2/5 |
+| PG10 day 11 / day 21 / finance single IP / GA negative | 1/5 / 3/5 / 5/5 / 5/5 | 1/5 / 3/5 / 5/5 / 5/5 |
+| Example checklist (day 21) | 49/50 | 49/50 |
+
+Per seed (round 5):
+
+| Seed | recall @7 / @10 / @14 / @18 / @21 | precision @14 / @21 | ECE @14 | pooled CE | daily 80 % on day | D1 workdays | checklist |
+|---|---|---|---|---|---|---|---|
+| 0 | 0.52 / 0.80 / 0.95 / 0.97 / 0.87 | 0.833 / 0.908 | 0.052 | 0.122 | 10 | 3 | 10/10 |
+| 1 | 0.50 / 0.76 / 0.89 / 0.90 / 0.88 | 0.841 / 0.891 | 0.072 | 0.129 | 11 | 3 | 10/10 |
+| 2 | 0.44 / 0.78 / 0.84 / 0.87 / 0.86 | 0.843 / 0.944 | 0.098 | 0.130 | 11 | 3 | 10/10 |
+| 3 | 0.52 / 0.76 / 0.84 / 0.93 / 0.88 | 0.877 / 0.882 | 0.077 | 0.144 | 12 | 4 | 9/10 |
+| 4 | 0.45 / 0.78 / 0.84 / 0.83 / 0.76 | 0.842 / 0.915 | 0.054 | 0.100 | 11 | 5 | 10/10 |
+
+#### 16.13.5 Progress with time (PG1 / PG2; medians over the 5 seeds)
+
+| | day 3 | day 5 | day 7 | day 10 | day 14 | day 18 | day 21 |
+|---|---|---|---|---|---|---|---|
+| recall, round 5 | 0.00 | 0.42 | 0.50 | 0.78 | 0.84 | 0.90 | 0.87 |
+| recall, round 4 | 0.00 | 0.39 | 0.50 | 0.78 | 0.84 | 0.87 | 0.85 |
+| precision, round 5 | 1.00 | 0.69 | 0.80 | 0.87 | 0.84 | 0.86 | 0.91 |
+| precision, round 4 | 1.00 | 0.64 | 0.79 | 0.87 | 0.86 | 0.85 | 0.92 |
+| plug-in ECE, round 5 | 0.38 | 0.34 | 0.13 | 0.16 | 0.07 | 0.09 | 0.10 |
+| plug-in ECE, round 4 | 0.37 | 0.33 | 0.18 | 0.17 | 0.08 | 0.10 | 0.13 |
+| median stated confidence, round 5 | – | 0.49 | 0.65 | 0.76 | 0.87 | 0.89 | 0.91 |
+| median stated confidence, round 4 | – | 0.67 | 0.65 | 0.76 | 0.86 | 0.88 | 0.91 |
+| confirmed statements, round 5 | 0 | 25 | 33 | 59 | 65 | 74 | 77 |
+| confirmed statements, round 4 | 0 | 29 | 37 | 64 | 71 | 79 | 83 |
+| mean specialisation depth, round 5 | 1.00 | 1.24 | 1.33 | 1.43 | 1.52 | 1.57 | 1.60 |
+| mean specialisation depth, round 4 | 0.50 | 1.07 | 1.18 | 1.29 | 1.37 | 1.43 | 1.46 |
+
+**Reading the table.**
+- The profile gets more precise the longer it runs. Recall rises 0.50 → 0.78 → 0.84 → 0.90 from day 7 to day 18. The median confidence of the stated patterns rises 0.65 → 0.91. Statements specialise deeper (1.33 → 1.60 levels).
+- The day-21 dip in recall is drift: D1–D3 change the GA department's login and approvals on days 12–14, and the generator's 21-day truth judges the new versions.
+- Round 5 states fewer patterns: 77 against 83 on day 21. V-1 no longer states the OA / finance roots as `GET /health`, and the incident changes alter some P10 / P14 evidence.
+
+#### 16.13.6 Determinism
+
+Pack O seed 0 was run twice on `code4`, once with `PYTHONHASHSEED=0` and once with `PYTHONHASHSEED=1`, in separate processes.
+
+- **Scores.** The score JSONs are identical: 0 differences in 15 735 leaves (`jdiff.py`, timings excluded).
+- **Full result pickle.** A deep diff (`pkldiff.py`; `reports/progressive/round5_eval/determinism_pkl_diff.txt`) found two differences, both order-only:
+  - B27 emitted the same incident events of one tick (2025-09-21 01:15 UTC: one oa reopen and twelve portal opens) in a different order.
+  - 196 `hold_facets` dicts of `model.ptree` had a different key order.
+  - Everything else is equal: all events and incidents, every snapshot model, every statement, every value.
+- **Fix.** EV5-5 sorts both.
+
+In round 4 the same check needed `PYTHONHASHSEED` pinned, and even then two processes differed through `id()`-based state (16.13.1). Round 5 removed the str-hash dependences: T-4, R-4 and V-5 owner-side, and EV5-5. The owners' subprocess tests run under several hash seeds:
+- `test_p04_p05_stream_equivalence.py` (P04 / P05 models);
+- `test_registry_hash_order.py` (P02 / P06 / P07 / P08, under 5 hash seeds);
+- `test_round5_hash_order_views.py` (P03 / P11 / P15, under 5 seeds);
+- `test_round5_eval_order.py` (EV5-5).
+
+`pscale.pin_hash_seed` still pins the evaluation entry points to 0, which keeps the old reports reproducible.
+
+#### 16.13.7 Cost
+
+**P-core engine CPU per 21-day pack O run.** Median over seeds 0–4: round 5 (`code4`) against round 4's final runs. Both were measured with 2–3 heavy processes on the 4-core machine, so differences under about 10 % are load noise.
+
+| Engine | round 4 s (median) | round 5 s (median) | change |
+|---|---|---|---|
+| P00 event | 13.8 | 14.1 | +2 % |
+| P01 event_context | 10.0 | 9.7 | -3 % |
+| P02 attr_registry | 111.5 | 88.9 | -20 % |
+| P03 conformity | 75.6 | 79.9 | +6 % |
+| P04 pattern_tree | 278.0 | 253.5 | -9 % |
+| P05 attr_select | 144.8 | 132.5 | -8 % |
+| P06 content_bounds | 28.8 | 15.2 | -47 % |
+| P07 payload_grammar | 3.4 | 3.8 | +12 % |
+| P08 binding | 34.1 | 31.0 | -9 % |
+| P09 time_window | 35.6 | 38.1 | +7 % |
+| P10 workflow | 10.9 | 11.1 | +2 % |
+| P11 who_groups | 7.0 | 7.5 | +7 % |
+| P12 system_profile | 14.5 | 16.4 | +13 % |
+| P13 facets | 7.8 | 8.8 | +13 % |
+| P14 views | 311.0 | 131.2 | -58 % |
+| P15 resource_governor | 29.4 | 34.8 | +18 % |
+| P-core total | 1166 | 880 | -24 % |
+| other engines (lib-3 B, raw) | 857 | 901 | +5 % |
+| wall s (whole run) | 2099 | 1819 | |
+| peak RSS MB | 1989 | 1428 | |
+
+**What changed.**
+- The P-core spends 24 % less CPU per run, and the whole run takes 13 % less wall time (2 099 → 1 819 s). Peak RSS fell 1 989 → 1 428 MB on seeds 0 and 2–4; seed 1 read 2 092 MB, which includes checkpoint serialisation.
+- The owners' equivalent rewrites show up where expected: P02 −20 % (R-1), P06 −47 % (R-3 together with T-2's `TDigest._compress`), P04 −9 % and P05 −8 % (T-1 / T-2).
+- No owner claimed an equivalent rewrite of P14, so its −58 % is not one. It renders fewer statements: 77 against 83 confirmed on day 21. V-1 removed the root `GET /health` statements, whose parts covered every department and whose who listed ~234 IPs. This was not profiled separately. The numbers are per engine call over the whole run. The owners' microbenchmarks (16.13.2) isolate the per-row gains:
+  - P04: 622 → 480 µs mean and 1 092 → 732 µs p95 per learned row;
+  - P05: 577 → 458 µs;
+  - P08 `screen`: 1.4 → 0.8 s over 157 recorded calls;
+  - `SplitStats.update`: 111 → 46 µs.
+
+**PG4 points (7 days, `scripts/progressive_scale.py` grid, `code5`).**
+
+| Point | memory MB | P-core µs / event | scoring p95 µs | learning p95 µs (per P04 row, EV5-3) |
+|---|---|---|---|---|
+| 500 IPs, 40 attributes | 38.8 | 2 290 | 509 | 1 483 |
+| 20 000 IPs, 40 attributes | 43.1 | 1 745 | 405 | 1 459 |
+| 500 IPs, 340 attributes | 57.0 | 3 639 | 729 | 2 147 |
+| 20 servers | 42.2 | 26 811 | 1 510 | 1 674 |
+| 100 servers | 65.6 | 29 072 | 3 649 | 1 964 |
+| 300 servers | 86.0 | 40 175 | 6 941 | 2 342 |
+
+**PG4 checks** (`reports/progressive/progressive_report.json`):
+
+| Check | Target | Result |
+|---|---|---|
+| memory slope vs IPs | ≤ 0.15 | 0.028 |
+| CPU / event slope vs IPs | ≤ 0.1 | −0.074 |
+| memory slope vs attributes | ≤ 0.2 | 0.180 |
+| CPU / event slope vs attributes | ≤ 0.2 | **0.216** |
+| memory slope vs systems | ≤ 0.3 | 0.264 |
+| idle system after ≥ 1 day | ≤ 1 MB | 0.42 MB |
+| largest tree | ≤ 40 MB | 21.5 MB |
+| scoring p95 | ≤ 100 µs | **6 941 µs** |
+| learning p95 | ≤ 250 µs | **2 342 µs** (6 443 in round 4, per P00 row) |
+
+**Reading.**
+
+*The attribute CPU slope.* It fails here but passed in round 4's report. That report took its IP / attribute points from round 3's code (§16.12.5). The same two points re-run in pairs, on HEAD 180f1fc and on `code5` (`prog5/ev/scale5h`, `scale5p`):
+
+| Code | µs / event at 40 → 340 attributes | slope |
+|---|---|---|
+| HEAD (round 4's code) | 2 712 → 4 457 | 0.232 |
+| `code5` | 2 246 → 3 738 | 0.238 |
+
+So the slope came with round 4's code, not round 5. Round 5 is 17 % faster at both points, with identical memory (38.8 / 57.0 MB on both codes). Per event from 40 to 340 attributes, P05 grows ×2.6 (436 → 1 156 µs), P02 ×1.9 (292 → 563 µs) and P00 ×3 (49 → 149 µs).
+
+*Memory against round 4's report.* The memory points are 5–30 % above round 4's report, but they equal HEAD's on the same pack: servers-20 is 42.4 MB on HEAD and 42.2 MB on `code5`. The difference is the pack / code state behind round 4's older points, not round 5.
+
+*Learning p95.* It reads 2.3 ms against 6.4 ms in round 4. Most of that is EV5-3's denominator: P04's own learned rows rather than P00's rows of the same tick.
+
+#### 16.13.8 PG9: bounded vs full (calibration owner's runs, round-5 lib-3 code)
+
+These runs (`reports/progressive/round5_eval/pg9/`) use the lib-3 decision chain owner's final code. They come before the other owners' last edits, EV5-2 (gate 7 reads D⁺) and EV5-5 / EV5-6. Those edits do not touch the default registry's bounded mode, except gate 7's reading. The machine was shared with 2–5 heavy processes.
+
+| | Pack A seed 0, full | Pack A seed 0, bounded | Pack E seed 0, full | Pack E seed 0, bounded |
+|---|---|---|---|---|
+| gate 1 detection | 0.667 (12/12 detected) | 0.667 (12/12; T12's maximum severity critical → medium) | 0.0 | 0.333 (T5' within deadline) |
+| gate 3 incidents ≥ LOW / ≥ MEDIUM / HIGH | 19 / 6 / 2 | 16 / 7 / 1 | 6 / 1 / 0 | 4 / 0 / 0 |
+| lib-3 CPU | 1 141 s | 657 s | – | – |
+| p95 at 35 entities | 1 579 ms | 1 059 ms (67 % of full; PG9 wants ≤ 50 %) | 557 ms | 295 ms (53 %) |
+
+**Bounded-mode failures shared with HEAD (open issues, 16.13.12):**
+- Gate 15. Pack A has 88 stale series (B11 `behavior.timing` 38, `behavior.acc_alarm` 28) from the B11 / B13 prefilter, and 68 `pipeline_degraded` events, because B13 writes `insufficient_support:budget_history` for the IPs it skips. Pack E has 58 stale series.
+- Gate 8. On A, T9b `unknown_identity` is lost and the EER share falls 1.0 → 0.67. On E, 19 of 37 keys have no identity / portrait profile.
+- Pack A clean CUSUM edges rise 10 → 24 in bounded mode. 19 of them are hourly S_h alarms of erp-prod|10.20.4.32, from `robust_tail` trimming a small ring.
+
+PG9 stays "not measured" in the gate table. The assembly has no packs A–E on/off comparison input (`pg9_compare`), as in round 4.
+
+#### 16.13.9 Variants, O-real and non-regression
+
+**O-real (35 days; seeds 0–2 on `code5`).** Each run took 4 365 / 4 398 / 4 423 s of wall time in one resumable process (4–5 checkpoints), with peak RSS ≈ 3.2 GB and 0 exceptions. Every O-real number below uses the round-5 scorer with EV5-7. "Round 4" is round 4's seed-0 pickle re-scored the same way. Its published 0.304 / 0.406 @35 and CE 0.522 had judged every family statement "unsupported".
+
+| | round 4, s0 (re-scored) | `code4`, s0 (frozen oa view, before EV5-6) | round 5, s0 | round 5, s1 | round 5, s2 |
+|---|---|---|---|---|---|
+| PG11 R-items passing (of 11; R1 n/a) | R7, R8, R10, R11 | R7, R8, R10, R11 | R7, R8, R10, R11 | R7, R8, R9, R10 | R8, R9, R10 |
+| recall / precision @14 | 0.446 / 0.438 | 0.569 / 0.570 | 0.462 / 0.450 | 0.477 / 0.421 | 0.492 / 0.421 |
+| recall / precision @35 | 0.342 / 0.754 | 0.392 / 0.770 | 0.354 / 0.747 | 0.405 / 0.747 | 0.342 / 0.824 |
+| anomalies | 4/10 (A1, A8, A9, A10) | same | same | same | same |
+| FAR ≥ LOW / ≥ MEDIUM | 0.0033 / 0.0024 | 0.0017 / 0.0012 | 0.0017 / 0.0012 | 0.0037 / 0.0024 | 0.0021 / 0.0014 |
+| PG5 drifts passing | D3, D5 | D5 | D3, D5 | D3, D4 | D3, D4, D5 |
+| pooled CE (stated / held, n) | 0.261 (0.81 / 0.64, 2 000) | 0.254 (0.78 / 0.67, 2 415) | 0.270 (0.81 / 0.60, 1 765) | 0.245 (0.83 / 0.64, 1 895) | 0.200 (0.81 / 0.66, 1 826) |
+| example checklist (day 35) | 5/10 | 4/10 | 4/10 | 4/10 | 3/10 |
+
+**Reading.**
+- **Calibration.** Round 4 read O-real's statements as strongly over-confident: stated 0.81, held 0.33. Most of that was the scorer, not the engine. oa and its replica oa-r2 form the engine family `fam:1` from day 11; the truth calls that family `oa`, so none of `fam:1`'s statements was judged against their events (EV5-7). With the family judged, O-real is over-confident by 0.15–0.21 (CE 0.20–0.27), where pack O is under-confident by 0.08.
+- **What EV5-6 costs on seed 0.** It costs recall and precision @14: 0.569 / 0.570 → 0.462 / 0.450. Before the fix, oa's frozen pre-join view still held its unchanged patterns, and on day 14 the 3-day-old family tree had not restated all of them. EV5-6 is what lets D3 pass on O-real; D3 also passes on seeds 1–2.
+- **Recall over the run.** O-real's recall falls from day 14 to day 35 on every run, as in round 4.
+- **R13 and the example.** R13 (CRM branches as one family) fails on all seeds, as in round 4. The example checklist reads the family view (EV5-7) and passes 3–4 of 10.
+
+**O-red (seed 0, `code5`).**
+- Recall / precision @14 0.622 / 0.780; round 4 re-scored: 0.568 / 0.776.
+- Recall / precision @21 0.773 / 0.919; round 4: 0.705 / 0.926.
+- Anomalies 9/10 (A7 missed, as in round 4). False splits 0. FAR ≥ LOW / ≥ MEDIUM 0.0027 / 0.0020 (0.0029 / 0.0020). D1–D5 all pass.
+- Pooled CE 0.163, stated 0.78 / held 0.86 (round 4: 0.207, 0.73 / 0.85).
+
+**O60 (seed 0, `code5`).** O60 aggregates days 1–7 and switches to 60-s events from day 8. Its day-8 recall / precision is 0.559 / 0.774, against pack O seed 0's 0.545 / 0.839. Recall agrees within the 0.05 consistency requirement. Precision is 0.065 lower on 31 vs 31 judged claims (round 4: 0.500 / 0.829 against 0.545 / 0.838).
+
+**Non-regression, default registry (packs A and E seed 0, `code5`, `scripts/evaluate.py`; `prog5/ev/ae5_keep`).**
+- Compared with `reports/round4/runs/{A,E}_0_full.json`, the deltas are exactly the tie fix (C-1–C-3) plus gate 7 reading D⁺ (EV5-2). The score fields equal the calibration owner's final runs (`round5_eval/pg9/final_{A,E}_full.json`) apart from the KS reading.
+- **Pack A:** detection 12/12, 8 within deadline, same severities. Incidents ≥ LOW / MEDIUM / HIGH 19 / 6 / 2 (same); reopened 5 → 9. Legit L8 low → medium. Classes ARI 0.780, EER share 1.0 (same).
+- **Pack E:** 3/3 (T5' high → critical). LOW false alarms 8 → 6, MEDIUM 1 → 1. Classes ARI 0.755 → 0.551 and refit ARI min 0.955 → 0.689: B02 refit fragility through the governor trajectory, an open issue for B02.
+- **Gate 7.** The anti-conservative D⁺ maximum is 0.102 on A (marg_int) and 0.128 on E (marg_shape_q). The two-sided D is 1.0 on both, the atom at p = 1 of `silence` and the other atom detectors.
+- **Wall time.** A took 911 s against 1 048 s in round 4; E took 1 121 s against 1 283 s.
+
+**Tests.** The final tree passes the full suite: 3 165 passed, 4 skipped, 0 failed in 21 min (`prog5/ev/full2.txt`; round 4: 3 052). Before EV5-4b/c, EV5-5–EV5-7 it gave 3 153 passed. The evaluator's new tests:
+- `tests/engines/test_p04_round5_eval.py` (EV5-4 a–c)
+- `tests/engines/test_round5_eval_order.py` (EV5-5)
+- `tests/engines/test_p14_round5_eval.py` (EV5-6)
+- `tests/eval/test_pmetrics.py::{test_d4_counts_only_incidents_that_involve_the_grown_population, test_engine_family_statements_are_judged_for_their_member_systems}`
+- `tests/eval/test_metrics.py::test_calibration_gate_reads_the_anti_conservative_side`
+- `tests/eval/test_pscale.py::test_learning_p95_divides_p04_cpu_by_the_rows_p04_learned`
+- `tests/eval/test_progressive_report_label.py::test_example_reads_the_family_view_of_a_system_that_joined_one`
+
+Each one fails on the code before its change. The owners' tests are listed in 16.13.2.
+
+#### 16.13.10 The anomalies, the example checklist per seed, and the example as learned
+
+| Anomaly | s0 | s1 | s2 | s3 | s4 |
+|---|---|---|---|---|---|
+| A1 | who | who | who | who | who |
+| A2 | content | content | content | content | content |
+| A3 | content, when | content, when | content, when | content | content, when |
+| A4 | when | when | when | when | when |
+| A5 | seq | seq | seq | seq | seq |
+| A6 | novel | novel | novel | novel | novel |
+| A7 | content, seq | content | content, seq | content, seq | content, seq |
+| A8 | content, who | content, who | content, who | content, who | content, who |
+| A9 | who | who | who | who | who |
+| A10 | content, seq, who | seq, who | content, seq, who | content, seq, who | content, seq, who |
+
+All 50 of 50 are detected, with the same evidence types as round 4.
+
+**Example checklist (truth valid on day 21):**
+
+| Clause | s0 | s1 | s2 | s3 | s4 |
+|---|---|---|---|---|---|
+| 综合部 3 IPs log in to OA (who = 192.168.1.21, .23, 10.168.7.121) | ✓ Jaccard 1.00 | ✓ 1.00 | ✓ 1.00 | ✓ 1.00 | ✓ 1.00 |
+| workday login window 08:30–08:51 | ✓ IoU 0.90 | ✓ 0.95 | ✓ 0.95 | ✓ 0.86 | ✓ 0.71 |
+| 90 % of submissions in 1–2 KB | ✓ 1–2 KB | ✓ 1–2 KB | ✓ 1–2 KB | ✗ 1–3 KB | ✓ 1–2 KB |
+| 100 % in 0.5–3 KB | ✓ 1–2.8 KB | ✓ 0.5–3 KB | ✓ 0.4–2.4 KB | ✓ 0.5–3 KB | ✓ 0.6–2 KB |
+| `username=` present, value ≤ 10 characters | ✓ `[a-z]{4}(\.[a-z])?` | ✓ same | ✓ same | ✓ same | ✓ same |
+| bindings .121 → mike.w, .21 → jack, .23 → rose | ✓ 3/3 | ✓ 3/3 | ✓ 3/3 | ✓ 3/3 | ✓ 3/3 |
+| 192.168.1.21 visits the approval pages | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 17:00 report (.23, .121) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| finance approval only by 财务部 192.168.2.10 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| user view: 综合部 never writes in finance | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+The checklist scores 49 of 50, as in round 4. The one miss is again seed 3's 90 % band, displayed as 1–3 KB: the truth's sharp density drop at its 95th percentile with n_eff ≈ 25 (§16.12.12).
+
+**The requirement's example as learned.** The statements below are P14's text verbatim, from `example.days['21']` of `reports/progressive/runs/O_0.json` (seed 0, day 21). "…" marks what is left out, as in §16.12.13:
+- the user-agent regex and client-stack sets everywhere;
+- the content clauses of the stale approval statement and of the user view's parts. Each part is quoted as its head, workflow and confidence tail.
+
+The calendar starts on day 1 = 2025-09-01.
+
+**System view, 综合部's OA login node, after D1 (08:30–08:51) and D2 (mike → mike.w):**
+
+> 【oa】工作日 08:32–08:51（覆盖 85 %，6 个工作日），综合部（10.168.7.121、192.168.1.21、192.168.1.23）访问 POST /login（登录）：viewstate.len= 90 % 在 1000–2000，全部在 800–2800（n = 39，下次越界概率 ≤ 12 %）；提交数据量 90 % 在 1–2 KB，全部在 1–2.8 KB（n = 39，下次越界概率 ≤ 12 %）；下行字节 90 % 在 335–590 B，观测范围 300–600 B（n = 21）；上行字节 90 % 在 1.5–2.5 KB，观测范围 1.4–3.2 KB（n = 23）；时长 90 % 在 10–70，全部在 10–120（n = 46，下次越界概率 ≤ 10.0 %）；每 IP 每小时次数 90 % 在 1–1；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 captcha=、csrf=、password=、username=、viewstate=；password= 取值 `[A-Za-z0-9]{7,30}`；password.len= 取值集合封闭 {10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 8.0, …}；username= 取值 `[a-z]{4}(\.[a-z])?`，username= 取值集合封闭 {jack, mike, mike.w, rose}；viewstate= 取值 `[A-Za-z0-9\-_]{511,4094}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\-[a-z]{3}\-[a-z]{4}\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；username=jack 只来自 -|chrome/126|win|128|w16；username=mike 只来自 -|edge/125|win|128|w16；username=mike.w 只来自 -|edge/125|win|128|w16；username=rose 只来自 -|chrome/126|win|128|w16；绑定：10.168.7.121 → username=mike.w、192.168.1.21 → username=jack、192.168.1.23 → username=rose（g3 = 0.00，各 ≥ 5 次）。流程：POST /login → GET /home（间隔 0 秒–4 秒）。置信 0.90 · 依据 47 次 · 首次 2025-09-09 · 最近 2025-09-21 · v1.0
+>
+> (state `stable`, `pattern_id` p:oa:0:18@1.0)
+
+**System view, 192.168.1.21's approval after D3 renamed the pages (new and old route):**
+
+> 【oa】工作日 09:35–11:29（覆盖 96 %，8 个工作日），综合部（192.168.1.21）访问 POST /flow/{num}/approve（审批）（原 POST /approval/{num}/approve，页面已更名）：viewstate.len= 90 % 在 800–1400，全部在 700–1500（n = 46，下次越界概率 ≤ 10.0 %）；提交数据量 90 % 在 0.8–1.4 KB，全部在 0.8–1.5 KB（n = 47，下次越界概率 ≤ 9.8 %）；下行字节 90 % 在 2–18 KB，全部在 1–20 KB（n = 55，下次越界概率 ≤ 8.4 %）；上行字节 90 % 在 1.4–2 KB，全部在 1.3–2 KB（n = 42，下次越界概率 ≤ 11 %）；时长 90 % 在 10–100，全部在 10–180（n = 55，下次越界概率 ≤ 8.4 %）；net.pkts_down 90 % 在 4–16，全部在 2–16（n = 55，下次越界概率 ≤ 8.4 %）；每 IP 每小时次数 90 % 在 1–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\u0080-\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理, 退回}；viewstate= 取值 `[A-Za-z0-9\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\-[a-z]{3}\-[a-z]{4}\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；…。流程：GET /flow/{num} → POST /flow/{num}/approve（间隔 45 秒–5 分钟）。置信 0.85 · 依据 55 次 · 首次 2025-09-01 · 最近 2025-09-12 · v1.0
+>
+> (state `confirmed`, `pattern_id` p:oa:0:10@1.0|as:POST oa.corp.local /flow/{num}/approve)
+
+> 【oa】工作日 09:35–11:29（覆盖 96 %，8 个工作日），综合部（192.168.1.21）访问 POST /approval/{num}/approve（审批）：…。置信 0.85 · 依据 55 次 · 首次 2025-09-01 · 最近 2025-09-12 · v1.0（近期未出现）（页面已更名为 POST /flow/{num}/approve）
+>
+> (state `stale`, `pattern_id` p:oa:0:10@1.0)
+
+**System view, the 17:00 report submission:**
+
+> 【oa】工作日 17:01–17:14（覆盖 91 %，11 个工作日），综合部（10.168.7.121、192.168.1.23）访问 POST /report/generate（提交报告）：提交数据量 90 % 在 20–50 KB，观测范围 20–60 KB（n = 23）；下行字节 90 % 在 2.2–4.4 KB，观测范围 2–4.5 KB（n = 15）；时长 90 % 在 10–100，观测范围 5–140（n = 27）；每 IP 每小时次数 90 % 在 1–1；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {json}；表单键必含 dept=、items[]=、period=；dept= 取值 `[A-Z]{2}`，dept= 取值集合封闭 {GA}；…；请求头 user-agent.len 取值集合封闭 {111.0, 125.0}。流程：GET /report/form → POST /report/generate（间隔 74 秒–4 分钟）。置信 0.85 · 依据 29 次 · 首次 2025-09-01 · 最近 2025-09-19 · v1.0
+>
+> (state `confirmed`, `pattern_id` p:oa:0:12@1.0)
+
+**System view, finance approval:**
+
+> 【finance】工作日 10:02–11:28、15:03–15:58（覆盖 90 %，13 个工作日），财务部（192.168.2.10）访问 POST /fin/approval/{num}/approve（审批）：viewstate.len= 90 % 在 915–979，观测范围 910–980（n = 2）；voucher= 90 % 在 20000000–100000000，全部在 10000000–100000000（n = 48，下次越界概率 ≤ 9.6 %）；提交数据量 90 % 在 1–1.6 KB，全部在 0.9–1.6 KB（n = 55，下次越界概率 ≤ 8.4 %）；下行字节 90 % 在 11.2–17 KB，观测范围 11–17 KB（n = 7）；时长 90 % 在 10–100，全部在 5–140（n = 58，下次越界概率 ≤ 8.0 %）；每 IP 每小时次数 90 % 在 1–3；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 amount=、opinion=、sign=、viewstate=、voucher=；opinion= 取值 `[\u0080-\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理, 退回}；viewstate= 取值 `[A-Za-z0-9\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\-[a-z]{3}\-[a-z]{4}\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}。流程：GET /fin/approval/list → POST /fin/approval/{num}/approve（间隔 30 秒–2 分钟）；POST /fin/approval/{num}/approve → GET /fin/approval/list（间隔 6 分钟–28 分钟）。置信 0.87 · 依据 59 次 · 首次 2025-09-01 · 最近 2025-09-19 · v1.0
+>
+> (state `stable`, `pattern_id` p:finance:0:9@1.0)
+
+**User view, department `class:grp:dept:综合部` (composed of the learned groups G25, G6):**
+
+> 综合部（3 个 IP，2 个行为群组）使用 mail、oa
+> - 综合部 访问 mail（占其活动 18 %）：邮件（TLS mail.corp.local）。置信 0.74 · 依据 3 个成员
+> - 综合部 访问 oa（占其活动 82 %）：文档（GET /docs）、文档（GET /docs/{num}）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、查看报告（GET /report/form）[10.168.7.121、192.168.1.23]、提交报告（POST /report/generate）[10.168.7.121、192.168.1.23]、查看审批（GET /flow/list）[192.168.1.21]、查看审批（GET /flow/{num}）[192.168.1.21]、审批（POST /flow/{num}/approve）[192.168.1.21]。置信 0.74 · 依据 3 个成员
+> - 综合部 在 crm 中从未执行写操作（15 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 15 天
+> - 综合部 在 finance 中从未执行写操作（21 天、0 次）（封闭的写操作：审批（POST /fin/approval/{num}/approve）、登录（POST /fin/login））；192.168.1.23 的尝试被判定为越权（未学习）。置信 0.99 · 依据 21 天
+> - 综合部 在 portal 中从未执行写操作（21 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））。置信 1.00 · 依据 21 天
+> - 【oa】工作日 08:32–08:51（覆盖 85 %，6 个工作日），192.168.1.21访问 POST /login（登录）：…。流程：POST /login → GET /home（间隔 0 秒–4 秒）。置信 0.90 · 依据 47 次 · 首次 2025-09-09 · 最近 2025-09-21 · v1.0
+> - 【oa】工作日 09:33–16:56（覆盖 97 %，12 个工作日），192.168.1.21访问 GET /docs（文档）：…。流程：GET /docs → GET /docs/{num}（间隔 10 秒–56 秒）；POST /docs/{num}/comment → GET /docs（间隔 6 分钟–29 分钟）；GET /docs/{num} → GET /docs（间隔 3 分钟–28 分钟）；GET /home → GET /docs（间隔 10 分钟–31 分钟）。置信 0.85 · 依据 298 次 · 首次 2025-09-16 · 最近 2025-09-19 · v1.0
+> - 【oa】工作日 09:28–11:25（覆盖 96 %，8 个工作日），192.168.1.21访问 GET /flow/list（查看审批）（原 GET /approval/list，页面已更名）：…。流程：GET /flow/list → GET /flow/{num}（间隔 38 秒–4 分钟）。置信 0.85 · 依据 59 次 · 首次 2025-09-01 · 最近 2025-09-12 · v1.0
+> - 【oa】工作日 09:32–11:28（覆盖 96 %，8 个工作日），192.168.1.21访问 GET /flow/{num}（查看审批）（原 GET /approval/{num}，页面已更名）：…。流程：GET /flow/list → GET /flow/{num}（间隔 38 秒–4 分钟）；GET /flow/{num} → POST /flow/{num}/approve（间隔 45 秒–5 分钟）。置信 0.85 · 依据 57 次 · 首次 2025-09-01 · 最近 2025-09-12 · v1.0
+> - 【oa】工作日 09:35–11:29（覆盖 96 %，8 个工作日），192.168.1.21访问 POST /flow/{num}/approve（审批）（原 POST /approval/{num}/approve，页面已更名）：…。流程：GET /flow/{num} → POST /flow/{num}/approve（间隔 45 秒–5 分钟）。置信 0.85 · 依据 55 次 · 首次 2025-09-01 · 最近 2025-09-12 · v1.0
+> - 【oa】工作日 08:32–08:51（覆盖 85 %，6 个工作日），10.168.7.121、192.168.1.23访问 POST /login（登录）：…。流程：POST /login → GET /home（间隔 0 秒–4 秒）。置信 0.90 · 依据 47 次 · 首次 2025-09-09 · 最近 2025-09-21 · v1.0
+> - 【oa】工作日 09:33–16:56（覆盖 97 %，12 个工作日），10.168.7.121、192.168.1.23访问 GET /docs（文档）：…。流程：GET /docs → GET /docs/{num}（间隔 10 秒–56 秒）；POST /docs/{num}/comment → GET /docs（间隔 6 分钟–29 分钟）；GET /docs/{num} → GET /docs（间隔 3 分钟–28 分钟）；GET /home → GET /docs（间隔 10 分钟–31 分钟）。置信 0.85 · 依据 298 次 · 首次 2025-09-16 · 最近 2025-09-19 · v1.0
+> - 【oa】工作日 17:00–17:10（覆盖 92 %，12 个工作日），10.168.7.121、192.168.1.23访问 GET /report/form（查看报告）：…。流程：GET /report/form → POST /report/generate（间隔 74 秒–4 分钟）。置信 0.85 · 依据 29 次 · 首次 2025-09-01 · 最近 2025-09-19 · v1.0
+> - 【oa】工作日 17:01–17:14（覆盖 91 %，11 个工作日），10.168.7.121、192.168.1.23访问 POST /report/generate（提交报告）：…。流程：GET /report/form → POST /report/generate（间隔 74 秒–4 分钟）。置信 0.85 · 依据 29 次 · 首次 2025-09-01 · 最近 2025-09-19 · v1.0
+> - 【mail】工作日 09:26–09:41、13:36–14:00（覆盖 81 %，11 个工作日），综合部（10.168.7.121、192.168.1.21、192.168.1.23）连接 TLS mail.corp.local（邮件）：…。置信 0.80 · 依据 95 次 · 首次 2025-09-04 · 最近 2025-09-19 · v1.0
+> - 【oa】工作日 09:34–16:26（覆盖 97 %，13 个工作日），综合部（10.168.7.121、192.168.1.21、192.168.1.23）访问 GET /docs/{num}（文档）：…。流程：GET /docs → GET /docs/{num}（间隔 10 秒–56 秒）；GET /docs/{num} → POST /docs/{num}/comment（间隔 51 秒–6 分钟）；GET /docs/{num} → GET /docs（间隔 3 分钟–28 分钟）。置信 0.97 · 依据 156 次 · 首次 2025-09-01 · 最近 2025-09-19 · v1.0
+> - 【oa】工作日 09:36–16:29（覆盖 93 %，13 个工作日），综合部（10.168.7.121、192.168.1.21、192.168.1.23）访问 POST /docs/{num}/comment（评论）：…。流程：GET /docs/{num} → POST /docs/{num}/comment（间隔 51 秒–6 分钟）；POST /docs/{num}/comment → GET /docs（间隔 6 分钟–29 分钟）。置信 0.93 · 依据 70 次 · 首次 2025-09-01 · 最近 2025-09-19 · v1.0
+> - 【oa】工作日 09:35–11:29（覆盖 96 %，8 个工作日），综合部（192.168.1.21）访问 POST /approval/{num}/approve（审批）：…。置信 0.85 · 依据 55 次 · 首次 2025-09-01 · 最近 2025-09-12 · v1.0（近期未出现）（页面已更名为 POST /flow/{num}/approve）
+> - 【oa】工作日 09:32–11:28（覆盖 96 %，8 个工作日），综合部（192.168.1.21）访问 GET /approval/{num}（查看审批）：…。置信 0.85 · 依据 57 次 · 首次 2025-09-01 · 最近 2025-09-12 · v1.0（近期未出现）（页面已更名为 GET /flow/{num}）
+> - 【oa】工作日 09:28–11:25（覆盖 96 %，8 个工作日），综合部（192.168.1.21）访问 GET /approval/list（查看审批）：…。置信 0.85 · 依据 59 次 · 首次 2025-09-01 · 最近 2025-09-12 · v1.0（近期未出现）（页面已更名为 GET /flow/list）
+> - 【oa】工作日 08:30–09:30（覆盖 99 %，10 个工作日），综合部（10.168.7.121、192.168.1.23）访问 GET /home（首页）：…。流程：POST /login → GET /home（间隔 0 秒–4 秒）；GET /home → GET /docs（间隔 10 分钟–31 分钟）。置信 0.85 · 依据 57 次 · 首次 2025-09-19 · 最近 2025-09-21 · v1.0
+
+**User view, the learned groups that hold 综合部's addresses** (192.168.1.21 → G25, 192.168.1.23 → G6, 10.168.7.121 → G6):
+
+- G25 `综合部·oa GET /flow/list` (192.168.1.21): 综合部·oa GET /flow/list（1 个 IP）使用 mail、oa
+  - 综合部·oa GET /flow/list 在 crm 中从未执行写操作（15 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 15 天
+  - 综合部·oa GET /flow/list 在 finance 中从未执行写操作（21 天、0 次）（封闭的写操作：审批（POST /fin/approval/{num}/approve）、登录（POST /fin/login））。置信 0.99 · 依据 21 天
+  - 综合部·oa GET /flow/list 在 oa 中从未执行：提交报告（POST /report/generate）（21 天、0 次）。置信 0.98 · 依据 21 天
+  - 综合部·oa GET /flow/list 在 portal 中从未执行写操作（21 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））。置信 1.00 · 依据 21 天
+- G6 `综合部` (10.168.7.121, 192.168.1.23): 综合部（2 个 IP）使用 mail、oa
+  - 综合部 在 crm 中从未执行写操作（15 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 15 天
+  - 综合部 在 finance 中从未执行写操作（21 天、0 次）（封闭的写操作：审批（POST /fin/approval/{num}/approve）、登录（POST /fin/login））；192.168.1.23 的尝试被判定为越权（未学习）。置信 0.99 · 依据 21 天
+  - 综合部 在 portal 中从未执行写操作（21 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））。置信 1.00 · 依据 21 天
+**Reading.**
+
+*What the login node now states.* It covers the requirement's first sentence after D1 and D2:
+- the three addresses, a workday window of 08:32–08:51, and 90 % of submissions in 1–2 KB (all in 1–2.8 KB);
+- `username=` required, with grammar `[a-z]{4}(\.[a-z])?` and the closed set {jack, mike, mike.w, rose};
+- the three bindings, and login → home in 0–4 s;
+- confidence 0.90 on 47 observations.
+
+Seed 0's day-21 text is the same as round 4's: round 5's changes are cost, determinism and other statements.
+
+*Renames.* Every place that names the approval pages follows D3's rename:
+- the renamed pages are stated with "（原 … ，页面已更名）";
+- the old route is stated as "（近期未出现）（页面已更名为 …）";
+- the department view's action list names the new pages;
+- the approver group's own name is now `综合部·oa GET /flow/list`. In round 4 it was still `… GET /approval/list` (V-2).
+
+*The user view.*
+- The department view composes the two learned roles and states every action with its confidence and support.
+- It says "综合部 在 finance 中从未执行写操作 …；192.168.1.23 的尝试被判定为越权（未学习）": A1 was judged foreign and not learned.
+- The approver group also states what it never does inside OA: "在 oa 中从未执行：提交报告（POST /report/generate）".
+
+*Still wrong.*
+- On day 14 (the Sunday after D1–D3), seed 0's login node states "工作日 08:49–09:21（覆盖 58 %，5 个工作日）" and {jack, mike, rose} with `10.168.7.121 → username=mike`. That is one new workday and no `mike.w` event yet (16.13.11 item 1).
+- P11 still learns 综合部 as two behavioural groups. The department view and the configured name join them.
+
+#### 16.13.11 Diagnosis of what still fails
+
+1. **Precision @14: 0.842 (target 0.90). Most of the shortfall is drift that no engine could yet see.**
+   - **The day-14 snapshot.** Day 14 is the Sunday after three drifts:
+     - D1, Friday 12: one workday of the new login window.
+     - D2, Saturday 13: `mike.w` has no event before Monday 15.
+     - D3, Sunday 14: the renamed approval pages have no event before Monday 15.
+   - **Why these claims fail.** The headline scorer judges every claim against the law valid that day. So two kinds of claims fail although no engine could have seen the change:
+     - the old approval pages, which have no held-out event ("unsupported");
+     - the login node's binding, grammar and closed set (`mike` → `mike.w`).
+   - **Precision without them.** `precobs.py` (scratch) sets aside the claims on a lineage whose version valid that day has had no event yet: D2's login version and D3's three pages, matched by who-overlap with the changed version. On the remaining claims, precision@14 is 0.922 / 0.926 / 0.903 / 0.980 / 0.939 on seeds 0–4 (median 0.926). On round 4's runs it is 0.945 (median).
+   - **What is left.** D1's login / home windows: one new workday, and a rank test cannot reach α = 0.01 on 3 arrivals (the time / views owner measured this; a location test false-flags day 11). Plus 'when' coverage on small samples.
+   - The headline gate is NOT changed by the evaluator. Whether drift-touched claims should be judged only after a workday of the new behaviour is the lead's decision (open issue).
+   - Precision@14 fell 0.857 → 0.842 against round 4. Part of the fall is V-1: it removed root `GET /health` statements that the evaluator had been passing (3 on seed 0, 2 on seed 1, per the time / views owner).
+2. **Calibration: pooled debiased CE 0.129 [0.100–0.144] (target 0.05).**
+   - It is better than round 4's 0.157 [0.149–0.192] on the same scorer.
+   - Statements are still under-confident: pooled stated 0.807 against held 0.884 (round 4: 0.777 / 0.874).
+   - The plug-in pooled ECE is 0.077 against a null floor of 0.026.
+   - The remaining error is the same open issue as round 4: P04 `p_hold` for nodes and the P14 part confidence. On O-real the same machinery is over-confident (16.13.9).
+3. **D1 on seeds 3 and 4: confirmed after 4 and 5 workdays (≤ 3 required).**
+   - **The tree is in time.** On seed 3 the GA login node is confirmed with a new-regime window on workday 3 (day 16).
+   - **P09's window fit is not.** It fits the window from the first three new-regime dates: 3 sources × 3 dates = 9 points, with back-off to the ancestor and coverage 0.8. The result is 08:38–08:51 against the true 08:30–08:51 (IoU 0.62 < 0.7). Seed 4 gives 08:31–08:44 (IoU 0.62). IoU passes on day 17 (seed 3) and day 18 (seed 4).
+   - **The suggested fix does not settle it.** The tree owner suggested widening a few-point fit by range / (n − 1), the unbiased end-point correction for a uniform law. Applied to these fits:
+     - Seed 3 becomes 08:36.4–08:52.6, IoU 0.65 — still below 0.7.
+     - Seed 4 becomes 08:29.4–08:45.6, IoU 0.72.
+   - The miss on seed 3 is sampling: 8 of 21 minutes are uncovered on the left edge, against an expected 2.1 for 9 uniform points. So the correction does not fix the gate, and it would widen every young window. Not changed; open issue for P09.
+4. **AUTO.monitor.finance (seeds 1 and 4 at day 21; seed 2 at day 14).**
+   - **What EV5-4 a–c fixed.** Three defects: the pooled reference level, the cross-type fallback, and a transient alarm kept open until expiry.
+   - **What remains.** A weekend coded loss that rises between weekends. Seed 2: Saturday 13 reads 2.99 bits against the previous weekend's level of 2.35.
+   - **Why.** P04's coder is shared by both day types and decays towards the workday mix between weekends. So the first weekend day reads as a change of the node.
+   - It needs a day-type-conditioned coder, or a reference recomputed under the current coder (open issue, tree owner).
+5. **Recurring misses (recall@14 0.842, @21 0.872).**
+   - **On every seed:**
+     - DEV's login: the truth demands the 60-name closed set of the pool, which the engine leaves open.
+     - The 01:00 backup: one event a day, in the truth from day 21 only.
+     - GA's 17:00 report submission at day 14 (`GA.oa.report#1`).
+   - **On most seeds:**
+     - The mail departments: GA / FIN / SALES mail differ only by short windows.
+     - FIN's approval content at day 14: its opinion set is left open.
+     - `PUB.portal.visit#3` at day 21 (seeds 0, 2, 4; content or when).
+   - Recovered this round: `FIN.oa.documents#2` (V-4) on every seed.
+6. **PG4.** Per-event p95 is still far above budget: scoring 6.9 ms and learning 2.3 ms against 100 / 250 µs, on the servers points dominated by per-tick overhead. The CPU per event rises faster with the number of attributes than allowed: 0.216 (0.238 in a load-paired re-run) against ≤ 0.2. P05 (×2.6 from 40 to 340 attributes), P02 (×1.9) and P00 (×3) carry that growth (16.13.7). The memory slopes pass.
+7. **PG8 and PG10.** As in round 4:
+   - PG8: finance's who arm, and who level within 5 % on 2/5 seeds. The time / views owner traced seed 1: the 3-consecutive-day switch rule, against the noise of the daily difference, delays the switch to day 18.
+   - PG10: day 11 1/5 and day 21 3/5. On day 11 there is no 综合部-only login statement on seeds 0, 3 and 4. On day 21, seed 3's band is 1–3 KB and seed 4's window 08:30–08:45.
+8. **PG11 (O-real).** 3–4 of 11 R-items per seed, as in round 4: R2–R5, R12 and R13 fail on all 3 seeds. With the family view judged (EV5-7), O-real's statements are over-confident by 0.15–0.21 (16.13.9).
+
+#### 16.13.12 Open issues (round 5 → owners)
+
+The owners' cross-owner open issues resolved this round:
+- pnode `SetSummary` set order (T-4).
+- P03 `HourSS` id ties, P11 covers and pending moves, P15 key order (V-5).
+- `psketch` `TDigest._compress` (T-2).
+- The PG4 learning denominator (EV5-3).
+- Gate 7's two-sided KS on issued p (EV5-2).
+- PG5 D4 semantics (EV5-1, lead decision).
+- The P04 pooled structural reference (EV5-4 a–c).
+- The `test_p04_behaviour_split` failure seen mid-round (passes on the final tree).
+- The remaining order-only hash dependences (EV5-5).
+- The frozen system view of a family member (EV5-6).
+- Family statements never judged (EV5-7).
+
+Still open:
+
+- **Tree / time (P04, P09):**
+  - D1 on seeds 3 and 4 (16.13.11 item 3). P09's window from 9 points: the end-point correction alone does not reach IoU 0.7 on seed 3. A fit that prefers the node's own new-regime points over the ancestor's reservoir once they span REGIME_DATES dates is untested.
+  - AUTO.monitor.finance (item 4): a weekend loss level under a coder shared by both day types.
+  - Node under-confidence on pack O against over-confidence on O-real (`p_hold`).
+- **Time / views (P10, P12, P14):**
+  - PG8's finance who arm: the 3-day switch rule against the noise of the daily difference.
+  - R13: CRM branches as a family that respects disjoint user populations.
+  - P10: the approver's interleaved concurrent sessions hold the list → view dependency at 0.78–0.80 against the 0.8 cut.
+  - P12 / P04, O-real: after a system joins a family, the family tree restates the member's patterns slowly. On seed 0, retiring oa's frozen view (EV5-6) cost recall / precision @14 0.569 / 0.570 → 0.462 / 0.450. Seeding a family tree from its members' confirmed nodes, or keeping a member's tree until the family has restated them, is untested.
+- **Lib-3 decision chain (B24, B25):**
+  - `robust_tail` can trim a small ring's own null extremes. In bounded pack A, erp-prod|10.20.4.32 gave q = 4e-5 for a score below its ring maximum and 19 hourly S_h alarm edges. Candidate: no trim below n_u ≈ 30. Needs the packs A–E non-regression.
+  - B08 and B18 inherit the lower-atom rule (JSD 0 → p = 1); their owners should confirm the semantics.
+- **Bounded mode (B11, B13, P15, B15, B30; lead's contract-M decision):**
+  - Gate 15 fails in bounded mode at HEAD too: stale series of prefiltered IPs, and B13's `insufficient_support:budget_history` counted as degraded.
+  - Identity and portrait profiles of earned / forced entities are missing on pack E (gates 8 and 11 n/a).
+  - PG9's p95 at 35 entities is 67 % (A) and 53 % (E) of full, measured under load. It should be re-measured on an idle machine.
+- **Evaluation (lead):**
+  - Whether drift-touched claims are judged before the new behaviour has had a workday (16.13.11 item 1; `precobs` reported beside the headline).
+  - The 'when' tolerance covers held-out sampling, not estimation error (the time / views owner).
+  - Packs B–D and seeds ≥ 1 of A / E were not run on the final code.
+- **Cost (lead):** per-event p95 is still far above the 100 / 250 µs budgets (16.13.7). The CPU-per-event slope against attributes is 0.22–0.24 (≤ 0.2); it was 0.232 on HEAD too. It comes from P05 (×2.6 from 40 to 340 attributes), P02 (×1.9) and P00 (×3). Equivalent rewrites gave −8 % to −58 % per engine; the next steps need non-equivalent cadence changes:
+  - spread P02's hourly `update_types` / `update_stats` over ticks;
+  - P08's re-screen when nothing was found;
+  - P05's skip of unchanged keys with a decay-aware fingerprint (T-3);
+  - P00's column-wise parser.
+- **Ownership (lead):** `lib/pevalue.py` was in the time / views owner's brief but edited by the tree owner (its numba path).
+- **numba (lead):** `numba` 0.68.0 and `llvmlite` 0.50.0 are installed in `.venv`, and `backend/requirements.txt` lists `numba>=0.60` as optional. Without it, or with `APPMON_NO_NUMBA=1`, the bit-identical numpy path runs. The JIT cache goes to `lib/__pycache__` (first compile 3–6 s).
 
 ---
 

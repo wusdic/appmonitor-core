@@ -68,8 +68,8 @@
    "3": {
     "day": 3,
     "n_truth": 26,
-    "n_stmt": 1,
-    "n_confirmed": 1,
+    "n_stmt": 2,
+    "n_confirmed": 2,
     "recall": 0.0,
     "components": {
      "who": 0.038461538461538464,
@@ -86,18 +86,23 @@
      "monthly": null
     },
     "precision": 1.0,
-    "n_precision": 1,
+    "n_precision": 2,
     "n_unjudged": 0,
     "n_duplicate": 0,
-    "ece": 0.25539433259674305,
+    "ece": 0.4607439667498311,
     "calib": [
      [
-      0.7446,
+      0.3333,
+      1,
+      0
+     ],
+     [
+      0.7452,
       1,
       0
      ]
     ],
-    "mean_depth": 1.0,
+    "mean_depth": 0.5,
     "per_pattern": {
      "GA.oa.documents#0": {
       "recovered": false,
@@ -416,8 +421,8 @@
    "4": {
     "day": 4,
     "n_truth": 31,
-    "n_stmt": 19,
-    "n_confirmed": 19,
+    "n_stmt": 23,
+    "n_confirmed": 23,
     "recall": 0.16129032258064516,
     "components": {
      "who": 0.41935483870967744,
@@ -433,14 +438,19 @@
      "sporadic": 0.0,
      "monthly": null
     },
-    "precision": 0.8947368421052632,
-    "n_precision": 19,
+    "precision": 0.9130434782608695,
+    "n_precision": 23,
     "n_unjudged": 0,
     "n_duplicate": 0,
-    "ece": 0.4494523079564758,
+    "ece": 0.4551856599019455,
     "calib": [
      [
       0.5161,
+      1,
+      0
+     ],
+     [
+      0.3412,
       1,
       0
      ],
@@ -475,7 +485,27 @@
       0
      ],
      [
+      0.6602,
+      1,
+      0
+     ],
+     [
       0.3333,
+      1,
+      0
+     ],
+     [
+      0.6667,
+      1,
+      0
+     ],
+     [
+      0.4018,
+      1,
+      0
+     ],
+     [
+      0.7257,
       1,
       0
      ],
@@ -505,11 +535,6 @@
       0
      ],
      [
-      0.7253,
-      1,
-      0
-     ],
-     [
       0.7216,
       1,
       0
@@ -535,7 +560,7 @@
       0
      ]
     ],
-    "mean_depth": 1.0,
+    "mean_depth": 0.8260869565217391,
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": false,
@@ -914,31 +939,36 @@
    "5": {
     "day": 5,
     "n_truth": 31,
-    "n_stmt": 25,
-    "n_confirmed": 25,
-    "recall": 0.3870967741935484,
+    "n_stmt": 29,
+    "n_confirmed": 29,
+    "recall": 0.3548387096774194,
     "components": {
      "who": 0.4838709677419355,
-     "when": 0.6129032258064516,
+     "when": 0.5806451612903226,
      "content": 0.8387096774193549,
      "bindings": 0.0,
      "workflow": 0.8181818181818182
     },
     "recall_by_period": {
-     "daily": 0.34615384615384615,
+     "daily": 0.3076923076923077,
      "weekly": null,
      "continuous": 1.0,
      "sporadic": 0.0,
      "monthly": null
     },
-    "precision": 0.7391304347826086,
-    "n_precision": 23,
+    "precision": 0.6666666666666666,
+    "n_precision": 27,
     "n_unjudged": 2,
     "n_duplicate": 0,
-    "ece": 0.2845058520725349,
+    "ece": 0.3281917293646191,
     "calib": [
      [
       0.5161,
+      1,
+      0
+     ],
+     [
+      0.3412,
       1,
       0
      ],
@@ -973,29 +1003,49 @@
       0
      ],
      [
+      0.681,
+      0,
+      0
+     ],
+     [
       0.3333,
       1,
       0
      ],
      [
       0.8671,
+      0,
+      0
+     ],
+     [
+      0.7013,
       1,
       0
      ],
      [
-      0.8523,
+      0.7013,
+      1,
+      1
+     ],
+     [
+      0.7013,
+      1,
+      1
+     ],
+     [
+      0.6667,
       1,
       0
      ],
      [
-      0.8523,
-      1,
-      1
+      0.4018,
+      0,
+      0
      ],
      [
-      0.8523,
-      1,
-      1
+      0.7018,
+      0,
+      0
      ],
      [
       0.912,
@@ -1023,11 +1073,6 @@
       0
      ],
      [
-      0.7014,
-      0,
-      0
-     ],
-     [
       0.756,
       1,
       0
@@ -1048,12 +1093,12 @@
       0
      ],
      [
-      0.0004,
+      0.0005,
       0,
       0
      ]
     ],
-    "mean_depth": 1.24,
+    "mean_depth": 1.0689655172413792,
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": false,
@@ -1332,16 +1377,16 @@
       "stmt": null
      },
      "DEV.mail#0": {
-      "recovered": true,
+      "recovered": false,
       "components": {
        "who": true,
-       "when": true,
+       "when": false,
        "content": true,
        "bindings": null,
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:mail:0:3@1.0"
+      "stmt": null
      },
      "PUB.portal.visit#0": {
       "recovered": true,
@@ -1432,8 +1477,8 @@
    "6": {
     "day": 6,
     "n_truth": 32,
-    "n_stmt": 29,
-    "n_confirmed": 29,
+    "n_stmt": 33,
+    "n_confirmed": 33,
     "recall": 0.4375,
     "components": {
      "who": 0.46875,
@@ -1449,14 +1494,19 @@
      "sporadic": 0.0,
      "monthly": null
     },
-    "precision": 0.6956521739130435,
-    "n_precision": 23,
+    "precision": 0.7407407407407407,
+    "n_precision": 27,
     "n_unjudged": 6,
     "n_duplicate": 0,
-    "ece": 0.13296956521739128,
+    "ece": 0.1745592592592593,
     "calib": [
      [
       0.6994,
+      1,
+      0
+     ],
+     [
+      0.5925,
       1,
       0
      ],
@@ -1491,12 +1541,17 @@
       0
      ],
      [
+      0.55,
+      1,
+      0
+     ],
+     [
       0.6283,
       1,
       0
      ],
      [
-      0.7,
+      0.3667,
       1,
       0
      ],
@@ -1516,6 +1571,21 @@
       1
      ],
      [
+      0.8147,
+      1,
+      0
+     ],
+     [
+      0.3507,
+      1,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
+     ],
+     [
       0.7,
       1,
       0
@@ -1538,11 +1608,6 @@
      [
       0.55,
       0,
-      0
-     ],
-     [
-      0.55,
-      1,
       0
      ],
      [
@@ -1571,7 +1636,7 @@
       0
      ]
     ],
-    "mean_depth": 1.3448275862068966,
+    "mean_depth": 1.1818181818181819,
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": false,
@@ -1962,8 +2027,8 @@
    "7": {
     "day": 7,
     "n_truth": 32,
-    "n_stmt": 39,
-    "n_confirmed": 39,
+    "n_stmt": 43,
+    "n_confirmed": 43,
     "recall": 0.5,
     "components": {
      "who": 0.625,
@@ -1979,14 +2044,19 @@
      "sporadic": 0.5,
      "monthly": null
     },
-    "precision": 0.7666666666666667,
-    "n_precision": 30,
+    "precision": 0.7352941176470589,
+    "n_precision": 34,
     "n_unjudged": 9,
     "n_duplicate": 0,
-    "ece": 0.11330651324078617,
+    "ece": 0.11417837058495814,
     "calib": [
      [
       0.6994,
+      1,
+      0
+     ],
+     [
+      0.5925,
       1,
       0
      ],
@@ -2021,12 +2091,17 @@
       0
      ],
      [
+      0.55,
+      1,
+      0
+     ],
+     [
       0.6283,
       1,
       0
      ],
      [
-      0.7,
+      0.3667,
       1,
       0
      ],
@@ -2044,6 +2119,21 @@
       0.55,
       0,
       1
+     ],
+     [
+      0.8147,
+      1,
+      0
+     ],
+     [
+      0.3507,
+      0,
+      0
+     ],
+     [
+      0.55,
+      1,
+      0
      ],
      [
       0.7,
@@ -2071,8 +2161,8 @@
       0
      ],
      [
-      0.9285,
-      1,
+      0.84,
+      0,
       0
      ],
      [
@@ -2082,11 +2172,6 @@
      ],
      [
       0.7,
-      1,
-      0
-     ],
-     [
-      0.55,
       1,
       0
      ],
@@ -2136,7 +2221,7 @@
       0
      ]
     ],
-    "mean_depth": 1.435897435897436,
+    "mean_depth": 1.302325581395349,
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": true,
@@ -2527,31 +2612,36 @@
    "8": {
     "day": 8,
     "n_truth": 34,
-    "n_stmt": 40,
-    "n_confirmed": 40,
-    "recall": 0.5588235294117647,
+    "n_stmt": 44,
+    "n_confirmed": 44,
+    "recall": 0.5,
     "components": {
-     "who": 0.6470588235294118,
-     "when": 0.9117647058823529,
+     "who": 0.5882352941176471,
+     "when": 0.8823529411764706,
      "content": 0.8529411764705882,
      "bindings": 0.0,
      "workflow": 0.9166666666666666
     },
     "recall_by_period": {
-     "daily": 0.5172413793103449,
+     "daily": 0.4482758620689655,
      "weekly": null,
      "continuous": 1.0,
      "sporadic": 0.5,
      "monthly": null
     },
-    "precision": 0.7741935483870968,
-    "n_precision": 31,
+    "precision": 0.8285714285714286,
+    "n_precision": 35,
     "n_unjudged": 9,
     "n_duplicate": 0,
-    "ece": 0.16401945660032805,
+    "ece": 0.25098171123055246,
     "calib": [
      [
       0.4511,
+      1,
+      0
+     ],
+     [
+      0.385,
       1,
       0
      ],
@@ -2567,6 +2657,11 @@
      ],
      [
       0.7,
+      1,
+      0
+     ],
+     [
+      0.65,
       1,
       0
      ],
@@ -2591,7 +2686,7 @@
       0
      ],
      [
-      0.5192,
+      0.2784,
       1,
       0
      ],
@@ -2602,7 +2697,7 @@
      ],
      [
       0.4333,
-      0,
+      1,
       1
      ],
      [
@@ -2611,11 +2706,26 @@
       1
      ],
      [
-      0.3872,
+      0.0671,
       1,
       1
      ],
      [
+      0.5639,
+      1,
+      0
+     ],
+     [
+      0.2623,
+      1,
+      0
+     ],
+     [
+      0.65,
+      1,
+      0
+     ],
+     [
       0.8147,
       1,
       0
@@ -2658,11 +2768,6 @@
      [
       0.65,
       0,
-      0
-     ],
-     [
-      0.65,
-      1,
       0
      ],
      [
@@ -2706,7 +2811,7 @@
       0
      ]
     ],
-    "mean_depth": 1.45,
+    "mean_depth": 1.3181818181818181,
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": true,
@@ -2877,16 +2982,16 @@
       "stmt": null
      },
      "FIN.mail#0": {
-      "recovered": true,
+      "recovered": false,
       "components": {
-       "who": true,
-       "when": true,
+       "who": false,
+       "when": false,
        "content": true,
        "bindings": null,
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:mail:0:4@1.0|grp:dept:财务部"
+      "stmt": null
      },
      "SALES.oa.login#0": {
       "recovered": false,
@@ -2973,16 +3078,16 @@
       "stmt": "p:crm:0:3@1.0"
      },
      "SALES.mail#0": {
-      "recovered": true,
+      "recovered": false,
       "components": {
-       "who": true,
+       "who": false,
        "when": true,
        "content": true,
        "bindings": null,
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:mail:0:4@1.0|grp:G11"
+      "stmt": null
      },
      "DEV.code#0": {
       "recovered": true,
@@ -3122,29 +3227,29 @@
   "pg1_day14": {
    "day": 8,
    "n_truth": 34,
-   "n_stmt": 40,
-   "n_confirmed": 40,
-   "recall": 0.5588235294117647,
+   "n_stmt": 44,
+   "n_confirmed": 44,
+   "recall": 0.5,
    "components": {
-    "who": 0.6470588235294118,
-    "when": 0.9117647058823529,
+    "who": 0.5882352941176471,
+    "when": 0.8823529411764706,
     "content": 0.8529411764705882,
     "bindings": 0.0,
     "workflow": 0.9166666666666666
    },
    "recall_by_period": {
-    "daily": 0.5172413793103449,
+    "daily": 0.4482758620689655,
     "weekly": null,
     "continuous": 1.0,
     "sporadic": 0.5,
     "monthly": null
    },
-   "precision": 0.7741935483870968,
-   "n_precision": 31,
+   "precision": 0.8285714285714286,
+   "n_precision": 35,
    "n_unjudged": 9,
    "n_duplicate": 0,
-   "ece": 0.16401945660032805,
-   "mean_depth": 1.45
+   "ece": 0.25098171123055246,
+   "mean_depth": 1.3181818181818181
   },
   "pg1_last_by_system": {
    "code": {
@@ -3157,7 +3262,7 @@
     "recall": 0.6666666666666666
    },
    "mail": {
-    "recall": 0.75
+    "recall": 0.25
    },
    "oa": {
     "recall": 0.25
@@ -3176,20 +3281,20 @@
     "2": null,
     "3": 0.0,
     "4": 0.16129032258064516,
-    "5": 0.3870967741935484,
+    "5": 0.3548387096774194,
     "6": 0.4375,
     "7": 0.5,
-    "8": 0.5588235294117647
+    "8": 0.5
    },
    "precision": {
     "1": null,
     "2": null,
     "3": 1.0,
-    "4": 0.8947368421052632,
-    "5": 0.7391304347826086,
-    "6": 0.6956521739130435,
-    "7": 0.7666666666666667,
-    "8": 0.7741935483870968
+    "4": 0.9130434782608695,
+    "5": 0.6666666666666666,
+    "6": 0.7407407407407407,
+    "7": 0.7352941176470589,
+    "8": 0.8285714285714286
    },
    "recall_violations": [],
    "recall_monotone": true,
@@ -3211,15 +3316,15 @@
     ],
     [
      5,
-     0.7014219435039047
+     0.7017847371999743
     ],
     [
      6,
-     0.65
+     0.6000000000000001
     ],
     [
      7,
-     0.6247
+     0.55
     ],
     [
      8,
@@ -3230,23 +3335,23 @@
     [
      5,
      7,
-     12,
-     0.03244999999999998
+     11,
+     0.03749999999999998
     ]
    ],
    "conf_nondecreasing": true,
    "median_U": [
     [
      5,
-     0.0007189271935529754
+     0.0007198235418161586
     ],
     [
      6,
-     0.000999922151329149
+     0.0009972939129203565
     ],
     [
      7,
-     0.0010111414261602012
+     0.0010101649443317985
     ],
     [
      8,
@@ -3258,38 +3363,38 @@
      5,
      7,
      6,
-     -0.00017890647471775547
+     -0.00017928460144400816
     ]
    ],
    "U_nonincreasing": true,
    "calibration": {
-    "n": 61,
-    "ece": 0.12012131147540984,
-    "ece_null": 0.11069065573770491,
-    "ce": 0.0,
-    "conf": 0.6503704918032788,
-    "hold": 0.7704918032786885
+    "n": 69,
+    "ece": 0.1802057971014493,
+    "ece_null": 0.11509297101449276,
+    "ce": 0.19879714672098592,
+    "conf": 0.621144927536232,
+    "hold": 0.782608695652174
    },
    "calibration_by_kind": {
     "node": {
-     "n": 56,
-     "ece": 0.14426607142857142,
-     "ece_null": 0.10812949999999998,
-     "ce": 0.17101260756058284,
-     "conf": 0.6771625,
-     "hold": 0.8214285714285714
+     "n": 64,
+     "ece": 0.18539999999999998,
+     "ece_null": 0.113990125,
+     "ce": 0.2196213127614367,
+     "conf": 0.6473062500000001,
+     "hold": 0.8125
     },
     "part": {
      "n": 5,
-     "ece": 0.24302000000000004,
-     "ece_null": 0.32009820000000005,
+     "ece": 0.48612,
+     "ece_null": 0.31552060000000004,
      "ce": 0.0,
-     "conf": 0.3503,
-     "hold": 0.2
+     "conf": 0.28628,
+     "hold": 0.4
     }
    },
-   "ece": 0.0,
-   "ece_last_day": 0.16401945660032805
+   "ece": 0.19879714672098592,
+   "ece_last_day": 0.25098171123055246
   },
   "false_splits": {
    "n": null,
@@ -3313,12 +3418,12 @@
    "far": {
     "entity_days": 2869,
     "ks_conf_two": null,
-    "inc_low": 25,
-    "inc_medium": 23,
-    "pv_low": 91,
-    "far_low": 0.00871383757406762,
-    "far_medium": 0.00801673056814221,
-    "pv_far_low": 0.03171836876960613,
+    "inc_low": 24,
+    "inc_medium": 22,
+    "pv_low": 89,
+    "far_low": 0.008365284071104914,
+    "far_medium": 0.007668177065179505,
+    "pv_far_low": 0.031021261763680724,
     "ks_conf": null
    }
   },
@@ -4598,8 +4703,8 @@
         "negative": true
        },
        {
-        "text_zh": "综合部 访问 mail（占其活动 5 %）：邮件（TLS mail.corp.local）。置信 0.68 · 依据 2 个成员",
-        "text_en": "综合部 uses mail (5 % of its activity): mail (TLS mail.corp.local). Confidence 0.68, support 2 members.",
+        "text_zh": "综合部 访问 mail（占其活动 5 %）：邮件（TLS mail.corp.local）。置信 0.67 · 依据 2 个成员",
+        "text_en": "综合部 uses mail (5 % of its activity): mail (TLS mail.corp.local). Confidence 0.67, support 2 members.",
         "negative": false
        },
        {
@@ -4608,8 +4713,8 @@
         "negative": false
        },
        {
-        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs/{num}）、文档（GET /docs）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、提交报告（POST /report/generate）、查看报告（GET /report/form）。置信 0.68 · 依据 2 个成员",
-        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs/{num}), documents (GET /docs), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), submit reports (POST /report/generate), view report (GET /report/form). Confidence 0.68, support 2 members.",
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs/{num}）、文档（GET /docs）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、提交报告（POST /report/generate）、查看报告（GET /report/form）。置信 0.67 · 依据 2 个成员",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs/{num}), documents (GET /docs), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), submit reports (POST /report/generate), view report (GET /report/form). Confidence 0.67, support 2 members.",
         "negative": false
        },
        {
@@ -5780,8 +5885,8 @@
         "negative": true
        },
        {
-        "text_zh": "综合部 访问 mail（占其活动 5 %）：邮件（TLS mail.corp.local）。置信 0.69 · 依据 2 个成员",
-        "text_en": "综合部 uses mail (5 % of its activity): mail (TLS mail.corp.local). Confidence 0.69, support 2 members.",
+        "text_zh": "综合部 访问 mail（占其活动 5 %）：邮件（TLS mail.corp.local）。置信 0.67 · 依据 2 个成员",
+        "text_en": "综合部 uses mail (5 % of its activity): mail (TLS mail.corp.local). Confidence 0.67, support 2 members.",
         "negative": false
        },
        {
@@ -5790,8 +5895,8 @@
         "negative": false
        },
        {
-        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs/{num}）、文档（GET /docs）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、提交报告（POST /report/generate）、查看报告（GET /report/form）。置信 0.69 · 依据 2 个成员",
-        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs/{num}), documents (GET /docs), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), submit reports (POST /report/generate), view report (GET /report/form). Confidence 0.69, support 2 members.",
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs/{num}）、文档（GET /docs）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、提交报告（POST /report/generate）、查看报告（GET /report/form）。置信 0.67 · 依据 2 个成员",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs/{num}), documents (GET /docs), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), submit reports (POST /report/generate), view report (GET /report/form). Confidence 0.67, support 2 members.",
         "negative": false
        },
        {
@@ -5871,8 +5976,8 @@
       "header_en": "综合部 (3 IPs, 2 behavioural groups) uses oa",
       "statements": [
        {
-        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs）、文档（GET /docs/{num}）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、查看报告（GET /report/form）[10.168.7.121、192.168.1.23]、提交报告（POST /report/generate）[10.168.7.121、192.168.1.23]、查看审批（GET /approval/list）[192.168.1.21]、查看审批（GET /approval/{num}）[192.168.1.21]、审批（POST /approval/{num}/approve）[192.168.1.21]。置信 0.68 · 依据 3 个成员",
-        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs), documents (GET /docs/{num}), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), view report (GET /report/form) [10.168.7.121, 192.168.1.23], submit reports (POST /report/generate) [10.168.7.121, 192.168.1.23], view approve (GET /approval/list) [192.168.1.21], view approve (GET /approval/{num}) [192.168.1.21], approve (POST /approval/{num}/approve) [192.168.1.21]. Confidence 0.68, support 3 members.",
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs）、文档（GET /docs/{num}）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、查看报告（GET /report/form）[10.168.7.121、192.168.1.23]、提交报告（POST /report/generate）[10.168.7.121、192.168.1.23]、查看审批（GET /approval/list）[192.168.1.21]、查看审批（GET /approval/{num}）[192.168.1.21]、审批（POST /approval/{num}/approve）[192.168.1.21]。置信 0.67 · 依据 3 个成员",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs), documents (GET /docs/{num}), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), view report (GET /report/form) [10.168.7.121, 192.168.1.23], submit reports (POST /report/generate) [10.168.7.121, 192.168.1.23], view approve (GET /approval/list) [192.168.1.21], view approve (GET /approval/{num}) [192.168.1.21], approve (POST /approval/{num}/approve) [192.168.1.21]. Confidence 0.67, support 3 members.",
         "negative": false
        },
        {
@@ -5983,36 +6088,35 @@
  },
  "anomalies": {},
  "engine_s": {
-  "raw.action_token": 18.8,
+  "raw.action_token": 18.3,
   "raw.client_stack": 1.3,
-  "raw.event": 8.1,
-  "derived.event_context": 5.5,
-  "behavior.resource_governor": 10.2,
-  "behavior.attr_registry": 50.3,
-  "behavior.attr_select": 59.4,
-  "behavior.conformity": 37.9,
-  "behavior.pattern_tree": 92.6,
-  "behavior.content_bounds": 5.8,
-  "behavior.payload_grammar": 1.5,
-  "behavior.binding": 11.8,
+  "raw.event": 8.2,
+  "derived.event_context": 5.9,
+  "behavior.resource_governor": 9.5,
+  "behavior.attr_registry": 63.8,
+  "behavior.attr_select": 74.2,
+  "behavior.conformity": 37.3,
+  "behavior.pattern_tree": 111.6,
+  "behavior.content_bounds": 11.9,
+  "behavior.payload_grammar": 1.4,
+  "behavior.binding": 17.8,
   "behavior.time_window": 6.5,
-  "behavior.workflow": 7.0,
-  "behavior.who_groups": 3.7,
-  "behavior.system_profile": 11.7,
-  "behavior.calibration": 72.4,
-  "behavior.fusion": 223.5,
-  "behavior.risk": 110.6,
-  "behavior.incident": 11.6,
-  "behavior.governor": 193.3,
+  "behavior.workflow": 7.3,
+  "behavior.who_groups": 3.8,
+  "behavior.system_profile": 11.0,
+  "behavior.calibration": 73.6,
+  "behavior.fusion": 228.3,
+  "behavior.risk": 113.4,
+  "behavior.incident": 11.8,
+  "behavior.governor": 200.0,
   "behavior.explain": 0.1,
   "behavior.facets": 2.6,
-  "behavior.views": 13.4
+  "behavior.views": 138.1
  },
- "wall_s": 984.2413212460015,
+ "wall_s": 1183.844637574,
  "registry": "progressive_decision",
  "resource_mode": "full",
- "incidents": 25,
- "events": 1752,
- "job_s": 999.425261259079,
- "peak_rss_mb": 1212.3
+ "incidents": 24,
+ "events": 1745,
+ "job_s": 1201.9423139095306
 }
