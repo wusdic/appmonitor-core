@@ -571,6 +571,7 @@ class BindingEngine(Engine):
         pk = pair_key(X, Y)
         hist: Optional[FD.ValueHistory] = st["hist"].get(pk)
         excl: Dict[str, Dict[str, str]] = {}
+        est: Dict[str, str] = {}
         if hist is not None:
             xs = list(ps.x.keys())
             ip_x = FD.parse_x(X) == ("net.src", 0)
@@ -583,7 +584,6 @@ class BindingEngine(Engine):
             first = {str(x): FD.classify(hist.get(str(x)), values.get(str(x), ()), now,
                                          (), episode(str(x))) for x in xs}
             cnt = FD.pair_counts(ps, now, None, first)
-            est: Dict[str, str] = {}
             for x, c in cnt.items():
                 if c["n"] >= FD.N_BIND and c["y"] and not FD.is_shared(x):
                     est[str(x)] = str(FD._jv(max(c["y"].items(), key=lambda kv: kv[1])[0]))
@@ -601,6 +601,18 @@ class BindingEngine(Engine):
         rec = FD.fit_pair(ps, now, exclude=excl, support=sup)
         if rec is None:
             return None
+        if hist is not None:
+            # (round 6) a binding its source's latest clean values refute at the
+            # binding's own bound is suspended until the change is adopted or the
+            # value returns (lib/pfd.refuted: D2 stated .121 -> mike for 4 days)
+            for x, ent in rec["table"].items():
+                if not ent.get("bound"):
+                    continue
+                others = [v for xx, v in est.items() if xx != str(x)]
+                rf = FD.refuted(hist.get(str(x)), ent.get("top"), ent.get("LB"), others)
+                if rf is not None:
+                    ent["bound"] = False
+                    ent["changing"] = rf
         prev_b = (st.get("bound") or {}).get((kind, node.id, pk)) or {}
         for x, ent in rec["table"].items():
             if hist is not None:

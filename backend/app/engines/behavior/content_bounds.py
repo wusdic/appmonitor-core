@@ -344,11 +344,12 @@ class ContentBoundsEngine(Engine):
             rr = reg.get(a) if reg is not None else None
             approx = float(getattr(rr, "approx_share", 0.0) or 0.0) if rr is not None else 0.0
             excl = self._excl(viol, summ, a) if viol else None
+            pin = pins_for(config, store, key, a)
             rec = PB.fit_numeric(summ, now, day, n_c * pres, n_m * pres, approx,
-                                 PB.unit_of(a, byte_globs), pins_for(config, store, key, a),
+                                 PB.unit_of(a, byte_globs), pin,
                                  excl=excl, day_of=lambda ts: local_day(ts, config))
-            if rec is None:
-                continue
+            if rec is None or (not PB.stated(rec) and not pin):
+                continue                     # (round 6) no claim yet (PB.stated)
             sysd = getattr(rr, "num", None) if rr is not None else None
             rec["gain"] = PB.bin_gain(summ, sysd)
             prev = old_attrs.get(a)

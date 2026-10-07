@@ -172,6 +172,7 @@ from .lib import pnode as PN
 from .lib import pselect as SEL
 from .lib import psketch as PS
 from .lib import ptree as PT
+from .lib import timebins as TB
 from .lib.combine import seeded_uniform
 from .lib.phier import GRP_NONE, STAR, Shaped
 
@@ -216,6 +217,8 @@ HELD_EXPIRE_S = 7 * DAY
 HELD_COLS = 96
 ADWIN_DELTA = 0.002
 LOSS_CLIP = 20.0
+ROW_ATTRS_MAX = 48             # attributes a row records for waiting route rows / source extremes
+ALPHA_DT = 4.0                 # prior weight of the pooled predictive in a day type's coder (structural loss)
 PH_MIN_N = 30.0
 PH_MIN_DAYS = 5                # daily means a node needs before its Page-Hinkley tests run
 DRIFT_EXPIRE_S = 14 * DAY
@@ -320,7 +323,7 @@ class Coder:
     ~70 % of the logins into `other`, so the target could not tell 综合部's two
     names from 销售部's twenty and no who split could pass rule (V)."""
 
-    __slots__ = ("targets", "bmap", "p0", "lc", "hver", "wdiv", "hashed")
+    __slots__ = ("targets", "bmap", "p0", "lc", "hver", "wdiv", "hashed", "lcd")
 
     def __init__(self, targets: Sequence[str], seeds: Sequence[Sequence[Tuple[Hashable, float]]],
                  hver: Tuple = (), wdiv: int = 15) -> None:
@@ -332,6 +335,7 @@ class Coder:
         self.lc = np.zeros((T, K_B))
         self.hver = tuple(hver)
         self.hashed = [False] * T
+        self.lcd: Optional[np.ndarray] = None      # per day type counts (structural loss only)
         for t, sd in enumerate(seeds):
             self.seed_target(t, sd)
 
@@ -382,10 +386,56 @@ class Coder:
         n = self.lc.sum(axis=1, keepdims=True)
         return (self.lc + PE.ALPHA * self.p0) / (n + PE.ALPHA)
 
-    def add(self, bins: Sequence[int], w: float) -> None:
+    def add(self, bins: Sequence[int], w: float, daytype: Optional[int] = None) -> None:
+        lcd = getattr(self, "lcd", None) if daytype is not None else None
+        if daytype and (lcd is None or lcd.shape[1] != self.lc.shape[0]):
+            # the first non-workday row: every row counted so far was a workday's
+            # (a node without non-workday rows keeps no per-day-type counts: its
+            # pooled counts are its workday counts)
+            lcd = self.lcd = np.zeros((2,) + self.lc.shape)
+            lcd[0] = self.lc
+        d = 1 if daytype else 0
         for t, b in enumerate(bins):
             if b >= 0:
                 self.lc[t, b] += w
+                if lcd is not None:
+                    lcd[d, t, b] += w
+
+    def pred_daytype(self, daytype: int, pooled: Optional[np.ndarray] = None) -> np.ndarray:
+        """The predictive of one day type's events, for the structural loss
+        (round 6): that day type's own counts backed off to the pooled
+        predictive, p(b | d) = (lc_d[b] + ALPHA_DT p(b)) / (lc_d[.] + ALPHA_DT).
+        A node active on both day types (a 24 x 7 monitor) codes its weekend
+        events against the weekends it has seen, not against a pooled count
+        that drifts towards the workday mix during every working week - which
+        read the first weekend day of every week as a structural change of the
+        node (pack O seed 2, finance /health: Saturday 2.99 bits against the
+        previous weekend's 2.35; AUTO.monitor.finance missed). The split
+        statistics keep the pooled predictive (pred)."""
+        p = self.pred() if pooled is None else pooled
+        lcd = getattr(self, "lcd", None)
+        if lcd is None or lcd.shape[1] != p.shape[0]:
+            return p
+        c = lcd[1 if daytype else 0]
+        n = c.sum(axis=1, keepdims=True)
+        return (c + ALPHA_DT * p) / (n + ALPHA_DT)
+
+    def daytype_losses(self, daytype: int, p: np.ndarray, bins: Sequence[int]) -> List[float]:
+        """-log2 pred_daytype(daytype, p)[t, b] for the coded targets but @when
+        (the structural loss), computed for the event's own bins only."""
+        lcd = getattr(self, "lcd", None)
+        tg = self.targets
+        if lcd is None or lcd.shape[1] != p.shape[0]:
+            return [-math.log2(max(p[t, b], 1e-12)) for t, b in enumerate(bins)
+                    if b >= 0 and tg[t] != "@when"]
+        c = lcd[1 if daytype else 0]
+        out = []
+        for t, b in enumerate(bins):
+            if b >= 0 and tg[t] != "@when":
+                row = c[t]
+                q = (row[b] + ALPHA_DT * p[t, b]) / (row.sum() + ALPHA_DT)
+                out.append(-math.log2(max(q, 1e-12)))
+        return out
 
     def value_of(self, t: int, b: int) -> Optional[Hashable]:
         hashed = getattr(self, "hashed", None) or ()
@@ -397,7 +447,9 @@ class Coder:
         return None
 
     def nbytes(self) -> int:
-        return int(self.p0.nbytes + self.lc.nbytes + 64 * sum(len(b) for b in self.bmap) + 100)
+        lcd = getattr(self, "lcd", None)
+        return int(self.p0.nbytes + self.lc.nbytes + (lcd.nbytes if lcd is not None else 0)
+                   + 64 * sum(len(b) for b in self.bmap) + 100)
 
 
 # ============================================================ learn context
@@ -1635,8 +1687,7 @@ class PatternTreeEngine(Engine):
             # few hours and in `other` for the rest), which ADWIN reads as change
             # (measured: a 60-s monitor's node was `evolving`, i.e. unconfirmed,
             # all the time); time drift is the daily-mean Page-Hinkley's job
-            ls = [-math.log2(max(p[t, b], 1e-12)) for t, b in enumerate(bins)
-                  if b >= 0 and coder.targets[t] != "@when"]
+            ls = coder.daytype_losses(daytype, p, bins)
             # the loss is measured in the coder's bins; a refresh of a target's
             # hierarchy (P02 moves numeric bin edges, re-groups values) changes
             # what the bins mean, not the behaviour: the structural detectors
@@ -1644,8 +1695,25 @@ class PatternTreeEngine(Engine):
             # every structural `evolving` state on pack O, 21 nodes on day 21,
             # was a false alarm)
             hv = tuple(self._cver(lc, a) for a in coder.targets if not a.startswith("@"))
-            if leaf.meta.get("adw_ver") != hv:
+            # (round 6) so does a new coder (a new learning episode, a retarget):
+            # the levels were measured under the old one's counts (an episode
+            # restarted on a Wednesday codes the weekend from workday counts only)
+            if leaf.meta.get("adw_ver") != hv or leaf.meta.get("adw_coder") is not coder:
+                old_coder = leaf.meta.get("adw_coder")
+                if old_coder is not None and old_coder is not coder:
+                    # an open structural alarm compares the days since it opened
+                    # with levels coded by the coder that is gone: under the new
+                    # one it can only read the encoding change (pack O seed 2,
+                    # finance /health: retargeted on Monday 15, the day coded
+                    # 2.95 bits against the old 2.05 and the node went
+                    # `evolving`). A change that persists alarms again under
+                    # the new coder's own levels.
+                    dr = leaf.meta.pop("drift", None)
+                    if dr is not None and leaf.state == "evolving" and not leaf.meta.get("evolving"):
+                        leaf.state = dr.get("prev_state") if dr.get("prev_state") in ("confirmed", "stable") \
+                            else "confirmed"
                 leaf.meta["adw_ver"] = hv
+                leaf.meta["adw_coder"] = coder
                 leaf.adwin = None
                 leaf.meta.pop("adwin_nwd", None)
                 # the pre-alarm loss levels are in the old encoding too (round 5)
@@ -1684,7 +1752,7 @@ class PatternTreeEngine(Engine):
                 if ad.add(loss) > 0:
                     self._structural_alarm(lc, tr, leaf, ts)
             self._ph_when(lc, leaf, minute, ts, day, ip, daytype)
-        coder.add(bins, omega)
+        coder.add(bins, omega, daytype)
         # every n_g units, and at least daily once N_G_MIN units arrived: (V) is
         # anytime-valid, so the cadence only bounds CPU; a daily check lets a
         # 3-login-a-day pattern be tested daily instead of every ten days
@@ -1816,6 +1884,11 @@ class PatternTreeEngine(Engine):
                 newc.bmap[t2] = coder0.bmap[t1]
                 newc.p0[t2] = coder0.p0[t1]
                 newc.lc[t2] = coder0.lc[t1]
+                lcd0 = getattr(coder0, "lcd", None)
+                if lcd0 is not None:
+                    if newc.lcd is None:
+                        newc.lcd = np.zeros((2,) + newc.lc.shape)
+                    newc.lcd[:, t2] = lcd0[:, t1]
                 hashed_new[t2] = hashed_old[t1] if t1 < len(hashed_old) else False
         newc.hashed = hashed_new
         tm = np.ones((ss.C, len(new_t)), dtype=bool)
@@ -1979,9 +2052,21 @@ class PatternTreeEngine(Engine):
         if attrs is None:
             sel = lc.selection(kind)
             roles = sel.get("roles") or {}
-            attrs = list(dict.fromkeys(list((sel.get("targets_sys") or {}).get(kind) or [])
-                                       + [a for a, r in roles.items() if r in ("split", "target", "shape")
-                                          and SEL.targetable(a)]))
+            tsys = list((sel.get("targets_sys") or {}).get(kind) or [])
+            ts_set = set(tsys)
+            rest = [a for a, r in roles.items() if r in ("split", "target", "shape")
+                    and SEL.targetable(a) and a not in ts_set]
+            if len(tsys) + len(rest) > ROW_ATTRS_MAX:
+                # (round 6) bounded: every row records at most ROW_ATTRS_MAX
+                # attributes, the system targets first, then the kept roles by
+                # P05's utility. Unbounded, the per-row work grew with the kept
+                # roles (PG4's 340-attribute point: 70-80 per system against
+                # ~40 at 40 attributes)
+                us = sel.get("ustat") or {}
+                rest.sort(key=lambda a: (-float((us.get(a) or {}).get("U_t", 0.0) or 0.0), a))
+                rest = rest[:max(0, ROW_ATTRS_MAX - len(tsys))]
+            keep = set(rest)
+            attrs = list(dict.fromkeys(tsys + [a for a in roles if a in keep]))
             lc.rpart_attrs[kind] = attrs
         return attrs
 
@@ -2574,17 +2659,31 @@ class PatternTreeEngine(Engine):
             return
         ev = nd.meta.setdefault("evolving", {})
         st = ev.get(a)
+        # (round 6) the scale a value is tested on is its summary's (log or
+        # linear, P02's typing when the summary was made); a target dropped and
+        # re-made on the other scale (pattern_tree._daily keeps <= M_T + 4
+        # summaries) must not be judged against daily means of the old scale:
+        # O-real seed 0, after the R8 holiday every CRM branch's net.resp_len /
+        # body.len summary came back linear, its first daily mean (11 930 B)
+        # was read against a log-scale history (mu 9.2, sd 0.14) and the nodes
+        # were `evolving` from day 31 to the end (BR01-BR12 recall lost at 35)
+        scale = "log" if getattr(s, "log", False) else "lin"
         if st is not None:
-            self._evolve_obs(st, y - st["mu"], ip, day)
-            return
+            if st.get("scale", scale) != scale:
+                del ev[a]
+                st = None
+            else:
+                self._evolve_obs(st, y - st["mu"], ip, day)
+                return
         w, mu, var = s.moments(ts, PS.CH_L)
         if not (w >= 5.0 and var == var and var > 0):
             return
         sd = math.sqrt(var)
         dt_key = "nwd" if daytype not in (None, EV.ABSENT, "workday", "wd", 0) else "wd"
-        r, pday, xm, n = self._dph(nd, f"{a}|{dt_key}", y, day, ts, sd)
+        r, pday, xm, n = self._dph(nd, f"{a}|{dt_key}|{scale}", y, day, ts, sd)
         if r != 0:
             self._alarm(nd, a, ts, r, mu, sd, "num")
+            ev[a]["scale"] = scale
             self._seed_evolving(ev[a], pday, xm - mu, n)
             self._evolve_obs(ev[a], y - mu, ip, day)
 
@@ -3170,13 +3269,23 @@ class PatternTreeEngine(Engine):
             if isinstance(pc, Mapping):
                 pcal.update(pc.get("days") or {})
         n_active = 0
+        cal = None
         for d in range(last_day + 1, day):
             rec = pcal.get(d) or pcal.get(str(d))
             cls = rec.get("class") if isinstance(rec, Mapping) else None
+            if cls is None:
+                # (round 6) a day the system had no traffic on has no P01 record:
+                # its class is the configured calendar's, not the weekday's. A
+                # holiday week read as five missed workdays and every workday
+                # pattern went `stale` on the first holiday (O-real R8, days
+                # 22-28: the twelve CRM branches' nodes from day 22)
+                if cal is None:
+                    cal = TB.parse_calendar(lc.config.get("calendar"))
+                date = _dt.date.fromordinal(d)
+                cls = ("makeup" if date in cal.makeup_workdays else "holiday" if date in cal.holidays
+                       else "workday" if date.weekday() < 5 else "weekend")
             if cls == "holiday" or normal_days(d, d + 1) == 0:
                 continue
-            if cls is None:
-                cls = "workday" if _dt.date.fromordinal(d).weekday() < 5 else "weekend"
             dtp = 0 if cls in ("workday", "makeup") else 1
             if dtp in active_types:
                 n_active += 1

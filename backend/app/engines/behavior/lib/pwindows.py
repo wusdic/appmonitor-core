@@ -51,6 +51,7 @@ The label is 'w:HHMM-HHMM' with the exclusive end (09:00 <= t < 09:21 ->
 from __future__ import annotations
 
 import datetime as _dt
+import functools
 import math
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -330,6 +331,81 @@ def _windows_from_blocks(blocks: List[Tuple[int, int]], counts: np.ndarray, widt
     return sorted(out[:W_MAX]), info
 
 
+SESSION_GAP_MIN = 30.0           # _sessions: a source's arrivals > 30 min apart are separate sessions
+
+
+def _sessions(pts: Sequence[Sequence[Any]], tz_offset_s: float) -> List[Any]:
+    """(round 6) The independent unit of each arrival for _extend: its
+    source's session - the source's arrivals of one local date split where
+    they are more than SESSION_GAP_MIN apart (the usual inactivity rule).
+    An arrival without a source is a unit of its own."""
+    keys: List[Any] = [None] * len(pts)
+    grp: Dict[Tuple[int, str], List[int]] = {}
+    for i, p in enumerate(pts):
+        if len(p) > 3 and p[3]:
+            grp.setdefault((_local_date(float(p[1]), tz_offset_s), str(p[3])), []).append(i)
+        else:
+            keys[i] = ("pt", i)
+    for k, idx in grp.items():
+        idx.sort(key=lambda j: float(pts[j][1]))
+        sess, last = 0, None
+        for j in idx:
+            ts = float(pts[j][1])
+            if last is not None and ts - last > SESSION_GAP_MIN * 60.0:
+                sess += 1
+            keys[j] = (k[0], k[1], sess)
+            last = ts
+    return keys
+
+
+def _extend(wins: List[Tuple[float, float, float]], u: np.ndarray, units: Sequence[Any]
+            ) -> List[Tuple[float, float, float]]:
+    """(round 6) The edges of a minute-mode window are its extreme arrivals,
+    which lie INSIDE the true window: k independent arrivals of a block of
+    constant rate (Bayesian Blocks' model) leave on average 1 / (k + 1) of the
+    window beyond each edge. The unbiased (UMVU) estimate of a uniform law's
+    support extends each extreme by R / (k - 1) (R = the range of the window's
+    clean arrivals). k counts the INDEPENDENT units - a source's session
+    (_sessions): the page views of one session share its start, so a
+    session is one draw of the arrival law (pack O seed 0, finance approvals 10:00-11:30: 30 views
+    of ~10 sessions spanned 10:17-11:28; extended by R / 29 the window still
+    missed 10:00-10:15, by R / 9 it does not). Edges are rounded to whole
+    minutes and never reach a neighbouring window; with many units the
+    extension is below half a minute and the window does not change.
+    The stated coverage keeps the hull's rank bound (predictive_coverage):
+    the extension only adds room, so the bound stays a valid lower bound
+    (a coverage raised by the extension's expected edge mass over-stated the
+    held share of clustered arrivals: pack O seed 0, nominal 0.92 -> 0.95,
+    'when' checks passing 0.919 -> 0.905).
+    Why (pack O seeds 3-4, D1): after 综合部's login moved to 08:30-08:51 the
+    window was fitted from the first 9 arrivals of the new law (3 sources x 3
+    workdays) and read 08:38-08:51 / 08:31-08:44 (IoU 0.62) on day 16: the
+    hull of 9 uniform points misses 20 % of the window on average and IoU <
+    0.7 one time in five; extended, one time in seventeen (tests/lib)."""
+    if not wins or not len(u):
+        return wins
+    u = np.floor(np.asarray(u, dtype=np.float64))
+    unit_arr = list(units)
+    order = np.argsort(u, kind="stable")
+    u = u[order]
+    unit_arr = [unit_arr[int(i)] for i in order]
+    out: List[Tuple[float, float, float]] = []
+    for i, (s, e, sh) in enumerate(wins):
+        lo_lim = out[-1][1] if out else 0.0
+        hi_lim = wins[i + 1][0] if i + 1 < len(wins) else float(DAY_MIN)
+        m = (u >= s) & (u < e)
+        inside = u[m]
+        k = len({unit_arr[j] for j in np.flatnonzero(m)})
+        if inside.size < 2 or k < 2:
+            out.append((s, e, sh))
+            continue
+        g = float(inside[-1] - inside[0]) / (k - 1.0)
+        s2 = float(max(lo_lim, min(s, math.floor(s - g + 0.5))))
+        e2 = float(min(hi_lim, max(e, math.floor(e + g + 0.5))))
+        out.append((s2, e2, sh))
+    return out
+
+
 SNAP_SPACING = 3.0               # edge snapping: gaps <= 3 x the window's mean point spacing
 TRIM_ALPHA = 0.01                # edge trimming: an end group behind a gap that a flat density
                                  # would produce with prob. < 1 % (mu ln(n / 0.01), mu = median gap / ln 2) ...
@@ -512,6 +588,8 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
         clean = wts >= CLEAN_W
         wins_u = _snap(wins_u, (mins[clean] - cut) % DAY_MIN, float(clean.sum()) or 1.0)
         wins_u = _accepted(wins_u, pts, wts, cut, tz_offset_s)
+        wins_u = _extend(wins_u, (mins[clean] - cut) % DAY_MIN,
+                         _sessions([p for p, ok in zip(pts, clean) if ok], tz_offset_s))
     windows: List[List[int]] = []
     for s, e, _ in wins_u:
         if info.get("all_day"):
@@ -535,6 +613,13 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
         tot = h.sum()
         mids = np.arange(SLOTS) * SLOT_MIN + SLOT_MIN / 2.0
         cov = float(sum(h[i] for i in range(SLOTS) if in_windows(mids[i], windows)) / tot)
+        if not info.get("all_day"):
+            # (round 6) the slot share is an in-sample share like the minute
+            # mode's: the windows were chosen to hold the sample, so the next
+            # arrival falls beyond them with probability up to the rank bound
+            # (O-real seed 0, crm-02 days 7-14: '09:00-18:00' stated coverage
+            # 1.00 on n ~ 100 arrivals, held 0.96-0.98 - every check failed)
+            cov = predictive_coverage(cov, float(n), len(windows))
     dates, stab = None, None
     if pts:
         by_date: Dict[int, List[bool]] = {}
@@ -683,6 +768,8 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
             rec["coverage_in"] = c_in
             rec["cv"] = [round(h, 3), round(m, 3)]
             rec["coverage"] = float(min(c_in, (h + FWD_PRIOR * c_in) / (m + FWD_PRIOR)))
+            if rec["coverage"] < FLAT_SHARE:
+                _flat(rec, use, tz_offset_s)
     if young and since0 is None:
         # 4b a change whose arrivals are too few for the KS test (3 logins on
         # one date): the established law (the dates before the young ones)
@@ -699,6 +786,29 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
                     est["provisional"] = True
                     return est
     return rec
+
+
+def _flat(rec: Dict[str, Any], pts: Sequence[Sequence[Any]], tz_offset_s: float) -> None:
+    """(round 6) fit_daytype's flat-day rule applied to the out-of-sample
+    coverage: windows that hold less than FLAT_SHARE of the arrivals of dates
+    they were not fitted on describe no time-of-day law (their edges and gaps
+    follow the sample), so the day type is stated as one all-day window, as
+    fit_daytype does when the in-sample windows hold a minority. O-real seed
+    0, days 22-23: portal's non-workday POST /login (a normal law over
+    07:00-23:00, sampled 1 in 4) stated '20:01-20:59' at coverage 0.20 and
+    held 0.01-0.03 of the held-out arrivals."""
+    rec["windows_fitted"] = rec.get("windows")
+    rec["windows"] = [[0, DAY_MIN]]
+    rec["labels"] = [label(0, DAY_MIN)]
+    rec["shares"] = [1.0]
+    rec["coverage"] = 1.0
+    rec["all_day"] = True
+    rec["flat_cv"] = True
+    by: Dict[int, bool] = {}
+    for p in pts:
+        if (float(p[2]) if len(p) > 2 else 1.0) >= CLEAN_W:
+            by[_local_date(float(p[1]), tz_offset_s)] = True
+    rec["stability"] = 1.0 if by else rec.get("stability")
 
 
 DRIFT_ALPHA = 0.01               # recent_drift: binomial lower tail of a date's in-window arrivals (Bonferroni)
@@ -782,9 +892,42 @@ def _ks_sf(lam: float) -> float:
     return float(min(1.0, max(0.0, 2.0 * s)))
 
 
+KS_EXACT_MN = 4096               # _wks: exact two-sample KS law when m x n <= this (small samples)
+
+
+@functools.lru_cache(maxsize=4096)
+def _ks2_exact_sf(k: int, m: int, n: int) -> float:
+    """Exact two-sided two-sample KS tail P(D_{m,n} >= k / (m n)) under H0
+    (Hodges 1957: lattice paths from (0, 0) to (m, n) that stay strictly
+    inside |i/m - j/n| < d, all C(m + n, m) paths equally likely). D of two
+    samples of sizes m, n is a multiple of 1 / (m n): k = round(D m n)."""
+    m, n = int(m), int(n)
+    if m <= 0 or n <= 0 or k <= 0:
+        return 1.0
+    prev: List[int] = []
+    for i in range(m + 1):
+        cur = [0] * (n + 1)
+        for j in range(n + 1):
+            if abs(i * n - j * m) >= k:                  # |i/m - j/n| >= d (integer test)
+                continue
+            if i == 0 and j == 0:
+                cur[j] = 1
+                continue
+            cur[j] = (prev[j] if i > 0 else 0) + (cur[j - 1] if j > 0 else 0)
+        prev = cur
+    return float(min(1.0, max(0.0, 1.0 - prev[n] / math.comb(m + n, m))))
+
+
 def _wks(ua: np.ndarray, wa: np.ndarray, ub: np.ndarray, wb: np.ndarray) -> Tuple[float, float]:
     """Weighted two-sample Kolmogorov-Smirnov (D, p), effective sample sizes
-    (sum w)^2 / sum w^2 (Kish)."""
+    (sum w)^2 / sum w^2 (Kish).
+    Round 6: small samples use the EXACT law of D (_ks2_exact_sf, on the
+    effective sizes rounded) instead of Kolmogorov's limit, which is
+    conservative there: 9 established against 6 new arrivals, completely
+    separated (D = 1), read p = 0.0015 > REGIME_ALPHA from the limit against
+    the exact 2 / C(15, 6) = 0.0004 - pack O seed 3, day 15: 综合部's login
+    part after D1 (two new workdays) was not cut at the change, and its
+    window stayed the union of both laws, 08:38-09:20, for two more days."""
     grid = np.unique(np.concatenate([ua, ub]))
     oa, ob = np.argsort(ua), np.argsort(ub)
     ca = np.concatenate(([0.0], np.cumsum(wa[oa])))
@@ -794,6 +937,10 @@ def _wks(ua: np.ndarray, wa: np.ndarray, ub: np.ndarray, wb: np.ndarray) -> Tupl
     D = float(np.max(np.abs(Fa - Fb))) if grid.size else 0.0
     na = float(wa.sum()) ** 2 / max(float((wa * wa).sum()), 1e-12)
     nb = float(wb.sum()) ** 2 / max(float((wb * wb).sum()), 1e-12)
+    m, n = int(round(na)), int(round(nb))
+    if 0 < m * n <= KS_EXACT_MN:
+        # the D of the effective sizes' lattice at or below the observed D
+        return D, _ks2_exact_sf(int(math.floor(D * m * n + 1e-6)), m, n)
     ne = na * nb / max(na + nb, 1e-12)
     return D, _ks_sf(D * math.sqrt(ne))
 
@@ -882,6 +1029,35 @@ def confidence(rec: Mapping[str, Any]) -> float:
         c = min(c, float(dr["coverage"]))       # recent_drift: the windows stopped holding
     st = rec.get("stability")
     return c * (float(st) if st is not None else 1.0)
+
+
+def drift_hold(drift: Mapping[str, Any], nominal: Optional[float]) -> Optional[float]:
+    """(round 6) The probability that windows whose latest dates contradict
+    them (recent_drift: k of the young dates' n clean arrivals inside) HOLD
+    at their stated coverage c - theta, the true share inside, >= c - eps,
+    eps = pnode.hold_eps(c), the tolerance of "holds" of P04's held-out tests
+    and the statement contract. theta's
+    posterior is the one whose mean recent_drift states as the coverage,
+    Beta(k + FWD_PRIOR c, n - k + FWD_PRIOR (1 - c)) (the stated coverage c
+    as a prior of strength FWD_PRIOR, then the young arrivals). Pack O D1,
+    day 14: 0 of 3 young logins inside 09:00-09:21 gives ~0.007 (round 5
+    stated the windows at that posterior's mean, 0.36, and they held 0)."""
+    from scipy.special import betainc
+    from . import pnode as PN
+    if not isinstance(drift, Mapping) or nominal is None:
+        return None
+    c_nom = float(nominal)
+    x = max(0.0, c_nom - PN.hold_eps(c_nom))
+    p, any_ = 1.0, False
+    for dr in drift.values():
+        if not isinstance(dr, Mapping) or dr.get("n") is None:
+            continue
+        k, n = float(dr.get("k") or 0.0), float(dr["n"])
+        any_ = True
+        a = k + FWD_PRIOR * c_nom
+        b = max(n - k, 0.0) + FWD_PRIOR * (1.0 - c_nom)
+        p *= float(1.0 - betainc(a, max(b, 1e-9), x)) if x > 0 else 1.0
+    return float(p) if any_ else None
 
 
 def entropy_gain_bits(hist: np.ndarray) -> float:

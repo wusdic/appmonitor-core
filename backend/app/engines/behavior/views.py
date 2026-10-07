@@ -357,6 +357,17 @@ def part_hold(nd: Any, gids: Sequence[str], p_node: float) -> float:
     return float((ps + m * p_node) / (n + m))
 
 
+def drift_conf(drift: Any, when_ev: Optional[Mapping[str, Any]], when_c: Optional[float]) -> float:
+    """(round 6) The bound on a drifting statement (P09 recent_drift: its
+    latest dates contradict the windows): the probability the stated windows
+    hold given the young dates' arrivals alone (PW.drift_hold); the young
+    arrivals' posterior coverage when that is unknown (round 4)."""
+    dh = PW.drift_hold(drift, (when_ev or {}).get("coverage"))
+    if dh is not None:
+        return float(dh)
+    return float(when_c) if (when_c is not None and math.isfinite(float(when_c))) else 1.0
+
+
 def part_content(c: "_Ctx", nd: Any, ent: Optional[Mapping[str, Any]], gids: Sequence[str],
                  t: float) -> Optional[Mapping[str, Any]]:
     """P06's entry of a node with its numeric constraints refitted on ONE
@@ -680,8 +691,10 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         conf = float(min(float(ph), float(own)))
     if drift and when_c is not None and math.isfinite(float(when_c)):
         # P04's hold rate is the windows' past record; a drifting window holds
-        # only as far as the young arrivals support it
-        conf = float(min(conf, float(when_c)))
+        # only as far as the young arrivals support it: (round 6) the
+        # probability that the stated windows hold given the young dates'
+        # arrivals (PW.drift_hold), the posterior coverage when unknown
+        conf = float(min(conf, drift_conf(drift, when_ev, when_c)))
     sys_label = c.key
     addr = ""
     root = c.ptm.kinds[kind].nodes.get(c.ptm.kinds[kind].root) if c.ptm is not None else None

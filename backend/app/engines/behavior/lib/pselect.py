@@ -54,6 +54,10 @@ R_P = 4096                 # probe rows per (tree, kind)
 R_P_MIN_STRATUM = 32       # at least min(32, size) rows per stratum
 STRATA_MAX = 256           # strata tracked per probe (lowest decayed mass evicted)
 A_PROBE = 64               # rotating slice of attributes evaluated per run
+SPLIT_EVERY = 24           # split roles re-judged every run (the best by U_s; the others rotate)
+EVERY_ROLES = ("split", "target", "redundant")   # roles re-judged every run (names_to_evaluate)
+E_MAX = 72                 # attributes judged per run (every-run roles + the rotating slice)
+E_MIN_SLICE = 16           # the slice's floor when the every-run roles fill the budget
 M_T = 8                    # targets per node
 M_SYS = 32                 # system target list length (node overrides draw from it)
 U_HI = 0.05                # bits / event: promote
@@ -532,6 +536,16 @@ class StratifiedProbe:
 
     def offer(self, stratum: Hashable, row: Mapping[str, Any], mass: float, t: float, u: float,
               want_id: Optional[int] = None) -> None:
+        self.offer_lazy(stratum, lambda: row, mass, t, u, want_id)
+
+    def offer_lazy(self, stratum: Hashable, make_row: Callable[[], Mapping[str, Any]], mass: float,
+                   t: float, u: float, want_id: Optional[int] = None) -> bool:
+        """offer() with the row built only when the reservoir takes it (round 6:
+        in steady state most offered rows are refused - a stratum's reservoir
+        holds ~R_p sqrt(m_k) / sum sqrt(m_j) of its ~ rate x H_m rows - and
+        building each refused row over every wanted attribute was P05's per-event
+        cost that grew with the number of attributes). Same reservoir, same
+        sequence numbers, same decisions as building the row first."""
         self.n_offered += 1
         self._mut += 1
         sm = self.smass.get(stratum)
@@ -542,21 +556,26 @@ class StratifiedProbe:
             self.strata[stratum] = []
             self.cap[stratum] = R_P_MIN_STRATUM
         sm.add(t, float(mass))
-        keys = tuple(sorted(row.keys()))
-        sid = self._schema(keys, want_id)
-        vals = tuple(row[k] for k in keys)
         k = self._key(t, u)
         heap = self.strata[stratum]
         self._seq += 1
-        item = (k, self._seq, sid, vals, float(mass), float(t))
         cap = self.cap.get(stratum, R_P_MIN_STRATUM)
-        if len(heap) < cap or self._size < self.R:
-            heapq.heappush(heap, item)
-            self._size += 1
-        elif k > heap[0][0]:
-            heapq.heapreplace(heap, item)
+        grow = len(heap) < cap or self._size < self.R
+        taken = grow or k > heap[0][0]
+        if taken:
+            row = make_row()
+            keys = tuple(sorted(row.keys()))
+            sid = self._schema(keys, want_id)
+            vals = tuple(row[k_] for k_ in keys)
+            item = (k, self._seq, sid, vals, float(mass), float(t))
+            if grow:
+                heapq.heappush(heap, item)
+                self._size += 1
+            else:
+                heapq.heapreplace(heap, item)
         if self._size > self.R + R_P_MIN_STRATUM * len(self.cap) + 1:
             self.rebalance(t)                  # bounded memory between hourly runs
+        return taken
 
     def _evict_stratum(self, t: float) -> None:
         worst = min(self.smass, key=lambda s: self.smass[s].get(0, t))
@@ -1253,21 +1272,65 @@ def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any]
             "low": low, "dropped_at": dropped_at, "ustat": ustat}
 
 
+def every_run(registry_names: Iterable[str], roles: Mapping[str, str],
+              ustat: Optional[Mapping[str, Mapping[str, Any]]] = None) -> List[str]:
+    """The attributes judged at every run (names_to_evaluate): the split /
+    target / redundant roles, the `split` ones only the SPLIT_EVERY best by U_s
+    (round 6: P04 tests <= C_MAX candidates per leaf, drawn from the best ones;
+    on the 340-attribute point the synthetic informative attributes held 70-76
+    split roles per system - 37 on pack O's OA - each re-judged every hour)."""
+    kept = [a for a in registry_names if roles.get(a, "probe") in EVERY_ROLES]
+    if ustat is not None:
+        sp = [a for a in kept if roles.get(a) == "split"]
+        if len(sp) > SPLIT_EVERY:
+            sp.sort(key=lambda a: (-float((ustat.get(a) or {}).get("U_s", 0.0) or 0.0), a))
+            late = set(sp[SPLIT_EVERY:])
+            kept = [a for a in kept if a not in late]
+    return kept
+
+
 def names_to_evaluate(registry_names: Sequence[str], roles: Mapping[str, str],
                       dropped_at: Mapping[str, float], t: float, run_index: int,
-                      a_probe: int = A_PROBE) -> List[str]:
-    """Every attribute holding a role other than `dropped`, dropped ones due
-    for their 7-day re-probe, plus a rotating crc32 slice of A_probe others."""
-    kept = [a for a in registry_names if roles.get(a, "probe") not in ("dropped", "probe")]
+                      a_probe: int = A_PROBE, ustat: Optional[Mapping[str, Mapping[str, Any]]] = None
+                      ) -> List[str]:
+    """Every attribute whose role feeds the trees (split, target, redundant:
+    re-judged every run, with hysteresis), dropped ones due for their 7-day
+    re-probe, plus a rotating crc32 slice of A_probe others - the others being
+    the never-evaluated, the dropped and (round 6) the `invariant` and `shape`
+    roles. Those two describe what an attribute IS (constant; unpredictable
+    and high-cardinality), which does not change hour to hour; re-judged
+    every run they made each run's work grow with the number of attributes:
+    on PG4's 340-attribute point the synthetic constants and noise held ~140
+    kept roles, P05 evaluated them all every hour (x1.8 its 40-attribute
+    cost per run), and the CPU-per-event slope against attributes was 0.22-
+    0.24. Unevaluated attributes keep their role (assign_roles). While the
+    rotation pool fits one slice (<= A_probe attributes: pack O) every
+    attribute is still evaluated every run, as before. A run judges at most
+    E_MAX attributes (plus the weekly re-probes): the slice gets the budget the
+    every-run roles leave, never less than E_MIN_SLICE."""
+    every = EVERY_ROLES
+    kept = every_run(registry_names, roles, ustat)
     reprobe = [a for a in registry_names if roles.get(a) == "dropped"
                and t - float(dropped_at.get(a, t)) >= REPROBE_S]
-    rest = [a for a in registry_names if roles.get(a, "probe") in ("probe", "dropped")
-            and a not in set(reprobe)]
-    if len(rest) <= a_probe:
+    rset = set(reprobe)
+    kset = set(kept)
+    rest = [a for a in registry_names if a not in kset and a not in rset]
+    # (round 6) one run judges at most E_MAX attributes besides the dropped ones
+    # due for their weekly re-probe: the slice gets what the every-run roles
+    # leave (at least E_MIN_SLICE)
+    a_slice = min(a_probe, max(E_MIN_SLICE, E_MAX - len(kept)))
+    if len(rest) <= a_slice:
         slice_ = rest
     else:
-        K = max(1, math.ceil(len(rest) / a_probe))
-        slice_ = [a for a in rest if (zlib.crc32(a.encode("utf-8")) + run_index) % K == 0][:a_probe]
+        # a cyclic window over a fixed (crc32) order: every attribute of the pool
+        # is judged once every ceil(|pool| / slice) runs. (Before: the crc32
+        # residue classes mod K, cut at the slice size - the attributes past the
+        # cut of an over-full class were never judged.)
+        order = sorted(rest, key=lambda a: (zlib.crc32(a.encode("utf-8")), a))
+        n = len(order)
+        start = (int(run_index) * a_slice) % n
+        win = set(order[start:start + a_slice] + order[:max(0, start + a_slice - n)])
+        slice_ = [a for a in rest if a in win]
     seen = set()
     out = []
     for a in kept + reprobe + slice_:

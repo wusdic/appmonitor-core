@@ -42,7 +42,12 @@ DAYS = 4.0
 # drift's pre-alarm loss level restarts with the ADWINs when the coder's encoding
 # changes (pattern_tree, test_p04_round5_eval.py); without that restart the
 # digest is the tree owner's 3b08ee6b3bc21a29c7ea25afcb0378a43bf95652.
-GOLDEN = {"model.ptree": "86afb654e21302a504e89c9fffadbbe0851c17fc",
+# Round 6 (tree owner): the structural loss is coded per day type and its
+# levels / an open alarm restart with the coder, the daily-mean Page-Hinkley
+# history is kept per summary scale, unrecorded days are classed from the
+# calendar (test_p04_round6.py): model.ptree re-recorded (round 5:
+# 86afb654e21302a504e89c9fffadbbe0851c17fc); model.attrsel unchanged.
+GOLDEN = {"model.ptree": "7e48735c1965a0f0a0578c57b7cc65ffd03b1be1",
           "model.attrsel": "4b8e9e79e81bdbd30e5fba08d9c2d8c66f15ddee"}
 
 

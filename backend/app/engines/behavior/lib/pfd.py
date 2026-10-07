@@ -880,6 +880,11 @@ class ValueHistory:
                 if len(r[3]) > HIST_DAYS:
                     del r[3][0]
         st["recent"].append(ys)
+        if clean:
+            rc = st.get("rc")
+            if rc is None:
+                rc = st["rc"] = deque(maxlen=RECENT)
+            rc.append(ys)                     # (round 6) the last clean values (refuted)
 
     def get(self, x: str) -> Optional[Dict[str, Any]]:
         return self.x.get(str(x))
@@ -946,6 +951,47 @@ def classify(hx: Optional[Mapping[str, Any]], values: Iterable[Any], t: float,
         if not ok:
             out[y] = "pending"
     return out
+
+
+REFUTE_ALPHA = 0.01         # refuted: the binding's own bound makes x's latest clean values this unlikely
+
+
+def refuted(hx: Optional[Mapping[str, Any]], top: Any, lb: Optional[float],
+            established_elsewhere: Iterable[str] = (), alpha: float = REFUTE_ALPHA
+            ) -> Optional[Dict[str, Any]]:
+    """(round 6) Is source x's binding x -> top contradicted by its latest
+    evidence at the binding's OWN stated bound? The table states P(y = top |
+    x) >= LB; the trailing run of x's last clean values (ValueHistory 'rc')
+    that are neither top nor another source's established value (a borrowed
+    credential is P03's anomaly, not a change of x) has probability <=
+    (1 - LB)^m under that claim; when it is <= alpha the claim is refuted and
+    the binding is suspended ('changing') until the new value is adopted (a
+    rename, classify 'superseded') or top returns. Pack O seed 0, days 15-18:
+    after D2 (mike -> mike.w, day 13) 10.168.7.121 logged in as mike.w every
+    workday, the new value needs REBIND_N = 5 clean events to supersede the old
+    one, and the 综合部 login statements kept '10.168.7.121 -> username=mike'
+    at LB 0.999 (confidence 0.96-0.98) while it held 0 on every check."""
+    if not hx or lb is None or not (0.0 <= float(lb) <= 1.0):
+        return None
+    rc = list(hx.get("rc") or ())
+    if not rc:
+        return None
+    t0 = str(_jv(top))
+    other = set(map(str, established_elsewhere))
+    run: List[str] = []
+    for y in reversed(rc):
+        if y == t0:
+            break
+        if y in other:
+            continue
+        run.append(y)
+    m = len(run)
+    if m == 0:
+        return None
+    p = (1.0 - float(lb)) ** m
+    if p > alpha:
+        return None
+    return {"run": m, "values": sorted(set(run)), "p": float(p)}
 
 
 def binding_discriminates(rec: Mapping[str, Any]) -> bool:

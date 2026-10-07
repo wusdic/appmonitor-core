@@ -115,29 +115,49 @@ class AttributeSelectionEngine(Engine):
         ABSENT = EV.ABSENT
         bl = [(nm, b._values(nm)) for nm in names]
         cl = [(nm, cb._values(nm)) for nm in cnames]
+        # the row is built only when the reservoir takes it (StratifiedProbe.
+        # offer_lazy); the stratum is routed on a getter over the batch columns
+        # that reads exactly what the row would hold (round 6)
+        bd = {nm: lst for nm, lst in bl if lst is not None}
+        cd = {nm: lst for nm, lst in cl if lst is not None}
         for i in rr.tolist():
-            row = {}
-            for nm, lst in bl:
+            def get(nm: str, i: int = i) -> Any:
+                lst = bd.get(nm)
                 if lst is not None:
                     v = lst[i]
                     if v is not ABSENT:
-                        row[nm] = v
-            for nm, lst in cl:
-                if nm not in row and lst is not None:
+                        return v
+                lst = cd.get(nm)
+                if lst is not None:
                     v = lst[i]
                     if v is not ABSENT:
-                        row[nm] = v
-            row.setdefault("net.src", b.ip_of(i))
+                        return v
+                return b.ip_of(i) if nm == "net.src" else ABSENT
+
+            def make_row(i: int = i) -> Dict[str, Any]:
+                row = {}
+                for nm, lst in bl:
+                    if lst is not None:
+                        v = lst[i]
+                        if v is not ABSENT:
+                            row[nm] = v
+                for nm, lst in cl:
+                    if nm not in row and lst is not None:
+                        v = lst[i]
+                        if v is not ABSENT:
+                            row[nm] = v
+                row.setdefault("net.src", b.ip_of(i))
+                return row
             if root is not None:
                 try:
-                    leaf = root.route(lambda nm, row=row: row.get(nm, EV.ABSENT), hier, (), float(b.ts[i]))[-1]
+                    leaf = root.route(get, hier, (), float(b.ts[i]))[-1]
                 except Exception:
                     leaf = root.root
-                st = (row.get("ev.ch", ""), int(leaf))
+                st = (get("ev.ch") if get("ev.ch") is not ABSENT else "", int(leaf))
             else:
                 st = EV.bootstrap_stratum(b, i)
             u = seeded_uniform(s, float(b.t1), "p05", int(b.rid[i]))
-            pr.offer(st, row, float(mass[i]), float(b.ts[i]), u, wid)
+            pr.offer_lazy(st, make_row, float(mass[i]), float(b.ts[i]), u, wid)
         return int(rr.size)
 
     def _wanted(self, store: Any, key: str, now: float, root: Any) -> Optional[set]:
@@ -156,7 +176,7 @@ class AttributeSelectionEngine(Engine):
             return None
         roles = prev.get("roles") or {}
         todo = SEL.names_to_evaluate(reg.names(), roles, prev.get("dropped_at") or {}, now,
-                                     self.run_index.get(key, 0))
+                                     self.run_index.get(key, 0), ustat=prev.get("ustat") or {})
         want = set(todo[:A_ROW]) | set(SEL.CONTEXT_SEEDS) | {"net.src", "ev.ch"}
         pt = MP.get_ptree(store, key)
         if pt is not None:
@@ -268,7 +288,7 @@ class AttributeSelectionEngine(Engine):
             stable = self._stab.get(key, {}).get("stable", 0) >= STABLE_RUNS
             a_probe = SEL.A_PROBE * (int(STABLE_PERIOD_S // self.eval_period_s) if stable else 1)
             todo = SEL.names_to_evaluate(names, roles_prev, prev.get("dropped_at") or {}, now, run_idx,
-                                         a_probe)
+                                         a_probe, ustat=prev.get("ustat") or {})
             tprev = list((prev.get("targets_sys") or {}).get(kind) or [])
             if not tprev:
                 tprev = SEL.bootstrap_selection(reg, kind, names)["targets_sys"][kind]

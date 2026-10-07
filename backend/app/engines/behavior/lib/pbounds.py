@@ -467,6 +467,28 @@ def coverage_lb(c: float, n: float, q: float = 0.05) -> float:
     return float(pmdl.beta_quantile(q, k, max(1e-6, float(n) - k) + 1.0))
 
 
+STATED_MIN = 0.5                 # (round 6) a band / range guaranteeing less than this states nothing
+
+
+def stated(rec: Optional[Mapping[str, Any]]) -> bool:
+    """(round 6) Does a numeric record make a claim worth publishing? Its band
+    states a coverage (the 95 % lower bound, coverage_lb) of >= STATED_MIN, or
+    its hard range a next-outside probability (cover) of <= STATED_MIN. A
+    record with neither guarantees nothing a reader or P04's held-out tests
+    can hold it to, and only adds failures: pack O seed 0, day 21, mail's TLS
+    node 1 published net.pkts_down / pkts_up from n_eff 0.6 (band coverage
+    0.006, range 23-26 with "P(next outside) <= 76 %"); P04 tested the range at
+    its nominal 0.24 and it failed (0.15) in 5 of 13 tests: p_hold 0.62
+    against a held-out 0.94 of the evaluator's checks."""
+    if not isinstance(rec, Mapping):
+        return False
+    c = rec.get("coverage")
+    if _fin(c) and float(c) >= STATED_MIN:
+        return True
+    cv = rec.get("cover")
+    return rec.get("range") is not None and _fin(cv) and float(cv) <= STATED_MIN
+
+
 def confidence(rec: Mapping[str, Any]) -> float:
     """Statement confidence of a numeric constraint (§6.17.2): the stated
     (lower-bound) coverage of the band over its nominal 0.9, times 1 - cover

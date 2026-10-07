@@ -83,6 +83,7 @@ from .lib import pstrategy as PSt
 from .lib.phier import GRP_NONE, REG_NONE, STAR, Regions, ip_prefix
 
 STATE = "model.sysprof_state"
+WHO_SHARED = "model.sysprof_who"            # a family's shared WhoCode (at the family key)
 DAY = PS.DAY
 PERIOD_S = DAY
 MIN_DAYS = 1                               # full local days measured before the first decision
@@ -266,6 +267,12 @@ class WhoCode:
             if dd == d and ce > 0:
                 gain, bev = [float((cm - x) / ce) for x in cb], float(ce)
         return bits, float(e), gain, bev
+
+    def evidence(self) -> float:
+        """Behaviour evidence units over the last 7 days + today."""
+        if not hasattr(self, "bp"):
+            return 0.0
+        return float(self.cur_bev + sum(e for _, _, _, e in self.bring))
 
     def beh_gain(self) -> Tuple[Optional[List[float]], float]:
         """Held-out behaviour gain per level (bits/event) over the last 7 days + today."""
@@ -1009,9 +1016,12 @@ class SystemProfileEngine(Engine):
         trs = [t for t in (store.get_model(s, SYSTEM_ENTITY, STATE) for s in members)
                if isinstance(t, SysTracker)]
         days_seen = max([int(t.days_seen) for t in trs] or [0])
+        # one code per family (shared by its members' trackers, round 6): each
+        # distinct code is counted once
+        codes = list({id(t.who): t.who for t in trs}.values())
         tot, ev = np.zeros(5), 0.0
-        for t in trs:
-            b, e = t.who.bits()
+        for w in codes:
+            b, e = w.bits()
             if b is not None:
                 tot += np.asarray(b) * e
                 ev += e
@@ -1019,8 +1029,8 @@ class SystemProfileEngine(Engine):
             meas["who"], meas["who_n"] = [float(x) for x in tot / ev], float(ev)
         # held-out behaviour gain of each who level (evidence-weighted over members)
         gtot, gev = np.zeros(5), 0.0
-        for t in trs:
-            g, e = t.who.beh_gain()
+        for w in codes:
+            g, e = w.beh_gain()
             if g is not None:
                 gtot += np.asarray(g) * e
                 gev += e
@@ -1028,8 +1038,8 @@ class SystemProfileEngine(Engine):
             meas["who_pred"], meas["who_pred_n"] = [float(x) for x in gtot / gev], float(gev)
         # the last completed day alone (one Hedge round, evidence-weighted over members)
         db, dg, dbe, dge = np.zeros(5), np.zeros(5), 0.0, 0.0
-        for t in trs:
-            dv = t.who.day_values()
+        for w in codes:
+            dv = w.day_values()
             if dv is None:
                 continue
             bits, e, gain, ge = dv
@@ -1177,6 +1187,9 @@ class SystemProfileEngine(Engine):
                 self._release(store, s, now)
         for s, fid, why in res["left"]:
             self._detach(store, s, fid, now)
+        # (round 6) one who / behaviour code per family, fed by every member
+        for fid, mem in sorted(res["families"].items()):
+            self._share_who(store, fid, mem, now)
         dst: Dict[str, Dict[str, str]] = {}
         for s, fid in member.items():
             tr = store.get_model(s, SYSTEM_ENTITY, STATE)
@@ -1224,6 +1237,35 @@ class SystemProfileEngine(Engine):
             store.put_model(fid, SYSTEM_ENTITY, name, obj, ts=now)
 
     @staticmethod
+    def _share_who(store: Any, fid: str, members: Sequence[str], now: float) -> None:
+        """A family is measured as ONE system: its members' trackers share one
+        WhoCode (the who bits and the held-out behaviour gain per who level that
+        lib/pstrategy and the views read for the family's tree), and a member
+        that joins adopts the family's code instead of its own. Kept per member,
+        each code learned from that member's share of the family's traffic and
+        the family's figure was their evidence-weighted mean: O-real seed 0, oa
+        alone measured a group gain of +0.03 bit/event on day 10; from the
+        replica's join on day 11 (half the traffic each, the replica's code one
+        day old) the family read -0.24 to -0.77 until day 21, and the views
+        dropped every per-group statement of the OA tree (GA / SALES / FIN
+        documents and logins). The shared code starts as the code of the member
+        with the most behaviour evidence (the transfer of its sufficient
+        statistics; a newer member's few days are not merged into it), and it
+        is stored at the family key."""
+        shared = store.get_model(fid, SYSTEM_ENTITY, WHO_SHARED)
+        trs = [(s, store.get_model(s, SYSTEM_ENTITY, STATE)) for s in members]
+        trs = [(s, t) for s, t in trs if isinstance(t, SysTracker)]
+        if not isinstance(shared, WhoCode):
+            if not trs:
+                return
+            _, src = max(trs, key=lambda st: (st[1].who.evidence(), st[0]))
+            shared = src.who
+            store.put_model(fid, SYSTEM_ENTITY, WHO_SHARED, shared, ts=now)
+        for _, t in trs:
+            if t.who is not shared:
+                t.who = shared
+
+    @staticmethod
     def _release(store: Any, s: str, now: float) -> None:
         """A system that joined a family no longer uses its own tree: keep a
         checkpoint (lineage, detach restore) and drop the in-memory models."""
@@ -1247,6 +1289,11 @@ class SystemProfileEngine(Engine):
             if name == MP.PTREE:
                 cp.tree_key = s
             store.put_model(s, SYSTEM_ENTITY, name, cp, ts=now)
+        # its own who code from now on: a copy of the family's (round 6)
+        tr = store.get_model(s, SYSTEM_ENTITY, STATE)
+        shared = store.get_model(fid, SYSTEM_ENTITY, WHO_SHARED)
+        if isinstance(tr, SysTracker) and isinstance(shared, WhoCode) and tr.who is shared:
+            tr.who = copy.deepcopy(shared)
 
     @staticmethod
     def _detach_shares(store: Any, fam: Mapping[str, Any], now: float) -> Dict[str, float]:
