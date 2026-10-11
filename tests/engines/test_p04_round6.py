@@ -243,3 +243,84 @@ def test_a_foreign_source_without_colleagues_is_not_a_check():
     after = st[-1]
     assert after is not None and after[2], st
     assert after[1] is not None and after[1] >= 0.7, st        # every test passed
+
+
+def test_pair_counts_from_the_request_index_equal_the_request_walk():
+    """PG4 (round 6): _pairs reads the requests applicable to each path node
+    from a per-tick index instead of walking every P08 request per learned
+    event; the same pair sketches get the same updates, in the same order per
+    node (the round-5 per-request walk is the reference here)."""
+    import random
+    from app.engines.behavior import pattern_tree as PTE
+    from app.engines.behavior.lib import pevent as EVL
+
+    class Rec:
+        def __init__(self, log, nid, key):
+            self.log, self.nid, self.key = log, nid, key
+
+        def update(self, xg, yv, ts, mass, omega):
+            self.log.append((self.nid, self.key, xg, yv, ts, mass, omega))
+
+    class Node:
+        def __init__(self, nid, log):
+            self.nid, self.log = nid, log
+
+        def pair(self, name, y):
+            return Rec(self.log, self.nid, (name, y))
+
+    class Hier:
+        def gen(self, x, lv, v):
+            return f"{v}@{lv}"
+
+    class LC:
+        pass
+
+    def reference(lc, tr, path, kind, get, ts, mass, omega):
+        used = {}
+        ends = (path[0], path[-1])
+        for x, lv, y, nodes, pk in lc.pairs:
+            if pk is not None and pk != kind:
+                continue
+            targets = [n for n in path if n in nodes] if nodes else list(dict.fromkeys(ends))
+            targets = [n for n in targets if used.get(n, 0) < PTE.PAIRS_NODE_MAX]
+            for n in targets:
+                used[n] = used.get(n, 0) + 1
+            if not targets:
+                continue
+            xv, yv = get(x), get(y)
+            if xv is EVL.ABSENT or yv is EVL.ABSENT:
+                continue
+            xg = PTE._h(lc.hier.gen(x, lv, xv))
+            name = x if lv == 0 else f"{x}@{lv}"
+            for nid in dict.fromkeys(targets):
+                tr.nodes[nid].pair(name, y).update(xg, PTE._h(yv), ts, mass, omega)
+
+    rnd = random.Random(5)
+    for trial in range(60):
+        attrs = [f"a{i}" for i in range(12)]
+        pairs = []
+        for _ in range(rnd.randint(1, 64)):
+            nodes = set(rnd.sample(range(10), rnd.randint(1, 4))) if rnd.random() < 0.6 else None
+            pairs.append((rnd.choice(["net.src", "a0"]), rnd.choice([0, 1]), rnd.choice(attrs), nodes,
+                          rnd.choice([None, 0, 1])))
+        row = {a: (EVL.ABSENT if rnd.random() < 0.2 else f"v{rnd.randint(0, 3)}") for a in attrs}
+        row["net.src"] = "10.0.0.1"
+        get = row.get
+        path = rnd.sample(range(10), rnd.randint(1, 5))
+        kind = rnd.choice([0, 1])
+        logs = []
+        for fn in (reference, None):
+            log = []
+            lc = LC()
+            lc.pairs, lc.hier = pairs, Hier()
+            tr = type("T", (), {})()
+            tr.nodes = {n: Node(n, log) for n in range(10)}
+            if fn is None:
+                PTE.PatternTreeEngine._pairs(None, lc, tr, path, kind, get, 1.0, 2.0, 3.0)
+            else:
+                fn(lc, tr, path, kind, get, 1.0, 2.0, 3.0)
+            logs.append(log)
+        ref, new = logs
+        assert sorted(ref, key=repr) == sorted(new, key=repr), trial
+        for n in range(10):
+            assert [e for e in ref if e[0] == n] == [e for e in new if e[0] == n], (trial, n)

@@ -875,3 +875,19 @@ def test_grain_and_meta_stratum_keys():
     dp, terc, dt, g = MC.decode_pending(code)
     assert (dp, terc) == ("wd_night", 1) and g["dp_h"] == "wd_night" and g["dp_q"] == "nwd_day"
     assert g["prov"]["marg_int_q"] == 1 and g["prov"]["marg_shape_q"] == 0
+
+
+def test_health_weight_hysteresis_does_not_follow_ks_noise():
+    """Round 6: KS D of 2048 null p-values has sd ~0.019; a detector whose D
+    hovers around KS_MAX_D must not flip its weight every evaluation (it
+    redefines B25's fused statistic for every entity of the system)."""
+    w, seq = 1.0, []
+    for d in (0.052, 0.048, 0.051, 0.044, 0.049, 0.040, 0.036):
+        w = K.health_weight(d, 1.0, w)
+        seq.append(w)
+    assert seq == [0.5] * 7                              # halved once, held in the band
+    assert K.health_weight(0.030, 1.0, 0.5) == 1.0       # restored below KS_RESTORE_D
+    assert K.health_weight(0.030, 1.8, 0.5) == 0.5       # ratio not yet in its restore band
+    assert K.health_weight(0.030, 1.5, 0.5) == 1.0
+    assert K.health_weight(0.048, 1.0, 1.0) == 1.0       # an untouched detector is not halved
+    assert K.health_weight(float("nan"), float("nan"), 0.5) == 1.0   # no data: neutral

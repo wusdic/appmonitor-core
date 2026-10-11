@@ -95,19 +95,50 @@ def ip_space_bits(v: str, level: int) -> float:
     return float(tot - bits)
 
 
+@lru_cache(maxsize=65536)
+def _parse_net(c: str) -> Any:
+    """ipaddress.ip_network(c, strict=False), None when c is not a network
+    (networks are immutable: one parsed object serves every Regions)."""
+    try:
+        return ipaddress.ip_network(c, strict=False)
+    except ValueError:
+        return None
+
+
+_REGION_MEMOS: Dict[Tuple[Tuple[str, str], ...], Dict[str, str]] = {}
+_REGION_MEMOS_MAX = 256
+
+
 class Regions:
     """First-match CIDR regions: [(name, cidrs)] from config ip_classes /
     dhcp_scopes, or P11 prefix covers."""
 
     def __init__(self, regions: Iterable[Tuple[str, Iterable[str]]] = ()) -> None:
         self._nets: List[Tuple[Any, str]] = []
+        raw: List[Tuple[str, str]] = []
         for name, cidrs in regions:
+            nm = str(name)
             for c in cidrs:
-                try:
-                    self._nets.append((ipaddress.ip_network(str(c), strict=False), str(name)))
-                except ValueError:
-                    continue
-        self._memo: Dict[str, str] = {}
+                cs = str(c)
+                raw.append((cs, nm))
+                net = _parse_net(cs)
+                if net is not None:
+                    self._nets.append((net, nm))
+        # (round 6, cost) every engine rebuilds its tree's Hierarchies - and so
+        # these Regions - for every system and tick (m_ptree.hierarchies): the
+        # CIDR parse and the per-address memo are shared by every Regions built
+        # from the same (cidr, name) list (O-servers, 100 systems: 3.4 M
+        # ip_network parses, 86 % of P03's CPU). The memo key is the list of
+        # input strings (their hashes are cached; hashing the parsed networks
+        # cost ~5 us per network). Same answers: `of` is a pure function of
+        # the parsed list, which is a function of the input list.
+        key = tuple(raw)
+        memo = _REGION_MEMOS.get(key)
+        if memo is None:
+            if len(_REGION_MEMOS) >= _REGION_MEMOS_MAX:
+                _REGION_MEMOS.clear()
+            memo = _REGION_MEMOS[key] = {}
+        self._memo: Dict[str, str] = memo
 
     @classmethod
     def from_config(cls, config: Optional[Mapping[str, Any]]) -> "Regions":

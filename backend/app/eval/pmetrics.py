@@ -720,6 +720,41 @@ class PTruth:
         return sum(1 for d in range(max(1, d0), min(d1, self.n_days) + 1)
                    if d - 1 < len(self.workday) and self.workday[d - 1])
 
+    def row_systems(self) -> Set[str]:
+        """Every system some truth row names (row['system'] and row['systems'])."""
+        rs = self.__dict__.get("_row_systems")
+        if rs is None:
+            rs = set()
+            for r in self.rows:
+                rs.add(str(r["system"]))
+                rs.update(str(x) for x in r.get("systems") or [])
+            self._row_systems = rs
+        return rs
+
+    def row_observable(self, row: Mapping[str, Any], day: int) -> bool:
+        """(evaluator round 6) The behaviour of a truth segment has been
+        observable for at least one workday by the end of `day`: the segment
+        emitted events on a workday in [valid_from_day, day] (a segment with
+        no workday windows: on any day of its own day type)."""
+        tid = row["tid"]
+        cache = self.__dict__.setdefault("_obs_cache", {})
+        k = (tid, int(day))
+        hit = cache.get(k)
+        if hit is not None:
+            return hit
+        vf = max(1, int(row["valid_from_day"]))
+        has_wd = bool((row.get("windows") or {}).get("workday"))
+        ok = False
+        for iso, per in (self.opp.get(tid) or {}).items():
+            di = self.day_index(iso)
+            if not (vf <= di <= day) or not sum(int(v) for v in per.values()):
+                continue
+            if not has_wd or (0 <= di - 1 < len(self.workday) and self.workday[di - 1]):
+                ok = True
+                break
+        cache[k] = ok
+        return ok
+
     def family_of(self, system: str) -> Set[str]:
         fams = (self.systems.get("families") or {})
         out = {system}
@@ -734,6 +769,14 @@ def _sys_match(stmt_sys: str, row: Mapping[str, Any], pt: PTruth, members: Itera
         return True
     if members and (row["system"] in members or set(members) & pt.family_of(row["system"])):
         return True                     # a statement of the engine family the row's system joined
+    if not members and not str(stmt_sys).startswith("fam:") and stmt_sys in pt.row_systems():
+        # (evaluator round 6) a system with truth rows of its own is judged on
+        # them only: a statement of branch crm-03's own tree (truth family
+        # crm-br, 12 branches with their own users) was judged on held-out
+        # events of all 12 branches, so its who held ~1/12 (O-real: stated
+        # 0.83, held 0.57 at HEAD). The truth family still serves a statement
+        # of a system WITHOUT rows of its own (one named after the family)
+        return False
     return stmt_sys in pt.family_of(row["system"]) or stmt_sys.startswith("fam:") and (
         row["system"] in pt.family_of(stmt_sys[4:]) or stmt_sys[4:] in pt.family_of(row["system"]))
 
@@ -1341,7 +1384,36 @@ def holdout_check(s: LStmt, rows_valid: Sequence[Mapping[str, Any]], pt: PTruth,
                 add(f"{attr}.bind.{x}", _f(lbs.get(x), conf), [str(e[attr]) in ys for e in sub])
     holds = [h for _, _, h, _ in res]
     return {"supported": True, "ok": all(ok for *_, ok in res), "constraints": res,
-            "min_hold": float(min(holds)) if holds else 1.0}
+            "min_hold": float(min(holds)) if holds else 1.0,
+            "tids": sorted({str(e["tid"]) for e in evs})}
+
+
+def claim_observable(s: LStmt, h: Mapping[str, Any], pt: PTruth, day: int) -> bool:
+    """(evaluator round 6, lead decision) Whether the truth behaviour a claim
+    describes has been observable for at least one workday by the end of
+    `day`, so that precision can fairly judge it.
+
+    - A supported claim is judged on held-out events of the truth segments
+      valid that day (holdout_check's drawn `tids`); each must have emitted
+      events on a workday since it began (PTruth.row_observable). A segment
+      opened by a drift (D2 moves GA's login on Saturday, day 13) is not
+      observable until the next workday, and no learner can state it before.
+    - An unsupported claim (no valid truth row of its action and context) is
+      judged once every segment of its action that ENDED by `day` ended at
+      least one workday ago: the absence must be observable too (D3's
+      renamed routes stop on day 14).
+    A claim about an action the truth never had is observable (and false)."""
+    if h.get("supported"):
+        return all(pt.row_observable(pt.by_tid[t], day) for t in h.get("tids") or ()
+                   if t in pt.by_tid)
+    for row in pt.rows:
+        vt = int(row["valid_to_day"])
+        if vt > day or _route_of(row) != (s.method, s.route) \
+                or not _sys_match(s.system, row, pt, s.members):
+            continue
+        if pt.workdays_between(vt, day) < 1:
+            return False
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -1404,7 +1476,7 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
         by_period[per_] = float(np.mean(v)) if v else None
     # precision + calibration over rendered confirmed statements
     valid = pt.valid_at_day(day)
-    prec_hits, conf, obs = [], [], []
+    prec_hits, prec_all, conf, obs = [], [], [], []
     calib: List[List[Any]] = []
     unjudged = dups = 0
     seen: Set[str] = set()
@@ -1421,18 +1493,28 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
             continue
         seen.add(claim)
         h = holdout_check(s, valid, pt, _stream(seed, day, 2, claim), precision_n, day)
-        prec_hits.append(bool(h["ok"]))           # no held-out event of its context: false
+        ob = claim_observable(s, h, pt, day)
+        prec_all.append(bool(h["ok"]))            # no held-out event of its context: false
+        if ob:
+            prec_hits.append(bool(h["ok"]))
         if math.isfinite(s.confidence):
             conf.append(s.confidence)
             obs.append(1.0 if h["ok"] else 0.0)
-            calib.append([round(float(s.confidence), 4), int(bool(h["ok"])), int("|" in s.pattern_id)])
+            calib.append([round(float(s.confidence), 4), int(bool(h["ok"])), int("|" in s.pattern_id),
+                          int(ob)])
     depths = [s.depth for s in stmts if s.confirmed and math.isfinite(s.depth)]
     return {
         "day": day, "n_truth": len(rows), "n_stmt": len(stmts),
         "n_confirmed": sum(1 for s in stmts if s.confirmed),
         "recall": recall, "components": comps, "recall_by_period": by_period,
+        # headline (round 6, lead decision): claims whose truth behaviour has
+        # been observable for >= 1 workday (claim_observable); the stricter
+        # all-claims figure is kept as precision_all
         "precision": float(np.mean(prec_hits)) if prec_hits else None,
-        "n_precision": len(prec_hits), "n_unjudged": unjudged, "n_duplicate": dups,
+        "n_precision": len(prec_hits),
+        "precision_all": float(np.mean(prec_all)) if prec_all else None,
+        "n_precision_all": len(prec_all), "n_unobservable": len(prec_all) - len(prec_hits),
+        "n_unjudged": unjudged, "n_duplicate": dups,
         "ece": ece(conf, obs), "calib": calib,
         "mean_depth": float(np.mean(depths)) if depths else None,
         "per_pattern": {k: {"recovered": v["recovered"], "components": v["components"],
@@ -1513,7 +1595,11 @@ def pg2_convergence(pg1: Mapping[int, Mapping[str, Any]], pt: PTruth,
     cal = calibration([c[0] for c in pool], [c[1] for c in pool]) if pool else calibration([], [])
     cal_kind = {k: calibration([c[0] for c in pool if c[2] == i], [c[1] for c in pool if c[2] == i])
                 for k, i in (("node", 0), ("part", 1))}
+    pool_obs = [c for c in pool if len(c) < 4 or c[3]]
+    cal_obs = calibration([c[0] for c in pool_obs], [c[1] for c in pool_obs]) if pool_obs else None
     return {"recall": rec, "precision": {d: pg1[d].get("precision") for d in days},
+            "precision_all": {d: pg1[d].get("precision_all") for d in days},
+            "calibration_observable": cal_obs,
             "recall_violations": viol, "recall_monotone": (not viol) if rec else None,
             "recall_violations_daily": rec_viol(days), "trend_days": tdays,
             "days_to_80": ttr, "depth_nondecreasing": depth_ok,

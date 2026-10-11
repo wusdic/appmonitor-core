@@ -754,6 +754,7 @@ def cluster_tol(nominal: float, n: float, clusters: Optional[Mapping[Any, List[f
     return tol
 
 
+WHEN_SPAN_S = DAY                  # (round 6) 'when' is judged on checks spanning a day (HoldRecord._close)
 HOLD_BATCH_U = 50.0                # (evaluator round 4) ... or of >= 50 independent units (source-days)
 HOLD_BATCH_N = 100.0               # a held-out test is a batch of >= 100 checked events ...
 HOLD_BATCH_S = 7 * DAY             # ... or of a week, whichever comes first (M46)
@@ -786,7 +787,7 @@ class HoldRecord:
     ECE 0.37-0.41) although 35-45 % of them held; that product is kept as
     p_constraints() (diagnosis). O(constraints) floats per node."""
 
-    __slots__ = ("c", "L", "b", "bt0", "bn", "blast", "T", "F", "seg", "TF", "lite", "bc", "bu")
+    __slots__ = ("c", "L", "b", "bt0", "bn", "blast", "T", "F", "seg", "TF", "lite", "bc", "bu", "bw0", "bwr")
 
     def __init__(self, lite: bool = False) -> None:
         self.lite = bool(lite)                       # tests only: no per-constraint counts / facets
@@ -802,6 +803,8 @@ class HoldRecord:
         self.TF: Dict[str, List[float]] = {}         # facet -> [passes, tests] of its keys alone (diagnosis)
         self.bc: Dict[str, Dict[Any, List[float]]] = {}   # current batch: key -> cluster -> [n, hits]
         self.bu: set = set()                         # current batch: its independent units (clusters)
+        self.bw0: Optional[float] = None             # current batch: time of its first 'when' check
+        self.bwr: Optional[list] = None              # [t0, {hour: [n, hits, units]}]: 'when' checks of the last day
 
     def _f(self, t: float) -> float:
         if self.L is None:
@@ -844,11 +847,53 @@ class HoldRecord:
         its record between two tests (a saw-tooth that made PG2's median
         confidence dip on days without a test)."""
         T = self._T()
-        if self.b and self.bn > 0 and self.blast is not None:
+        # (round 6) a time-of-day claim is judged on checks spanning a day. A
+        # batch closed within WHEN_SPAN_S of its first 'when' check is a time
+        # slice (a busy public node fills its 50 units in minutes): its
+        # coverage says nothing about the share of a day's arrivals the window
+        # holds (pack O seeds 0-1: 51 of 53 failed portal tests failed on
+        # 'when'). Such a batch's 'when' checks go to hourly bins of the last
+        # day (WhenRoll) and the test judges 'when' on that trailing day - from
+        # the first test that closes a day after the first check on, every
+        # test judges it (a wrong window keeps failing tests); a batch that
+        # spans a day itself (a quiet node's weekly batch) is judged on its own
+        # checks, as before.
+        wfail: Optional[bool] = None
+        wb = self.b.pop("when", None)
+        wbc = (getattr(self, "bc", None) or {}).pop("when", None)
+        bw0 = getattr(self, "bw0", None)
+        self.bw0 = None
+        if wb is not None and wb[0] > 0 and self.blast is not None:
+            n, h, nom = wb
+            if bw0 is None or float(self.blast) - float(bw0) >= WHEN_SPAN_S:
+                wfail = h / n < nom - cluster_tol(nom, n, wbc)
+            else:
+                roll = getattr(self, "bwr", None)
+                if roll is None:
+                    roll = self.bwr = [float(bw0), {}]
+                hr_ = int(float(self.blast) // 3600.0)
+                v = roll[1].get(hr_)
+                if v is None:
+                    v = roll[1][hr_] = [0.0, 0.0, 0.0]
+                v[0] += n
+                v[1] += h
+                v[2] += float(len(wbc)) if wbc else n
+                for k in [k for k in roll[1] if k <= hr_ - WHEN_SPAN_S / 3600.0]:
+                    del roll[1][k]
+                if float(self.blast) - roll[0] >= WHEN_SPAN_S:
+                    N = sum(x[0] for x in roll[1].values())
+                    H = sum(x[1] for x in roll[1].values())
+                    U = sum(x[2] for x in roll[1].values())
+                    if N > 0:
+                        wfail = H / N < nom - batch_tol(nom, U)
+        if (self.b or wfail is not None) and self.bn > 0 and self.blast is not None:
             # (evaluator round 4) clustered checks: cluster_tol
             cl = getattr(self, "bc", None) or {}
             failed = [k for k, (n, h, nom) in self.b.items()
                       if n > 0 and h / n < nom - cluster_tol(nom, n, cl.get(k))]
+            if wfail:
+                failed.append("when")
+            judged = set(self.b) | ({"when"} if wfail is not None else set())
             lam = HOLD_TEST_LAMBDA
             T[0] *= lam
             T[1] *= lam
@@ -868,7 +913,7 @@ class HoldRecord:
             if TF is None:
                 TF = self.TF = {}
             if getattr(self, "lite", False):
-                self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, set()
+                self._reset_batch()
                 return
             fac_fail = {hold_facet(k) for k in failed}
             # '~net': the statement without its transport measures (what a reader
@@ -878,13 +923,17 @@ class HoldRecord:
             # sorted: TF's key order must not follow str-hash set order (evaluator
             # round 5: model.ptree hold_facets differed in key order between two
             # PYTHONHASHSEED runs of pack O seed 0)
-            for fac in sorted({hold_facet(k) for k in self.b} | {"~net"}):
+            for fac in sorted({hold_facet(k) for k in judged} | {"~net"}):
                 r = TF.get(fac)
                 if r is None:
                     r = TF[fac] = [0.0, 0.0]
                 r[0] = r[0] * lam + (0.0 if fac in fac_fail else 1.0)
                 r[1] = r[1] * lam + 1.0
+        self._reset_batch()
+
+    def _reset_batch(self) -> None:
         self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, set()
+        self.bw0 = None
 
     def _F(self) -> Dict[str, float]:
         F = getattr(self, "F", None)
@@ -923,6 +972,8 @@ class HoldRecord:
         bv = self.b.get(key)
         if bv is None:
             bv = self.b[key] = [0.0, 0.0, float(nominal)]
+            if key == "when" and getattr(self, "bw0", None) is None:
+                self.bw0 = t
         bv[0] += float(w)
         if hit:
             bv[1] += float(w)
@@ -1007,6 +1058,7 @@ class HoldRecord:
             self.T = [0.0, 0.0]
             self.F = {}
             self.TF = {}
+            self.bw0 = self.bwr = None
             self.seg = int(getattr(self, "seg", 0)) + 1
             return
         self._T()
@@ -1014,9 +1066,13 @@ class HoldRecord:
             self.c.pop(k, None)
             self.b.pop(k, None)
             (getattr(self, "bc", None) or {}).pop(k, None)
+            if k == "when":
+                self.bw0 = self.bwr = None
 
     def nbytes(self) -> int:
-        return int(64 + 80 * len(self.c) + 80 * len(getattr(self, "b", None) or ()) + 64)
+        bwr = getattr(self, "bwr", None)
+        return int(64 + 80 * len(self.c) + 80 * len(getattr(self, "b", None) or ()) + 64
+                   + (64 * len(bwr[1]) if bwr else 0))
 
 
 # ===================================================== split row reservoir

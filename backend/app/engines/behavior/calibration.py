@@ -476,9 +476,12 @@ def health_add(hs: Dict[str, Any], ts: float, dt: float, pvals: np.ndarray,
             ks[i].append(v)
 
 
-def evaluate_health(ks_bufs, exc: np.ndarray, expected: np.ndarray) -> Dict[str, Dict[str, float]]:
+def evaluate_health(ks_bufs, exc: np.ndarray, expected: np.ndarray,
+                    prev: Optional[Mapping[str, Any]] = None) -> Dict[str, Dict[str, float]]:
     """{detector: {ks, rate_ratio, weight_mult, n, expected}} for every detector
-    with data. A check without enough data is NaN and neutral (calib.health_weight)."""
+    with data. A check without enough data is NaN and neutral (calib.health_weight).
+    `prev` (round 6): the previous evaluation, whose weights the hysteresis of
+    calib.health_weight continues (lib/calib KS_RESTORE_D)."""
     out: Dict[str, Dict[str, float]] = {}
     for i, d in enumerate(DETECTORS):
         buf = ks_bufs[i]
@@ -489,7 +492,8 @@ def evaluate_health(ks_bufs, exc: np.ndarray, expected: np.ndarray) -> Dict[str,
         ks_d = calib.ks_uniform(np.fromiter(buf, dtype=np.float64, count=n)) \
             if n >= HEALTH_KS_MIN else _NAN
         rr = float(exc[i]) / ex if ex >= HEALTH_RATE_MIN_EXPECTED else _NAN
-        out[d] = {"ks": ks_d, "rate_ratio": rr, "weight_mult": calib.health_weight(ks_d, rr),
+        pw = (prev.get(d) or {}).get("weight_mult") if isinstance(prev, Mapping) else None
+        out[d] = {"ks": ks_d, "rate_ratio": rr, "weight_mult": calib.health_weight(ks_d, rr, pw),
                   "n": n, "expected": ex}
     return out
 
@@ -832,7 +836,7 @@ class CalibrationEngine(Engine):
     def _write_health(self, store, s: str, hs: Dict[str, Any], now: float, dt: float) -> None:
         le = hs["last_eval"]
         if le is None or now - le >= HEALTH_EVAL_S or now < le:
-            hs["out"] = evaluate_health(hs["ks"], hs["exc"], hs["exp"])
+            hs["out"] = evaluate_health(hs["ks"], hs["exc"], hs["exp"], prev=hs.get("out"))
             hs["last_eval"] = now
         last = store.latest_derived(s, SYSTEM_KEY, CALIB_HEALTH)
         if last is not None and last.ts == now:

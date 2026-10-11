@@ -69,3 +69,81 @@ def test_one_run_judges_a_bounded_number_of_attributes():
     for run in range(40):
         seen |= set(SEL.names_to_evaluate(big[0], big[1], {}, 0.0, run, ustat=big[2]))
     assert seen == set(big[0])
+
+
+def test_a_rare_field_is_not_redundant_with_what_marks_its_presence():
+    """O-real seed 0 finance (round 6): a login form's username is present on
+    ~2 % of the events, exactly those whose content type is form-encoded. g3
+    over all rows is a share of the probe's mass, so ctype -> username looked
+    functional (g3 ~0.004 < RED_G3) and the username was classed 'redundant'
+    with http.ctype: no node target, no source -> username binding stated.
+    Redundancy is judged on the rows where the dependent attribute is present
+    too; a true copy (present everywhere) is still redundant."""
+    from app.engines.behavior.lib.phier import Hierarchies
+    rng = np.random.default_rng(3)
+    t0 = 1_780_000_000.0
+    pr = SEL.StratifiedProbe(R=4096)
+    users = ["lucy"] * 8 + ["tom", "kate"]          # one clerk logs in most often
+    for i in range(4000):
+        login = rng.random() < 0.02
+        row = {"http.route": "POST /fin/login" if login else "GET /fin/page",
+               "http.ctype": "application/x-www-form-urlencoded" if login else "text/html",
+               "net.src": f"192.168.2.{int(rng.integers(10, 16))}"}
+        row["http.ctype_copy"] = "c:" + row["http.ctype"]
+        if login:
+            row["body.kv.username"] = users[int(rng.integers(0, len(users)))]
+        pr.offer(("http", row["http.route"]), row, 1.0, t0 + i, (i * 0.61803398875) % 1.0 + 1e-9)
+    t = t0 + 4000
+    pr.rebalance(t)
+    hier = Hierarchies(registry={a: {"type": "categorical"}
+                                 for a in ("http.route", "http.ctype", "http.ctype_copy", "body.kv.username")})
+    kept = ["http.ctype", "http.ctype_copy", "body.kv.username"]
+    red = SEL.redundancy(pr, t, hier, kept, cost=lambda a: 0.0, cov=lambda a: 1.0)
+    assert "body.kv.username" not in red, red
+    # the exact copy is still recognised
+    assert red.get("http.ctype_copy") == "http.ctype" or red.get("http.ctype") == "http.ctype_copy", red
+
+
+def test_per_run_pools_are_bounded_and_untouched_below_the_cap():
+    """PG4 (round 6): who_proxies walks every kept attribute and the node
+    target pass every node-local one, per run - 86-89 split roles per system
+    on the 340-attribute point against <= 40 kept on pack O / O-real. Both
+    lists are capped; below the cap they are the full lists in their order."""
+    small = [f"a{i:02d}" for i in range(20)]
+    ust = {a: {"U_t": 0.01 * i} for i, a in enumerate(small)}
+    assert SEL.bounded_by_u(small, ust, SEL.LOCAL_POOL_MAX) == small
+    big = [f"b{i:03d}" for i in range(120)]
+    ustb = {a: {"U_t": (i * 37 % 120) / 100.0} for i, a in enumerate(big)}
+    got = SEL.bounded_by_u(big, ustb, SEL.LOCAL_POOL_MAX)
+    assert len(got) == SEL.LOCAL_POOL_MAX
+    best = sorted(big, key=lambda a: -ustb[a]["U_t"])[:SEL.LOCAL_POOL_MAX]
+    assert set(got) == set(best) and got == [a for a in big if a in set(best)]
+    roles = {a: "split" for a in small}
+    out = {"roles": roles, "ustat": ust, "targets_sys": {0: small[:5]}, "split_cands": {0: []}}
+    assert SEL.proxy_candidates(out) == small
+    roles = {a: ("split" if i % 3 else "shape") for i, a in enumerate(big)}
+    out = {"roles": roles, "ustat": ustb, "targets_sys": {0: big[100:110]},
+           "split_cands": {0: [(a, 0) for a in big[50:60]]}}
+    pc = SEL.proxy_candidates(out, prev_proxies=["b007"])
+    assert len(pc) == SEL.PROXY_EVAL_MAX
+    assert set(big[100:110]) <= set(pc) and set(big[50:60]) <= set(pc) and "b007" in pc
+
+
+def test_daily_value_groups_are_bounded_and_rotate():
+    """PG4 (round 6): value groups are re-fitted for <= VG_MAX attributes a
+    day - P04's targets and split candidates every day, the others by age -
+    and for all of them when there are no more (pack O / O-real)."""
+    small = [f"c{i:02d}" for i in range(10)]
+    assert SEL.value_group_slice(small, {}, {}) == small
+    big = [f"c{i:03d}" for i in range(100)]
+    out = {"targets_sys": {0: big[90:95]}, "split_cands": {0: [(a, 1) for a in big[80:85]]}}
+    last: dict = {}
+    seen = set()
+    for day in range(10):
+        sl = SEL.value_group_slice(big, out, last)
+        assert len(sl) == SEL.VG_MAX
+        assert set(big[90:95]) | set(big[80:85]) <= set(sl)
+        for a in sl:
+            last[a] = float(day)
+        seen |= set(sl)
+    assert seen == set(big)

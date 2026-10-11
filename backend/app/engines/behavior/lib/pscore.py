@@ -131,9 +131,17 @@ def eb_concentration(counts: np.ndarray, N: float, prior: np.ndarray,
     f = np.maximum(f / max(f.sum(), 1e-300), 1e-300)
     nz = n > 0
     nn, ff = n[nz], f[nz]
+    # (round 6, cost) all grid points at once: row j of the 2-D terms is the
+    # 1-D array the per-alpha loop summed (same elementwise operations, and a
+    # C-contiguous row is reduced by the same pairwise summation), and the
+    # first maximum is kept as before
+    A = np.asarray(alphas, dtype=np.float64)
+    af = A[:, None] * ff[None, :]
+    S = np.sum(gammaln(nn[None, :] + af) - gammaln(af), axis=1)
+    Ls = gammaln(A) - gammaln(N + A)
     best, arg = -math.inf, float(alphas[-1])
-    for a in alphas:
-        L = float(gammaln(a) - gammaln(N + a) + np.sum(gammaln(nn + a * ff) - gammaln(a * ff)))
+    for j, a in enumerate(alphas):
+        L = float(Ls[j] + S[j])
         if L > best:
             best, arg = L, float(a)
     return arg
@@ -192,7 +200,8 @@ def conformal_rank_p(n_as_extreme: float, n: float) -> float:
 
 
 def tail_p(y: float, u: float, xi: float, sigma: float, tail_mass: float = 0.1,
-           k: Optional[float] = None, x_max: Optional[float] = None) -> float:
+           k: Optional[float] = None, x_max: Optional[float] = None,
+           pred: Optional["GpdPredictive"] = None) -> float:
     """Doubled POT tail probability beyond threshold u: 2 * tail_mass * sf(y - u).
 
     Without k: the plug-in GPD survival function at the fitted (xi, sigma).
@@ -204,7 +213,10 @@ def tail_p(y: float, u: float, xi: float, sigma: float, tail_mass: float = 0.1,
     if y <= u:
         return 1.0
     if k is not None and k >= PRED_K_MIN:
-        sf = gpd_predictive_sf(y - u, xi, sigma, k, None if x_max is None else x_max - u)
+        if pred is not None:                # prepared for these (xi, sigma, k, x_max - u)
+            sf = pred.sf(y - u)
+        else:
+            sf = gpd_predictive_sf(y - u, xi, sigma, k, None if x_max is None else x_max - u)
     else:
         from .evt import gpd_sf
         sf = float(gpd_sf(np.asarray([y - u]), xi, sigma)[0])
@@ -244,6 +256,62 @@ def pwm_cov(xi: float, sigma: float, k: float) -> Tuple[float, float, float]:
     return vs, -csk, vk
 
 
+class GpdPredictive:
+    """gpd_predictive_sf with the parameter part prepared once (round 6,
+    cost): the 9 x 9 quadrature grid of (sigma, xi), its support mask and
+    weights depend on (xi, sigma, k, z_max) only - a fitted tail record's
+    constants - and only the excess z changes from value to value. sf(z)
+    performs the same array operations as the one-shot function did (which
+    now delegates here), so the values are the same bits."""
+
+    __slots__ = ("k", "bad", "empty", "w", "tw", "sg", "small", "xsafe")
+
+    def __init__(self, xi: float, sigma: float, k: float, z_max: Optional[float] = None) -> None:
+        self.k = k
+        self.bad = not (sigma > 0.0 and math.isfinite(sigma) and math.isfinite(xi))
+        self.empty = False
+        if self.bad:
+            return
+        vs, cv, vx = pwm_cov(xi, sigma, k)
+        a = math.sqrt(max(vs, 0.0))
+        b = cv / a if a > 0 else 0.0
+        c = math.sqrt(max(vx - b * b, 0.0))
+        sg = sigma + a * _GZ1
+        xs = xi + b * _GZ1 + c * _GZ2
+        ok = sg > 0.0
+        if z_max is not None and z_max > 0.0:
+            neg = xs < 0.0
+            end = np.where(neg, -sg / np.where(neg, xs, -1.0), np.inf)
+            ok &= end >= z_max
+        w = _GZW[ok]
+        tw = float(w.sum())
+        if not tw > 0.0:
+            self.empty = True
+            return
+        self.w, self.tw = w, tw
+        sg, xs = sg[ok], xs[ok]
+        self.sg = sg
+        with np.errstate(all="ignore"):
+            self.small = np.abs(xs) < 1e-9
+            self.xsafe = np.where(self.small, 1.0, xs)
+
+    def sf(self, z: float) -> float:
+        if not (z > 0.0):
+            return 1.0
+        if self.bad:
+            return NAN
+        if self.empty:
+            return 1.0 / (float(self.k) + 1.0)
+        sg, small, xsafe = self.sg, self.small, self.xsafe
+        with np.errstate(all="ignore"):
+            zz = z / sg
+            t = xsafe * zz
+            inside = t > -1.0
+            sf = np.where(small, np.exp(-zz),
+                          np.where(inside, np.exp(-np.log1p(np.where(inside, t, 0.0)) / xsafe), 0.0))
+        return float(min(1.0, float((self.w * sf).sum()) / self.tw))
+
+
 def gpd_predictive_sf(z: float, xi: float, sigma: float, k: float,
                       z_max: Optional[float] = None) -> float:
     """P(excess > z) under the approximate posterior of (sigma, xi): the
@@ -256,33 +324,7 @@ def gpd_predictive_sf(z: float, xi: float, sigma: float, k: float,
     rank probability 1 / (k + 1) of the tail. O(81)."""
     if not (z > 0.0):
         return 1.0
-    if not (sigma > 0.0 and math.isfinite(sigma) and math.isfinite(xi)):
-        return NAN
-    vs, cv, vx = pwm_cov(xi, sigma, k)
-    a = math.sqrt(max(vs, 0.0))
-    b = cv / a if a > 0 else 0.0
-    c = math.sqrt(max(vx - b * b, 0.0))
-    sg = sigma + a * _GZ1
-    xs = xi + b * _GZ1 + c * _GZ2
-    ok = sg > 0.0
-    if z_max is not None and z_max > 0.0:
-        neg = xs < 0.0
-        end = np.where(neg, -sg / np.where(neg, xs, -1.0), np.inf)
-        ok &= end >= z_max
-    w = _GZW[ok]
-    tw = float(w.sum())
-    if not tw > 0.0:
-        return 1.0 / (float(k) + 1.0)
-    sg, xs = sg[ok], xs[ok]
-    with np.errstate(all="ignore"):
-        zz = z / sg
-        small = np.abs(xs) < 1e-9
-        xsafe = np.where(small, 1.0, xs)
-        t = xsafe * zz
-        inside = t > -1.0
-        sf = np.where(small, np.exp(-zz),
-                      np.where(inside, np.exp(-np.log1p(np.where(inside, t, 0.0)) / xsafe), 0.0))
-    return float(min(1.0, float((w * sf).sum()) / tw))
+    return GpdPredictive(xi, sigma, k, z_max).sf(z)
 
 
 def num_summary_p(num: Any, v: float, t: float, n: float, gpd_hi: Optional[Tuple[float, float, float]] = None,

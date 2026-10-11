@@ -2816,7 +2816,13 @@ closed sets equal); bindings equal for ≥ 95 % of truth pairs; each truth workf
 with dep ≥ 0.8 and an overlapping delay band. Component recalls are reported separately (who,
 when, content, bindings, workflow). Precision = share of rendered confirmed statements whose
 every constraint holds on held-out generated events of their context at least at its stated
-confidence (refinements of truth count as correct). **Targets at day 14:** recall ≥ 0.90
+confidence (refinements of truth count as correct). Precision judges a statement only once the truth
+behaviour it describes has been observable for at least one workday (round 6, lead decision,
+§16.14.2): every truth segment its held-out events come from has emitted events on a workday since it
+began, and an action that stopped has been absent for a workday. A learner cannot know behaviour
+it has not observed. The stricter precision over all claims is reported beside it as a secondary
+metric. A statement of a system with truth rows of its own is judged on that system's rows.
+**Targets at day 14:** recall ≥ 0.90
 overall and ≥ 0.85 per component; precision ≥ 0.90; GA and FIN bindings 6/6.
 
 **PG2 — Convergence and calibrated confidence.** Recall and precision at the snapshot days;

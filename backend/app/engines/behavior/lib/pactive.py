@@ -156,14 +156,30 @@ def applicability(store: Any, s: str, engine: str, config: Optional[Mapping[str,
 PERIODIC_MIN = 0.5              # B11 / B12 prefilter: derived.periodicity_score (§10.3)
 
 
-def periodic_candidate(store: Any, s: str, e: str, config: Optional[Mapping[str, Any]]) -> bool:
-    """B11 timing / B12 beacon prefilter in bounded mode: earned IPs and IPs whose
-    periodicity score (D0) is >= 0.5; always True in full mode."""
+def periodic_candidate(store: Any, s: str, e: str, config: Optional[Mapping[str, Any]],
+                       model: Optional[str] = None) -> bool:
+    """B11 timing / B12 beacon prefilter in bounded mode: earned IPs, IPs whose
+    periodicity score (D0) is >= 0.5, and - round 6 - IPs for which the engine
+    already holds its per-IP model (`model`, e.g. 'model.timing'); always True
+    in full mode.
+
+    The last clause is the prefilter's hysteresis. Membership is the entry
+    test, not a per-tick switch: the periodicity score of a machine client
+    hovers around 0.5 and the earned set is re-chosen daily (an incident
+    forces an IP in, its close lets it go), so a pure per-tick test started
+    an IP's behavior.timing / behavior.acc_alarm series and then stopped them
+    while the IP stayed active - stale series (gate 15; round 5 bounded pack A:
+    88 stale B11 series, api-gateway's callers flapping across 0.5). An IP
+    the engine has started on is therefore continued while it is active
+    (the engines' own loops run on A_t ∪ E_t only), exactly as in full mode;
+    the per-IP work stays O(IPs that ever looked machine-like)."""
     if not bounded(config):
         return True
     ee = earned_entities(store, s, config)
     if ee is None or e in ee:                 # no sets yet (no restriction) or earned
         return True
+    if model is not None and store.get_model(s, e, model) is not None:
+        return True                           # started: continued while active
     v = store.latest_derived(s, e, "derived.periodicity_score")
     val = getattr(v, "value", None)
     return isinstance(val, (int, float)) and float(val) >= PERIODIC_MIN
@@ -222,3 +238,34 @@ def pooled(store: Any, s: str, e: str, config: Optional[Mapping[str, Any]]) -> b
         return False
     ee = earned_entities(store, s, config)
     return ee is not None and e not in ee
+
+
+# ------------------------------------------------- which per-IP series are owed
+# Round 6: the per-IP series of the earned-only engines - B06 multivariate
+# (behavior.wh, behavior.wh.q), B07 rhythm (behavior.rhythm), B14 changepoint
+# (behavior.cp.prob / cp.onset, behavior.cusum_state) - and their share of the
+# merged behavior.acc_alarm (B06 / B07 / B14 write it on H / slot ticks; B11
+# and B13 on others) END when P15 demotes an IP from E_t(s) (§10.2: a demoted
+# IP's models are checkpointed and freed): it is then covered by its class
+# (B18) and the pattern tree, and nothing per-IP is computed for it. Bounded
+# pack A seed 0: two oa-portal humans demoted on day 15 / 17 (g / n < 1 bit
+# per row) carried 11 such series, and the day-boundary re-selection of the
+# earned set ended 8 H-period acc_alarm series. A reader that checks series
+# cadence (eval runner's stale checker, gate 15) asks series_owed().
+EARNED_ONLY_SERIES = frozenset({"behavior.wh", "behavior.wh.q", "behavior.rhythm",
+                                "behavior.cp.prob", "behavior.cp.onset",
+                                "behavior.cusum_state", "behavior.acc_alarm"})
+
+
+def series_owed(store: Any, s: str, e: str, name: str,
+                config: Optional[Mapping[str, Any]]) -> bool:
+    """False when series `name` of entity e is not owed this tick under the
+    bounded contract: an earned-only engine's per-IP series of an IP outside
+    E_t(s) (P15's sets published). Always True in full mode, for class /
+    pseudo keys and for every other series."""
+    if not bounded(config) or name not in EARNED_ONLY_SERIES:
+        return True
+    if not e or e.startswith(("class:", "__")):
+        return True
+    ee = earned_entities(store, s, config)
+    return ee is None or e in ee

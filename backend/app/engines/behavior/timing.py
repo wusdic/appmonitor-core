@@ -733,7 +733,7 @@ class TimingEngine(Engine):
         recs: List[_Rec] = []
         for s in store.systems():
             for e in PA.entities(store, s, now, ctx.config):
-                if not PA.periodic_candidate(store, s, e, ctx.config):
+                if not PA.periodic_candidate(store, s, e, ctx.config, TM.MODEL):
                     continue                  # bounded mode: machine-like IPs only (§10.3)
                 rec = self._entity(ctx, s, e, now, dt, daypart, alpha, frontier, r2_failed)
                 if rec is not None:

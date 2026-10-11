@@ -47,8 +47,16 @@ DAYS = 4.0
 # history is kept per summary scale, unrecorded days are classed from the
 # calendar (test_p04_round6.py): model.ptree re-recorded (round 5:
 # 86afb654e21302a504e89c9fffadbbe0851c17fc); model.attrsel unchanged.
-GOLDEN = {"model.ptree": "7e48735c1965a0f0a0578c57b7cc65ffd03b1be1",
-          "model.attrsel": "4b8e9e79e81bdbd30e5fba08d9c2d8c66f15ddee"}
+# Round 6, second change (tree owner): a held-out test judges 'when' on checks
+# spanning a day (pnode.HoldRecord trailing-day bins, tests/lib/test_pnode_round6.py):
+# model.ptree re-recorded (first round-6 digest 7e48735c1965a0f0a0578c57b7cc65ffd03b1be1)
+# and P05's redundancy is judged on the rows where the dependent attribute is
+# present too (tests/lib/test_pselect_round6.py): hdr.content-type is no longer
+# 'redundant' with body.fmt on this stream (and body.kv.dept / period / items[]
+# become split candidates): model.attrsel re-recorded (4b8e9e79e81bdbd30e5fba08d9c2d8c66f15ddee).
+# The bounded P05 pools / value groups and P04's pair index do not alter it.
+GOLDEN = {"model.ptree": "94de57ce3c306a316cb140b7c6b9d5a6f37c2ace",
+          "model.attrsel": "eaf0805815f991e9c5aa07624c0f956b0ce663bd"}
 
 
 def _dec(v: Any) -> Any:

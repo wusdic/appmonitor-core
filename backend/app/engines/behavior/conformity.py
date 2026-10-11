@@ -213,6 +213,7 @@ def _route_key(get: Callable[[str], Any]) -> Optional[str]:
 
 
 TYPES = ("who", "when", "content", "seq", "novel")
+P_COL = {t_: f"p_{t_}" for t_ in TYPES}
 DETS = {t: f"conf_{t}" for t in TYPES}
 CONF_SERIES = "behavior.conf"
 STATE = "model.pconf_state"
@@ -812,6 +813,7 @@ class _TreeCtx:
         self.pwin = MP.get_model(store, key, MP.PWIN)
         self.pflow = MP.get_model(store, key, MP.PFLOW)
         self.flow = getattr(self.pflow, "state", None)
+        self.pflow_map = isinstance(self.pflow, Mapping)
         wg = MP.who_groups(store)
         self.ip2g = wg.get("ip2g") or {}
         self.groups = wg.get("groups") or {}
@@ -828,6 +830,8 @@ class _TreeCtx:
         self.info: Dict[Tuple[int, int], _NodeInfo] = {}
         self.content_nodes: Dict[int, Set[int]] = {}
         self.whokeys: Dict[str, List[Any]] = {}
+        self.cmemo: Dict[Tuple[Any, ...], Tuple[float, List[str]]] = {}
+        self.pmemo: Dict[Tuple[Any, ...], Any] = {}
 
     def successor_of(self, route_key: Optional[str], ip: str, lday: int) -> Optional[str]:
         """lib/pdfg.successor_candidate for P03's local day (P10's route ledger
@@ -842,6 +846,92 @@ class _TreeCtx:
             except Exception:                       # pragma: no cover - a malformed ledger never blocks scoring
                 c[ck] = None
         return c[ck]
+
+    def check(self, typ: str, rec: Any, v: Any) -> Tuple[float, List[str]]:
+        """_check(typ, rec, v, None), memoised per tree context (round 6,
+        cost): a content check is a pure function of the fitted record and the
+        value (callers only read the flags), and the values of a tick recur
+        (status codes, sizes of the same pages, user names, form keys). The
+        records are held by the context's node cache for its lifetime, so
+        their ids are unique keys; an unhashable value is checked directly."""
+        try:
+            k = (id(rec), typ, v.__class__, v)
+            r = self.cmemo.get(k)
+        except TypeError:
+            return _check(typ, rec, v, None)
+        if r is None:
+            r = self.cmemo[k] = _check(typ, rec, v, None)
+        return r
+
+    def content_p(self, ni: "_NodeInfo", a: str, typ: str, rec: Any, v: Any
+                  ) -> Optional[Tuple[float, List[str], bool]]:
+        """One content record of a node checked on value v: (p, flags,
+        evolving) or None when the record cannot speak (p_cur NaN) - p is the
+        current record's p anchored to the node's reference snapshot of the
+        same record (SC.dual_anchor; the max of the two for an evolving,
+        coordinated attribute). A pure function of the node's records (fixed
+        for the tick) and v: memoised per (node, attribute, value) for the
+        tree context (round 6, cost: one lookup per record and event instead
+        of two checks, the reference lookup and the anchoring)."""
+        try:
+            k = (id(ni), a, v.__class__, v)
+            r = self.pmemo.get(k, False)
+        except TypeError:
+            k, r = None, False
+        if r is not False:
+            return r
+        p_cur, fl = self.check(typ, rec, v)
+        if _nan(p_cur):
+            r = None
+        else:
+            mname = MP.PBOUNDS if typ == "num" else MP.PGRAMMAR
+            rk = (mname, a)
+            rr = ni.refc.get(rk, False)
+            if rr is False:
+                rr = _ref_record(ni.nd, mname, a)
+                if rr and typ == "num":
+                    rr = _NumFast(rr)
+                ni.refc[rk] = rr
+            p_ref = self.check(typ, rr, v)[0] if rr else NAN
+            if a in ni.evolving:
+                r = (max(p_cur, p_ref) if not _nan(p_ref) else p_cur, fl, True)
+            else:
+                r = (SC.dual_anchor(p_cur, p_ref), fl, False)
+        if k is not None:
+            self.pmemo[k] = r
+        return r
+
+    def seq_coarse(self, a: Optional[int], b: Optional[int]) -> float:
+        """seq_coarse_p(flow, a, b, now), memoised per tree context (a pure
+        function of P10's state, fixed for the tick, and of (a, b))."""
+        memo = self.__dict__.setdefault("_coarse", {})
+        k = (a, b)
+        r = memo.get(k)
+        if r is None:
+            r = memo[k] = seq_coarse_p(self.flow, a, b, self.now)
+        return r
+
+    def method(self, route: Optional[str]) -> str:
+        """The upper-case method word of a route key ('' otherwise), per route
+        and tick."""
+        memo = self.__dict__.setdefault("_meth", {})
+        r = memo.get(route)
+        if r is None:
+            r = memo[route] = route.split()[0] if route and route.split()[0].isupper() else ""
+        return r
+
+    def seq_scores(self, g: str, a_key: Optional[str], b_key: str, bits: int) -> Dict[str, Any]:
+        """lib/pdfg.seq_scores at the tick's time, memoised per tree context
+        (round 6, cost): P03 scores a tick against P10's state as of its last
+        pass, which no P03 call changes, so the scores of one (scope,
+        predecessor, action, session Bloom bits) are the same for every event
+        of the tick that has them (callers only read the returned dict)."""
+        k = (g, a_key, b_key, bits)
+        memo = self.__dict__.setdefault("_seq", {})
+        r = memo.get(k)
+        if r is None:
+            r = memo[k] = DF.seq_scores(self.pflow, g, a_key, b_key, bits, self.now)
+        return r
 
     def _when_counts(self, nd: Any, daytype: int) -> Tuple[np.ndarray, float]:
         """(slot mass, evidence) of a node for a day type, all day types when
@@ -986,8 +1076,29 @@ class _TreeCtx:
     def sensitive(self, route: Optional[str]) -> bool:
         if not route or not self.sens:
             return False
-        path = route.split()[-1]
-        return any(p.search(path) for p in self.sens)
+        memo = self.__dict__.setdefault("_sens", {})
+        r = memo.get(route)
+        if r is None:
+            path = route.split()[-1]
+            r = memo[route] = any(p.search(path) for p in self.sens)
+        return r
+
+    def route_node(self, kind: int, nd: Any) -> bool:
+        """Whether the node's context fixes a route value (an action node), per
+        node and tick."""
+        k = ("rn", kind, nd.id)
+        r = self.info.get(k)
+        if r is None:
+            r = self.info[k] = any(c[0] in ROUTE_ATTRS and not c[3] for c in nd.ctx)
+        return r
+
+    def bloom(self, key: str) -> int:
+        """DF.bloom_bits(DF.h64(key)), per key and tick."""
+        memo = self.__dict__.setdefault("_bloom", {})
+        r = memo.get(key)
+        if r is None:
+            r = memo[key] = DF.bloom_bits(DF.h64(key))
+        return r
 
     # ------------------------------------------------------------ node info
     def node_info(self, kind: int, tree: Any, nid: int) -> _NodeInfo:
@@ -1009,9 +1120,12 @@ class _TreeCtx:
         ni.who_ref = set((nd.ref or {}).get("who") or []) if nd.ref else None
         # evolving (coordinated) attributes
         ev = nd.meta.get("evolving") or {}
-        who_top = len(nd.who.heavy_set(0, t)[0]) or 1
-        need = max(2, math.ceil(0.5 * who_top))
-        ni.evolving = {a for a, st in ev.items() if len(st.get("ips") or ()) >= need}
+        if ev:                                  # (the heavy set is read only when there is one)
+            who_top = len(nd.who.heavy_set(0, t)[0]) or 1
+            need = max(2, math.ceil(0.5 * who_top))
+            ni.evolving = {a for a, st in ev.items() if len(st.get("ips") or ()) >= need}
+        else:
+            ni.evolving = set()
         ni.when_ok = None
         went = PW.lookup(self.pwin, kind, nid)
         ni.wins = (went or {}).get("when") if went and went.get("status") == "fitted" else None
@@ -1285,23 +1399,79 @@ class _NumFast:
     rebuilding the grid dominated P03's time). Same maths; checked against
     p_value in tests/engines/test_p03_conformity.py."""
 
-    __slots__ = ("rec", "lg", "qg", "ql", "ps", "lo", "hi", "vmin", "vmax", "n", "rng", "th", "tl", "ok")
+    __slots__ = ("rec", "lg", "qg", "ql", "ps", "lo", "hi", "vmin", "vmax", "n", "rng", "th", "tl", "ok", "preds",
+                 "fl_on", "fl_lo", "fl_hi", "fl_tol", "fl_m", "fl_int", "fl_p1", "fl_p0")
 
     def __init__(self, rec: Mapping[str, Any]) -> None:
         self.rec = rec
         self.lg = bool(rec.get("log"))
         qg = rec.get("qgrid") or []
-        self.qg = np.asarray(qg, dtype=np.float64)
-        self.ok = self.qg.size >= 2 and bool(np.all(np.isfinite(self.qg))) and "band98" in rec
-        self.ps = np.linspace(0.0, 1.0, self.qg.size) if self.ok else None
-        self.ql = self.qg.tolist()
+        # (round 6, cost) the grid as Python floats without the numpy round
+        # trip (records are prepared per node and tick: ~25 us each with
+        # asarray / isfinite / linspace); the same values as
+        # np.asarray(qg, float64).tolist(), which stays the fallback for a grid
+        # float() does not take (None -> nan in numpy). `ps` (the grid's
+        # quantile levels) was never read and is no longer built.
+        if isinstance(qg, list) and all(x.__class__ is float for x in qg):
+            ql = list(qg)
+        else:
+            ql = np.asarray(qg, dtype=np.float64).tolist()
+        self.qg = ql
+        self.ok = len(ql) >= 2 and all(math.isfinite(x) for x in ql) and "band98" in rec
+        self.ps = None
+        self.ql = ql
         self.n = float(rec.get("n_c", NAN))
         self.rng = rec.get("range")
         self.th, self.tl = rec.get("tail_hi"), rec.get("tail_lo")
+        self.preds: Optional[Dict[bool, Any]] = None
         if self.ok:
             self.lo = PB._fwd(rec["band98"][0], self.lg)
             self.hi = PB._fwd(rec["band98"][1], self.lg)
-            self.vmin, self.vmax = float(self.qg[0]), float(self.qg[-1])
+            self.vmin, self.vmax = ql[0], ql[-1]
+        self._prep_floor(rec)
+
+    def _prep_floor(self, rec: Mapping[str, Any]) -> None:
+        """The record-only parts of _in_range_floor, computed once per record
+        and tick (round 6, cost: the per-event dict reads and conversions were
+        a third of the numeric check); floor() is _in_range_floor with them."""
+        self.fl_on = False
+        try:
+            rng = rec.get("range")
+            n_rng = rec.get("n_rng")
+            if not rng or n_rng is None or not (float(n_rng) >= 1.0):
+                return
+            lo, hi = float(rng[0]), float(rng[1])
+            tol = 1e-9 * max(1.0, abs(lo), abs(hi))
+            self.fl_lo, self.fl_hi, self.fl_tol = lo, hi, tol
+            self.fl_m = RANGE_MARGIN * max(hi - lo, tol)
+            self.fl_int = all(abs(z - round(z)) <= 1e-6 * max(1.0, abs(z)) for z in (lo, hi))
+            self.fl_p1 = SC.conformal_rank_p(1.0, float(n_rng))
+            self.fl_p0 = SC.conformal_rank_p(0.0, float(n_rng))
+        except (TypeError, ValueError, OverflowError):
+            self.fl_on = None                    # the reference function decides (and raises) as before
+            return
+        self.fl_on = True
+
+    def floor(self, v: Any, p: float) -> float:
+        """_in_range_floor(self.rec, v, p) (same comparisons and values)."""
+        on = self.fl_on
+        if on is None:
+            return _in_range_floor(self.rec, v, p)
+        if _nan(p) or not on:
+            return p
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return p
+        lo, hi, tol = self.fl_lo, self.fl_hi, self.fl_tol
+        if lo - tol <= x <= hi + tol:
+            return max(float(p), self.fl_p1)
+        m = self.fl_m
+        if abs(x - round(x)) <= 1e-6 * max(1.0, abs(x)) and self.fl_int:
+            m = max(m, 1.0)                  # integer data: one resolution step (bytes 516 vs max 515)
+        if lo - m <= x <= hi + m:
+            return max(float(p), self.fl_p0)
+        return p
 
     def p(self, v: Any) -> Tuple[float, List[str]]:
         flags: List[str] = []
@@ -1320,7 +1490,8 @@ class _NumFast:
         nn = self.n
         if not (nn >= PB.N_MIN) or not self.ok:
             return NAN, flags
-        y = PB._fwd(x, self.lg)
+        # PB._fwd(x, lg), x already a float
+        y = (math.log(x) if x > 0 else -math.inf) if self.lg else x
         if not math.isfinite(y):
             return SC.conformal_rank_p(0, nn), flags
         if self.lo <= y <= self.hi:
@@ -1336,19 +1507,45 @@ class _NumFast:
                 x0, x1 = ql[j - 1], ql[j]
                 m1 = len(ql) - 1
                 F = ((j - 1) + ((y - x0) / (x1 - x0) if x1 > x0 else 0.0)) / m1
-            return SC.numeric_p(F), flags
+            # SC.numeric_p(F) (F is a finite float here)
+            F = min(1.0, max(0.0, F))
+            return float(min(1.0, 2.0 * min(F, 1.0 - F))), flags
         if y > self.hi:
             if self.th:
                 th = self.th
-                return SC.tail_p(x, th[0], th[1], th[2], PB.TAIL_MASS, k=_tail_k(th),
-                                 x_max=self._extreme(True)), flags
+                k = _tail_k(th)
+                return SC.tail_p(x, th[0], th[1], th[2], PB.TAIL_MASS, k=k,
+                                 x_max=self._extreme(True), pred=self._pred(True, k)), flags
             return SC.conformal_rank_p(0.0 if y > self.vmax else 0.01 * nn, nn), flags
         if self.tl:
             tl = self.tl
             xm = self._extreme(False)
-            return SC.tail_p(-x, -tl[0], tl[1], tl[2], PB.TAIL_MASS, k=_tail_k(tl),
-                             x_max=None if xm is None else -xm), flags
+            k = _tail_k(tl)
+            return SC.tail_p(-x, -tl[0], tl[1], tl[2], PB.TAIL_MASS, k=k,
+                             x_max=None if xm is None else -xm, pred=self._pred(False, k)), flags
         return SC.conformal_rank_p(0.0 if y < self.vmin else 0.01 * nn, nn), flags
+
+    def _pred(self, upper: bool, k: Optional[float]) -> Optional[Any]:
+        """The record's predictive GPD tail prepared once (SC.GpdPredictive with
+        the (xi, sigma, k, z_max) tail_p would pass to gpd_predictive_sf)."""
+        if k is None or not (k >= SC.PRED_K_MIN):
+            return None
+        pr = self.preds
+        if pr is None:
+            pr = self.preds = {}
+        g = pr.get(upper)
+        if g is None:
+            if upper:
+                th = self.th
+                u, xm = th[0], self._extreme(True)
+                g = SC.GpdPredictive(th[1], th[2], k, None if xm is None else xm - u)
+            else:
+                tl = self.tl
+                u, xm = -tl[0], self._extreme(False)
+                xm = None if xm is None else -xm
+                g = SC.GpdPredictive(tl[1], tl[2], k, None if xm is None else xm - u)
+            pr[upper] = g
+        return g
 
     def _extreme(self, upper: bool) -> Optional[float]:
         """The largest (smallest) observed value in natural units: the record's
@@ -1376,7 +1573,7 @@ def _check(typ: str, rec: Any, v: Any, num: Any) -> Tuple[float, List[str]]:
     if typ == "num":
         if isinstance(rec, _NumFast):
             p, fl = rec.p(v)
-            return _in_range_floor(rec.rec, v, p), fl
+            return rec.floor(v, p), fl
         p, fl = PB.p_value(rec, v, num=num)
         return _in_range_floor(rec, v, p), fl
     if typ == "set":
@@ -1438,19 +1635,31 @@ class ConformityEngine(Engine):
         t0 = time.perf_counter()
         n = 0
         stats: Dict[str, Any] = {}
+        tz = PW.tz_offset(ctx.config, now)
         for s in sorted(set(store.batch_systems(EV.EVT_BATCH)) | set(store.batch_systems(EV.EVT_WIN))):
-            key = MP.tree_key(store, s)
-            tc = _TreeCtx(self, store, s, key, ctx.config, now)
-            self._hour_roll(st, store, s, now, tc.tz, k_int)
-            agg: Dict[str, Dict[str, Any]] = {}
-            cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]] = []
+            self._hour_roll(st, store, s, now, tz, k_int)
+            # (round 6, cost) the batches retained for D + 1 ticks keep every
+            # system of the last hour in the list: the tree context (models,
+            # hierarchies) is built only for a system with a new non-empty
+            # batch - O-servers (100 systems, ~24 events a tick) built ~85 a
+            # tick for ~11 that had events
+            todo: List[Tuple[str, float, Any]] = []
             for series in (EV.EVT_BATCH, EV.EVT_WIN):
                 last = st.last_batch.get((s, series), -math.inf)
                 for ts_b, b in store.batches_since(s, series, last):
                     st.last_batch[(s, series)] = ts_b
                     if b.n == 0:
                         continue
-                    n += self._score_batch(st, tc, store, s, ts_b, b, series, agg, cands)
+                    todo.append((series, ts_b, b))
+            if not todo:
+                stats[s] = {"ips": 0, "violations": 0}
+                continue
+            key = MP.tree_key(store, s)
+            tc = _TreeCtx(self, store, s, key, ctx.config, now)
+            agg: Dict[str, Dict[str, Any]] = {}
+            cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]] = []
+            for series, ts_b, b in todo:
+                n += self._score_batch(st, tc, store, s, ts_b, b, series, agg, cands)
             self._write_scores(store, s, now, dt, agg)
             cands.sort(key=lambda x: (-x[0], x[1]))  # highest severity, then smallest p
             for _, _, build in cands[:self.v_max]:
@@ -1583,8 +1792,7 @@ class ConformityEngine(Engine):
                 if v:
                     key = f"{route_key}#v{v}"
                 for nid in path:
-                    nd = tree.nodes[nid]
-                    if any(c[0] in ROUTE_ATTRS and not c[3] for c in nd.ctx):
+                    if tc.route_node(kind, tree.nodes[nid]):
                         num["act_node"] = float(nid)
                         break
             res["act"] = key
@@ -1600,15 +1808,15 @@ class ConformityEngine(Engine):
             else:
                 a_key, bits = None, 0
             res["prev"] = a_key
-            if tc.flow is not None and isinstance(tc.pflow, Mapping):
+            if tc.flow is not None and tc.pflow_map:
                 g = tc.ip2g.get(ip)
-                sc = DF.seq_scores(tc.pflow, str(g) if g is not None else DF.STAR, a_key, key, bits, t)
+                sc = tc.seq_scores(str(g) if g is not None else DF.STAR, a_key, key, bits)
                 p_seq = float(sc.get("p_seq", NAN))
                 p_tr = float(sc.get("p_trans", NAN))
                 if not _nan(p_tr) and p_tr <= SEQ_COARSE_P:
                     # (round 4) a content-variant hop or a revisit merged into the
                     # session is not a sequence anomaly: re-score at the route level
-                    pc = seq_coarse_p(tc.flow, sc.get("a"), sc.get("b"), t)
+                    pc = tc.seq_coarse(sc.get("a"), sc.get("b"))
                     if not _nan(pc) and pc > p_tr:
                         ps_ = [x for x in (pc, float(sc.get("p_req", NAN))) if not _nan(x)]
                         p_seq = float(min(1.0, 2.0 * min(ps_)))
@@ -1616,7 +1824,9 @@ class ConformityEngine(Engine):
                     seq_missing = [tc.flow.acts.key_of(a) or "?" for a in sc["missing"]]
                     res["p_req"] = sc.get("p_req")
                 acts = tc.flow.acts
-                k10 = DF.route_key(get)                  # the key P10 itself computes
+                # the key P10 itself computes (DF.route_key(get)) is route_key:
+                # _route_key reads ABSENT as None exactly as pdfg's getter does
+                k10 = route_key
                 led = st.led()
                 lday = int((ts + tc.tz) // DAY)
                 le = led.peek(s, route_key)
@@ -1648,7 +1858,14 @@ class ConformityEngine(Engine):
                             novel_coord = True
                             flags.add("group_action")
                 led.add(s, route_key, ip, g_ip, lday)
-            overlay[sess_k] = [None, ts, key, b"", bits | DF.bloom_bits(DF.h64(key))]
+            # (round 6) a content variant also marks its bare route in the session's
+            # Bloom set, as P10's session pass does (workflow.py `hb`): a requirement
+            # mined before the predecessor's node split names the bare route, and a
+            # predecessor scored in the SAME batch as its successor read as missing
+            # while its variant was too young for P10's action dictionary (pack O
+            # seed 1, day 7: 'POST /comment without POST /login' MEDIUM findings)
+            hb = tc.bloom(key) | (tc.bloom(route_key) if key != route_key else 0)
+            overlay[sess_k] = [None, ts, key, b"", bits | hb]
         # ---- novelty: `other` branch of a confident route split (without P10's dictionary)
         if tree is not None and tc.flow is None:
             for par, child in zip(path, path[1:]):
@@ -1700,23 +1917,12 @@ class ConformityEngine(Engine):
                     if v is EV.ABSENT:
                         continue
                     seen_attr.add(a)
-                    p_cur, fl = _check(typ, rec, v, None)
-                    if _nan(p_cur):
+                    r_ = tc.content_p(ni, a, typ, rec, v)
+                    if r_ is None:
                         continue
-                    mname = MP.PBOUNDS if typ == "num" else MP.PGRAMMAR
-                    rk = (mname, a)
-                    rr = ni.refc.get(rk, False)
-                    if rr is False:
-                        rr = _ref_record(nd, mname, a)
-                        if rr and typ == "num":
-                            rr = _NumFast(rr)
-                        ni.refc[rk] = rr
-                    p_ref = _check(typ, rr, v, None)[0] if rr else NAN
-                    if a in ni.evolving:
-                        p = max(p_cur, p_ref) if not _nan(p_ref) else p_cur
+                    p, fl, evo = r_
+                    if evo:
                         cap_low.add("content")
-                    else:
-                        p = SC.dual_anchor(p_cur, p_ref)
                     ps.append(p)
                     flags.update(fl)
                     if p < worst[0]:
@@ -2001,7 +2207,7 @@ class ConformityEngine(Engine):
         if not _nan(p_int):
             pt["content"] = p_int if _nan(pt["content"]) else min(1.0, 2.0 * min(pt["content"], p_int))
         for k, v in pt.items():
-            num[f"p_{k}"] = v
+            num[P_COL[k]] = v
         p_ev = SC.event_p(pt.values())
         num["p_ev"] = p_ev
         num["vtype"] = float(SC.vtype_mask(pt, VTYPE_P))
@@ -2031,8 +2237,10 @@ class ConformityEngine(Engine):
         if readdr_src is not None and "readdress_candidate" in bind_fl:
             res["readdr"] = readdr_src
         # ---- per (s, ip) aggregation for the tick scores
-        a = agg.setdefault(ip, {"p": {t_: 1.0 for t_ in TYPES}, "n": {t_: 0 for t_ in TYPES},
-                                "axes": {t_: set() for t_ in TYPES}})
+        a = agg.get(ip)
+        if a is None:
+            a = agg[ip] = {"p": {t_: 1.0 for t_ in TYPES}, "n": {t_: 0 for t_ in TYPES},
+                           "axes": {t_: set() for t_ in TYPES}}
         for k, v in pt.items():
             if _nan(v):
                 continue
@@ -2070,7 +2278,7 @@ class ConformityEngine(Engine):
                   res: Mapping[str, Any], a: Dict[str, Any],
                   cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]]) -> None:
         t = tc.now
-        method = route_key.split()[0] if route_key and route_key.split()[0].isupper() else ""
+        method = tc.method(route_key)
         write = method in WRITE
         sensitive = tc.sensitive(route_key)
         who_d = details.get("who")

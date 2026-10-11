@@ -826,18 +826,46 @@ def ks_uniform(ps: np.ndarray) -> float:
     return max(d_plus, d_minus)
 
 
-def health_weight(ks_d: float, rate_ratio: float) -> float:
+# Round 6: hysteresis of the health weight. A detector's weight is halved when
+# KS D > KS_MAX_D or its rate ratio leaves RATE_RATIO_BAND, and restored only
+# once D <= KS_RESTORE_D and the ratio is back inside RATE_RESTORE_BAND. The KS
+# D of HEALTH_KS_CAP = 2048 null p-values has a sampling sd of ~0.019, so a
+# detector whose D sits near 0.05 crossed the single threshold back and forth
+# at the hourly re-evaluation: in pack A seed 0 (round 5 code) marg_int,
+# identity, budget_vol / breadth, bocpd, seq, dwell and jsd flipped between
+# 0.5 and 1 hour by hour. weight_mult enters B25's fusion of EVERY entity of
+# the system, so each flip redefined the fused statistic that the meta rings
+# hold - learnt under other weights - and the H-stream evidence CUSUM of an
+# ordinary host (erp-prod 10.20.4.32) read the redefinition as evidence: q_inst_h
+# 1e-5 on hours whose detector p-values were those of the other mode's 3e-3,
+# S_h latched for 21 h and a MEDIUM false alarm opened.
+KS_RESTORE_D = 0.035
+RATE_RESTORE_BAND = (0.6, 1.0 / 0.6)
+
+
+def health_weight(ks_d: float, rate_ratio: float, prev: Optional[float] = None) -> float:
     """weight_mult for behavior.calib_health: 0.5 if ks_d > KS_MAX_D or rate_ratio
     outside RATE_RATIO_BAND, else 1.0 (NaN inputs -> 1.0).
 
     Each NaN only neutralises its own check: (NaN, 5.0) is still 0.5.
+    `prev` (round 6): the detector's current weight. A halved detector (prev
+    < 1) is restored only when every finite check is back inside its restore
+    band (D <= KS_RESTORE_D, ratio in RATE_RESTORE_BAND): hysteresis, so the
+    weight does not follow the sampling noise of D around the threshold.
     """
     kd = _f(ks_d)
     rr = _f(rate_ratio)
     lo, hi = RATE_RATIO_BAND
     bad_ks = kd > KS_MAX_D                      # False for NaN
     bad_rate = rr == rr and not (lo <= rr <= hi)
-    return 0.5 if (bad_ks or bad_rate) else 1.0
+    if bad_ks or bad_rate:
+        return 0.5
+    pv = _f(prev) if prev is not None else 1.0
+    if pv == pv and pv < 1.0:
+        rlo, rhi = RATE_RESTORE_BAND
+        if kd > KS_RESTORE_D or (rr == rr and not (rlo <= rr <= rhi)):
+            return 0.5                          # inside the alarm band, not yet restored
+    return 1.0
 
 
 # ------------------------------------------------------------------ seeding

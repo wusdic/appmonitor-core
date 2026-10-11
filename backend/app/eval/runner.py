@@ -375,7 +375,12 @@ class _Recorder:
         self.layer_of = {e.name: e.layer for e in self.engines}
         self.idx = {n: i for i, n in enumerate(self.names)}
         self._tick_engine = np.zeros(len(self.names))
+        self._tick_cpu = np.zeros(len(self.names))
         self.engine_rows: List[np.ndarray] = []
+        # (round 6) per-engine THREAD CPU per tick beside the wall clock: the
+        # evaluation machine runs several heavy processes on 4 cores, and PG4
+        # asks for the cost on one core (pscale.pcore_cpu cpu_ms)
+        self.engine_cpu_rows: List[np.ndarray] = []
         self.tick_rows: List[Tuple[float, float, int, int, float, float, float, float, float,
                                    float, float]] = []
         self.exceptions: List[Dict[str, Any]] = []
@@ -387,6 +392,7 @@ class _Recorder:
 
             def wrapped(ctx: Any, observations: Any = None, _orig=orig, _eng=eng) -> int:
                 t0 = time.perf_counter()
+                c0 = time.thread_time()
                 try:
                     return _orig(ctx, observations)
                 except Exception as exc:  # strict mode re-raises out of safe_run
@@ -401,12 +407,20 @@ class _Recorder:
                         raise RunAborted(f"engine {_eng.name} raised: {exc}") from exc
                     return 0
                 finally:
-                    self._tick_engine[self.idx[_eng.name]] += time.perf_counter() - t0
+                    i_ = self.idx[_eng.name]
+                    self._tick_engine[i_] += time.perf_counter() - t0
+                    tc = getattr(self, "_tick_cpu", None)
+                    if tc is not None:
+                        tc[i_] += time.thread_time() - c0
 
             eng.safe_run = wrapped  # instance attribute shadows the method
 
     def begin_tick(self) -> None:
         self._tick_engine[:] = 0.0
+        if getattr(self, "_tick_cpu", None) is None:      # a checkpoint of older code
+            self._tick_cpu = np.zeros(len(self.names))
+            self.engine_cpu_rows = []
+        self._tick_cpu[:] = 0.0
 
     def end_tick(self, now: float, dt: float, phase: int, training: bool, gen_s: float,
                  pipe_s: float, collect_s: float) -> None:
@@ -416,6 +430,7 @@ class _Recorder:
         self.tick_rows.append((now, dt, phase, int(training), gen_s * 1000.0, pipe_s * 1000.0,
                                *layer_ms, collect_s * 1000.0))
         self.engine_rows.append(per.astype(np.float32).copy())
+        self.engine_cpu_rows.append((self._tick_cpu * 1000.0).astype(np.float32))
 
     def timings(self) -> Dict[str, Any]:
         cols = ["ts", "dt", "phase", "training", "gen_ms", "pipeline_ms",
@@ -423,8 +438,12 @@ class _Recorder:
         arr = np.asarray(self.tick_rows, dtype=np.float64).reshape(-1, len(cols))
         eng = (np.vstack(self.engine_rows) if self.engine_rows
                else np.zeros((0, len(self.names)), dtype=np.float32))
+        cpu_rows = getattr(self, "engine_cpu_rows", None) or []
+        cpu = (np.vstack(cpu_rows) if len(cpu_rows) == len(self.engine_rows) and cpu_rows
+               else None)
         return {"columns": cols, "ticks": arr, "engine_names": list(self.names),
-                "engine_layers": [self.layer_of[n] for n in self.names], "engine_ms": eng}
+                "engine_layers": [self.layer_of[n] for n in self.names], "engine_ms": eng,
+                "engine_cpu_ms": cpu}
 
 
 class _StaleChecker:
@@ -448,9 +467,10 @@ class _StaleChecker:
     # (pack E seed 0: three xsys series flagged in the 900-s warm-up).
     WINDOWED = {"behavior.xsys": 3600.0}
 
-    def __init__(self) -> None:
+    def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         self.found: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         self._name_cache: Dict[Tuple[str, str], Tuple[Any, List[Tuple[str, str]]]] = {}
+        self.config = config or {}
 
     def _names(self, store: MetricStore, s: str, e: str) -> List[Tuple[str, str]]:
         """The entity's lib-3 series, re-scanned only when its name sets grew
@@ -499,6 +519,14 @@ class _StaleChecker:
         decision ticks has not missed one yet."""
         ts, A = store.vec_since(s, e, "feature.active", last + 1e-6)
         if not len(ts):
+            if e.startswith("class:"):
+                # a class key has no feature.active: it is active again from the
+                # first tick after `last` on which its per-tick series
+                # behavior.class was written; a class re-formed by B02 owes its
+                # H series two periods after that (round 6: bounded pack A seed 0,
+                # class:r6 flagged 5 times on re-birth)
+                cl = [m.ts for m in store.derived_tail(s, e, "behavior.class", 64) if m.ts > last]
+                return bool(cl) and now - min(cl) > 2.0 * period + 1e-6
             return True
         a = np.asarray(A, dtype=np.float64).reshape(len(ts), -1)[:, 0]
         on = np.flatnonzero(a >= 0.5)
@@ -511,6 +539,10 @@ class _StaleChecker:
             from ..engines.behavior.lib import m_class
         except Exception:  # pragma: no cover - lib is present in every checkout
             m_class = None
+        try:
+            from ..engines.behavior.lib import pactive as PA
+        except Exception:  # pragma: no cover
+            PA = None
         for s in store.systems():
             # a class key that no longer exists (dissolved role, empty pool)
             # legitimately stops being written
@@ -529,6 +561,10 @@ class _StaleChecker:
                 for kind, n in names:
                     last = lw[n]
                     if last is None or now - last <= 2.0 * dt + 1e-6:
+                        continue
+                    # bounded mode (progressive.md §10.2): an earned-only engine's
+                    # per-IP series ends by design when P15 demotes the IP
+                    if PA is not None and not PA.series_owed(store, s, e, n, self.config):
                         continue
                     if n in self.WINDOWED:
                         if self._window_overdue(store, s, e, last, now, dt, self.WINDOWED[n]):
@@ -1072,7 +1108,7 @@ def run_pack(pack_name: Any, seed: int, registry_factory: Optional[Callable] = N
     pipeline = Pipeline(store, registry, window_s=int(plan[0].dt), config=config)
     gen = _make_generator(pack, seed, generator_factory)
     rec = _Recorder(registry, on_error)
-    stale = _StaleChecker()
+    stale = _StaleChecker(config)
     col = _Collector(store)
     snapper = _DaySnapper(pack)
 

@@ -145,7 +145,7 @@ def run_pack_resumable(pack: Any, seed: int, ckpt: str, *, segment_s: float = 18
         gen = R._make_generator(p, seed, None)
         st = {"pack": p, "plan": plan, "config": config, "store": store, "registry": registry,
               "pipeline": pipeline, "gen": gen, "rec": R._Recorder(registry, "record"),
-              "stale": R._StaleChecker(), "col": R._Collector(store), "snapper": R._DaySnapper(p),
+              "stale": R._StaleChecker(config), "col": R._Collector(store), "snapper": R._DaySnapper(p),
               "result": R.RunResult(pack=str(getattr(p, "name", pack)), seed=int(seed), strict=True,
                                     config=R._jsonable(config), phases=[vars(x).copy() for x in plan],
                                     disabled_engines=[]),
@@ -156,6 +156,7 @@ def run_pack_resumable(pack: Any, seed: int, ckpt: str, *, segment_s: float = 18
     rec, stale, col, snapper = st["rec"], st["stale"], st["col"], st["snapper"]
     p00 = next((e for e in st["registry"].ordered() if e.name == "raw.event"), None)
     p04 = next((e for e in st["registry"].ordered() if e.name == "behavior.pattern_tree"), None)
+    p03 = next((e for e in st["registry"].ordered() if e.name == "behavior.conformity"), None)
     wall0 = float(st["wall_s"])
     t_seg = time.perf_counter()
 
@@ -195,8 +196,11 @@ def run_pack_resumable(pack: Any, seed: int, ckpt: str, *, segment_s: float = 18
             st["tap_events"].append(_org_events(gen) - e0)
             ls = (getattr(p00, "last_stats", None) or {}) if p00 is not None else {}
             l4 = (getattr(p04, "last_stats", None) or {}) if p04 is not None else {}
+            l3 = (getattr(p03, "last_stats", None) or {}) if p03 is not None else {}
+            # (round 6) 4th column: the rows P03 itself scored (pscale.pcore_cpu)
             st["tap_batch"].append((float(ls.get("events", 0) or 0), float(ls.get("learned", 0) or 0),
-                                    float(l4.get("learned", 0) or 0) if p04 is not None else float("nan")))
+                                    float(l4.get("learned", 0) or 0) if p04 is not None else float("nan"),
+                                    float(l3.get("events", 0) or 0) if p03 is not None else float("nan")))
             if not ph.training:
                 st["scen_ticks"].append(now)
                 col.on_tick(now, ph.dt, record_series=record_series)

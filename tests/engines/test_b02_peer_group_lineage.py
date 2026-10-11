@@ -98,3 +98,27 @@ def test_cross_system_roles_are_global():
     rid = role_of(mc, "oa", ip(1, 0))
     assert m_class.members(w.store, "oa", rid) == [ip(1, i) for i in range(4)]
     assert w.store.profile("oa", f"class:{rid}").extra["peer_group"]["n_members_org"] == 8
+
+
+def test_role_id_survives_eligibility_churn():
+    """Round 6 (pack E seed 0, class ARI 0.755 -> 0.551): the members a role
+    was last clustered with are blocked by open incidents this run and its
+    other members, held or provisionally typed last run, are clustered
+    instead. They are the same population: the role keeps its id - no second
+    role minted for it, no class_split / transition."""
+    w = World(outlier=False)
+    eng = PeerGroupEngine()
+    inter = [ip(0, i) for i in range(4)]
+    preset(w, {"rI": inter, "rA": [ip(1, i) for i in range(4)],
+               "rB": [ip(2, i) for i in range(4)]})
+    m = w.model()
+    m["roles"]["rI"]["cluster"] = [f"{S}|{e}" for e in inter[:2]]   # last run: 2 eligible
+    w.store.put_model("__org__", "__org__", "model.class", m, version=2)
+    for e in inter[:2]:                                               # now blocked
+        w.store.put_incident(Incident(system=S, entity=e, status="open", opened=NOW,
+                                      last_seen=NOW))
+    mc = fit(w, eng)
+    assert {role_of(mc, S, e) for e in inter} == {"rI"}, {e: role_of(mc, S, e) for e in inter}
+    assert sorted(mc["roles"]["rI"]["cluster"]) == [f"{S}|{e}" for e in inter[2:]]
+    assert not events(w.store, "class_split") and not events(w.store, "class_transition")
+    assert len([r for r in mc["roles"]]) == 3

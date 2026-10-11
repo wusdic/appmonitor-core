@@ -122,7 +122,9 @@ class Tree:
               gone: Optional[Iterable[str]] = None, mass_t: Optional[float] = None) -> List[int]:
         """Path of node ids from the root to the event's leaf (§5.5.1).
         Exceptions are not entered here (P03/P04 check node.exc[ip])."""
-        gone_set = set(gone or ())
+        # (round 6) a set argument is used as is (P03 / P04 pass a set per batch;
+        # the copy per event was a P04 hot spot); membership only, never mutated
+        gone_set = gone if isinstance(gone, (set, frozenset)) else set(gone or ())
         nid = self.root
         path = [nid]
         nd = self.nodes[nid]

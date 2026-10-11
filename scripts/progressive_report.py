@@ -361,17 +361,17 @@ def render_html(rep: Mapping[str, Any]) -> str:
                  f"<td>{_fmt(g.get('value'))}</td><td>{_fmt(g.get('target'))}</td></tr>")
     p.append("</table></div>")
     p.append("<h2>Per seed</h2><div class='wrap'><table><tr><th>seed</th><th>recall@14</th><th>precision@14</th>"
-             "<th>ECE</th><th>who</th><th>when</th><th>content</th><th>bindings</th><th>workflow</th>"
+             "<th>precision@14 all claims</th><th>ECE</th><th>who</th><th>when</th><th>content</th><th>bindings</th><th>workflow</th>"
              "<th>GA+FIN bindings</th><th>ARI</th><th>pv FAR</th><th>wall s</th></tr>")
     for r in rep.get("runs") or []:
         if "error" in r:
-            p.append(f"<tr><td>{r['seed']}</td><td colspan=12 class='bad'>{_fmt(r['error'])}</td></tr>")
+            p.append(f"<tr><td>{r['seed']}</td><td colspan=13 class='bad'>{_fmt(r['error'])}</td></tr>")
             continue
         sc = r["score"]
         d14 = sc.get("pg1_day14") or {}
         c = d14.get("components") or {}
         p.append(f"<tr><td>{r['seed']}</td><td>{_fmt(d14.get('recall'))}</td><td>{_fmt(d14.get('precision'))}</td>"
-                 f"<td>{_fmt(d14.get('ece'))}</td>" + "".join(f"<td>{_fmt(c.get(k))}</td>" for k in
+                 f"<td>{_fmt(d14.get('precision_all'))}</td><td>{_fmt(d14.get('ece'))}</td>" + "".join(f"<td>{_fmt(c.get(k))}</td>" for k in
                                                                ("who", "when", "content", "bindings", "workflow"))
                  + f"<td>{_fmt(sc.get('bindings_ga_fin_day14'))}</td><td>{_fmt((sc.get('pg3') or {}).get('ari'))}</td>"
                  f"<td>{_fmt(((sc.get('pg6') or {}).get('far') or {}).get('pv_far_low'))}</td>"
@@ -428,7 +428,7 @@ def render_html(rep: Mapping[str, Any]) -> str:
     var = rep.get("variants") or []
     if var:
         p.append("<h2>Variants (O-red: never tuned on; O60: day 8 in 60-s event mode)</h2><div class='wrap'><table>"
-                 "<tr><th>pack</th><th>seed</th><th>recall@14</th><th>precision@14</th><th>ECE</th>"
+                 "<tr><th>pack</th><th>seed</th><th>recall@14</th><th>precision@14</th><th>precision@14 all claims</th><th>ECE</th>"
                  "<th>recall by day</th><th>false splits</th><th>anomalies detected</th></tr>")
         for v in var:
             sc = v.get("score") or {}
@@ -436,7 +436,8 @@ def render_html(rep: Mapping[str, Any]) -> str:
             rc = (sc.get("pg2") or {}).get("recall") or {}
             an = v.get("anomalies") or {}
             p.append(f"<tr><td>{_fmt(sc.get('pack'))}</td><td>{_fmt(v.get('seed'))}</td><td>{_fmt(d14.get('recall'))}</td>"
-                     f"<td>{_fmt(d14.get('precision'))}</td><td>{_fmt(d14.get('ece'))}</td>"
+                     f"<td>{_fmt(d14.get('precision'))}</td><td>{_fmt(d14.get('precision_all'))}</td>"
+                     f"<td>{_fmt(d14.get('ece'))}</td>"
                      f"<td>{_fmt(', '.join(f'd{k} {x:.2f}' for k, x in sorted(rc.items(), key=lambda kv: int(kv[0])) if x is not None))}</td>"
                      f"<td>{_fmt((sc.get('false_splits') or {}).get('per_system_month'))}</td>"
                      f"<td>{sum(1 for a in an.values() if a.get('detected'))}/{len(an)}</td></tr>")

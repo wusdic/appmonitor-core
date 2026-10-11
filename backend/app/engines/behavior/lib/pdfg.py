@@ -117,6 +117,13 @@ SCOPES_MAX = 32
 STAR = "*"
 NO_KEY = "∅"
 SESS_FLOOR = 256
+# (round 6) an address whose session keys INTERLEAVE carries several clients:
+# a key seen again after another key came in between, while >= KEYED_CONC
+# distinct keys were active within the session gap (FlowState.track_key)
+KEYED_CONC = 5                   # distinct session keys active on one address within the gap
+KEYS_MAX = 16                    # session keys remembered per address
+KEYTRACK_N = 4096                # addresses tracked / marked (LRU)
+KEYED_PFX = "k:"                 # namespace of the keyed sessions of a marked address
 
 
 # ================================================================ hashing
@@ -498,6 +505,45 @@ class FlowState:
             pc = e[4]
             if prev in pc or len(pc) < R_PREV:
                 pc[prev] = pc.get(prev, 0) + 1
+
+    # ----------------------------------------------------------- keys
+    def track_key(self, ip: str, kv: Any, ts: float, gap: float) -> bool:
+        """(round 6) Whether the sessions of address `ip` are told apart by
+        their session key (O(KEYS_MAX) per event). The session pass keys
+        sessions by address, since per-request cookies (health checks) would
+        make every request a session of its own, and by key only behind
+        addresses P11 / B17 call shared. An address whose keys INTERLEAVE -
+        a key seen again after another key came in between, with >=
+        KEYED_CONC distinct keys active within the session gap - carries
+        several clients at once (a SNAT proxy, a terminal server): from then
+        on its sessions are keyed. Per-request keys never recur, one user has
+        a handful of keys at most, so neither is marked.
+        Why (O-real seeds 0-1, R1): from day 8 every OA user comes through the
+        untrusted SNAT proxy 192.168.100.99, which carries about half of OA's
+        traffic (P12's snat_suspect needs 90 %, B17 did not flag it); one
+        address-session interleaved all of them with the 60-s health checks,
+        so 报告表单 -> 生成报告 (GA.oa.report) was never an edge (no statement
+        carried it on days 7-35): the route ledger saw /health before the form
+        13 times of 14 by day 21 (seed 0)."""
+        kt = getattr(self, "keytrack", None)
+        if kt is None:
+            kt = self.keytrack = PS.LRU(KEYTRACK_N)
+            self.keyed = PS.LRU(KEYTRACK_N)
+        kv = str(kv)
+        rec = kt.get(ip)
+        if rec is None:
+            kt.put(ip, [kv, {kv: float(ts)}])
+        else:
+            last, seen = rec
+            t0 = seen.get(kv)
+            if kv != last and t0 is not None and ts - t0 <= gap:
+                if sum(1 for t in seen.values() if ts - t <= gap) >= KEYED_CONC:
+                    self.keyed.put(ip, float(ts))
+            seen[kv] = float(ts)
+            if len(seen) > KEYS_MAX:
+                del seen[min(seen, key=lambda k: (seen[k], k))]
+            rec[0] = kv
+        return self.keyed.get(ip) is not None
 
     # ----------------------------------------------------------- caps
     def sess_cap(self, budget_cap: Optional[int]) -> int:
@@ -1106,6 +1152,31 @@ def p_trans(st: FlowState, g: str, a: Optional[int], b: Optional[int], t: float,
     return float(min(1.0, s + w0 * max(0.0, rest)))
 
 
+def _seen_action(bits: int, acts: ActionDict, k: str) -> bool:
+    """(round 6) Whether the session (Bloom `bits`) performed action `k` in any
+    of its content variants: a requirement is about the ACTION (the route); a
+    content split of the predecessor's node (P04) gives its new events the
+    key 'route#vN' while the requirement was mined on the key they had before.
+    The variants scanned are those the action dictionary holds (only when the
+    key itself is absent, i.e. on the rare missing path). Pack O seed 1, day
+    7 (round-6 time / views code): P04 split portal's POST /login on
+    net.pkts_down (child statements from day 8); between 12:00 and 12:45
+    seven POST /comment of clean visitors were scored 'without the required
+    predecessor POST /login' (MEDIUM; 7 of the run's 9 new incidents on clean
+    sources); round 5 had 42 findings of the same text on
+    day 21 of that seed (cause not traced)."""
+    if bloom_has(bits, h64(k)):
+        return True
+    r = split_key(k)[0]
+    if r != k and bloom_has(bits, h64(r)):
+        return True
+    pre = r + "#v"
+    for kk in acts.k2i:
+        if kk != k and kk.startswith(pre) and bloom_has(bits, h64(kk)):
+            return True
+    return False
+
+
 def p_req(st: FlowState, scope: Mapping[str, Any], acts: ActionDict, b: Optional[int], bits: int,
           t: float, g: str = STAR) -> Tuple[float, List[int]]:
     """(min over required predecessors a of b absent from the session of
@@ -1118,7 +1189,7 @@ def p_req(st: FlowState, scope: Mapping[str, Any], acts: ActionDict, b: Optional
             continue
         a = int(r["a"])
         k = acts.key_of(a)
-        if k is None or bloom_has(bits, h64(k)):
+        if k is None or _seen_action(bits, acts, k):
             continue
         c_b = _ev(st.pcnt, (g, b), t)
         c_with = min(st.prec.ev((g, b, a), t), c_b)

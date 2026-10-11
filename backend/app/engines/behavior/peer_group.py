@@ -969,7 +969,23 @@ class PeerGroupEngine(Engine):
         j_of_label = {c: j for j, c in enumerate(labels)}
         new_sets = [{keys[i] for i in c} for c in clusters]
         old_roles = mc["roles"]
-        old_sets = {rid: set(r.get("cluster") or r.get("members") or [])
+        # Role identity is matched on the entities clustered NOW (round 6): an
+        # old role's set is its last cluster plus its published members (held
+        # and provisionally typed ones), restricted to this run's eligible
+        # keys. The eligible set churns with open incidents and quarantine;
+        # members that are out of it this run cannot be in any new cluster,
+        # and members that were out of it last run were never in the old
+        # cluster, so a raw Jaccard on the clustered sets read eligibility
+        # churn as a different population. Pack E seed 0 (round 5): the
+        # interactive role's cluster {.2.25, .2.26, .2.28, .1.15} vs the next
+        # run's {.1.16, .1.18, .2.26, .2.27, .2.28, .2.50} (all members of
+        # it) gave J = 0.25 < J_INHERIT, a second role was minted for the
+        # same population and the provisionally typed humans split between
+        # the two (class ARI 0.755 -> 0.551, refit ARI min 0.955 -> 0.690);
+        # which side of 0.3 it fell on depended on whose incident happened
+        # to be open, e.g. a health monitor's (B24's tie rule changed that).
+        here = set(keys)
+        old_sets = {rid: (set(r.get("cluster") or ()) | set(r.get("members") or ())) & here
                     for rid, r in old_roles.items()}
         ids, J, oids = match_ids(new_sets, old_sets)
         # lineage: splits (one old -> several new) and merges (several old -> one new)

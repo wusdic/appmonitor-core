@@ -70,6 +70,7 @@ class AttributeSelectionEngine(Engine):
         self.probes: Dict[Tuple[str, int], SEL.StratifiedProbe] = {}
         self.run_index: Dict[str, int] = {}
         self.last_vg: Dict[str, float] = {}
+        self.last_vg_attr: Dict[str, Dict[str, float]] = {}   # key -> attribute -> time its value groups were fitted
         self.last_stats: Dict[str, Any] = {}
         self.eval_period_s = float(params.get("eval_period_s", PERIOD_S))
         self._want_cache: Dict[str, Tuple[int, Optional[set]]] = {}
@@ -326,8 +327,10 @@ class AttributeSelectionEngine(Engine):
         if pr0 is not None and len(pr0):
             # every kept attribute: a source property that is only a target (a client
             # stack P05 kept as a target) must not pay for splits either (§6.5.3)
-            proxies = SEL.who_proxies(pr0, now, hier,
-                                      [a for a, r in out["roles"].items() if r in ("split", "target", "shape")])
+            # - (round 6) bounded: the attributes P04 can use as targets or split
+            # candidates first (SEL.proxy_candidates), PROXY_EVAL_MAX of them
+            proxies = SEL.who_proxies(pr0, now, hier, SEL.proxy_candidates(
+                out, prev.get("who_proxies") or ()))
         # per-node overrides from the node summaries
         pt = MP.get_ptree(store, key)
         overrides: Dict[int, Dict[int, List[str]]] = {}
@@ -337,10 +340,11 @@ class AttributeSelectionEngine(Engine):
                 prk = self.probes.get((key, kind))
                 if prk is not None and len(prk):
                     tsys = out["targets_sys"].get(kind, [])
-                    local = [a for a, r in out["roles"].items()
-                             if r in ("split", "target", "shape") and a not in tsys
-                             and SEL.targetable(a) and a in reg.records
-                             and kind in set(reg.records[a].kinds)]
+                    local = SEL.bounded_by_u([a for a, r in out["roles"].items()
+                                              if r in ("split", "target", "shape") and a not in tsys
+                                              and SEL.targetable(a) and a in reg.records
+                                              and kind in set(reg.records[a].kinds)],
+                                             out["ustat"], SEL.LOCAL_POOL_MAX)
                     # n_min 12 (not 32): a rare action's node (a department's
                     # login, 3 rows a workday in the stratified probe) inherited
                     # its ancestor's targets for ~11 days, so its username /
@@ -351,11 +355,16 @@ class AttributeSelectionEngine(Engine):
         if now - self.last_vg.get(key, -math.inf) >= 86400.0 and pr0 is not None and len(pr0):
             self.last_vg[key] = now
             tg = out["targets_sys"].get(EV.KIND_TXN, [])
-            for a, r in reg.records.items():
-                if r.type != "categorical" or a in SEL.WHO_ATTRS or not SEL.targetable(a):
-                    continue
-                if out["roles"].get(a) not in ("split", "target"):
-                    continue
+            vg_names = [a for a, r in reg.records.items()
+                        if r.type == "categorical" and a not in SEL.WHO_ATTRS and SEL.targetable(a)
+                        and out["roles"].get(a) in ("split", "target")]
+            # (round 6, PG4) at most VG_MAX a day: the system targets and split
+            # candidates first, the others by the age of their groups
+            last = self.__dict__.setdefault("last_vg_attr", {}).setdefault(key, {})
+            vg_names = SEL.value_group_slice(vg_names, out, last)
+            for a in vg_names:
+                last[a] = now
+                r = reg.records[a]
                 vg = SEL.value_groups(pr0, now, hier, a, tg)
                 if vg != (r.hier.get("groups") or {}):
                     reg.set_value_groups(a, vg)

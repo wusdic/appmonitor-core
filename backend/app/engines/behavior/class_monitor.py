@@ -133,6 +133,8 @@ from .lib import gating as G
 from .lib import m_baseline as MB
 from .lib import m_class
 from .lib import m_vocab as V
+from .lib import pactive as PA
+from .lib import sketch as SK
 from .lib import timebins as TB
 from .lib.classkeys import SYSTEM_KEY, class_kind
 from .lib.detectors import DETECTOR_INFO, arl_days
@@ -316,6 +318,50 @@ def aggregate(N: np.ndarray) -> np.ndarray:
         tot = cnt.sum()
         out[CLR_IDX] = cnt / tot if tot > 0.0 else np.nan
     return out
+
+
+_IDLE: Dict[float, np.ndarray] = {}
+
+
+def idle_row(dt: float) -> np.ndarray:
+    """feature.nat of a tick without any data, exactly as B01 computes it
+    for an idle entity (lib/features.compute_features with nothing fresh):
+    the implicit row of a member B01 does not process in bounded mode."""
+    key = float(dt)
+    r = _IDLE.get(key)
+    if r is None:
+        r = _IDLE[key] = F.compute_features(lambda _m: None, key)[1].astype(np.float32)
+    return r.astype(np.float64)
+
+
+def idle_row_h(cov: float, G: Optional[float] = None) -> np.ndarray:
+    """feature.nat.h of an idle member over an H window with pipeline
+    coverage `cov` s, as B01's H decision row of an entity with no data
+    (zero parts, empty sets / maps, no span features)."""
+    G = float(GR.GRAIN_S["h"] if G is None else G)
+    key = (round(float(cov), 3), G)
+    r = _IDLE.get(key)
+    if r is None:
+        S = np.zeros(F.compute_parts(lambda _m: None, 1.0, active=0.0).shape[0])
+        S[0] = float(cov)
+        sets = {f: SK.set_count(SK.set_union([])) for f in F.SET_SOURCES}
+        maps = {src: {} for src in F.MAP_RAW_SETS}
+        span = {name: None for name in F.SPAN_FEATURES}
+        r = _IDLE[key] = F.grain_values(S, float(cov), G, sets=sets, maps=maps,
+                                        span=span)[1].astype(np.float32)
+        if len(_IDLE) > 256:
+            _IDLE.clear()
+    return r.astype(np.float64)
+
+
+def _tick_coverage(store: Any, s: str, now: float, dt: float, G: float) -> float:
+    """Wall clock the pipeline covered in (now - G, now] (B01's coverage of an
+    idle entity): the system's tick clock (ops.tick, written in bounded mode)
+    x the cadence; the cadence alone when the clock is not kept."""
+    tt = getattr(store, "tick_times", None)
+    ts = tt(s, since=now - G + 1e-3) if tt is not None else []
+    n = sum(1 for t in ts if t <= now + 1e-6)
+    return float(min(G, max(1, n) * dt))
 
 
 # ============================================================ decayed sums
@@ -512,8 +558,14 @@ def _hmp(ps: Sequence[float]) -> float:
 class _Sys:
     """Per-tick, per-system reads shared by its classes."""
 
-    def __init__(self, store: Any, s: str, now: float) -> None:
+    def __init__(self, store: Any, s: str, now: float,
+                 config: Optional[Mapping[str, Any]] = None) -> None:
         self.store, self.s, self.now = store, s, now
+        # bounded mode (progressive.md §10.3): B01 writes rows for the IPs it
+        # processes (A_t ∪ E_t) only; a member outside that set is idle by
+        # construction and its row is IMPLICIT (feature.active = 0), not stale
+        self.processed: Optional[frozenset] = (
+            frozenset(PA.entities(store, s, now, config)) if PA.bounded(config) else None)
         self.common_sys: Dict[str, Dict[str, Any]] = {}
         self._ledgers: Optional[List[Tuple[Dict[str, Any], Dict[str, Any]]]] = None
         self.has_vocab = False          # some role class has a model.vocab (B08 runs)
@@ -607,7 +659,7 @@ class ClassMonitorEngine(Engine):
             classes = self._classes(store, s)
             if not classes:
                 continue
-            sc = _Sys(store, s, now)
+            sc = _Sys(store, s, now, ctx.config)
             for ck, mem in classes.items():
                 model = self._class(ctx, sc, ck, mem, now, dt, tc_now, tc_slot)
                 if model is not None:
@@ -656,6 +708,15 @@ class ClassMonitorEngine(Engine):
         store, s = ctx.store, sc.s
         rows, present, active_members = [], [], []
         seen_any = False
+        implicit: List[str] = []
+        if sc.processed is not None:
+            # bounded mode: members B01 did not process this tick are idle;
+            # their implicit row joins the aggregate once (aggregate() is
+            # invariant to the number of idle rows: zero counts, no exposure),
+            # so the class row equals full mode's without reading them
+            implicit = [m for m in members if m not in sc.processed]
+            if implicit:
+                members = [m for m in members if m in sc.processed]
         for m in members:
             nat = store.vec_at(s, m, NAT, now)
             if nat is None:
@@ -669,11 +730,15 @@ class ClassMonitorEngine(Engine):
         model = store.get_model(s, ck, MODEL)
         if self._canon and _valid(model) and model.get("grain_mode") != GR.CANONICAL:
             model = None                         # learnt from tick rows: not a grain model
+        all_members = members + implicit
+        if implicit and (present or seen_any or _valid(model)):
+            present = present + implicit         # silent members count (class_rhythm, m)
+            rows.append(idle_row(dt))
         if not present and not seen_any and not _valid(model):
             return None                          # nothing ever observed for this class
         if not _valid(model):
             model = new_model(class_kind(ck), self._canon)
-        model["members"], model["n_members"] = list(members), len(members)
+        model["members"], model["n_members"] = list(all_members), len(all_members)
         run = model["run"]
         scores: Dict[str, float] = {}
         pm: Dict[str, float] = {}
@@ -727,6 +792,11 @@ class ClassMonitorEngine(Engine):
                 cov_h = float(mh[1]) if not cov_h >= float(mh[1]) else cov_h
                 if float(mh[0]) > 0.5:
                     active_h.append(m)
+            if implicit and (rows_h or present):
+                if not rows_h:                   # every member idle: the pipeline's coverage
+                    cov_h = _tick_coverage(store, s, now, dt, GR.GRAIN_S["h"])
+                if cov_h > 0.0:
+                    rows_h.append(idle_row_h(cov_h))
             if rows_h and cov_h > 0.0:
                 agg_h = aggregate(np.asarray(rows_h, dtype=np.float64))
                 store.add_vec(s, ck, AGG_H, now, agg_h.astype(np.float32),
@@ -793,7 +863,7 @@ class ClassMonitorEngine(Engine):
             info["p_coh"] = p_coh
 
         # ---- 3d) class_novel (adoption ledgers)
-        tallies, novel = self._novel(sc, ck, model, set(members), now, dt, info)
+        tallies, novel = self._novel(sc, ck, model, set(all_members), now, dt, info)
         if novel is not None:
             p_nov, ax_nov, alarm, top = novel
             scores["class_novel"], pm["class_novel"] = _score(p_nov), p_nov

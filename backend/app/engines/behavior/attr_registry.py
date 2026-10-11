@@ -112,8 +112,9 @@ class AttributeRegistryEngine(Engine):
             stale_scale = False
             if meta["hour"] != h:
                 meta["hour"] = h
-                reg.update_types(now)
-                reg.update_stats(now)
+                counts: Dict[int, Any] = {}          # one distinct count per record for both passes
+                reg.update_types(now, counts)
+                reg.update_stats(now, counts)
                 # lib/phier bins a value on the scale of hier['log'] while the edges
                 # were computed on hier['edges_log']: when update_stats flips the log
                 # flag, the edges must be recomputed at once (else every value of

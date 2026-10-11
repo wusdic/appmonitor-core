@@ -134,6 +134,18 @@ def _classify(v: Any, is_time_name: bool) -> Tuple[Optional[float], Tuple[float,
     return x, tuple(te), nz
 
 
+def _card_count(rec: Any, counts: Optional[Dict[int, Any]]) -> Any:
+    """rec.card.count(), shared through `counts` (keyed by the card object's
+    id, held alive by the record) between passes that do not add to it."""
+    if counts is None:
+        return rec.card.count()
+    k = id(rec.card)
+    c = counts.get(k)
+    if c is None:
+        c = counts[k] = rec.card.count()
+    return c
+
+
 def _all_str(v: Any) -> bool:
     """A hashable collection of str only (a memo keyed by such a value is
     exact: 1 == 1.0 would merge two sets whose str forms differ)."""
@@ -695,13 +707,14 @@ class AttrRegistry:
         return used
 
     # ------------------------------------------------------------- typing
-    def infer_type(self, rec: AttrRecord, t: float) -> str:
+    def infer_type(self, rec: AttrRecord, t: float,
+                   counts: Optional[Dict[int, Any]] = None) -> str:
         te = rec.te.read(t)
         n = te[0]
         if n <= 0:
             return "unknown"
         f = te / n
-        distinct = rec.card.count()
+        distinct = _card_count(rec, counts)
         if f[_TE_IX["ip"]] >= 0.99:
             return "ip"
         if (rec.name.endswith("_ts") or rec.name.endswith(".ts")) and f[_TE_IX["time"]] >= 0.99:
@@ -720,13 +733,16 @@ class AttrRegistry:
             return "categorical"
         return "text"
 
-    def update_types(self, t: float) -> List[Tuple[str, str, str]]:
-        """Re-infer unlocked types; returns [(name, old, new)] for changes."""
+    def update_types(self, t: float, counts: Optional[Dict[int, Any]] = None) -> List[Tuple[str, str, str]]:
+        """Re-infer unlocked types; returns [(name, old, new)] for changes.
+        `counts` (round 6, cost): a dict shared with an update_stats call at
+        the same time, so each record's distinct count (an EpochHLL
+        copy-merge-estimate) is computed once for both passes."""
         out = []
         for nm, rec in self.records.items():
             if rec.locked:
                 continue
-            new = self.infer_type(rec, t)
+            new = self.infer_type(rec, t, counts)
             te = rec.te.read(t)
             n = te[0]
             if new == "text" and n > 0:
@@ -747,14 +763,14 @@ class AttrRegistry:
             self.version += 1
         return out
 
-    def update_stats(self, t: float) -> None:
+    def update_stats(self, t: float, counts: Optional[Dict[int, Any]] = None) -> None:
         """Entropy (Chao-Shen on evidence), stability 1 - JSD(p_Hs, p_Hl),
-        approx share, log flag."""
+        approx share, log flag. `counts`: see update_types."""
         for rec in self.records.values():
             if len(rec.top):                       # (tracked keys: what top.items() tested)
                 (keys, sh, other), (_, sh_s, o_s), (_, sh_l, o_l) = \
                     _distributions(rec.top, t, (PS.CH_M, PS.CH_S, PS.CH_L))
-                rec.entropy = entropy_from_top(sh, other, rec.card.count(), len(keys))
+                rec.entropy = entropy_from_top(sh, other, _card_count(rec, counts), len(keys))
                 rec.stability = 1.0 - pmdl.jsd(np.append(sh_s, o_s), np.append(sh_l, o_l))
             pm = float(rec.pres.read(t)[PS.CH_M])
             rec.approx_share = float(rec.approx.read(t)[0] / pm) if pm > 0 else 0.0

@@ -153,6 +153,8 @@ trust / quarantine / model.control. Inert unless config['progressive']['enabled'
 from __future__ import annotations
 
 import datetime as _dt
+import heapq
+import itertools
 import math
 import zlib
 from collections import Counter, deque
@@ -209,6 +211,7 @@ EXC_N_CONF = 10.0
 PRUNE_RUNS = 3
 PRUNE_MIN_AGE = 7 * DAY        # a split's children have this long before it can be pruned
 TAU_MERGE = 0.02
+_NOVAL = object()                # _pairs: a request's values not read yet
 PAIRS_NODE_MAX = 8             # binding pair sketches per node (P08 requests, in its order)
 DAMP = 0.1
 HELD_PER_IP = 256
@@ -2833,27 +2836,51 @@ class PatternTreeEngine(Engine):
         """Binding pair counts requested by P08 (model.pwant), at most
         PAIRS_NODE_MAX pair sketches per node: the first ones in P08's request
         order that apply to the node (a pair applies to the nodes it names, or,
-        when it names none, to the root and the leaf of each path)."""
-        used: Dict[int, int] = {}
+        when it names none, to the root and the leaf of each path).
+
+        (round 6, PG4) Per node, the applicable requests come from an index
+        built once per tick (node -> requests naming it, and the requests
+        naming none) instead of a walk over every request per learned event:
+        P08 requests up to 64 pairs, more with more attributes (the
+        340-attribute point: x15 time in _pairs against the 40-attribute one).
+        The same sketches get the same updates in the same order per node."""
+        ixs = lc.__dict__.get("_pair_ix")
+        if ixs is None or ixs[0] is not lc.pairs:
+            ixs = lc._pair_ix = (lc.pairs, {})
+        e = ixs[1].get(kind)
+        if e is None:
+            named: Dict[int, List[int]] = {}
+            unnamed: List[int] = []
+            for i, (_x, _lv, _y, nodes, pk) in enumerate(lc.pairs):
+                if pk is not None and pk != kind:
+                    continue
+                if nodes:
+                    for n in nodes:
+                        named.setdefault(int(n), []).append(i)
+                else:
+                    unnamed.append(i)
+            e = ixs[1][kind] = (named, unnamed)
+        named, unnamed = e
         ends = (path[0], path[-1])
-        for x, lv, y, nodes, pk in lc.pairs:
-            if pk is not None and pk != kind:
+        vals: Dict[int, Any] = {}
+        for nid in dict.fromkeys(path):
+            a = named.get(nid, ())
+            b = unnamed if nid in ends else ()
+            if not a and not b:
                 continue
-            targets = [n for n in path if n in nodes] if nodes else list(dict.fromkeys(ends))
-            targets = [n for n in targets if used.get(n, 0) < PAIRS_NODE_MAX]
-            for n in targets:
-                used[n] = used.get(n, 0) + 1
-            if not targets:
-                continue
-            xv = get(x)
-            yv = get(y)
-            if xv is EV.ABSENT or yv is EV.ABSENT:
-                continue
-            xg = _h(lc.hier.gen(x, lv, xv))
-            yv = _h(yv)
-            name = x if lv == 0 else f"{x}@{lv}"
-            for nid in dict.fromkeys(targets):
-                tr.nodes[nid].pair(name, y).update(xg, yv, ts, mass, omega)
+            for i in itertools.islice(heapq.merge(a, b), PAIRS_NODE_MAX):
+                v = vals.get(i, _NOVAL)
+                if v is _NOVAL:
+                    x, lv, y, _nodes, _pk = lc.pairs[i]
+                    xv = get(x)
+                    yv = get(y)
+                    if xv is EV.ABSENT or yv is EV.ABSENT:
+                        v = None
+                    else:
+                        v = (x if lv == 0 else f"{x}@{lv}", y, _h(lc.hier.gen(x, lv, xv)), _h(yv))
+                    vals[i] = v
+                if v is not None:
+                    tr.nodes[nid].pair(v[0], v[1]).update(v[2], v[3], ts, mass, omega)
 
     @staticmethod
     def _gc_pairs(lc: _LC, tr: PT.Tree, kind: int) -> None:

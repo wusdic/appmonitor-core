@@ -30,4 +30,6 @@ def test_hold_record_facets_are_kept_in_sorted_order():
         h.add(k, True, 0.9, t)
     h._close()
     assert list(h.TF) == sorted(h.TF)
-    assert set(h.TF) == {"who", "when", "bind", "net", "content", "~net"}
+    # (round 6, pnode.WHEN_SPAN_S) a batch spanning less than a day does not
+    # judge 'when' (its checks go to the trailing day's hourly bins)
+    assert set(h.TF) == {"who", "bind", "net", "content", "~net"}

@@ -994,6 +994,69 @@ def ip_information(probe: StratifiedProbe, t: float, hier: Any, targets: Sequenc
 
 
 PROXY_COV = 0.5            # a source property is present on >= half of the probe rows
+PROXY_EVAL_MAX = 48        # (round 6) attributes who_proxies judges per run (proxy_candidates)
+LOCAL_POOL_MAX = 24        # (round 6) node-local target candidates per run (node_targets_from_probe)
+
+
+def bounded_by_u(names: Sequence[str], ustat: Mapping[str, Mapping[str, Any]], cap: int) -> List[str]:
+    """`names` in their own order, the `cap` best by U_t (then CR_p, name) when
+    there are more (round 6, PG4: per-run work over the kept roles grew with
+    the number of attributes - 37 kept on pack O's OA, 86-89 split roles on
+    the 340-attribute point, each one walked per node and per run)."""
+    if len(names) <= cap:
+        return list(names)
+    best = set(sorted(names, key=lambda a: (-float((ustat.get(a) or {}).get("U_t", 0.0)),
+                                            -float((ustat.get(a) or {}).get("CR_p", 0.0)), a))[:cap])
+    return [a for a in names if a in best]
+
+
+VG_MAX = 32                # (round 6) categorical attributes whose value groups are re-fitted per day
+
+
+def value_group_slice(names: Sequence[str], out: Mapping[str, Any], last: Mapping[str, float],
+                      cap: int = VG_MAX) -> List[str]:
+    """The categorical split / target attributes whose value groups (registry
+    level 1) P05 re-fits today (round 6, PG4: one fit per attribute per day
+    was 1.2 s of P05 at 40 attributes, 14.4 s at 340): every one when there
+    are no more than `cap`; else the system targets and the split candidates
+    first (the attributes P04 uses), then the others by the age of their
+    groups (never fitted first), `cap` in all, in `names` order."""
+    if len(names) <= cap:
+        return list(names)
+    ns = set(names)
+    first: List[str] = []
+    for lst in (out.get("targets_sys") or {}).values():
+        first += [a for a in lst if a in ns]
+    for lst in (out.get("split_cands") or {}).values():
+        first += [a for a, _l in lst if a in ns]
+    first += sorted(names, key=lambda a: (float(last.get(a, -math.inf)), a))
+    sel = set(list(dict.fromkeys(first))[:cap])
+    return [a for a in names if a in sel]
+
+
+def proxy_candidates(out: Mapping[str, Any], prev_proxies: Iterable[str] = (),
+                     cap: int = PROXY_EVAL_MAX) -> List[str]:
+    """The kept attributes who_proxies judges (round 6): a source property
+    matters to P04 only as a target (excluded from the coder's targets) or as
+    a split candidate (yields to the who levels), so the system target lists,
+    the last run's proxies and the split candidates by U_s come first, then
+    the other kept attributes by U_t, `cap` in all; every kept attribute when
+    there are no more than `cap` (pack O and O-real: <= 40)."""
+    roles = out.get("roles") or {}
+    kept = [a for a, r in roles.items() if r in ("split", "target", "shape")]
+    if len(kept) <= cap:
+        return kept
+    ks = set(kept)
+    ustat = out.get("ustat") or {}
+    first: List[str] = []
+    for lst in (out.get("targets_sys") or {}).values():
+        first += [a for a in lst if a in ks]
+    first += [a for a in prev_proxies if a in ks]
+    for lst in (out.get("split_cands") or {}).values():
+        first += [a for a, _l in lst if a in ks]
+    first += sorted(kept, key=lambda a: (-float((ustat.get(a) or {}).get("U_t", 0.0)), a))
+    sel = set(list(dict.fromkeys(first))[:cap])
+    return [a for a in kept if a in sel]
 
 
 def who_proxies(probe: StratifiedProbe, t: float, hier: Any, attrs: Sequence[str],
@@ -1061,10 +1124,29 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
     if n == 0 or len(kept) < 2:
         return {}
     codes = {}
+    pres: Dict[str, np.ndarray] = {}
     for a in kept:
-        l, cc, k = level_codes(hier, a, probe.column(rows, a), raw=probe.codes(rows, a))
+        col = probe.column(rows, a)
+        l, cc, k = level_codes(hier, a, col, raw=probe.codes(rows, a))
         codes[a] = (cc, k)
+        pres[a] = np.fromiter((v is not ABSENT and v is not MISSING for v in col), dtype=bool, count=len(col))
     H = {a: w_entropy(codes[a][0], w, n) for a in kept}
+
+    def g3(x: str, y: str) -> float:
+        # (round 6) g3(x -> y) over every row AND over the rows where y is
+        # present: g3 is a share of the probe's mass, so an attribute present
+        # on a few rows (a login form's username, ~1 % of the events) looked
+        # like a function of anything that marks those rows (http.ctype is
+        # form-encoded exactly when the username is present) although its
+        # VALUE is not (O-real seed 0 finance: username 'redundant' with
+        # http.ctype from day 9, so it was no node target and P08's
+        # source -> username binding was never stated on the login node)
+        (cx, _kx), (cy, ky) = codes[x], codes[y]
+        e = w_g3(cx, cy, ky, w)
+        m = pres[y]
+        if e <= RED_G3 and m.any() and not m.all():
+            e = max(e, w_g3(cx[m], cy[m], ky, w[m]))
+        return e
     # numeric pairs: the same quantity under two names (response size and bytes
     # down) is redundant when the rank correlation is ~1 where both are present
     nums: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
@@ -1088,14 +1170,12 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
     for i, a in enumerate(order):
         if a in red:
             continue
-        ca, ka = codes[a]
         for b in order[i + 1:]:
             if b in red or H[b] < RED_HB:
                 continue
-            cb, kb = codes[b]
-            e_ab = w_g3(ca, cb, kb, w)
+            e_ab = g3(a, b)
             if e_ab <= RED_G3:
-                e_ba = w_g3(cb, ca, ka, w)
+                e_ba = g3(b, a)
                 if e_ba <= RED_G3:
                     # keep the member the other is (more nearly) a function of:
                     # a route template determines its path exactly, the path

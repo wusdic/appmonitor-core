@@ -126,7 +126,7 @@ def test_learning_p95_divides_p04_cpu_by_the_rows_p04_learned():
     assert out["learning_us_per_learned_event"] == pytest.approx(100.0)
     # without P04's count (old taps) the P00 rows are still the fallback
     old = S.pcore_cpu(t, [1000.0] * 20, batch_per_tick=[b[:2] for b in batch])
-    assert old["learning_p95_us"] == pytest.approx(1000.0)
+    assert old["learning_p95_us_per_tick"] == pytest.approx(1000.0)
 
 
 def test_entry_points_pin_the_hash_seed(tmp_path):
@@ -154,3 +154,54 @@ def test_entry_points_pin_the_hash_seed(tmp_path):
     outs = {subprocess.run([sys.executable, str(plain)], env=env, capture_output=True, text=True,
                            timeout=60).stdout for _ in range(4)}
     assert len(outs) > 1
+
+
+def test_p95_is_a_quantile_over_events_not_ticks():
+    """Round 6: a tick's events each cost the tick's CPU / its events, so the
+    per-event p95 weighs a tick by its events. 18 busy ticks (1 000 events,
+    50 ms of P03: 50 us each) and two night ticks of 2 events and 2 ms (1 000
+    us each): 4 of 18 004 events cost 1 000 us, the event p95 is 50 us; the
+    round-5 tick quantile read 1 000 us (10 % of the TICKS)."""
+    t = {"engine_names": ["behavior.conformity", "behavior.pattern_tree"],
+         "engine_ms": [[50.0, 10.0]] * 18 + [[2.0, 10.0]] * 2}
+    batch = [(1000.0, 100.0, 100.0)] * 18 + [(2.0, 2.0, 100.0)] * 2
+    out = S.pcore_cpu(t, [1000.0] * 20, batch_per_tick=batch)
+    assert out["scoring_p95_us"] == pytest.approx(50.0)
+    assert out["scoring_p95_us_per_tick"] == pytest.approx(1000.0)
+
+
+def test_scoring_divides_p03_cpu_by_the_rows_p03_scored():
+    """Round 6: P03 also scores the window events (evt.win): with its own
+    count in the tap (4th element) the scored rows are P03's."""
+    t = {"engine_names": ["behavior.conformity", "behavior.pattern_tree"],
+         "engine_ms": [[10.0, 10.0]] * 4}
+    out = S.pcore_cpu(t, [1000.0] * 4, batch_per_tick=[(100.0, 100.0, 100.0, 200.0)] * 4)
+    assert out["scoring_p95_us"] == pytest.approx(50.0)
+    assert out["scoring_p95_us_per_p00_row"] == pytest.approx(100.0)
+    assert out["scored_events"] == pytest.approx(800.0)
+
+
+def test_weighted_quantile_matches_inverted_cdf():
+    rng = np.random.default_rng(3)
+    x = rng.random(57)
+    assert S.weighted_quantile(x, np.ones(57), 0.95) == pytest.approx(
+        float(np.quantile(x, 0.95, method="inverted_cdf")))
+    assert S.weighted_quantile([1.0, 2.0, 3.0], [1.0, 0.0, 1.0], 0.5) == 1.0
+    assert S.weighted_quantile([], [], 0.95) is None
+
+
+def test_cpu_time_p95_is_reported_and_preferred_by_pg4():
+    """Round 6: the per-event p95s also on the engines' thread CPU time (the
+    wall clock of a shared machine counts the waits for a core); PG4 reads
+    the CPU figure when a point carries it."""
+    t = {"engine_names": ["behavior.conformity", "behavior.pattern_tree"],
+         "engine_ms": [[20.0, 10.0]] * 4}
+    cpu = {"behavior.conformity": [5.0] * 4, "behavior.pattern_tree": [4.0] * 4}
+    out = S.pcore_cpu(t, [100.0] * 4, batch_per_tick=[(100.0, 100.0, 100.0, 100.0)] * 4, cpu_ms=cpu)
+    assert out["scoring_p95_us"] == pytest.approx(200.0)
+    assert out["scoring_p95_us_cpu"] == pytest.approx(50.0)
+    assert out["learning_p95_us_cpu"] == pytest.approx(40.0)
+    pt = {"pack": "O-servers-20", "n_ips": 0, "n_attrs": 40, "n_systems": 20, "mem_bytes": 1.0,
+          "mem_by_key": {"a": 1}, "cpu": out}
+    chk = {c["name"]: c for c in S.pg4_summary([pt])["details"]["checks"]}
+    assert chk["scoring p95 us/event"]["value"] == pytest.approx(50.0)

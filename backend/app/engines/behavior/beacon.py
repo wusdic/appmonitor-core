@@ -567,7 +567,7 @@ class BeaconEngine(Engine):
         # pass 1: ingest this tick's rare events into every entity's buffers
         ents: List[_Ent] = []
         for e in PA.entities(store, s, now, ctx.config):
-            if not PA.periodic_candidate(store, s, e, ctx.config):
+            if not PA.periodic_candidate(store, s, e, ctx.config, MODEL):
                 continue                      # bounded mode: machine-like IPs only (§10.3)
             model = store.get_model(s, e, MODEL)
             if not (isinstance(model, dict) and model.get("fmt") == 1):

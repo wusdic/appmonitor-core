@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -133,7 +134,8 @@ def pcore_memory(store: MetricStore, model_names: Sequence[str] = P_MODELS) -> D
 
 def pcore_cpu(timings: Mapping[str, Any], events_per_tick: Sequence[float],
               engines: Sequence[str] = P_ENGINES,
-              batch_per_tick: Optional[Sequence[Tuple[float, float]]] = None) -> Dict[str, Any]:
+              batch_per_tick: Optional[Sequence[Tuple[float, float]]] = None,
+              cpu_ms: Optional[Mapping[str, Sequence[float]]] = None) -> Dict[str, Any]:
     """CPU of the P engines. us_per_event: all P engines over the generator's
     events. The per-event p95s follow §12 PG4's units: scoring (P03) per
     SCORED event (the rows of P00's batches: P03 scores every row) and
@@ -153,6 +155,7 @@ def pcore_cpu(timings: Mapping[str, Any], events_per_tick: Sequence[float],
     total = float(sum(by.values()))
     scored, learned = ev, ev
     learned_p00 = None
+    scored_p00 = None
     if batch_per_tick is not None and len(batch_per_tick) >= k:
         bt = np.asarray(batch_per_tick, dtype=float)[:k]
         scored, learned = bt[:, 0], bt[:, 1]
@@ -164,17 +167,76 @@ def pcore_cpu(timings: Mapping[str, Any], events_per_tick: Sequence[float],
             # evening ticks, where P00 samples few rows and P04 learns the
             # busy afternoon's.
             learned_p00, learned = learned, bt[:, 2]
+        if bt.shape[1] >= 4 and np.isfinite(bt[:, 3]).all():
+            # (round 6) P03 scores the window events of evt.win too, not only
+            # P00's batch rows: its CPU is divided by the rows IT scored in the
+            # tick (its return value; O-servers: 28 % more rows than P00's)
+            scored_p00, scored = scored, bt[:, 3]
 
-    def p95(name: str, per: np.ndarray) -> Optional[float]:
+    def per_tick(name: str, per: np.ndarray) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         if name not in names:
             return None
         col = ms[:, names.index(name)]
         m = per > 0
-        return float(np.quantile(col[m] * 1000.0 / per[m], 0.95)) if m.any() else None
+        return (col[m] * 1000.0 / per[m], per[m]) if m.any() else None
+
+    cpu_cols = {n: np.asarray(v, dtype=float)[:k] for n, v in (cpu_ms or {}).items()
+                if len(v) >= k}
+
+    def p95_cpu(name: str, per: np.ndarray) -> Optional[float]:
+        """The same event quantile on the engine's THREAD CPU time (round 6):
+        the runner's wall clock counts the time the process waits for a core,
+        and the evaluation machine runs 2-5 heavy processes on 4 cores (§16.13:
+        the same code read 17-30 % apart between runs); PG4 asks for the cost
+        on one core."""
+        col = cpu_cols.get(name)
+        if col is None:
+            return None
+        m = per > 0
+        return weighted_quantile(col[m] * 1000.0 / per[m], per[m], 0.95) if m.any() else None
+
+    def p95(name: str, per: np.ndarray) -> Optional[float]:
+        """(round 6) The 95th percentile over EVENTS of the per-event cost: a
+        tick's events each cost the tick's CPU / its events (batch scoring),
+        so a tick weighs by its events. The round-5 figure, a quantile over
+        TICKS (kept as *_p95_us_per_tick), let a night tick of 2 events weigh
+        as much as a busy one of 2 000: on O-servers the fixed per-system work
+        of the few-event ticks set it."""
+        r = per_tick(name, per)
+        return None if r is None else weighted_quantile(r[0], r[1], 0.95)
+
+    def p95_tick(name: str, per: np.ndarray) -> Optional[float]:
+        r = per_tick(name, per)
+        return None if r is None else float(np.quantile(r[0], 0.95))
     out = {"ms_total": total, "events": tot_ev,
            "us_per_event": total * 1000.0 / tot_ev if tot_ev else None,
            "scoring_p95_us": p95(SCORING_ENGINE, scored), "learning_p95_us": p95(LEARNING_ENGINE, learned),
+           "scoring_p95_us_per_tick": p95_tick(SCORING_ENGINE, scored),
+           "learning_p95_us_per_tick": p95_tick(LEARNING_ENGINE, learned),
+           "p95_weighting": "events (a tick's per-event cost counted once per event of the tick)",
            "by_engine": by}
+    # (evaluator round 6) the P-core's THREAD CPU per event from the runner's
+    # recorder (timings['engine_cpu_ms']): the slopes of PG4 compare points
+    # run at different times on a shared 4-core machine, where wall time per
+    # engine moved 17-30 % with the load (round 5: attrs slope 0.216 / 0.238
+    # / 0.232 for three measurements of nearly the same code)
+    tcpu = timings.get("engine_cpu_ms")
+    if tcpu is not None:
+        tc = np.asarray(tcpu, dtype=float)
+        if tc.ndim == 2 and tc.shape[1] == len(names) and tc.shape[0] >= k:
+            tc = tc[:k]
+            by_cpu = {names[i]: float(tc[:, i].sum()) for i in idx}
+            out["by_engine_cpu"] = by_cpu
+            out["us_per_event_cpu"] = (float(sum(by_cpu.values())) * 1000.0 / tot_ev
+                                       if tot_ev else None)
+    if cpu_cols:
+        out["scoring_p95_us_cpu"] = p95_cpu(SCORING_ENGINE, scored)
+        out["learning_p95_us_cpu"] = p95_cpu(LEARNING_ENGINE, learned)
+        out["cpu_ms_by_engine"] = {n: float(c.sum()) for n, c in cpu_cols.items()}
+        if SCORING_ENGINE in cpu_cols and scored.sum() > 0:
+            out["scoring_us_per_event_cpu"] = float(cpu_cols[SCORING_ENGINE].sum()) * 1000.0 / float(scored.sum())
+        if LEARNING_ENGINE in cpu_cols and learned.sum() > 0:
+            out["learning_us_per_event_cpu"] = float(cpu_cols[LEARNING_ENGINE].sum()) * 1000.0 / float(learned.sum())
     if batch_per_tick is not None and len(batch_per_tick) >= k:
         out.update({"scored_events": float(scored.sum()), "learned_events": float(learned.sum()),
                     "scoring_us_per_event": (by.get(SCORING_ENGINE, 0.0) * 1000.0 / float(scored.sum())
@@ -182,13 +244,32 @@ def pcore_cpu(timings: Mapping[str, Any], events_per_tick: Sequence[float],
                     "learning_us_per_learned_event": (by.get(LEARNING_ENGINE, 0.0) * 1000.0
                                                       / float(learned.sum()) if learned.sum() else None),
                     "units": "scoring per scored (batch) event, learning per learned event"})
+        # (the per-P00-row figures are the round-5 diagnostics: tick-weighted)
+        if scored_p00 is not None:
+            out["scoring_p95_us_per_p00_row"] = p95_tick(SCORING_ENGINE, scored_p00)
         if learned_p00 is not None:
-            out.update({"learning_p95_us_per_p00_row": p95(LEARNING_ENGINE, learned_p00),
+            out.update({"learning_p95_us_per_p00_row": p95_tick(LEARNING_ENGINE, learned_p00),
                         "units": "scoring per scored (batch) event, learning per row P04 learned "
                                  "in the tick (its rows of t - D)"})
     else:
         out["units"] = "per generator event (no batch tap)"
     return out
+
+
+def weighted_quantile(x: Sequence[float], w: Sequence[float], q: float) -> Optional[float]:
+    """The q-quantile of values x with non-negative weights w (inverted CDF:
+    the smallest x whose cumulative weight reaches q of the total); equal
+    weights give np.quantile(x, q, method='inverted_cdf')."""
+    x = np.asarray(x, dtype=float)
+    w = np.asarray(w, dtype=float)
+    m = np.isfinite(x) & np.isfinite(w) & (w > 0)
+    if not m.any():
+        return None
+    x, w = x[m], w[m]
+    o = np.argsort(x, kind="stable")
+    x, cw = x[o], np.cumsum(w[o])
+    i = int(np.searchsorted(cw, q * cw[-1], side="left"))
+    return float(x[min(i, x.size - 1)])
 
 
 class _BatchTap:
@@ -199,13 +280,17 @@ class _BatchTap:
     def __init__(self) -> None:
         self.rows: List[Tuple[float, float]] = []
         self.p04: List[float] = []
+        self.p03: List[float] = []
+        self.cpu: Dict[str, List[float]] = {SCORING_ENGINE: [], LEARNING_ENGINE: []}
 
     def batch(self) -> Optional[List[Tuple[float, ...]]]:
-        """(P00 rows, P00 learned, P04 learned) per tick (the third only when
-        P04 ran in every tick)."""
+        """(P00 rows, P00 learned, P04 learned, P03 scored) per tick (the third
+        only when P04 ran in every tick, the fourth when P03 did too)."""
         if not self.rows:
             return None
         if len(self.p04) == len(self.rows):
+            if len(self.p03) == len(self.rows):
+                return [(a, b, c, d) for (a, b), c, d in zip(self.rows, self.p04, self.p03)]
             return [(a, b, c) for (a, b), c in zip(self.rows, self.p04)]
         return list(self.rows)
 
@@ -229,11 +314,23 @@ class _BatchTap:
                     run4 = eng.run
 
                     def run_p04(ctx: Any, observations: Any = None, _run0=run4, _eng=eng) -> Any:
+                        c0 = time.thread_time()
                         out = _run0(ctx, observations)
+                        self.cpu[LEARNING_ENGINE].append((time.thread_time() - c0) * 1000.0)
                         st = getattr(_eng, "last_stats", None) or {}
                         self.p04.append(float(st.get("learned", 0) or 0))
                         return out
                     eng.run = run_p04
+                elif eng.name == SCORING_ENGINE:
+                    run3 = eng.run
+
+                    def run_p03(ctx: Any, observations: Any = None, _run0=run3) -> Any:
+                        c0 = time.thread_time()
+                        out = _run0(ctx, observations)
+                        self.cpu[SCORING_ENGINE].append((time.thread_time() - c0) * 1000.0)
+                        self.p03.append(float(out or 0))
+                        return out
+                    eng.run = run_p03
             return reg
         return make
 
@@ -278,7 +375,7 @@ def run_point(pack: Any, seed: int = 0, registry_factory: Optional[Callable] = N
                    keep_store=True, record_series=False, **run_kw)
     mem = pcore_memory(res.store, model_names)
     cpu = pcore_cpu(res.timings, holder["g"].per_tick if "g" in holder else [], engines,
-                    batch_per_tick=tap.batch())
+                    batch_per_tick=tap.batch(), cpu_ms=tap.cpu)
     org = getattr(p, "org", None)
     n_meta = sum(1 for a in (getattr(org, "attr_schedule", None) or [])
                  if a.name.startswith("f"))
@@ -293,6 +390,20 @@ def run_point(pack: Any, seed: int = 0, registry_factory: Optional[Callable] = N
            "exceptions": len(res.exceptions)}
     res.store = None
     return out
+
+
+def engine_cpu_columns(timings: Mapping[str, Any], engines: Sequence[str]
+                       ) -> Optional[Dict[str, List[float]]]:
+    """{engine: thread-CPU ms per tick} from the runner's recorder
+    (timings['engine_cpu_ms'], round 6), or None for runs without it."""
+    cpu = timings.get("engine_cpu_ms") if isinstance(timings, Mapping) else None
+    names = list((timings or {}).get("engine_names") or [])
+    if cpu is None or not names:
+        return None
+    arr = np.asarray(cpu, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != len(names):
+        return None
+    return {n: arr[:, names.index(n)].tolist() for n in engines if n in names}
 
 
 def run_point_resumable(pack: Any, seed: int, ckpt: str, *, stop_after_s: Optional[float] = None,
@@ -311,7 +422,8 @@ def run_point_resumable(pack: Any, seed: int, ckpt: str, *, stop_after_s: Option
     if res is None:
         return None
     mem = pcore_memory(res.store, model_names)
-    cpu = pcore_cpu(res.timings, res.tap["events"], engines, batch_per_tick=res.tap["batch"])
+    cpu = pcore_cpu(res.timings, res.tap["events"], engines, batch_per_tick=res.tap["batch"],
+                    cpu_ms=engine_cpu_columns(res.timings, (SCORING_ENGINE, LEARNING_ENGINE)))
     org = getattr(p, "org", None)
     n_meta = sum(1 for a in (getattr(org, "attr_schedule", None) or []) if a.name.startswith("f"))
     idle = set((getattr(org, "config", None) or {}).get("idle_systems") or [])
@@ -343,8 +455,12 @@ def pg4_summary(points: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     for name, ps in by_pack.items():
         q = dict(ps[0])
         q["mem_bytes"] = float(np.median([x["mem_bytes"] for x in ps]))
-        ups = [x["cpu"].get("us_per_event") for x in ps if x["cpu"].get("us_per_event")]
+        # thread CPU where every seed of the point carries it (round 6), else wall
+        cpu_ok = all(x["cpu"].get("us_per_event_cpu") for x in ps)
+        key = "us_per_event_cpu" if cpu_ok else "us_per_event"
+        ups = [x["cpu"].get(key) for x in ps if x["cpu"].get(key)]
         q["us_per_event"] = float(np.median(ups)) if ups else None
+        q["us_per_event_basis"] = "thread CPU" if cpu_ok else "wall"
         med.append(q)
     scale = [p for p in med if str(p["pack"]).startswith("O-scale")]
     servers = [p for p in med if str(p["pack"]).startswith("O-servers")]
@@ -359,8 +475,13 @@ def pg4_summary(points: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     m_sv = _slope(servers, "n_systems", lambda p: p["mem_bytes"])
     idle = [p.get("idle_max_bytes") for p in servers if p.get("idle_max_bytes") is not None]
     per_tree = [max(p["mem_by_key"].values()) for p in med if p.get("mem_by_key")]
-    sc = [p["cpu"].get("scoring_p95_us") for p in med if p["cpu"].get("scoring_p95_us")]
-    le = [p["cpu"].get("learning_p95_us") for p in med if p["cpu"].get("learning_p95_us")]
+    # (round 6) the per-event p95s on thread CPU time where the points carry
+    # it (pcore_cpu: wall time counts the waits of a shared machine)
+    def _p95(p: Mapping[str, Any], name: str) -> Any:
+        c = p["cpu"]
+        return c.get(name + "_cpu") if c.get(name + "_cpu") else c.get(name)
+    sc = [_p95(p, "scoring_p95_us") for p in med if _p95(p, "scoring_p95_us")]
+    le = [_p95(p, "learning_p95_us") for p in med if _p95(p, "learning_p95_us")]
     le_ = lambda v, t: None if v is None else v <= t + 1e-12
     checks = [
         check("memory slope vs IPs (attrs fixed)", m_ip, "<= 0.15 (0.35 with P11 ip mode)", le_(m_ip, 0.15)),
@@ -377,7 +498,7 @@ def pg4_summary(points: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     ]
     return gate("PG4 resources sublinear in IPs, metrics and servers", m_ip, "slopes per §12", checks,
                 points=[{k: p.get(k) for k in ("pack", "n_ips", "n_attrs", "n_systems", "mem_bytes",
-                                               "us_per_event")} for p in med])
+                                               "us_per_event", "us_per_event_basis")} for p in med])
 
 
 def run_grid(packs: Iterable[str], seeds: Iterable[int] = (0,), **kw: Any) -> List[Dict[str, Any]]:

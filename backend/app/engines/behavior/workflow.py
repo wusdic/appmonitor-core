@@ -293,42 +293,61 @@ class WorkflowEngine(Engine):
             # the session key separates users only behind a shared address (NAT,
             # VDI: P11 / B17 `shared`); elsewhere per-request cookies (health
             # checks) would turn every request into its own session
-            sk = (skey[i] if skey is not None and ip in shared and skey[i] not in (None, EV.ABSENT)
-                  else DF.NO_KEY)
-            k = (ip, sk)
+            kv = skey[i] if skey is not None and skey[i] not in (None, EV.ABSENT) else None
+            sk = kv if (kv is not None and ip in shared) else DF.NO_KEY
             ts = float(b.ts[i])
-            st.sess_hll.add(k, ts)
-            e = st.sessions.get(k)
             sd = sid[i] if sid is not None and sid[i] not in (None, EV.ABSENT) else None
-            if e is None:
-                new = True
-            elif sd is not None:
-                new = e[0] != sd
-            else:
-                new = ts - e[1] > gap
             h = hcache.get(key)
             if h is None:
                 h = hcache[key] = DF.h64(key)
-            if new:
-                if e is not None and e[5]:
-                    pend.append(("end", e[1], ip, e[2], e[6]))
-                prev, prev2, delay, earlier, bits, start = None, None, None, b"", 0, True
-            else:
-                prev, prev2, earlier, bits, start = e[2], e[7], e[3], e[4], False
-                delay = ts - e[1] if ts >= e[1] else None
-            # the route ledger sees every event (rename detection, lib/pdfg.detect_renames)
-            st.see_route(rk, ip, DF.EPOCH_ORD + int((ts + off) // 86400.0),
-                         DF.split_key(prev)[0] if prev else None)
-            if learn[i]:
-                pend.append(("row", ts, ip, key, prev, delay, start, earlier, float(mass[i]), int(i),
-                             prev2 == key and prev != key))
-            hs = DF.unpack_hashes(earlier)
-            if h in hs:
-                hs.remove(h)
-            hs.append(h)
-            st.sessions.put(k, [sd, max(ts, e[1]) if (e is not None and not new) else ts, key,
-                                DF.pack_hashes(hs[-DF.E_MAX:]), bits | DF.bloom_bits(h),
-                                bool(learn[i]), float(mass[i]), prev])
+            # (round 6) a content variant also marks its route in the session's
+            # Bloom set: a requirement mined before the predecessor's node split
+            # names the bare route (lib/pdfg._seen_action)
+            hb = DF.bloom_bits(h) | (DF.bloom_bits(DF.h64(rk)) if key != rk else 0)
+            # (round 6) an address whose session keys interleave (FlowState.track_key:
+            # a SNAT proxy) is counted on its keyed sessions; its address session
+            # stays up to date for P03, which reads it, but emits nothing
+            keys = [(ip, sk)]
+            if kv is not None and sk == DF.NO_KEY and st.track_key(ip, kv, ts, gap):
+                keys = [(ip, sk), (ip, DF.KEYED_PFX + str(kv))]
+            for j, k in enumerate(keys):
+                emit = j == len(keys) - 1
+                st.sess_hll.add(k, ts)
+                e = st.sessions.get(k)
+                if e is None:
+                    new = True
+                elif sd is not None:
+                    new = e[0] != sd
+                else:
+                    new = ts - e[1] > gap
+                if new:
+                    if emit and e is not None and e[5]:
+                        pend.append(("end", e[1], ip, e[2], e[6]))
+                    prev, prev2, delay, earlier, bits, start = None, None, None, b"", 0, True
+                else:
+                    prev, prev2, earlier, bits, start = e[2], e[7], e[3], e[4], False
+                    delay = ts - e[1] if ts >= e[1] else None
+                if j == 0:
+                    # the route ledger sees every event (rename detection, lib/pdfg.detect_renames)
+                    # in the ADDRESS session, also once the address is keyed: a rename
+                    # compares the new route's place with the old route's, recorded
+                    # before the address was keyed (a keyed session opened by the
+                    # renamed list page has no previous route where the old page
+                    # followed the home page: pack O seed 0, D3 never confirmed
+                    # with the ledger fed from keyed sessions)
+                    st.see_route(rk, ip, DF.EPOCH_ORD + int((ts + off) // 86400.0),
+                                 DF.split_key(prev)[0] if prev else None)
+                if emit:
+                    if learn[i]:
+                        pend.append(("row", ts, ip, key, prev, delay, start, earlier, float(mass[i]), int(i),
+                                     prev2 == key and prev != key))
+                hs = DF.unpack_hashes(earlier)
+                if h in hs:
+                    hs.remove(h)
+                hs.append(h)
+                st.sessions.put(k, [sd, max(ts, e[1]) if (e is not None and not new) else ts, key,
+                                    DF.pack_hashes(hs[-DF.E_MAX:]), bits | hb,
+                                    bool(learn[i]), float(mass[i]), prev])
             n += 1
         st.n_rows += n
         return n

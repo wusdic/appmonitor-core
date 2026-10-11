@@ -333,6 +333,17 @@ class EventBuilderEngine(Engine):
                             e["http.sclass"] = status_class(int(float(r["st"])))
                         if isinstance(r.get("l7"), Mapping):
                             l7 = r["l7"]
+                            # (round 6) an aggregated record carries the forwarding
+                            # headers on its ev_sample rows, not on the record: the
+                            # client behind a trusted proxy is resolved per row (O-real
+                            # R1: every proxied oa event was the proxy's address)
+                            if headers is None and trusted:
+                                rh = l7.get("headers")
+                                if rh:
+                                    src, peer_src = PP.resolve_who(o.entity, rh, trusted, who_headers)
+                                    e["net.src"] = src
+                                    if peer_src is not None:
+                                        e["net.peer_src"] = peer_src
                         # per-event adapter / WAF fields (§5.1.2): an aggregated
                         # record carries them on its ev_sample rows, not on the record
                         if isinstance(r.get("meta"), Mapping):

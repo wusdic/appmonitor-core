@@ -508,3 +508,21 @@ def test_small_sample_prior_cannot_contradict_the_own_ring():
     p_top = m_calib.p_value(ring, 25.0, 0.5, 1e-18)           # beyond the ring: prior counts
     assert p_top < 1e-10
     assert m_calib.p_value(ring, 15.5, 0.5, float("nan")) == calib.p_from_ring(ring, 15.5, 0.5)
+
+
+def test_evaluate_health_continues_the_previous_weight():
+    """Round 6: evaluate_health passes each detector's previous weight to the
+    hysteresis of calib.health_weight (no hour-by-hour flapping)."""
+    import numpy as np
+    from collections import deque
+    from app.engines.behavior.lib.detectors import DETECTORS, N_DETECTORS
+    i = DETECTORS.index("marg_int")
+    bufs = [deque() for _ in range(N_DETECTORS)]
+    # randomised p of a mildly miscalibrated detector: D ~ 0.04 (inside the band)
+    p = np.linspace(0.0, 1.0, 2048) ** 1.1
+    bufs[i].extend(p.tolist())
+    exc, exp_ = np.zeros(N_DETECTORS), np.zeros(N_DETECTORS)
+    d = B24.evaluate_health(bufs, exc, exp_)["marg_int"]
+    assert 0.035 < d["ks"] <= 0.05 and d["weight_mult"] == 1.0
+    held = B24.evaluate_health(bufs, exc, exp_, prev={"marg_int": {"weight_mult": 0.5}})
+    assert held["marg_int"]["weight_mult"] == 0.5
