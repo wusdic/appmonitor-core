@@ -167,6 +167,7 @@ EV_CLUSTER = 3.0            # evidence units a signature needs to enter the dail
 EV_JOIN = 10.0              # ... to join a group between runs (§6.15 item 3)
 JOIN_MAJ = 0.6
 JOIN_PER_TICK = 256
+READDR_MAX = 256                 # (round 6) readdressed members remembered (old -> new), newest kept
 DROP_EV = 10.0              # dropped after 7 d with fewer units (§6.15 item 1)
 DROP_AGE_S = 7 * DAY
 IDLE_S = 30 * DAY
@@ -468,9 +469,21 @@ class WhoGroupsEngine(Engine):
     # ---------------------------------------------------------- readdress
     def _readdress(self, st: WGState, store: Any, now: float, model: Dict[str, Any]) -> bool:
         """P03's readdress_candidate rows: the new IP joins the old IP's group
-        at once, flagged provisional (the next daily run confirms or releases)."""
+        at once, flagged provisional (the next daily run confirms or releases).
+
+        (round 6) The member's move is remembered, model['readdressed'] =
+        {old: {'new', 't', 'g'}}, while it holds - the old address stays silent
+        (its signature's last row is older than the move; IDLE_S at most) -
+        so the views state the member at its new address:
+        the who summaries of the nodes it uses learn the new address only as
+        fast as its mass grows (O-real seed 0, R3: 财务部's 192.168.2.11 moved
+        to .51 on day 9; the finance login / ledger statements listed .10,
+        .11, .12 until day 17 and failed the who check on every held-out
+        login of .51, 38 claims). Bounded: READDR_MAX newest moves."""
         ip2g = model.setdefault("ip2g", {})
         groups = model.setdefault("groups", {})
+        rd = model.get("readdressed")
+        rd = dict(rd) if isinstance(rd, Mapping) else {}
         changed = False
         for s in sorted(store.batch_systems(EV.PAT_ASSIGN)):
             last = st.last_asg.get(s, -math.inf)
@@ -492,7 +505,23 @@ class WhoGroupsEngine(Engine):
                     gr["members"] = sorted(set(gr.get("members") or []) | {new}, key=_ip_key)
                     gr["n"] = len(gr["members"])
                     gr["provisional"] = sorted(set(gr.get("provisional") or []) | {new}, key=_ip_key)
+                    rd[old] = {"new": new, "t": float(ts_b), "g": g}
                     changed = True
+        # a move holds while the old address stays silent (P11's idle horizon at
+        # most; the new address's group membership is the clustering's to
+        # confirm - a young provisional member is released and rejoins)
+        for old_ip in sorted(rd):
+            e = rd[old_ip]
+            sg = st.sigs.get(old_ip)
+            if (sg is not None and float(sg.last) > float(e.get("t", -math.inf))) \
+                    or now - float(e.get("t", -math.inf)) >= IDLE_S:
+                del rd[old_ip]
+                changed = True
+        if len(rd) > READDR_MAX:
+            for old_ip in sorted(rd, key=lambda k: (-float(rd[k].get("t", 0.0)), k))[READDR_MAX:]:
+                del rd[old_ip]
+        if rd or "readdressed" in model:
+            model["readdressed"] = rd
         return changed
 
     # --------------------------------------------------------------- joins

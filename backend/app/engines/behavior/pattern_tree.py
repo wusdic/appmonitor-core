@@ -911,9 +911,24 @@ class PatternTreeEngine(Engine):
             # (M45) rows P03 / B28 learned damped (outliers, low trust) are not
             # checks of the statement: it states the pattern, not its outliers
             # (the held-out data of the requirement is the pattern's own events)
-            if nd.ref is not None and nd.state in PN.CONFIDENT_STATES and not suspicious \
-                    and factor >= 1.0 - 1e-9:
-                self._hold_check(lc, nd, get, keys, daytype, minute, ts, omega, mass / rho, day)
+            if nd.ref is not None and nd.state in PN.CONFIDENT_STATES:
+                if not suspicious and factor >= 1.0 - 1e-9:
+                    self._hold_check(lc, nd, get, keys, daytype, minute, ts, omega, mass / rho, day)
+                elif suspicious and nd.who.support(keys, ip, ts):
+                    # (round 6) a row P03 damped as foreign whose source's colleagues
+                    # (its /24, its learned group) use the node is a check of the
+                    # statement's WHO: the node's traffic it does not describe.
+                    # Unchecked, a member P03 had not admitted yet left the
+                    # statement's confidence untouched while it sent half the
+                    # node's rows (O-real R3, finance /fin/ledger: 192.168.2.12
+                    # readdressed to .51 on day 9, every .51 row damped until day
+                    # 17; the who named .11 / .12, stated .82, held .63-.85).
+                    # A source with no colleague at the node (a scanner, a slow
+                    # poisoner) stays an outlier of the pattern, not a check (M45).
+                    # The check weighs the row's undamped unit: it is one event of
+                    # the node's traffic whatever P03 made of it
+                    self._hold_check(lc, nd, get, keys, daytype, minute, ts, omega / max(factor, 1e-9),
+                                     mass / rho, day, who_only=True)
             if d < nlast and nd.meta.get("R") is not None:
                 self._rev_update(lc, tr, nd, path[d + 1], get, ip, ts, omega, day, kind)
         # exception node of the leaf's heavy source
@@ -933,13 +948,15 @@ class PatternTreeEngine(Engine):
     @staticmethod
     def _hold_check(lc: _LC, nd: PN.Node, get: Callable[[str], Any], keys: Sequence[Any],
                     daytype: int, minute: float, ts: float, omega: float,
-                    mass: Optional[float] = None, day: Optional[int] = None) -> None:
+                    mass: Optional[float] = None, day: Optional[int] = None,
+                    who_only: bool = False) -> None:
         """Held-out check of one learned event against the node's statement as
         of its last reference snapshot (built from earlier data only): the
         prequential record behind the node's calibrated confidence
         (pnode.HoldRecord, §6.9.4). Suspect rows are not checked (they are not
-        part of the pattern), and neither are rows the node has not been
-        stated for yet (no reference)."""
+        part of the pattern) - but for the who of those whose colleagues use
+        the node (who_only, round 6) - and neither are rows the node has not
+        been stated for yet (no reference)."""
         cons = nd.ref.get("hold") if isinstance(nd.ref, Mapping) else None
         if not cons:
             return
@@ -1005,7 +1022,7 @@ class PatternTreeEngine(Engine):
         # of >= GNUM_SHARE of its mass each (refreshed daily), only the request's
         # own numeric attributes (facet 'content', not transport measures)
         gsum = None
-        if hg is not None:
+        if hg is not None and not who_only:
             dk = int(ts // 86400.0)
             gq = nd.meta.get("gnum_q")
             if gq is None or gq[0] != dk:
@@ -1042,6 +1059,8 @@ class PatternTreeEngine(Engine):
             lvl, items, nom = w
             k = keys[lvl] if lvl < len(keys) else None
             add("who", str(k) in items, nom)
+        if who_only:
+            return
         wh = cons.get("when")
         if wh is not None:
             dt = 1 if daytype else 0

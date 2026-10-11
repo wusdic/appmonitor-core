@@ -189,3 +189,57 @@ def test_a_row_records_a_bounded_number_of_attributes():
     assert set(best[:P4.ROW_ATTRS_MAX - 1]) == set(attrs[1:])
     small = {"targets_sys": {0: ["net.bytes_down"]}, "roles": {"body.len": "target", "x.y": "split"}}
     assert P4.PatternTreeEngine._row_attrs(None, _Stub(small), 0) == ["net.bytes_down", "body.len", "x.y"]
+
+
+# ------------------------------------------- confidence of a who P03 has not admitted
+def _readdress_run(new_ip, days=30, seed=11):
+    """Two finance addresses read the ledger every workday; from day 8 the
+    second one (.12) is readdressed to `new_ip`, whose every row P03 damps as
+    foreign (it has not learned the address yet). Returns the ledger node's
+    p_hold per day end."""
+    from test_p04_round3 import FOREIGN, CLEAN, _damp_hook
+    sel = {"targets_sys": {0: ["net.dur_ms"]}, "split_cands": {0: []}, "roles": {}}
+    sim = Sim(sel=sel)
+    a, old = "192.168.2.11", "192.168.2.12"
+    sim.hooks.append(_damp_hook(lambda ip, d: dict(FOREIGN) if ip == new_ip else dict(CLEAN)))
+
+    def day(d, t0, rng):
+        if not is_workday(t0):
+            return []
+        ev = []
+        for ip in (a, old if d < 8 else new_ip):
+            for _ in range(25):
+                ev.append((t0 + rng.uniform(9 * 3600, 17 * 3600), "oa", ip,
+                           {"http.route": "GET fin /fin/ledger", "net.dur_ms": float(rng.uniform(20, 60))}))
+        return ev
+    sim.add(daily(day, days, seed=seed))
+    out = []
+    for d in range(days):
+        sim.run_until(MON + (d + 1) * DAY)
+        tr = sim.tree()
+        nd = tr.nodes[sim.top()] if tr is not None and len(tr.nodes) > 1 else None
+        out.append(None if nd is None else (nd.state, nd.p_hold(sim.now), nd.who.is_suspect(new_ip, sim.now)))
+    return out
+
+
+def test_a_member_damped_as_foreign_lowers_the_who_confidence():
+    """O-real R3: finance's 192.168.2.12 readdressed to .51 on day 9; P03
+    damped every .51 row as foreign until day 17, the node kept it out of its
+    who (correctly: not admitted) AND out of its held-out checks, so the
+    statement 'ledger read by .11 / .12' kept its confidence (.82) while half
+    of the node's traffic came from .51 (held .63-.85). The rows of a suspect
+    whose colleagues (same /24) use the node now check the who."""
+    st = _readdress_run("192.168.2.51", days=30)
+    after = st[-1]
+    assert after is not None and after[2], st                  # .51 still suspect (P03 damps it)
+    assert after[1] is not None and after[1] <= 0.5, st        # before round 6: 0.75
+
+
+def test_a_foreign_source_without_colleagues_is_not_a_check():
+    """A suspect with no colleague at the node (an outside address) stays an
+    outlier of the pattern: its rows are not checks (M45), the confidence of
+    the statement about the node's members is unchanged."""
+    st = _readdress_run("10.77.0.9", days=30)
+    after = st[-1]
+    assert after is not None and after[2], st
+    assert after[1] is not None and after[1] >= 0.7, st        # every test passed

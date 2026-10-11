@@ -69,3 +69,34 @@ def test_rename_suspends_the_old_binding_until_it_is_adopted():
     tab = MP.get_model(store, "oa", MP.PBIND)["nodes"][0][nid]["pairs"]["net.src->body.kv.username"]["table"]
     e = tab["10.168.7.121"]
     assert e.get("bound") and e["top"] == "mike.w" and "changing" not in e, e
+
+
+def test_a_redundant_attribute_is_a_binding_candidate(monkeypatch):
+    """O-real seed 0, finance: P05 classed body.kv.username 'redundant' (with
+    http.ctype: the form-encoded requests are the logins) from day 9 on; P08
+    took its Y candidates from P05's split / target roles only, never
+    screened net.src -> username and stated no finance login binding on any
+    day (PG1 bindings 0 / 3; pack O, where username is a 'target': 3 / 3).
+    A redundant attribute carries information (another one's), so it is a
+    candidate; a dropped / invariant one is not."""
+    from types import SimpleNamespace as NS
+
+    sel = {"roles": {"body.kv.username": "redundant", "body.kv.batch": "split",
+                     "body.kv.remark": "dropped", "hdr.host": "invariant"},
+           "targets_sys": {"0": ["body.kv.batch"]}}
+    monkeypatch.setattr(MP, "get_model", lambda store, key, kind: sel if kind == MP.ATTRSEL else None)
+    recs = {a: NS(type="categorical", policy="clear", state="active") for a in sel["roles"]}
+
+    class Reg:
+        def get(self, a):
+            return recs.get(a)
+
+        def names(self):
+            return list(recs)
+
+        def coverage(self, a):
+            return 1.0
+
+    out = BindingEngine._y_candidates(None, "finance", Reg())
+    assert "body.kv.username" in out and "body.kv.batch" in out
+    assert "body.kv.remark" not in out and "hdr.host" not in out

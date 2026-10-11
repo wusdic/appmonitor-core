@@ -572,7 +572,25 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
     minute_mode = len(pts) >= min_points
     wts = np.asarray([float(p[2]) if len(p) > 2 else 1.0 for p in pts], dtype=np.float64)
     cw = wts
+    n_units = float(np.sum(wts >= CLEAN_W))
     if minute_mode:
+        # (round 6) the independent unit of an arrival law is a source's
+        # SESSION (_sessions), not its page views: each arrival weighs
+        # 1 / (its session's size), so Bayesian Blocks' evidence (cell counts,
+        # the change-point prior's N) and the coverage's sample size are
+        # sessions. Weighted per view, a session's 4-6 views a few minutes
+        # apart made a block of their own: O-real seed 0, portal's weekend
+        # POST /comment (a normal law over 07:00-23:00, sessions of several
+        # comments) stated '12:46-18:40' at coverage 0.68 where the law puts
+        # 0.53 (held 0.51-0.53, days 23-32); synthetic (tests/lib): stated
+        # above the law's share by > 0.05 in 27-37 % of fits, 3.5 windows
+        # for a one-mode law
+        units = _sessions(pts, tz_offset_s)
+        size: Dict[Any, int] = {}
+        for u_ in units:
+            size[u_] = size.get(u_, 0) + 1
+        cw = wts / np.asarray([float(size[u_]) for u_ in units], dtype=np.float64)
+        n_units = float(len({u_ for u_, w_ in zip(units, wts) if w_ >= CLEAN_W}))
         mins = np.asarray([p[0] for p in pts], dtype=np.float64)
         counts, widths, starts = _cells_minutes(mins, cut, cw)
         ncp = ncp_prior(float(cw.sum()), p0)
@@ -608,7 +626,7 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
         inside = np.asarray([in_windows(m, windows) for m in mins], dtype=np.float64)
         cov = float(np.sum(inside * cw) / max(float(cw.sum()), 1e-12))
         if not info.get("all_day"):
-            cov = predictive_coverage(cov, float(np.sum(wts >= CLEAN_W)), len(windows))
+            cov = predictive_coverage(cov, n_units, len(windows))
     else:
         tot = h.sum()
         mids = np.arange(SLOTS) * SLOT_MIN + SLOT_MIN / 2.0
@@ -760,6 +778,14 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
         rec["regime"] = "new" if use_recent else "mixed"
         if cut is not None:
             rec["change"] = {k: cut[k] for k in ("p", "dates_after", "sources_after", "accepted")}
+    if use_recent and young and rec.get("res") == "minute" and not rec.get("all_day"):
+        # (round 6) a young regime's edges from its arrivals and its previous
+        # regime's widths (_young_edges); all arrivals stay inside, so the
+        # in-sample coverage and stability are unchanged
+        old_pts = [p for p in pts if float(p[1]) < float(since)]
+        old = fit_regime(hist, n, old_pts, tz_offset_s=tz_offset_s, young=False) if old_pts else None
+        if old is not None:
+            _young_edges(rec, old, use, tz_offset_s)
     if rec.get("res") == "minute" and not rec.get("all_day"):
         fc = cv_coverage(hist, use, tz_offset_s)
         if fc is not None:
@@ -809,6 +835,160 @@ def _flat(rec: Dict[str, Any], pts: Sequence[Sequence[Any]], tz_offset_s: float)
         if (float(p[2]) if len(p) > 2 else 1.0) >= CLEAN_W:
             by[_local_date(float(p[1]), tz_offset_s)] = True
     rec["stability"] = 1.0 if by else rec.get("stability")
+
+
+YOUNG_UNITS = 20                 # _young_edges: a window of < 20 independent arrivals (sessions) of a new regime ...
+WIDTH_SIGMA = 0.15               # ... takes its previous regime's width as a prior: log-normal (sd 0.15: x/ 1.16) ...
+WIDTH_SAME = 0.5                 # ... with this probability, an unknown (log-uniform) width otherwise
+
+
+def _old_density(old: Mapping[str, Any]) -> Optional[Tuple[np.ndarray, np.ndarray, List[List[int]], np.ndarray]]:
+    """The previous regime's arrival law as a density over the day's minutes:
+    c s_j / |w_j| inside window w_j (share s_j, coverage c) and (1 - c) /
+    (1440 - sum |w_j|) outside; (density, window index per minute (-1
+    outside), windows, lengths) or None (no minute windows)."""
+    if old is None or old.get("res") != "minute" or old.get("all_day") or not old.get("windows"):
+        return None
+    c = float(old.get("coverage") or 0.0)
+    if not (FLAT_SHARE <= c < 1.0) or (old.get("dates") or 0) < REGIME_DATES:
+        return None
+    wins = [list(map(int, w)) for w in old["windows"]]
+    lens = np.asarray([window_len(s, e) for s, e in wins], dtype=np.float64)
+    if lens.sum() >= DAY_MIN or (lens <= 0).any():
+        return None
+    sh = np.asarray(list(old.get("shares") or [])[:len(wins)], dtype=np.float64)
+    if sh.size != len(wins) or sh.sum() <= 0:
+        sh = lens / lens.sum()
+    sh = sh / sh.sum()
+    grid = np.arange(DAY_MIN, dtype=np.float64)
+    dens = np.full(DAY_MIN, (1.0 - c) / (DAY_MIN - lens.sum()), dtype=np.float64)
+    member = np.full(DAY_MIN, -1, dtype=np.int64)
+    for j, (s, e) in enumerate(wins):
+        m = ((grid >= s) & (grid < e)) if s <= e else ((grid >= s) | (grid < e))
+        dens[m] = c * sh[j] / lens[j]
+        member[m] = j
+    return dens, member, wins, lens
+
+
+def _shift_mode(dens: np.ndarray, x: np.ndarray, wx: np.ndarray) -> int:
+    """The posterior mode of the shift delta of the new arrivals x (weights
+    wx: each session counts once) under the old law shifted by delta (flat
+    prior over the day's whole minutes)."""
+    deltas = np.arange(DAY_MIN, dtype=np.int64)
+    idx = (np.floor(x).astype(np.int64)[None, :] - deltas[:, None]) % DAY_MIN
+    ll = (np.log(dens)[idx] * wx[None, :]).sum(axis=1)
+    return int(np.argmax(ll))
+
+
+def _width_mean(R: float, k: int, w0: float, sigma: float = WIDTH_SIGMA, p_same: float = WIDTH_SAME) -> float:
+    """Posterior mean of a uniform law's width W from k independent draws of
+    range R, the location integrated out: p(W | R) ~ prior(W) (W - R) W^-k
+    on W >= R. The prior is a two-part mixture: with probability p_same the
+    law kept its previous width (log-normal around w0, sd sigma), otherwise
+    its width is unknown (log-uniform over 1 minute to a day) - a law that
+    narrowed or widened moves the posterior to the second part by its own
+    range, as a Bayes factor."""
+    W = np.exp(np.linspace(math.log(max(R, 1e-3)), math.log(float(DAY_MIN)), 4001))[1:]
+    if W.size == 0 or W[-1] <= R:
+        return float(R)
+    spike = np.exp(-((np.log(W) - math.log(w0)) ** 2) / (2.0 * sigma * sigma)) / (W * sigma * math.sqrt(2.0 * math.pi))
+    slab = 1.0 / (W * math.log(float(DAY_MIN)))
+    prior = p_same * spike + (1.0 - p_same) * slab
+    lik = np.exp(np.log(W - R) - k * (np.log(W) - math.log(max(R, 1.0))))
+    dw = np.gradient(W)
+    p = prior * lik * dw
+    if not np.isfinite(p).all() or p.sum() <= 0:
+        return float(R)
+    return float(np.sum(W * p) / np.sum(p))
+
+
+def _young_edges(rec: Dict[str, Any], old: Mapping[str, Any], new_pts: Sequence[Sequence[Any]],
+                 tz_offset_s: float) -> Optional[List[Dict[str, Any]]]:
+    """(round 6) The edges of a YOUNG regime's windows (a window of fewer than
+    YOUNG_UNITS independent arrivals - sessions, _sessions) from their
+    arrivals AND the previous regime's shape: a schedule change moves a law
+    and seldom reshapes it, while the new window's own k arrivals leave
+    2 / (k + 1) of it beyond their hull on average and move its edges with
+    every new arrival. Per window of the new fit: the old window it
+    continues is the one it overlaps when shifted back by the posterior mode
+    of the shift of the whole old law (_shift_mode); its width w0 centres
+    the prior of the new window's width W (kept with probability WIDTH_SAME,
+    log-normal sd WIDTH_SIGMA; unknown otherwise), which the arrivals update
+    with the uniform law's likelihood (_width_mean); the
+    window is centred on its arrivals' midrange (the posterior mean of the
+    location given W) and never narrower than their hull - a law that
+    widened or narrowed moves W away from w0 by its range and k. Edges are
+    rounded to whole minutes and never reach a neighbouring window. Windows
+    rewritten in place; returns [{'window', 'w0', 'units', 'from'}] or None.
+    Why (pack O seeds 3-4, D1): after 综合部's login moved from 09:00-09:21
+    to 08:30-08:51 the new regime's window on its third workday was fitted
+    from 9 logins (3 sources x 3 workdays), 518-530 in seed 3: hull plus the
+    order-statistics extension 08:37-08:52 (IoU 0.64 < 0.7), D1 confirmed
+    only on the fourth or fifth workday."""
+    od = _old_density(old)
+    if od is None or rec.get("all_day") or not rec.get("windows"):
+        return None
+    dens, member, owins, olens = od
+    clean = [p for p in new_pts if (float(p[2]) if len(p) > 2 else 1.0) >= CLEAN_W]
+    if len(clean) < 2:
+        return None
+    units = _sessions(clean, tz_offset_s)
+    size: Dict[Any, int] = {}
+    for u_ in units:
+        size[u_] = size.get(u_, 0) + 1
+    x = np.asarray([float(p[0]) % DAY_MIN for p in clean], dtype=np.float64)
+    wx = np.asarray([1.0 / size[u_] for u_ in units], dtype=np.float64)
+    d_hat = _shift_mode(dens, x, wx)
+    cut = int(rec.get("cut") or 0)
+    wins = [list(map(int, w)) for w in rec["windows"]]
+    if any(window_len(s, e) >= DAY_MIN for s, e in wins):
+        return None
+    # unwrapped frame (the fit's quiet cut): no window crosses it
+    uw = sorted([[(s - cut) % DAY_MIN, (s - cut) % DAY_MIN + window_len(s, e)] for s, e in wins])
+    ux = (x - cut) % DAY_MIN
+    out_w: List[List[float]] = []
+    info: List[Dict[str, Any]] = []
+    for i, (s, e) in enumerate(uw):
+        lo_lim = out_w[-1][1] if out_w else 0.0
+        hi_lim = uw[i + 1][0] if i + 1 < len(uw) else float(DAY_MIN)
+        sel = (ux >= s) & (ux < e)
+        k = len({units[j] for j in np.flatnonzero(sel)})
+        if k < 2 or k >= YOUNG_UNITS:
+            out_w.append([s, e])
+            continue
+        # the old window this one continues: overlap with the window shifted back
+        back = np.arange(int(s), int(math.ceil(e))) + cut - d_hat
+        hit = member[back % DAY_MIN]
+        hit = hit[hit >= 0]
+        if hit.size == 0:
+            out_w.append([s, e])
+            continue
+        j0 = int(np.bincount(hit).argmax())
+        w0 = float(olens[j0])
+        xs = ux[sel]
+        R = float(xs.max() - xs.min())
+        W = max(R, _width_mean(R, k, w0))
+        mid = 0.5 * float(xs.max() + xs.min())
+        s2 = float(max(lo_lim, math.floor(mid - W / 2.0 + 0.5)))
+        e2 = float(min(hi_lim, max(math.floor(mid + W / 2.0 + 0.5), s2 + 1.0)))
+        s2 = min(s2, float(math.floor(xs.min())))
+        e2 = max(e2, float(math.floor(xs.max())) + 1.0) if e2 < hi_lim else e2
+        out_w.append([s2, e2])
+        info.append({"window": [int(s2), int(e2)], "w0": round(w0, 1), "units": int(k), "W": round(W, 2),
+                     "from": owins[j0]})
+    if not info:
+        return None
+    windows = []
+    for s, e in out_w:
+        a, b = int(round(s + cut)) % DAY_MIN, int(round(e + cut)) % DAY_MIN
+        windows.append([0, DAY_MIN] if a == b else [a, b])
+    for d in info:
+        d["window"] = [(d["window"][0] + cut) % DAY_MIN, (d["window"][1] + cut) % DAY_MIN]
+    rec["windows_hull"] = rec.get("windows")
+    rec["windows"] = sorted(windows)
+    rec["labels"] = [label(s, e) for s, e in rec["windows"]]
+    rec["shift"] = {"delta": int(((d_hat + DAY_MIN // 2) % DAY_MIN) - DAY_MIN // 2), "windows": info}
+    return info
 
 
 DRIFT_ALPHA = 0.01               # recent_drift: binomial lower tail of a date's in-window arrivals (Bonferroni)

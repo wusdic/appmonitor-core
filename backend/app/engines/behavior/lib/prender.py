@@ -156,10 +156,15 @@ def _stated_u(who: Any, level: int, t: float, items: Sequence[Any], u_level: flo
 
 def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
               groups: Mapping[str, Mapping[str, Any]], regions_cfg: Iterable[str] = (),
-              mode: Optional[str] = None) -> Tuple[Dict[str, Any], str, str, float]:
+              mode: Optional[str] = None, readdr: Optional[Mapping[str, str]] = None
+              ) -> Tuple[Dict[str, Any], str, str, float]:
     """(evidence who, zh, en, confidence) of a pnode.WhoSummary (§6.17.2 who
     rule). `regions_cfg` = configured region names (rendered 'reg:<name>');
-    a learned region (a P11 group id) renders as that group's CIDR covers."""
+    a learned region (a P11 group id) renders as that group's CIDR covers.
+    `readdr` (round 6) = {old: new} members P11 saw move (who_groups
+    'readdressed': the old address silent since): an address list states the
+    member at its new address - the node's mass of the old address is the
+    same person's (the list's coverage is unchanged)."""
     lv0 = who.levels[0]
     tot = lv0.total(t)
     distinct = int(round(who.distinct(t))) if tot > 0 else 0
@@ -171,7 +176,7 @@ def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
     closed0 = bool(U0 <= U_CLOSED and n_days >= CLOSED_DAYS)
     regions_cfg = set(regions_cfg)
     if mode != "none" and len(heavy) <= IP_LIST_MAX and cov >= IP_COVER - 1e-9 and U0 <= U_CLOSED:
-        ips = sorted((str(x) for x in heavy), key=_ip_sort)
+        ips = sorted({str((readdr or {}).get(str(x), x)) for x in heavy}, key=_ip_sort)
         plain = [x[7:] if x.startswith("shared:") else x for x in ips]
         gs = {ip2g.get(x) for x in plain}
         gname = ""

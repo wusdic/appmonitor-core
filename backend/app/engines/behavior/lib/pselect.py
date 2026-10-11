@@ -1308,7 +1308,6 @@ def names_to_evaluate(registry_names: Sequence[str], roles: Mapping[str, str],
     attribute is still evaluated every run, as before. A run judges at most
     E_MAX attributes (plus the weekly re-probes): the slice gets the budget the
     every-run roles leave, never less than E_MIN_SLICE."""
-    every = EVERY_ROLES
     kept = every_run(registry_names, roles, ustat)
     reprobe = [a for a in registry_names if roles.get(a) == "dropped"
                and t - float(dropped_at.get(a, t)) >= REPROBE_S]

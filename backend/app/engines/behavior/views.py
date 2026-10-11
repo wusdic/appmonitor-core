@@ -264,6 +264,9 @@ class _Ctx:
         self.wg = MP.who_groups(store)
         self.ip2g = self.wg.get("ip2g") or {}
         self.groups = self.wg.get("groups") or {}
+        # (round 6) members P11 saw move to a new address (old -> new)
+        self.readdr = {str(o): str(e.get("new")) for o, e in (self.wg.get("readdressed") or {}).items()
+                       if isinstance(e, Mapping) and e.get("new")}
         ws = store.get_model(ORG, ORG, CF.WG_STATE)
         self.sigs = getattr(ws, "sigs", None)          # P11's per-address signatures (group parts)
         self.grp_gain = _grp_gain(MP.get_model(store, key, MP.SYSPROF))
@@ -561,7 +564,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     t = c.now
     pid = PN.pattern_id(c.key, kind, nd.id, nd.version, nd.cver)
     who_ev, who_zh, who_en, who_c = PR.who_block(nd.who, t, nd.n_days(), c.ip2g, c.groups,
-                                                 c.regions, c.mode)
+                                                 c.regions, c.mode, getattr(c, "readdr", None))
     if part is not None:
         g, mem, gname, share = part[:4]
         restrict = set(mem)
@@ -1127,6 +1130,10 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0, route: Optional
         parts.append((k[4:], float(cnt) / tot))
     lv0 = nd.who.levels[0]
     seen = {str(ip) for ip, *_ in lv0.items(t)}
+    rdr = getattr(c, "readdr", None) or {}
+    if rdr:
+        # (round 6) a member P11 saw move is seen at its new address, not the old
+        seen = {rdr.get(ip, ip) for ip in seen}
     sigs = getattr(c, "sigs", None)
     use_sig = route is not None and sigs is not None
     # at a node with an address context, a signature member counts only when

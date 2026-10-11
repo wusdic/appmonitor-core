@@ -171,8 +171,15 @@ class BindingEngine(Engine):
             # bound username is usually a split candidate (it separates
             # departments), not a system target; P05's target list alone
             # rotates and lost it on pack O's real lattice
+            # (round 6) and 'redundant': an attribute P05 drops because another
+            # one carries the same information is informative all the same -
+            # O-real seed 0, finance: body.kv.username was 'redundant' (with
+            # http.ctype: the form-encoded requests are the logins) from day 9
+            # on, P08 never screened
+            # net.src -> username and PG1's finance login bindings were 0 / 3
+            # on every day (pack O, where it is a 'target': 3 / 3)
             names = [a for v in (tsys or {}).values() for a in (v or [])]
-            names += [a for a, r in (roles or {}).items() if r in ("split", "target")]
+            names += [a for a, r in (roles or {}).items() if r in ("split", "target", "redundant")]
         elif reg is not None:
             names = reg.names()
         out = set()
