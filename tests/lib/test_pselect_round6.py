@@ -104,6 +104,41 @@ def test_a_rare_field_is_not_redundant_with_what_marks_its_presence():
     assert red.get("http.ctype_copy") == "http.ctype" or red.get("http.ctype") == "http.ctype_copy", red
 
 
+def test_a_text_field_is_compared_on_its_values_not_its_shape():
+    """O-real seed 0 finance (round 6, evaluator): the login username is a TEXT
+    attribute; level_codes compares text at its shape level, where every
+    username is the one shape [a-z]{4}, constant on the rows where it is
+    present - so ctype -> username was functional there as well and the
+    username stayed 'redundant' with http.ctype on days 1-27 (no node target,
+    no source -> username binding screened by P08). A text attribute with few
+    values is compared on its values; a text copy of another attribute is
+    still redundant. Fails with shape-level text codes."""
+    from app.engines.behavior.lib.phier import Hierarchies
+    rng = np.random.default_rng(5)
+    t0 = 1_780_000_000.0
+    pr = SEL.StratifiedProbe(R=4096)
+    users = ["lucy", "lucy", "lucy", "tomz", "kate"]          # one shape, three values
+    for i in range(4000):
+        login = rng.random() < 0.05
+        row = {"http.route": "POST /fin/login" if login else "GET /fin/page",
+               "http.ctype": "application/x-www-form-urlencoded" if login else "text/html",
+               "net.src": f"192.168.2.{int(rng.integers(10, 16))}"}
+        row["hdr.ctype_text"] = "t-" + row["http.ctype"][:4]
+        if login:
+            row["body.kv.username"] = users[int(rng.integers(0, len(users)))]
+        pr.offer(("http", row["http.route"]), row, 1.0, t0 + i, (i * 0.61803398875) % 1.0 + 1e-9)
+    t = t0 + 4000
+    pr.rebalance(t)
+    reg = {"http.route": {"type": "categorical"}, "http.ctype": {"type": "categorical"},
+           "hdr.ctype_text": {"type": "text"}, "body.kv.username": {"type": "text"}}
+    hier = Hierarchies(registry=reg)
+    assert hier.kind("body.kv.username") == "text"
+    kept = ["http.ctype", "hdr.ctype_text", "body.kv.username"]
+    red = SEL.redundancy(pr, t, hier, kept, cost=lambda a: 0.0, cov=lambda a: 1.0)
+    assert "body.kv.username" not in red, red
+    assert red.get("hdr.ctype_text") == "http.ctype" or red.get("http.ctype") == "hdr.ctype_text", red
+
+
 def test_per_run_pools_are_bounded_and_untouched_below_the_cap():
     """PG4 (round 6): who_proxies walks every kept attribute and the node
     target pass every node-local one, per run - 86-89 split roles per system

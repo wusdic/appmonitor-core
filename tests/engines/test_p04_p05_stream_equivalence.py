@@ -55,8 +55,16 @@ DAYS = 4.0
 # 'redundant' with body.fmt on this stream (and body.kv.dept / period / items[]
 # become split candidates): model.attrsel re-recorded (4b8e9e79e81bdbd30e5fba08d9c2d8c66f15ddee).
 # The bounded P05 pools / value groups and P04's pair index do not alter it.
-GOLDEN = {"model.ptree": "94de57ce3c306a316cb140b7c6b9d5a6f37c2ace",
-          "model.attrsel": "eaf0805815f991e9c5aa07624c0f956b0ce663bd"}
+# Round 6, evaluator: P05 compares a text attribute with few values on its
+# values, not its shape (tests/lib/test_pselect_round6.py::
+# test_a_text_field_is_compared_on_its_values_not_its_shape): on this stream
+# hdr.content-type is 'redundant' with body.fmt again (its value is a function
+# of the body format; at shape level it was not), and body.kv.dept / period /
+# items[] / items[].n are dropped instead of split candidates. Both digests
+# re-recorded (before: model.ptree 94de57ce3c306a316cb140b7c6b9d5a6f37c2ace,
+# model.attrsel eaf0805815f991e9c5aa07624c0f956b0ce663bd).
+GOLDEN = {"model.ptree": "6e0dcf9c554ed41d0c4235d8e0547b9e1b3fedce",
+          "model.attrsel": "4b8e9e79e81bdbd30e5fba08d9c2d8c66f15ddee"}
 
 
 def _dec(v: Any) -> Any:

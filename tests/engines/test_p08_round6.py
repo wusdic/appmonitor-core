@@ -71,17 +71,21 @@ def test_rename_suspends_the_old_binding_until_it_is_adopted():
     assert e.get("bound") and e["top"] == "mike.w" and "changing" not in e, e
 
 
-def test_a_redundant_attribute_is_a_binding_candidate(monkeypatch):
-    """O-real seed 0, finance: P05 classed body.kv.username 'redundant' (with
-    http.ctype: the form-encoded requests are the logins) from day 9 on; P08
-    took its Y candidates from P05's split / target roles only, never
-    screened net.src -> username and stated no finance login binding on any
-    day (PG1 bindings 0 / 3; pack O, where username is a 'target': 3 / 3).
-    A redundant attribute carries information (another one's), so it is a
-    candidate; a dropped / invariant one is not."""
+def test_a_redundant_attribute_is_not_a_binding_candidate(monkeypatch):
+    """(round 6, evaluator) P08's Y candidates are P05's split / target
+    attributes, not its redundant ones. A redundant attribute carries another
+    candidate's information, and the redundant ones are mostly present on
+    every request (http.status, http.sclass, http.ua): taking them made every
+    row a probe row, the bounded probe lost the rare login rows a binding is
+    seeded from, and pack O's finance logins were unbound on day 7
+    (tests/eval/test_content_integration.py). The O-real finance username that
+    P05 classed 'redundant' is fixed at its root in P05 (a text attribute with
+    few values is compared on its values, not its shape,
+    tests/lib/test_pselect_round6.py).
+    Fails with the round-6 'redundant' candidates."""
     from types import SimpleNamespace as NS
 
-    sel = {"roles": {"body.kv.username": "redundant", "body.kv.batch": "split",
+    sel = {"roles": {"http.status": "redundant", "body.kv.username": "split", "body.kv.batch": "target",
                      "body.kv.remark": "dropped", "hdr.host": "invariant"},
            "targets_sys": {"0": ["body.kv.batch"]}}
     monkeypatch.setattr(MP, "get_model", lambda store, key, kind: sel if kind == MP.ATTRSEL else None)
@@ -99,4 +103,5 @@ def test_a_redundant_attribute_is_a_binding_candidate(monkeypatch):
 
     out = BindingEngine._y_candidates(None, "finance", Reg())
     assert "body.kv.username" in out and "body.kv.batch" in out
+    assert "http.status" not in out
     assert "body.kv.remark" not in out and "hdr.host" not in out

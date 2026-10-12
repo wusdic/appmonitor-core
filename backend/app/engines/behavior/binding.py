@@ -171,15 +171,19 @@ class BindingEngine(Engine):
             # bound username is usually a split candidate (it separates
             # departments), not a system target; P05's target list alone
             # rotates and lost it on pack O's real lattice
-            # (round 6) and 'redundant': an attribute P05 drops because another
-            # one carries the same information is informative all the same -
-            # O-real seed 0, finance: body.kv.username was 'redundant' (with
-            # http.ctype: the form-encoded requests are the logins) from day 9
-            # on, P08 never screened
-            # net.src -> username and PG1's finance login bindings were 0 / 3
-            # on every day (pack O, where it is a 'target': 3 / 3)
+            # Not 'redundant' (round 6, evaluator): a redundant attribute's
+            # information is another candidate's, and the redundant ones are
+            # mostly present on every request (http.status, http.sclass,
+            # http.ua), so each row became a probe row and the bounded probe
+            # lost the rare login rows a binding is seeded from (pack O
+            # lattice, finance: seeded history 4 workdays instead of 5, 0 / 3
+            # bindings on day 7; tests/eval/test_content_integration.py). The
+            # O-real finance username that P05 classed redundant (at its
+            # shape level, where every username is one shape) is a split /
+            # target since P05 compares a text attribute with few values on
+            # its values (tests/lib/test_pselect_round6.py).
             names = [a for v in (tsys or {}).values() for a in (v or [])]
-            names += [a for a, r in (roles or {}).items() if r in ("split", "target", "redundant")]
+            names += [a for a, r in (roles or {}).items() if r in ("split", "target")]
         elif reg is not None:
             names = reg.names()
         out = set()

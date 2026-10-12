@@ -1127,7 +1127,15 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
     pres: Dict[str, np.ndarray] = {}
     for a in kept:
         col = probe.column(rows, a)
-        l, cc, k = level_codes(hier, a, col, raw=probe.codes(rows, a))
+        # (round 6, evaluator) a text attribute with few distinct values is
+        # compared on its VALUES, as a categorical one is: at its shape level
+        # every username of a login form is one shape ([a-z]{4}), constant on
+        # the rows where it is present, so it was a function of whatever marks
+        # those rows (O-real seed 0 finance: 'redundant' with http.ctype on
+        # days 1-27 after the round-6 present-rows rule; no node target, and
+        # P08 never screened source -> username). A text attribute with more
+        # than LEVEL_CARD values is still compared on its shapes.
+        l, cc, k = level_codes(hier, a, col, text_values=True, raw=probe.codes(rows, a))
         codes[a] = (cc, k)
         pres[a] = np.fromiter((v is not ABSENT and v is not MISSING for v in col), dtype=bool, count=len(col))
     H = {a: w_entropy(codes[a][0], w, n) for a in kept}
