@@ -1481,3 +1481,102 @@ slope 0.216 — further gains need non-equivalent cadence changes. PG8 0.833 (fi
 items per seed; family trees restate members slowly; R13. `robust_tail` trimming small rings; B08 / B18 owners to confirm
 the lower-atom semantics; gate 15 in bounded mode; PG9 to be re-measured idle. numba installed in `.venv` and listed as an
 optional dependency in `backend/requirements.txt` (lead); ownership of `lib/pevalue.py`.
+
+## 18. Progressive profile core, round 6 (2026-10-12)
+
+Full record: `progressive.md` §16.14 (the owners' changes, the evaluator's EV6-1 – EV6-9, results on the final code
+`code11` = commit d157721, determinism, cost, PG4, PG9 / gate 15, O-real on 3 seeds, diagnosis and open issues);
+as-built rows: `engines.md` ("As built, round 6" and the B02 / B11 / B12 / B18 / B24 cards); Chinese narrative: design doc
+§3.0 (status per requirement sentence), §3.3 (the changes in place, numbered T6-* (tree), V6-n (temporal / workflow /
+views, = that owner's CHANGE n), B6-* (decision chain), S6-* (scoring cost)), §3.5 (bounded mode), §3.6 (O-real), §3.7
+(cost), §3.8.0 – §3.8.0c (round 6, with the example verbatim in both views on pack O day 21 and O-real day 35; round 5 kept
+as §3.8.0d, round 4 as §3.8.0e, round 3 as §3.8.0f, round 2 as §3.8.0g), §3.9.6 / §3.9.10 / §3.9.11 (B11 / B12, B02 / B18,
+B24), §3.10.2 (packs A / E), §3.11, §3.12.1. Four owners worked concurrently with strict file ownership on top of commit
+ceb219c (tree / family: P04, P05, P12's family tree, `pnode`, `pselect`; temporal / workflow / views: P03's sequence side,
+P06 – P11, P14; lib-3 decision chain: B02, B11 – B13, B18, B24, the bounded-mode wiring; scoring cost: P03's cost,
+`pscore`, `phier`, P02's hourly pass, P00's proxy resolution, the PG4 harness); the lead checkpointed their work through
+commits e733d5c, 6de1ae8, 39cec3c, 7b9fa2e and d157721 (container restarts and usage limits), and the evaluator measured
+`code11`.
+
+### 18.1 What changed in the integrated system
+
+- **Lead decision on PG1 (EV6-1).** The headline precision judges a claim only once the truth behaviour it describes
+  has been observable for at least one workday (`pmetrics.claim_observable`, `PTruth.row_observable`); all-claims
+  precision is reported as `precision_all`, the set-aside count as `n_unobservable`, and PG2's calibration stays on all
+  judged claims with `calibration_observable` beside it. Round 5 re-scored under the same rule: precision @ 14
+  0.842 → 0.929.
+- **Scorer.** A statement of a member system with truth rows of its own (O-real crm-01 … 12) is judged on those rows only
+  (EV6-2; most of round 5's O-real "over-confidence"). PG4 reads thread CPU per engine (EV6-3) and the per-event p95 as a
+  quantile over events (S6-8). The bounded stale checker honours `pactive.series_owed` (EV6-4).
+- **P00.** A trusted proxy's client is resolved per `ev_sample` row of an aggregated record (S6-6): before, every proxied
+  O-real oa event from day 8 was the proxy's address, which hid SALES' oa behaviour and the oa / `fam:1` group parts and
+  caused most of the missed anomalies A2 – A6.
+- **P04 / P05 / `pnode`.** Day-type structural coder with alarm drop on coder replacement (T6-1); calendar-classed days
+  without traffic (T6-2); numeric drift history per summary scale (T6-3); who-only held-out checks for damped members with
+  colleague support (T6-4); bounded per-run P05 evaluation and per-row P04 attributes (T6-5); presence-conditioned
+  redundancy (T6-6); 'when' judged on the trailing day (T6-7); request-indexed pair counts and P05 per-run caps (T6-8);
+  value-level redundancy for low-cardinality text (EV6-5); compact probe interning (EV6-7); the `gen_codes` memo keyed on
+  model content and record identity (EV6-8 — fixes resumed ≠ straight runs and the order-dependent stream digest).
+- **P06 – P11, P14.** P09 exact small-sample KS, edge extension, predictive slot coverage (V6-1), all-day for windows that
+  do not hold out of sample (V6-2), young-regime width prior (V6-7), sessions as the evidence of a window (V6-8); P14
+  drifting windows stated at their hold probability (V6-3 / V6-5); P06 records stating nothing left out (V6-4); P08
+  refuted bindings suspended (V6-6; V6-9 removed again by EV6-5b); P11 / P14 readdressed members stated at their new address
+  (V6-10); P10 keyed sessions behind a proxy (V6-12), requirements met by any content variant (V6-13 / 13b), rename ledger
+  from the address session (V6-14).
+- **P03 cost, exact.** Tree context only for systems with a new batch, per-tick memos, precomputed numeric tail records
+  (`pscore.GpdPredictive`), `phier.Regions` sharing parsed networks (S6-1 – S6-4); the same-batch overlay marks a variant's
+  bare route (S6-7). P03 output digests equal to the base code on pack O and O-servers under two hash seeds.
+- **Decision chain / bounded mode.** B02 role lineage on (old cluster ∪ published members) ∩ eligible (B6-1); B11 / B12
+  prefilter continues an IP with a model (B6-2); B18 implicit idle rows for members B01 skips (B6-3); `pactive.series_owed`
+  (B6-4); B24 health-weight hysteresis (B6-5).
+- **Tried and reverted:** a family-wide shared who code (P12), the Beta own-window term for parts (V6-3 → V6-5) and the
+  date-CV part confidence (V6-11), folding P09's window confidence into node statements, a P05 cadence counting only
+  every-run role changes, τ_earn = 13, EV6-8's content-only key (`code10`).
+
+### 18.2 Results (all measured; `reports/progressive/`)
+
+- Pack O, seeds 0–4, 21 days (after vs round 5's final runs re-scored by this round's scorer,
+  `round5/rescored_r6/`): PG1 recall @ 14 0.868 [0.842–0.947] vs 0.842; headline precision @ 14 0.960 [0.925–1.000] vs
+  0.929 (all claims 0.877 vs 0.842); @ 21 0.881 / 0.969 vs 0.872 / 0.908; components who 0.921 / when 0.947 / content
+  0.921 / bindings 1.00 / workflow 1.00; precision on observable claims day 5 → 21 0.91 → 0.97 (round 5 0.69 → 0.91);
+  median stated confidence day 7 → 21 0.80 → 0.95; pooled debiased calibration error 0.141 vs 0.129 (stated 0.881 / held
+  0.942, under-confident; plug-in ECE 0.060 vs 0.077); depth non-decreasing 4/5 (seed 1 dips 0.003 and 0.017 before the
+  drifts); anomalies 50 / 50; FAR ≥ LOW 0.0022, ≥ MEDIUM 0.0014 per entity-day; PG5 D2 / D3 / D5 5/5, D4 4/5 (new: a
+  young content-split portal node on seed 1), D1 3/5; PG8 0.833; PG10 day 11 1/5, day 21 3/5; the example's checklist
+  48 / 50 (seed 3's 90 % band, seed 4's login window IoU 0.68). Gates passing: PG3, PG6, PG7; PG1's precision checks pass.
+- PG4 (`reports/progressive/scale_r6/`, 7-day points, thread CPU): memory slopes vs IPs 0.026, systems 0.270, attributes
+  0.203 (≤ 0.2; 0.214 before EV6-7); CPU / event slopes vs IPs −0.054, attributes 0.293; scoring p95 1 959 µs (round 5
+  6 941 µs: P03 no longer rebuilds idle systems' contexts), learning p95 3 816 µs.
+- Cost per pack O run (median): P-core 1 447 s wall / 1 426 s thread CPU vs round 5's 876 s; the unchanged B24 – B28 took
+  1.43× their round-5 time (machine load), so P-core is 1.15× at equal load (P03 0.85×, P09 1.50×); peak RSS 1.43 → 1.63 GB.
+- Determinism: pack O seed 0 under `PYTHONHASHSEED` 0 and 1 — 0 of 16 612 score differences and 0 differences in the full
+  result pickle; resumed runs equal straight ones (EV6-8; `test_resumable.py` passes in full-suite order).
+- O-red seed 0: recall / precision @ 14 0.649 / 0.959 (round 5 re-scored 0.622 / 0.848), anomalies 9/10 (A4 missed:
+  P03's per-node calibration ring absorbed the drift's out-of-window logins), D1 and D2 fail, false splits 0. O60 seed 0:
+  day-8 recall 0.500 vs pack O's 0.576 (outside 0.05). O-real seeds 0–2 (35 days): recall @ 35 0.54 / 0.66 / 0.52
+  (0.35 / 0.41 / 0.34), precision @ 35 0.94 / 0.97 / 0.97, anomalies 7 / 6 / 5 of 10 (4), checklist day 35 7 / 6 / 5 of 10
+  (4 / 4 / 3), under-confident (stated 0.89–0.91, held 0.94–0.95), FAR ≥ MEDIUM 0.0015 / 0.0025 / 0.0036 (up), R items
+  3 / 4 / 4.
+- Packs A / E seed 0, default registry, 7b9fa2e (evaluator's runs, not committed): A 12/12, 8 within deadline, control
+  incidents 18 / 7 / 2, reopened 8, L8 low; E 3/3, LOW / MEDIUM 6 / 1, class ARI 0.551 → 0.755, refit ARI min
+  0.690 → 0.955. Bounded mode: gate 15 passes on both packs (stale / degraded 0 / 0; round 5: 88 / 68 on A); PG9's ≤ 0.5
+  p95 ratio is not reachable under §10.2's earned rule (paired ratios 0.94 / 0.81).
+- Tests: full suite on the final tree 3 244 passed, 4 skipped, 3 failed — all timing bounds
+  (`test_b13_budget_edges::test_perf_forty_entities_generous_bound`, `test_calib.py::test_conformal_branch_meets_b24_per_tick_budget`,
+  `test_bounded_mode.py::test_bounded_cost_flat_in_idle_known_ips`; the first and third also fail / flake on ceb219c on this
+  machine).
+- The report was assembled by the evaluator (`scripts/progressive_report.py --assemble --seeds 0,1,2,3,4 --variants
+  O-red,O60,O-real --scale reports/progressive/scale_r6`); round 5's runs and report are in `reports/progressive/round5/`,
+  re-scored in `round5/rescored_r6/`.
+
+### 18.3 Open (ordered by impact; details in design doc §3.11 and `progressive.md` §16.14.11–§16.14.12)
+
+PG1 recall @ 14 0.868 (day 14 is the Sunday after D1 – D3). Calibration error 0.141, under-confident (the tree's p_hold
+prior for nodes without held-out tests). P03 statistics: `when_ptab` for young content-split children (D4 seed 1) and the
+per-node 'when' calibration ring under drift (O-red A4). O-real: `missing_predecessor` false alarms across the oa / oa-r2
+replica pair (P03's same-batch overlay per system batch), A2 / A5 / A7, the family login node without a `net.src →
+username` binding, finance's username still redundant (`svc_sync` dominates the probe mass). D1 on seeds 3–4 (nine
+new-regime logins). P09's all-day rule on few dates (O60 agreement 0.076). PG4: memory slope vs attributes 0.203, CPU
+slope 0.293, per-event p95 15–20× the targets (1.96 ms scoring, 3.8 ms learning). PG9 needs a design decision. B24 hysteresis not confirmed on seeds 2+;
+`signature.rule_match` iterates every known entity (flaky timing test). B–D packs and A / E seeds ≥ 1 not re-run; round 6's
+A / E run JSONs not committed.

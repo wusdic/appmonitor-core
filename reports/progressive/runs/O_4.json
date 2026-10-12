@@ -1422,14 +1422,14 @@
      "sporadic": 0.0,
      "monthly": null
     },
-    "precision": 1.0,
+    "precision": 0.9583333333333334,
     "n_precision": 24,
-    "precision_all": 1.0,
+    "precision_all": 0.9583333333333334,
     "n_precision_all": 24,
     "n_unobservable": 0,
     "n_unjudged": 2,
     "n_duplicate": 0,
-    "ece": 0.15901111111111105,
+    "ece": 0.11734444444444435,
     "calib": [
      [
       0.7074,
@@ -1439,7 +1439,7 @@
      ],
      [
       0.8,
-      1,
+      0,
       0,
       1
      ],
@@ -2546,14 +2546,14 @@
      "sporadic": 0.5,
      "monthly": null
     },
-    "precision": 0.8666666666666667,
+    "precision": 0.9,
     "n_precision": 30,
-    "precision_all": 0.8666666666666667,
+    "precision_all": 0.9,
     "n_precision_all": 30,
     "n_unobservable": 0,
     "n_unjudged": 4,
     "n_duplicate": 0,
-    "ece": 0.2347077777777778,
+    "ece": 0.2013744444444444,
     "calib": [
      [
       0.824,
@@ -2563,7 +2563,7 @@
      ],
      [
       0.9333,
-      0,
+      1,
       0,
       1
      ],
@@ -11578,14 +11578,14 @@
      "sporadic": 0.5,
      "monthly": null
     },
-    "precision": 0.9310344827586207,
+    "precision": 0.9482758620689655,
     "n_precision": 58,
-    "precision_all": 0.9310344827586207,
+    "precision_all": 0.9482758620689655,
     "n_precision_all": 58,
     "n_unobservable": 0,
     "n_unjudged": 9,
     "n_duplicate": 0,
-    "ece": 0.060406326415482985,
+    "ece": 0.06568327096068743,
     "calib": [
      [
       0.7851,
@@ -11601,7 +11601,7 @@
      ],
      [
       0.9729,
-      0,
+      1,
       0,
       1
      ],
@@ -14307,9 +14307,9 @@
     "3": null,
     "4": 1.0,
     "5": 0.8260869565217391,
-    "6": 1.0,
+    "6": 0.9583333333333334,
     "7": 0.9285714285714286,
-    "8": 0.8666666666666667,
+    "8": 0.9,
     "9": 0.9795918367346939,
     "10": 0.9433962264150944,
     "11": 0.9454545454545454,
@@ -14320,7 +14320,7 @@
     "16": 0.9649122807017544,
     "17": 0.9152542372881356,
     "18": 0.9433962264150944,
-    "19": 0.9310344827586207,
+    "19": 0.9482758620689655,
     "20": 0.9491525423728814,
     "21": 0.95
    },
@@ -14330,9 +14330,9 @@
     "3": null,
     "4": 1.0,
     "5": 0.8260869565217391,
-    "6": 1.0,
+    "6": 0.9583333333333334,
     "7": 0.9285714285714286,
-    "8": 0.8666666666666667,
+    "8": 0.9,
     "9": 0.9795918367346939,
     "10": 0.9433962264150944,
     "11": 0.9454545454545454,
@@ -14343,17 +14343,17 @@
     "16": 0.9649122807017544,
     "17": 0.9152542372881356,
     "18": 0.9433962264150944,
-    "19": 0.9310344827586207,
+    "19": 0.9482758620689655,
     "20": 0.9491525423728814,
     "21": 0.95
    },
    "calibration_observable": {
     "n": 775,
-    "ece": 0.04973922580645171,
+    "ece": 0.052319870967742,
     "ece_null": 0.020973984516129036,
-    "ce": 0.1037696568222605,
+    "ce": 0.10406150335864406,
     "conf": 0.883164,
-    "hold": 0.9329032258064516
+    "hold": 0.9354838709677419
    },
    "recall_violations": [],
    "recall_monotone": true,
@@ -14564,20 +14564,20 @@
    "U_nonincreasing": true,
    "calibration": {
     "n": 786,
-    "ece": 0.041030916030534374,
+    "ece": 0.043575445292620904,
     "ece_null": 0.02128313358778624,
-    "ce": 0.08954034976442453,
+    "ce": 0.08976178984003497,
     "conf": 0.8813609414758269,
-    "hold": 0.9223918575063613
+    "hold": 0.9249363867684478
    },
    "calibration_by_kind": {
     "node": {
      "n": 486,
-     "ece": 0.0353493827160494,
+     "ece": 0.032715637860082324,
      "ece_null": 0.02254794855967078,
-     "ce": 0.06585886753415324,
+     "ce": 0.0658237400576914,
      "conf": 0.8973255144032921,
-     "hold": 0.9259259259259259
+     "hold": 0.9300411522633745
     },
     "part": {
      "n": 300,
@@ -14588,7 +14588,7 @@
      "hold": 0.9166666666666666
     }
    },
-   "ece": 0.08954034976442453,
+   "ece": 0.08976178984003497,
    "ece_last_day": 0.061518455018244975
   },
   "false_splits": {
@@ -26863,8 +26863,8 @@
         "negative": false
        },
        {
-        "text_zh": "【mail】工作日 09:25–09:45、13:30–14:03（覆盖 79 %，10 个工作日），综合部（192.168.1.21、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 2–80 KB（n = 688，下次越界概率 ≤ 0.7 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 700，下次越界概率 ≤ 0.7 %）；时长 90 % 在 40–150，全部在 5–300（n = 690，下次越界概率 ≤ 0.7 %）；每 IP 每小时次数 90 % 在 2–8。置信 0.79 · 依据 89 次 · 首次 2025-09-04 · 最近 2025-09-19 · v1.0",
-        "text_en": "[mail] On workdays 09:25–09:45, 13:30–14:03 (coverage 79 %, 10 dates), 综合部 (192.168.1.21, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 2–80 KB (n = 688, P(next outside) ≤ 0.7 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 700, P(next outside) ≤ 0.7 %); 90 % of duration within 40–150, all within 5–300 (n = 690, P(next outside) ≤ 0.7 %); 90 % of events per IP-hour within 2–8. Confidence 0.79, support 89 events, first seen 2025-09-04, last seen 2025-09-19, v1.0.",
+        "text_zh": "【mail】工作日 09:25–09:45、13:30–14:03（覆盖 79 %，10 个工作日），综合部（192.168.1.21、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 2–80 KB（n = 688，下次越界概率 ≤ 0.7 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 700，下次越界概率 ≤ 0.7 %）；时长 90 % 在 40–150，全部在 5–300（n = 689，下次越界概率 ≤ 0.7 %）；每 IP 每小时次数 90 % 在 2–8。置信 0.79 · 依据 89 次 · 首次 2025-09-04 · 最近 2025-09-19 · v1.0",
+        "text_en": "[mail] On workdays 09:25–09:45, 13:30–14:03 (coverage 79 %, 10 dates), 综合部 (192.168.1.21, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 2–80 KB (n = 688, P(next outside) ≤ 0.7 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 700, P(next outside) ≤ 0.7 %); 90 % of duration within 40–150, all within 5–300 (n = 689, P(next outside) ≤ 0.7 %); 90 % of events per IP-hour within 2–8. Confidence 0.79, support 89 events, first seen 2025-09-04, last seen 2025-09-19, v1.0.",
         "negative": false
        },
        {
@@ -27103,36 +27103,36 @@
   }
  },
  "engine_s": {
-  "raw.action_token": 30.5,
-  "raw.client_stack": 2.7,
-  "raw.event": 21.4,
-  "derived.event_context": 15.1,
-  "behavior.resource_governor": 47.8,
-  "behavior.attr_registry": 152.3,
-  "behavior.attr_select": 232.3,
-  "behavior.conformity": 95.8,
-  "behavior.pattern_tree": 400.5,
-  "behavior.content_bounds": 27.9,
-  "behavior.payload_grammar": 5.7,
-  "behavior.binding": 54.2,
-  "behavior.time_window": 82.3,
-  "behavior.workflow": 16.6,
+  "raw.action_token": 29.5,
+  "raw.client_stack": 2.6,
+  "raw.event": 21.0,
+  "derived.event_context": 14.6,
+  "behavior.resource_governor": 46.6,
+  "behavior.attr_registry": 145.8,
+  "behavior.attr_select": 223.7,
+  "behavior.conformity": 92.6,
+  "behavior.pattern_tree": 384.8,
+  "behavior.content_bounds": 27.3,
+  "behavior.payload_grammar": 5.5,
+  "behavior.binding": 52.2,
+  "behavior.time_window": 78.6,
+  "behavior.workflow": 16.3,
   "behavior.who_groups": 12.8,
-  "behavior.system_profile": 24.9,
-  "behavior.calibration": 144.9,
-  "behavior.fusion": 466.8,
-  "behavior.risk": 219.6,
-  "behavior.incident": 22.4,
-  "behavior.governor": 394.1,
+  "behavior.system_profile": 24.3,
+  "behavior.calibration": 141.5,
+  "behavior.fusion": 451.7,
+  "behavior.risk": 215.9,
+  "behavior.incident": 21.9,
+  "behavior.governor": 383.5,
   "behavior.explain": 0.5,
-  "behavior.facets": 11.6,
-  "behavior.views": 314.6
+  "behavior.facets": 11.1,
+  "behavior.views": 303.9
  },
- "wall_s": 2893.1242247810005,
+ "wall_s": 2803.646983312996,
  "registry": "progressive_decision",
  "resource_mode": "full",
  "incidents": 72,
- "events": 2478,
- "job_s": 3189.729830980301,
- "peak_rss_mb": 1602.4
+ "events": 2483,
+ "job_s": 3116.887094259262,
+ "peak_rss_mb": 1670.5
 }

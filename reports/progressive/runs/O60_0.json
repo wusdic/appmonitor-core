@@ -1883,7 +1883,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:crm:0:1@2.0"
+      "stmt": "p:crm:0:1@1.0"
      },
      "SALES.crm#1": {
       "recovered": true,
@@ -1895,7 +1895,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:crm:0:3@2.0"
+      "stmt": "p:crm:0:3@1.0"
      },
      "SALES.mail#0": {
       "recovered": false,
@@ -2046,8 +2046,8 @@
    "7": {
     "day": 7,
     "n_truth": 32,
-    "n_stmt": 49,
-    "n_confirmed": 49,
+    "n_stmt": 39,
+    "n_confirmed": 39,
     "recall": 0.46875,
     "components": {
      "who": 0.625,
@@ -2068,7 +2068,7 @@
     "precision_all": 0.9333333333333333,
     "n_precision_all": 30,
     "n_unobservable": 0,
-    "n_unjudged": 19,
+    "n_unjudged": 9,
     "n_duplicate": 0,
     "ece": 0.16190369929773554,
     "calib": [
@@ -2253,7 +2253,7 @@
       1
      ]
     ],
-    "mean_depth": 1.5510204081632653,
+    "mean_depth": 1.435897435897436,
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": true,
@@ -2481,7 +2481,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:crm:0:1@2.0"
+      "stmt": "p:crm:0:1@1.0"
      },
      "SALES.crm#1": {
       "recovered": true,
@@ -2493,7 +2493,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:crm:0:3@2.0"
+      "stmt": "p:crm:0:3@1.0"
      },
      "SALES.mail#0": {
       "recovered": false,
@@ -2644,8 +2644,8 @@
    "8": {
     "day": 8,
     "n_truth": 34,
-    "n_stmt": 50,
-    "n_confirmed": 50,
+    "n_stmt": 40,
+    "n_confirmed": 40,
     "recall": 0.5,
     "components": {
      "who": 0.6470588235294118,
@@ -2666,7 +2666,7 @@
     "precision_all": 0.9032258064516129,
     "n_precision_all": 31,
     "n_unobservable": 0,
-    "n_unjudged": 19,
+    "n_unjudged": 9,
     "n_duplicate": 0,
     "ece": 0.26121336405529944,
     "calib": [
@@ -2857,7 +2857,7 @@
       1
      ]
     ],
-    "mean_depth": 1.56,
+    "mean_depth": 1.45,
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": true,
@@ -3109,7 +3109,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:crm:0:1@2.0"
+      "stmt": "p:crm:0:1@1.0"
      },
      "SALES.crm#1": {
       "recovered": true,
@@ -3121,7 +3121,7 @@
        "workflow": null
       },
       "period": "daily",
-      "stmt": "p:crm:0:3@2.0"
+      "stmt": "p:crm:0:3@1.0"
      },
      "SALES.mail#0": {
       "recovered": true,
@@ -3273,8 +3273,8 @@
   "pg1_day14": {
    "day": 8,
    "n_truth": 34,
-   "n_stmt": 50,
-   "n_confirmed": 50,
+   "n_stmt": 40,
+   "n_confirmed": 40,
    "recall": 0.5,
    "components": {
     "who": 0.6470588235294118,
@@ -3295,10 +3295,10 @@
    "precision_all": 0.9032258064516129,
    "n_precision_all": 31,
    "n_unobservable": 0,
-   "n_unjudged": 19,
+   "n_unjudged": 9,
    "n_duplicate": 0,
    "ece": 0.26121336405529944,
-   "mean_depth": 1.56
+   "mean_depth": 1.45
   },
   "pg1_last_by_system": {
    "code": {
@@ -3422,7 +3422,7 @@
     ],
     [
      8,
-     0.0009728592652829527
+     0.0010334097619743646
     ]
    ],
    "U_steps": [
@@ -5363,8 +5363,8 @@
       "header_en": "综合部 (2 IPs) uses mail, oa",
       "statements": [
        {
-        "text_zh": "综合部 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 0.99 · 依据 6 天",
-        "text_en": "综合部 has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 0.99, support 6 days.",
+        "text_zh": "综合部 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 6 天",
+        "text_en": "综合部 has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 1.00, support 6 days.",
         "negative": true
        },
        {
@@ -5410,8 +5410,8 @@
       "header_en": "综合部·oa GET /approval/list (1 IPs) uses oa",
       "statements": [
        {
-        "text_zh": "综合部·oa GET /approval/list 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 0.99 · 依据 6 天",
-        "text_en": "综合部·oa GET /approval/list has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 0.99, support 6 days.",
+        "text_zh": "综合部·oa GET /approval/list 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 6 天",
+        "text_en": "综合部·oa GET /approval/list has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 1.00, support 6 days.",
         "negative": true
        },
        {
@@ -5469,8 +5469,8 @@
         "negative": false
        },
        {
-        "text_zh": "综合部 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 0.99 · 依据 6 天",
-        "text_en": "综合部 has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 0.99, support 6 days.",
+        "text_zh": "综合部 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 6 天",
+        "text_en": "综合部 has never performed a write action on crm (6 days, 0 times) (closed write actions: customers (POST /crm/visit)). Confidence 1.00, support 6 days.",
         "negative": true
        },
        {
@@ -5576,36 +5576,36 @@
  },
  "anomalies": {},
  "engine_s": {
-  "raw.action_token": 26.8,
+  "raw.action_token": 28.0,
   "raw.client_stack": 2.0,
-  "raw.event": 11.6,
-  "derived.event_context": 8.4,
-  "behavior.resource_governor": 14.6,
-  "behavior.attr_registry": 83.3,
-  "behavior.attr_select": 107.3,
-  "behavior.conformity": 43.8,
-  "behavior.pattern_tree": 140.5,
+  "raw.event": 12.0,
+  "derived.event_context": 8.8,
+  "behavior.resource_governor": 14.7,
+  "behavior.attr_registry": 84.8,
+  "behavior.attr_select": 110.6,
+  "behavior.conformity": 45.6,
+  "behavior.pattern_tree": 145.3,
   "behavior.content_bounds": 10.2,
-  "behavior.payload_grammar": 2.4,
-  "behavior.binding": 20.3,
-  "behavior.time_window": 13.4,
-  "behavior.workflow": 10.6,
-  "behavior.who_groups": 6.0,
-  "behavior.system_profile": 17.2,
-  "behavior.calibration": 105.3,
-  "behavior.fusion": 309.2,
-  "behavior.risk": 155.6,
-  "behavior.incident": 16.8,
-  "behavior.governor": 275.2,
+  "behavior.payload_grammar": 2.3,
+  "behavior.binding": 20.5,
+  "behavior.time_window": 13.8,
+  "behavior.workflow": 11.1,
+  "behavior.who_groups": 6.2,
+  "behavior.system_profile": 17.7,
+  "behavior.calibration": 108.1,
+  "behavior.fusion": 316.4,
+  "behavior.risk": 158.2,
+  "behavior.incident": 16.9,
+  "behavior.governor": 279.9,
   "behavior.explain": 0.2,
-  "behavior.facets": 3.6,
-  "behavior.views": 21.4
+  "behavior.facets": 3.8,
+  "behavior.views": 20.7
  },
- "wall_s": 1444.9771237639943,
+ "wall_s": 1476.6763728149817,
  "registry": "progressive_decision",
  "resource_mode": "full",
  "incidents": 18,
- "events": 1725,
- "job_s": 1477.4962284564972,
- "peak_rss_mb": 1218.2
+ "events": 1720,
+ "job_s": 1507.132307767868,
+ "peak_rss_mb": 1213.6
 }
