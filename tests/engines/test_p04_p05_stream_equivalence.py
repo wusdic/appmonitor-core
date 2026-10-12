@@ -63,8 +63,15 @@ DAYS = 4.0
 # items[] / items[].n are dropped instead of split candidates. Both digests
 # re-recorded (before: model.ptree 94de57ce3c306a316cb140b7c6b9d5a6f37c2ace,
 # model.attrsel eaf0805815f991e9c5aa07624c0f956b0ce663bd).
+# Round 6, evaluator EV6-7: P05's probe interns want sets as bit masks and
+# schemas as key tuples (pselect.StratifiedProbe; test_pselect_round6.py::
+# test_probe_interning_stays_compact_when_the_wanted_slice_rotates). The model
+# is unchanged in content - the same rows, want sets, columns and every other
+# field, checked representation-free on this stream under PYTHONHASHSEED 0 and
+# 1 - but its canonical form is not: model.attrsel re-recorded (before:
+# 4b8e9e79e81bdbd30e5fba08d9c2d8c66f15ddee); model.ptree unchanged.
 GOLDEN = {"model.ptree": "6e0dcf9c554ed41d0c4235d8e0547b9e1b3fedce",
-          "model.attrsel": "4b8e9e79e81bdbd30e5fba08d9c2d8c66f15ddee"}
+          "model.attrsel": "c82b1447b9d3dfcf7b6343bf55b29c7cb04f4415"}
 
 
 def _dec(v: Any) -> Any:

@@ -38,6 +38,7 @@ model.attrsel@(tree key, '__system__') =
 """
 from __future__ import annotations
 
+import hashlib
 import heapq
 import math
 import zlib
@@ -276,16 +277,73 @@ _GEN_CACHE_VALUES = 8192           # values per (attribute, level, model fingerp
 _GEN_CACHE_KEYS = 4096
 
 
-def _gen_fingerprint(hier: Any, a: str, level: int) -> Tuple:
-    """What gen(a, level, .) depends on besides the value: the registry record's
-    version (types, bins, groups, set templates) and the learned who / region /
-    window models (their sizes)."""
+def _gen_deps(hier: Any, kind: str) -> Optional[str]:
+    """A digest of the learned models gen(a, level, .) of an attribute of this
+    kind reads at any level (gen falls through to the next level when one
+    cannot speak), by CONTENT (round 6, evaluator EV6-8): who groups (ip2g),
+    regions and the shared addresses for an address; P09's windows and the day
+    hours for the time of day; the per-day-type windows for ctx.when; the
+    destination maps for net.dst. A SHA-1 of their sorted repr, so the module
+    memo's keys stay small; computed once per Hierarchies object (`_c_gdeps`)."""
+    if kind not in ("ip", "tod", "when", "dst"):
+        return None
+    memo = getattr(hier, "__dict__", None)
+    memo = memo.setdefault("_c_gdeps", {}) if memo is not None else {}
+    hit = memo.get(kind)
+    if hit is not None:
+        return hit
+
+    def wins(ws: Any) -> List[Tuple]:
+        return [tuple(w) for w in (ws or ())]
+
+    def items(d: Any) -> List[Tuple[str, str]]:
+        return sorted((repr(k), repr(v)) for k, v in (d or {}).items())
+    if kind == "ip":
+        regs = getattr(hier, "regions", None)
+        nets = getattr(regs, "_nets", regs) if regs is not None else ()
+        try:
+            rt = [repr(tuple(x)) if isinstance(x, (list, tuple)) else repr(x) for x in (nets or ())]
+        except TypeError:
+            rt = [repr(regs)]
+        dep: Any = (sorted(repr(x) for x in (getattr(hier, "shared", ()) or ())),
+                    items(getattr(hier, "ip2g", None)), rt)
+    elif kind == "tod":
+        dep = (wins(getattr(hier, "windows", ())), tuple(getattr(hier, "day_hours", ()) or ()))
+    elif kind == "when":
+        wdt = getattr(hier, "windows_dt", None) or {}
+        dep = (sorted((str(k), wins(v)) for k, v in wdt.items()),
+               tuple(getattr(hier, "day_hours", ()) or ()))
+    else:
+        dep = (items(getattr(hier, "dst_members", None)), items(getattr(hier, "dst_sites", None)))
+    out = memo[kind] = hashlib.sha1(repr(dep).encode("utf-8", "surrogatepass")).hexdigest()
+    return out
+
+
+def _gen_fingerprint(hier: Any, a: str, level: int) -> Tuple[Tuple, Any]:
+    """(key, record): what gen(a, level, .) depends on besides the value - the
+    registry RECORD (its identity and version: types, bins, groups, set
+    templates) and the content of the learned who / region / window /
+    destination models it reads (_gen_deps).
+
+    (round 6, evaluator EV6-8) The key held the record's version number and
+    the SIZES of those models (len(ip2g), n_groups, len(regions),
+    len(windows)). The memo is module-level, so a value generalised under one
+    model was returned under another of the same sizes, and under another
+    system's (or another run's) record of the same attribute name and version
+    number: after P11 moved an address between groups, or P09 moved a window's
+    edges, P05 judged net.src / ctx.tod_min on the old groups and windows, two
+    systems shared a categorical attribute's value groups, and a run's results
+    depended on what the process had memoised before (a resumed run differed
+    from a straight one; tests/eval/test_resumable.py and the stream digests
+    failed in full-suite order). The record is pinned by the memo (gen_codes,
+    _GEN_PINS), so its id() cannot be reused while the key exists."""
     rec = hier._rec(a) if hasattr(hier, "_rec") else None
-    ver = getattr(rec, "version", None) if rec is not None and not isinstance(rec, Mapping) else \
-        (id(rec) if rec is not None else None)
-    return (a, int(level), ver, hier.kind(a), len(getattr(hier, "ip2g", {}) or {}),
-            getattr(hier, "n_groups", 0), len(getattr(hier, "regions", ()) or ()),
-            len(getattr(hier, "windows", ()) or ()))
+    ver = getattr(rec, "version", None) if rec is not None and not isinstance(rec, Mapping) else None
+    k = hier.kind(a)
+    return (a, int(level), id(rec) if rec is not None else None, ver, k, _gen_deps(hier, k)), rec
+
+
+_GEN_PINS: Dict[Tuple, Any] = {}    # key -> the record it was computed for (keeps id() unique)
 
 
 def gen_codes(hier: Any, a: str, level: int, codes0: np.ndarray, uniq: Sequence[Any]) -> Tuple[np.ndarray, int]:
@@ -305,12 +363,14 @@ def gen_codes(hier: Any, a: str, level: int, codes0: np.ndarray, uniq: Sequence[
         m0: Dict[Hashable, int] = {}
         lut0 = np.asarray([m0.setdefault(_hashable(g), len(m0)) for g in fast] or [0], dtype=np.int64)
         return (lut0[codes0] if codes0.size else codes0), len(m0)
-    fp = _gen_fingerprint(hier, a, level)
+    fp, rec = _gen_fingerprint(hier, a, level)
     memo = _GEN_CACHE.get(fp)
-    if memo is None:
+    if memo is None or _GEN_PINS.get(fp) is not rec:
         if len(_GEN_CACHE) >= _GEN_CACHE_KEYS:
             _GEN_CACHE.clear()
+            _GEN_PINS.clear()
         memo = _GEN_CACHE[fp] = {}
+        _GEN_PINS[fp] = rec
     elif len(memo) > _GEN_CACHE_VALUES:
         memo.clear()
     m: Dict[Hashable, int] = {}
@@ -476,12 +536,23 @@ class StratifiedProbe:
         self.strata: Dict[Hashable, List[Tuple[float, int, int, tuple, float, float]]] = {}
         self.smass: Dict[Hashable, PS.DecayedVector] = {}
         self.cap: Dict[Hashable, int] = {}
+        # (round 6, evaluator EV6-7) compact interning: a schema is its sorted
+        # key tuple (its name -> position index is built on demand and dropped
+        # by release()), a want set is a bit mask over the probe's name index
+        # (_nix, names numbered in sorted order of first use). Since round 6
+        # names_to_evaluate rotates the wanted slice every hour, a probe holds
+        # rows of hundreds of want sets and schemas: as frozensets and
+        # per-schema dicts they were ~4 MB of the 340-attribute PG4 point
+        # (r5: 63 want sets / 243 schemas over 12 probes; r6: 732 / 1 356).
+        # Same ids, same rows, same columns as before.
         self._schemas: Dict[tuple, int] = {}
-        self._schema_list: List[Tuple[tuple, Dict[str, int]]] = []
+        self._schema_list: List[tuple] = []
+        self._ixc: Dict[int, Dict[str, int]] = {}
         self._sid_want: List[Optional[int]] = []
         self._tcache: Optional[Tuple[Any, Any]] = None
-        self._wants: List[frozenset] = []
-        self._want_ix: Dict[frozenset, int] = {}
+        self._nix: Dict[str, int] = {}
+        self._wants: List[int] = []
+        self._want_ix: Dict[int, int] = {}
         self._seq = 0
         self._size = 0
         self._mut = 0                  # mutation counter (rows / codes caches)
@@ -496,21 +567,46 @@ class StratifiedProbe:
             if len(self._schema_list) > 8192:          # bounded intern table
                 self._gc_schemas()
             sid = self._schemas[k] = len(self._schema_list)
-            self._schema_list.append((keys, {x: i for i, x in enumerate(keys)}))
+            self._schema_list.append(keys)
             self._sid_want.append(wid)
         return sid
+
+    def schema_keys(self, sid: int) -> tuple:
+        """The sorted attribute names a schema's rows record."""
+        return self._schema_list[sid]
+
+    def schema_index(self, sid: int) -> Dict[str, int]:
+        """name -> position in a row of schema `sid` (built on demand, kept
+        until release())."""
+        ix = self._ixc.get(sid)
+        if ix is None:
+            ix = self._ixc[sid] = {x: i for i, x in enumerate(self._schema_list[sid])}
+        return ix
+
+    def _in_want(self, wid: Optional[int], name: str) -> bool:
+        """Whether rows recorded under want id `wid` wanted `name` (None: all)."""
+        if wid is None:
+            return True
+        j = self._nix.get(name)
+        return j is not None and bool((self._wants[wid] >> j) & 1)
 
     def want_id(self, want: Optional[Iterable[str]]) -> Optional[int]:
         """Intern the set of attributes a row records (None = all of the event's)."""
         if want is None:
             return None
-        fw = frozenset(want)
-        wid = self._want_ix.get(fw)
+        nix = self._nix
+        new = [n for n in want if n not in nix]
+        for n in sorted(new):                      # hash-seed invariant numbering
+            nix[n] = len(nix)
+        m = 0
+        for n in want:
+            m |= 1 << nix[n]
+        wid = self._want_ix.get(m)
         if wid is None:
             if len(self._wants) > 1024:
                 return None
-            wid = self._want_ix[fw] = len(self._wants)
-            self._wants.append(fw)
+            wid = self._want_ix[m] = len(self._wants)
+            self._wants.append(m)
         return wid
 
     def _gc_schemas(self) -> None:
@@ -519,8 +615,9 @@ class StratifiedProbe:
         old_w = self._sid_want
         self._schemas, self._schema_list, self._sid_want = {}, [], []
         remap = {}
+        self._ixc = {}
         for sid in sorted(used):
-            keys = old[sid][0]
+            keys = old[sid]
             remap[sid] = len(self._schema_list)
             self._schemas[(keys, old_w[sid])] = remap[sid]
             self._schema_list.append(old[sid])
@@ -663,20 +760,17 @@ class StratifiedProbe:
                 groups.setdefault(sid, []).append(p)
             tg = []
             for sid, pos in groups.items():
-                cols = list(zip(*[rows[p][1] for p in pos])) if self._schema_list[sid][0] else []
+                cols = list(zip(*[rows[p][1] for p in pos])) if self._schema_list[sid] else []
                 tg.append((sid, pos, cols))
             self._tcache = (rows, tg)
-        sl = self._schema_list
-        wants = self._wants
         out: List[Any] = [None] * len(rows)
         for sid, pos, cols in self._tcache[1]:
-            i = sl[sid][1].get(name)
+            i = self.schema_index(sid).get(name)
             if i is not None:
                 for p, v in zip(pos, cols[i]):
                     out[p] = v
             else:
-                wid = self._sid_want[sid]
-                fill = ABSENT if wid is None or name in wants[wid] else MISSING
+                fill = ABSENT if self._in_want(self._sid_want[sid], name) else MISSING
                 for p in pos:
                     out[p] = fill
         return out
@@ -686,12 +780,13 @@ class StratifiedProbe:
         self._tcache = None
         self._rcache = None
         self._ccache = None
+        self._ixc = {}
 
     def names(self) -> List[str]:
         used = {r[2] for rows in self.strata.values() for r in rows}
         out: set = set()
         for sid in used:
-            out.update(self._schema_list[sid][0])
+            out.update(self._schema_list[sid])
         return sorted(out)
 
     def nbytes(self) -> int:
@@ -699,7 +794,7 @@ class StratifiedProbe:
         for heap in self.strata.values():
             for r in heap:
                 b += 120 + 8 * len(r[3])
-        b += sum(64 + 8 * len(k) for k, _ in self._schema_list)
+        b += sum(64 + 8 * len(k) for k in self._schema_list)
         return int(b)
 
 
@@ -1486,11 +1581,10 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
         return {}
     sys_set = set(targets_sys)
     pool = list(targets_sys) + [a for a in local_pool if a not in sys_set]
-    sl = probe._schema_list
     by_node: Dict[int, List[int]] = {}
     gone_s = set(gone)
     for i, (sid, vals) in enumerate(rows):
-        ix = sl[sid][1]
+        ix = probe.schema_index(sid)
 
         def get(nm: str, ix: Dict[str, int] = ix, vals: tuple = vals) -> Any:
             j = ix.get(nm)

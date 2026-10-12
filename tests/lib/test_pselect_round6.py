@@ -182,3 +182,128 @@ def test_daily_value_groups_are_bounded_and_rotate():
             last[a] = float(day)
         seen |= set(sl)
     assert seen == set(big)
+
+
+def _rotating_offers(n_want, n_names, per_want, rows_per_want, rng):
+    """Rows offered under `n_want` want sets that rotate like P05's hourly
+    wanted slice (names_to_evaluate): a fixed core plus a rotating slice."""
+    names = [f"f{j:03d}" for j in range(n_names)]
+    core = names[:per_want // 2]
+    out = []
+    t = 1000.0
+    for h in range(n_want):
+        start = (per_want // 2 + h * 7) % (n_names - per_want)
+        want = set(core) | set(names[per_want // 2 + start: per_want + start])
+        for _ in range(rows_per_want):
+            # an action's rows carry the same fields (one schema per want set)
+            row = {a: int(rng.integers(0, 4)) for a in want if int(a[1:]) % 5 != h % 5}
+            out.append((want, ("http", int(rng.integers(0, 4))), row, float(rng.uniform(0.5, 2.0)), t,
+                        float(rng.random())))
+            t += 5.0
+    return out
+
+
+def test_probe_interning_stays_compact_when_the_wanted_slice_rotates():
+    """EV6-7 (evaluator, round 6): since round 6 the wanted slice of P05's probe
+    rows rotates every hour, so a probe holds rows of hundreds of want sets and
+    schemas. Interned as frozensets and per-schema name -> position dicts they
+    were ~4 MB of the 340-attribute PG4 point and failed PG4's memory slope
+    against attributes (0.180 -> 0.214); as bit masks over the probe's name
+    index and key tuples (index dicts built on demand, dropped by release())
+    they are a fraction of it."""
+    from app.eval.pscale import deep_sizeof
+    rng = np.random.default_rng(3)
+    pr = SEL.StratifiedProbe(R=8192)
+    for want, st, row, m, t, u in _rotating_offers(300, 400, 80, 3, rng):
+        pr.offer(st, row, m, t, u, pr.want_id(want))
+    rows = pr.rows(t)[0]
+    pr.column(rows, "f001")
+    pr.release()
+    assert len(pr._wants) == 300
+    meta = deep_sizeof([pr._wants, pr._want_ix, pr._schema_list, pr._schemas, pr._sid_want,
+                        getattr(pr, "_nix", None), getattr(pr, "_ixc", None)], set())
+    assert meta < 600_000, meta            # round-6 interning: 2.0 MB; EV6-7: 0.27 MB
+
+
+def test_probe_columns_equal_a_plain_reference_under_rotating_want_sets():
+    """Representation-free check of EV6-7: every column equals the value, ABSENT
+    (wanted, the event lacked it) or MISSING (not wanted when recorded)."""
+    rng = np.random.default_rng(11)
+    pr = SEL.StratifiedProbe(R=100000)
+    ref = []
+    offers = _rotating_offers(40, 120, 30, 5, rng)
+    for k, (want, st, row, m, t, u) in enumerate(offers):
+        w = None if k % 17 == 0 else want
+        pr.offer(st, row, m, t, u, pr.want_id(w))
+        ref.append((row, w))
+    rows, _, _ = pr.rows(t)
+    assert len(rows) == len(ref)
+    # rows() lists the reservoirs stratum by stratum; match rows by content
+    got = {}
+    for name in [f"f{j:03d}" for j in range(120)] + ["nope"]:
+        col = pr.column(rows, name)
+        for i, v in enumerate(col):
+            got.setdefault(i, {})[name] = v
+    want_rows = sorted(repr(sorted(
+        {n: (r[n] if n in r else (SEL.ABSENT if (w is None or n in w) else SEL.MISSING))
+         for n in [f"f{j:03d}" for j in range(120)] + ["nope"]}.items(), key=lambda kv: kv[0]))
+        for r, w in ref)
+    have_rows = sorted(repr(sorted(d.items(), key=lambda kv: kv[0])) for d in got.values())
+    assert have_rows == want_rows
+
+
+def _gen(h, a, level, vals):
+    u = list(vals)
+    codes, k = SEL.gen_codes(h, a, level, np.arange(len(u)), u)
+    return codes.tolist(), k
+
+
+def test_generalisation_memo_follows_the_windows_edges_not_their_number():
+    """EV6-8 (evaluator, round 6): gen_codes' module-level memo was keyed on the
+    SIZES of the learned models (len(windows), len(ip2g), n_groups,
+    len(regions)). P09 moving a window's edges kept the key, so P05 coded
+    ctx.tod_min on the old windows - and a run's results depended on what the
+    process had memoised before (a resumed run differed from a straight one)."""
+    from app.engines.behavior.lib import phier as PH
+    reg = {"ctx.tod_min": {"type": "time"}}
+    a = PH.Hierarchies(reg, windows=[(0, 600, "w:a"), (600, 1440, "w:b")])
+    b = PH.Hierarchies(reg, windows=[(0, 300, "w:a"), (300, 1440, "w:b")])
+    vals = [100.0, 400.0, 700.0]
+    assert _gen(a, "ctx.tod_min", 2, vals) == ([0, 0, 1], 2)
+    assert _gen(b, "ctx.tod_min", 2, vals) == ([0, 1, 1], 2)
+
+
+def test_generalisation_memo_follows_group_membership_and_day_type_windows():
+    from app.engines.behavior.lib import phier as PH
+    reg = {"net.src": {"type": "ip"}, "ctx.when": {"type": "time"}}
+    ips = ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+    a = PH.Hierarchies(reg, ip2g={"10.0.0.1": "g1", "10.0.0.2": "g1", "10.0.0.3": "g2"})
+    b = PH.Hierarchies(reg, ip2g={"10.0.0.1": "g1", "10.0.0.2": "g2", "10.0.0.3": "g2"})
+    assert _gen(a, "net.src", 3, ips) == ([0, 0, 1], 2)
+    assert _gen(b, "net.src", 3, ips) == ([0, 1, 1], 2)     # same sizes, one address moved
+    when = [("workday", 100.0), ("workday", 400.0), ("workday", 700.0)]
+    c = PH.Hierarchies(reg, windows_dt={"wd": [(0, 600, "w:a"), (600, 1440, "w:b")]})
+    d = PH.Hierarchies(reg, windows_dt={"wd": [(0, 300, "w:a"), (300, 1440, "w:b")]})
+    assert _gen(c, "ctx.when", 2, when)[0] == [0, 0, 1]
+    assert _gen(d, "ctx.when", 2, when)[0] == [0, 1, 1]
+
+
+def test_generalisation_memo_does_not_share_a_record_version_across_registries():
+    """EV6-8: two systems (or two runs in one process) with a categorical
+    attribute of the same name and record version but different value groups
+    must not share generalisations (the memo key holds the record itself)."""
+    from app.engines.behavior.lib import phier as PH
+    vals = ["a", "b", "c"]
+    r1 = {"x": {"type": "categorical", "hier": {"groups": {"a": "g1", "b": "g1", "c": "g2"}}}}
+    r2 = {"x": {"type": "categorical", "hier": {"groups": {"a": "g1", "b": "g2", "c": "g2"}}}}
+    h1, h2 = PH.Hierarchies(r1), PH.Hierarchies(r2)
+    assert _gen(h1, "x", 1, vals)[0] == [0, 0, 1]
+    assert _gen(h2, "x", 1, vals)[0] == [0, 1, 1]
+
+    class Rec:                                   # registry records carry a version number
+        def __init__(self, groups):
+            self.type, self.version, self.hier = "categorical", 1, {"groups": groups}
+    h3 = PH.Hierarchies({"y": Rec({"a": "g1", "b": "g1", "c": "g2"})})
+    h4 = PH.Hierarchies({"y": Rec({"a": "g1", "b": "g2", "c": "g2"})})
+    assert _gen(h3, "y", 1, vals)[0] == [0, 0, 1]
+    assert _gen(h4, "y", 1, vals)[0] == [0, 1, 1]

@@ -102,7 +102,15 @@ def test_workflow_and_precision_failures(org_run):
     assert r["per_pattern"]["GA.oa.approvals#1"]["components"]["workflow"] is False
     assert r["precision"] < 1.0
     n = r["n_confirmed"]
-    assert r["precision"] == pytest.approx((n - 2) / n)
+    # all claims (the secondary figure): exactly the two planted ones are false
+    assert r["n_precision_all"] == n
+    assert r["precision_all"] == pytest.approx((n - 2) / n)
+    # the headline (EV6-1) sets aside the truth's own claims about behaviour not
+    # yet observable for a workday on day 13; both planted claims are judged
+    # (an action the truth never had; a window on an observed action)
+    m = r["n_precision"]
+    assert m == n - r["n_unobservable"] and m < n
+    assert r["precision"] == pytest.approx((m - 2) / m)
 
 
 def test_candidates_do_not_count(org_run):
