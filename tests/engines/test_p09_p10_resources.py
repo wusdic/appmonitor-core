@@ -52,9 +52,9 @@ def run_p10(n_ips: int, n_attrs: int):
     for t1, b in ticks:                                     # (the last 5 drain the learning delay D)
         if b is not None:
             st.add_batch("oa", EV.EVT_BATCH, t1, b)
-        t0 = time.perf_counter()
+        t0 = time.thread_time()
         eng.safe_run(ctx(st, t1, window_s=900.0, config=CFG), None)
-        t_run += time.perf_counter() - t0
+        t_run += time.thread_time() - t0
     m = MP.get_model(st, "oa", MP.PFLOW)
     rows = m["stats"]["rows"]
     return {"us_per_event": round(t_run * 1e6 / rows, 1), "sessions": len(m.state.sessions),
@@ -116,9 +116,9 @@ def test_p09_cost_is_per_dirty_node_not_per_ip():
     for n, n_attrs in ((100, 0), (10000, 0), (1000, 200)):
         st, ot = p09_tree(n, n_attrs=n_attrs)
         eng = TimeWindowEngine()
-        t0 = time.perf_counter()
+        t0 = time.thread_time()
         eng.safe_run(ctx(st, MON + 10 * DAY, window_s=3600.0, config=CFG), None)
-        dt_fit = time.perf_counter() - t0
+        dt_fit = time.thread_time() - t0
         n_fit = eng.last_stats["oa"]["fitted"]
         size = len(repr(MP.get_model(st, "oa", MP.PWIN)))
         eng.safe_run(ctx(st, MON + 10 * DAY + 7 * 3600, window_s=3600.0, config=CFG), None)

@@ -133,6 +133,12 @@ def test_confidence_does_not_fall_between_tests_or_when_a_test_passes():
     assert trace[-1] > 0.8
 
 
+def _ROUTE(i):
+    """An action's context (round 7: only statements of an action join the
+    empirical-Bayes pool of the hold prior, pattern_tree._states_action)."""
+    return (("http.route", 0, frozenset({f"GET oa.corp.local /r{i}"}), False),)
+
+
 def test_statement_prior_is_kept_for_its_confidence_segment():
     """Once a statement has its own held-out tests it keeps the empirical-Bayes
     prior it had for the rest of its confidence segment: a later refit of the
@@ -147,7 +153,7 @@ def test_statement_prior_is_kept_for_its_confidence_segment():
     tr = m.tree(0, MON)
     nodes = []
     for i in range(12):
-        nd = PN.Node(100 + i, tr.root, 1, 0, (), MON)
+        nd = PN.Node(100 + i, tr.root, 1, 0, _ROUTE(i), MON)
         nd.state = "confirmed"
         nd.ref = {"hold": {"who": (0, frozenset({"1.1.1.1"}), 0.95)}}
         hr = nd.meta["hold"] = PN.HoldRecord()
@@ -160,7 +166,7 @@ def test_statement_prior_is_kept_for_its_confidence_segment():
     assert p0 is not None and p0[0] / sum(p0) > 0.7
     for nd in nodes[1:]:                           # the others start failing (a drift)
         nd.meta["hold"].T = [1.0, 10.0]
-    fresh = PN.Node(99, tr.root, 1, 0, (), MON)    # stated, not tested yet
+    fresh = PN.Node(99, tr.root, 1, 0, _ROUTE(99), MON)    # stated, not tested yet
     fresh.state = "confirmed"
     fresh.ref = {"hold": {"who": (0, frozenset({"1.1.1.1"}), 0.95)}}
     tr.nodes[fresh.id] = fresh
@@ -190,7 +196,7 @@ def test_a_statements_own_test_takes_its_kinds_current_prior():
     tr = m.tree(0, MON)
     nodes = []
     for i in range(12):
-        nd = PN.Node(200 + i, tr.root, 1, 0, (), MON)
+        nd = PN.Node(200 + i, tr.root, 1, 0, _ROUTE(i), MON)
         nd.state = "confirmed"
         nd.ref = {"hold": {"who": (0, frozenset({"1.1.1.1"}), 0.95)}}
         hr = nd.meta["hold"] = PN.HoldRecord()

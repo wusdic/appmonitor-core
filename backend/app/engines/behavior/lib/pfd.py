@@ -368,6 +368,7 @@ def screen(rows: Sequence[Mapping[str, Any]], w: np.ndarray, x_cands: Sequence[T
     dict form for small groups), the same statistics float for float as
     the per-pair dict form (_screen_ref, tests/lib/test_pfd_screen_equivalence.py)."""
     out = []
+    y_sig: Dict[str, bytes] = {}
     n_rows = len(rows)
     # generalised X values once per row (not once per (X, Y) pair), factorised
     xcols: Dict[Tuple[str, int], Tuple[List[Any], np.ndarray, List[Any], np.ndarray]] = {}
@@ -401,6 +402,7 @@ def screen(rows: Sequence[Mapping[str, Any]], w: np.ndarray, x_cands: Sequence[T
             else:
                 yv.append(None)
         y_codes, y_reps = _factorize(yv)
+        y_sig[yname] = y_codes.tobytes()
         y_ok = y_codes >= 0
         if int(y_ok.sum()) < 2 * SCREEN_MIN_ROWS:
             continue
@@ -439,6 +441,7 @@ def screen(rows: Sequence[Mapping[str, Any]], w: np.ndarray, x_cands: Sequence[T
                     out.append({"x": xn, "y": yname, "dir": "fwd", "stats": st, "strata": [gk]})
                 if rs is not None and (rs["fd"] or (rs["set"] and id_like)):
                     out.append({"x": yname, "y": xn, "dir": "rev", "stats": rs, "strata": [gk]})
+    out = _distinct_payloads(out, y_sig, card)
     out.sort(key=lambda d: (-(1.0 - d["stats"]["g3"]) * max(d["stats"].get("lambda", 0.0), 0.0)
                             * min(d["stats"]["hy"], 4.0), d["x"], d["y"]))
     seen: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -456,6 +459,44 @@ def screen(rows: Sequence[Mapping[str, Any]], w: np.ndarray, x_cands: Sequence[T
     for d in res:
         d["strata"] = [x for x in d["strata"] if x is not None]
     return res
+
+
+def _spec_score(d: Mapping[str, Any]) -> float:
+    st = d["stats"]
+    return (1.0 - st["g3"]) * max(st.get("lambda", 0.0), 0.0) * min(st["hy"], 4.0)
+
+
+def _distinct_payloads(specs: List[Dict[str, Any]], y_sig: Mapping[str, bytes],
+                       card: Optional[Callable[[str], float]] = None) -> List[Dict[str, Any]]:
+    """(Round 7) One payload per information: payload attributes whose probe
+    columns are the SAME partition of the probe rows (first-appearance codes,
+    _factorize, equal - presence included) bind the same sources to the same
+    groups of values, so their pairs with one X say one thing; only the most
+    identifier-like of them (registry card, then screen score, then name) is
+    screened. Why (PG4, 340 attributes): the synthetic department-valued
+    attributes (meta.f002, f006, f013, ...; each a function of the
+    department) were seven pairs 'sess.key -> meta.fXXX' at portal's root and
+    a dozen 'net.src@1 -> meta.fXXX' on OA's nodes - P08's records and P04's
+    pair sketches grew with the attribute count without any new binding
+    (model.pbind 0.47 -> 1.19 MB)."""
+    def payload(d: Mapping[str, Any]) -> str:
+        return d["y"] if d["dir"] == "fwd" else d["x"]
+
+    def other(d: Mapping[str, Any]) -> str:
+        return d["x"] if d["dir"] == "fwd" else d["y"]
+    best: Dict[Tuple[str, str, bytes], Tuple[Tuple[float, float, str], str]] = {}
+    for d in specs:
+        a = payload(d)
+        sig = y_sig.get(a)
+        if sig is None:
+            continue
+        k = (other(d), d["dir"], sig)
+        key = (-(float(card(a)) if card is not None else 0.0), -_spec_score(d), a)
+        cur = best.get(k)
+        if cur is None or key < cur[0]:
+            best[k] = (key, a)
+    return [d for d in specs if y_sig.get(payload(d)) is None
+            or best[(other(d), d["dir"], y_sig[payload(d)])][1] == payload(d)]
 
 
 # ===================================================================== fit
@@ -650,6 +691,35 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
             "table": table, "bound_values": bound_values,
             "gain": float(max(0.0, hy - hyx)),
             "confidence": float(min([e["LB"] for e in table.values() if e.get("bound")] or [0.0]))}
+
+
+ENTRY_KEEP_N = 2.0           # compact_table: a source seen on >= 2 evidence units keeps its entry
+ENTRY_DROP = ("k", "mass", "a0", "b0")   # fit_pair's working fields (no reader outside fit_pair)
+ENTRY_ANN = ("superseded", "pending", "changing", "rebound")
+
+
+def compact_table(table: Mapping[str, Mapping[str, Any]], keep: Iterable[str] = ()) -> Dict[str, Dict[str, Any]]:
+    """(Round 7) The table a node's pair record keeps: the entries of bound
+    or set-bound sources, of sources with a verdict (superseded / pending /
+    changing / rebound), of sources bound at the previous fit (`keep`: their
+    last bound value is held through a rename) and of RECURRING sources
+    (n >= ENTRY_KEEP_N: a binding in the making, P12's bindings_pending);
+    without fit_pair's working fields (k, mass, a0, b0). A one-off source
+    neither binds nor counts against a binding (P03 and P14 read bound and
+    set entries only), and its entry was most of the record wherever the
+    sources are public visitors (PG4, 340 attributes: portal's
+    'net.src -> http.ua' records held 37-64 entries, 0 bound, 35-55 KB per
+    node; model.pbind 0.77 MB on portal)."""
+    kp = {str(x) for x in keep}
+    out: Dict[str, Dict[str, Any]] = {}
+    for x, e in table.items():
+        if not isinstance(e, Mapping):
+            continue
+        if not (e.get("bound") or e.get("set") or str(x) in kp or any(a in e for a in ENTRY_ANN)
+                or float(e.get("n") or 0.0) >= ENTRY_KEEP_N):
+            continue
+        out[x] = {k: v for k, v in e.items() if k not in ENTRY_DROP}
+    return out
 
 
 def _loo_prior(sk: float, sn: float, sp: float, sp2: float, npur: int, n_others: int

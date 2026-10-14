@@ -47,6 +47,7 @@ from typing import Any, Callable, Dict, Hashable, Iterable, List, Mapping, Optio
 import numpy as np
 
 from . import pmdl
+from . import pnumba as PNB
 from . import psketch as PS
 from .pevent import ABSENT, KIND_TXN, KIND_WIN
 
@@ -81,6 +82,7 @@ CLOSED_COV_MAX = 0.25      # ... when it is a field of some actions (present on 
 N_CONST = 2                # structural constants a node tracks on top of its m_t targets
 N_LOCAL = 8                # probe rows it must be present in (the penalised gain carries the small-sample cost)
 RED_G3 = 0.01
+RED_G3_NM = 0.1            # (round 7) g3 bound on the rows where the dependent takes a non-modal value
 RED_HB = 0.1
 RED_RHO = 0.99             # numeric pairs: |Spearman rho| where both are present
 IP_INFO_MIN = 0.02         # CR(net.src) below this at every level: who = none
@@ -225,7 +227,32 @@ def codes_uniq(values: Sequence[Any]) -> Tuple[np.ndarray, List[Any]]:
     return out, uniq
 
 
+def _not_code(codes: np.ndarray, uniq: Sequence[Any], sentinel: Any) -> np.ndarray:
+    """Rows whose value is not `sentinel` (identity), from a codes_uniq pair."""
+    for j, u in enumerate(uniq):
+        if u is sentinel:
+            return codes != j
+    return np.ones(codes.size, dtype=bool)
+
+
+def sub_codes(codes: np.ndarray, uniq: Sequence[Any], ix: np.ndarray) -> Tuple[np.ndarray, List[Any]]:
+    """codes_uniq of the column restricted to the rows `ix` (ascending), from
+    the column's own codes_uniq: codes numbered by first occurrence in the
+    subset and the distinct values in that order. Equal to codes_uniq of the
+    sub-column whenever every value's first occurrence in the column is in the
+    subset (rows removed are of one sentinel value: MISSING / ABSENT)."""
+    sub = codes[ix]
+    if sub.size == 0:
+        return sub.astype(np.int64), []
+    u, first, inv = np.unique(sub, return_index=True, return_inverse=True)
+    order = np.argsort(first, kind="stable")
+    rank = np.empty(u.size, dtype=np.int64)
+    rank[order] = np.arange(u.size, dtype=np.int64)
+    return rank[inv.reshape(-1)], [uniq[int(j)] for j in u[order].tolist()]
+
+
 _NUM_T = (int, float, np.integer, np.floating)
+_NUM_X: List[Any] = [None, None]     # (value list, its floats): _num_bins' one-entry cache
 
 
 def _num_bins(hier: Any, a: str, level: int, uniq: Sequence[Any]
@@ -238,8 +265,16 @@ def _num_bins(hier: Any, a: str, level: int, uniq: Sequence[Any]
     if edges is None:
         return None
     nan = math.nan
-    x = np.array([float(v) if isinstance(v, _NUM_T) and not isinstance(v, bool) else nan for v in uniq],
-                 dtype=np.float64) if len(uniq) else np.full(0, np.nan)
+    # (round 7, PG4) the distinct values as floats once per value list: P05
+    # asks every level of an attribute with the same list (one-entry cache
+    # holding the list itself, so its identity cannot be reused)
+    xc = _NUM_X
+    if xc[0] is uniq and xc[1].size == len(uniq):
+        x = xc[1]
+    else:
+        x = np.array([float(v) if isinstance(v, _NUM_T) and not isinstance(v, bool) else nan for v in uniq],
+                     dtype=np.float64) if len(uniq) else np.full(0, np.nan)
+        xc[0], xc[1] = uniq, x
     ok = np.isfinite(x)
     if lg:
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -412,6 +447,47 @@ def level_codes(hier: Any, a: str, col: Sequence[Any], text_values: bool = False
     return best
 
 
+class LevelLUT:
+    """(round 7) level_codes of many row subsets of ONE column (P05's node
+    targets: every node's rows of every pool attribute): gen() of each of the
+    column's distinct values once per level (a lookup table over the column's
+    codes_uniq), then per subset only array work. Equal to
+    level_codes(hier, a, (), text_values, raw=sub_codes(codes, uniq, ix)):
+    the same level, codes (numbered by first occurrence in the subset) and K."""
+
+    def __init__(self, hier: Any, a: str, codes: np.ndarray, uniq: Sequence[Any],
+                 text_values: bool = False) -> None:
+        self.hier, self.a, self.codes, self.uniq = hier, a, codes, uniq
+        kind = hier.kind(a)
+        self.L = hier.n_levels(a)
+        self.start = 1 if kind == "num" or (kind == "text" and not text_values) else 0
+        self.luts: Dict[int, np.ndarray] = {}
+        self._ar = np.arange(len(uniq), dtype=np.int64)
+
+    def _lut(self, l: int) -> np.ndarray:
+        lut = self.luts.get(l)
+        if lut is None:
+            lut = self.luts[l] = gen_codes(self.hier, self.a, l, self._ar, self.uniq)[0]
+        return lut
+
+    def level_codes(self, ix: np.ndarray) -> Tuple[int, np.ndarray, int]:
+        sub = self.codes[ix]
+        n_uniq = int(np.unique(sub).size) if sub.size else 0
+        best = None
+        for l in range(self.start, self.L - 1):
+            if l == 0 and n_uniq > LEVEL_CARD:
+                continue
+            cc, k = _first_occurrence_codes(self._lut(l)[sub]) if sub.size else (sub.astype(np.int64), 0)
+            if k <= LEVEL_CARD:
+                return l, cc, k
+            best = (l, cc, k)
+        if best is None:
+            l = self.L - 1
+            cc, k = _first_occurrence_codes(self._lut(l)[sub]) if sub.size else (sub.astype(np.int64), 0)
+            return l, cc, k
+        return best
+
+
 def w_entropy(codes: np.ndarray, w: np.ndarray, n_rows: Optional[float] = None) -> float:
     """Mass-weighted plug-in entropy + Miller-Madow correction (K - 1)/(2 n ln 2)
     with n = rows (the evidence the probe holds, not the mass)."""
@@ -445,6 +521,92 @@ def w_plugin(codes: np.ndarray, w: np.ndarray) -> Tuple[float, int]:
     nz = tot[tot > 0]
     p = nz / s
     return float(-(p * np.log2(p)).sum()), int(nz.size)
+
+
+@PNB.njit
+def _joint_p(X: Any, Y: Any, K: Any, M: Any, w: Any, P: Any, off: Any, cnt: Any) -> int:
+    """Row r of the batch: the occupied cells of np.bincount(X[r] K[r] + Y[r],
+    weights=w) over the rows i with M[r, i], as probabilities tot / tot.sum()
+    in cell order (w_plugin's p), written to P[off[r]:off[r] + cnt[r]];
+    cnt[r] = -1 without rows, 0 when the total is not positive. Additions in
+    row order per cell and numpy's pairwise sum for the total: the floats
+    w_plugin computes."""
+    R = X.shape[0]
+    n = X.shape[1]
+    pos = 0
+    for r in range(R):
+        k = K[r]
+        mx = -1
+        for i in range(n):
+            if M[r, i]:
+                j = X[r, i] * k + Y[r, i]
+                if j > mx:
+                    mx = j
+        off[r] = pos
+        if mx < 0:
+            cnt[r] = -1
+            continue
+        tot = np.zeros(mx + 1)
+        for i in range(n):
+            if M[r, i]:
+                tot[X[r, i] * k + Y[r, i]] += w[i]
+        s = PNB.pairwise_sum(tot, 0, mx + 1)
+        if s <= 0.0:
+            cnt[r] = 0
+            continue
+        c = 0
+        for j in range(mx + 1):
+            if tot[j] > 0.0:
+                P[pos] = tot[j] / s
+                pos += 1
+                c += 1
+        cnt[r] = c
+    return pos
+
+
+@PNB.njit
+def _neg_seg_sums(Q: Any, off: Any, cnt: Any, h: Any) -> None:
+    """h[r] = -(sum of Q[off[r]:off[r] + cnt[r]]) as numpy sums it; 0 for an
+    empty row."""
+    for r in range(off.shape[0]):
+        if cnt[r] > 0:
+            h[r] = -PNB.pairwise_sum(Q, off[r], cnt[r])
+        else:
+            h[r] = 0.0
+
+
+def w_plugin_rows(X: np.ndarray, Y: np.ndarray, K: np.ndarray, M: np.ndarray,
+                  w: np.ndarray) -> List[Tuple[float, int]]:
+    """(round 7, PG4) [w_plugin((X[r] * K[r] + Y[r])[M[r]], w[M[r]]) for r]:
+    the joint entropies of many (target, grouping) pairs on one probe in two
+    numba kernels around ONE np.log2 (pnumba's rule: transcendental functions
+    stay in numpy), bit-identical to w_plugin per pair (tests/lib/
+    test_pselect_round7.py). P05's split utility asked w_plugin once per
+    (attribute, level, target) - ~10 numpy calls each, the per-call overhead
+    being most of P05's time - and the number of system targets grows with
+    the number of attributes (6.6 -> 10.6 per evaluation from 40 to 340
+    attributes). Without numba: the w_plugin loop itself."""
+    R = int(X.shape[0])
+    if R == 0:
+        return []
+    if not PNB.enabled():
+        out = []
+        for r in range(R):
+            m = M[r]
+            out.append(w_plugin((X[r] * int(K[r]) + Y[r])[m], w[m]))
+        return out
+    n = int(X.shape[1])
+    P = np.empty(max(1, R * n))
+    off = np.zeros(R, dtype=np.int64)
+    cnt = np.zeros(R, dtype=np.int64)
+    pos = _joint_p(X, Y, K, M, w, P, off, cnt)
+    Pp = P[:pos]
+    Q = Pp * np.log2(Pp)
+    h = np.zeros(R)
+    _neg_seg_sums(Q, off, cnt, h)
+    hl = h.tolist()
+    cl = cnt.tolist()
+    return [(float(hl[r]), int(cl[r])) if cl[r] > 0 else (0.0, 0) for r in range(R)]
 
 
 def w_plugin_many(codes: Sequence[np.ndarray], w: np.ndarray) -> List[Tuple[float, int]]:
@@ -558,6 +720,7 @@ class StratifiedProbe:
         self._mut = 0                  # mutation counter (rows / codes caches)
         self._rcache: Optional[Tuple[Any, Any]] = None
         self._ccache: Optional[Tuple[Any, Dict[str, Any]]] = None
+        self._colc: Optional[Tuple[Any, Dict[str, List[Any]]]] = None
         self.n_offered = 0
 
     def _schema(self, keys: tuple, wid: Optional[int] = None) -> int:
@@ -754,6 +917,22 @@ class StratifiedProbe:
         """Values of `name` per row: the value, ABSENT when the event lacked it,
         MISSING when the row did not record it (it was not wanted then). Rows are
         transposed once per schema (cached for the `rows` list object)."""
+        # (round 7) one evaluation asks for the same column from evaluate,
+        # codes, ip_information, who_proxies, redundancy, node targets and value
+        # groups: each is transposed once per rows object (callers never
+        # modify the returned list)
+        cc = getattr(self, "_colc", None)
+        if cc is not None and cc[0] is rows:
+            hit = cc[1].get(name)
+            if hit is not None:
+                return hit
+        else:
+            cc = self._colc = (rows, {})
+        out_ = self._column(rows, name)
+        cc[1][name] = out_
+        return out_
+
+    def _column(self, rows: Sequence[Tuple[int, tuple]], name: str) -> List[Any]:
         if self._tcache is None or self._tcache[0] is not rows:
             groups: Dict[int, List[int]] = {}
             for p, (sid, _) in enumerate(rows):
@@ -781,6 +960,7 @@ class StratifiedProbe:
         self._rcache = None
         self._ccache = None
         self._ixc = {}
+        self._colc = None
 
     def names(self) -> List[str]:
         used = {r[2] for rows in self.strata.values() for r in rows}
@@ -911,30 +1091,32 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
     if TIME_TARGET in present and TIME_TARGET not in tgt:
         tgt.append(TIME_TARGET)
     tgt_codes = [(b,) + lev(b)[1:] for b in tgt]
+    tgt_full = {b: np.asarray(bc, dtype=np.int64) for b, bc, _ in tgt_codes}
     tknown = {b: np.array([v is not MISSING for v in col(b)], dtype=bool) for b in tgt}
     Hb = {b: w_plugin(cc, w)[0] for b, cc, _ in tgt_codes}
     Kb = {b: int(np.unique(cc).size) for b, cc, _ in tgt_codes}
     for a in names:
         if a not in present:
             continue
-        c_full = col(a)
         # rows where the attribute was recorded (a probe row keeps only the
-        # attributes wanted when it was taken; unrecorded is not absent)
-        known = np.array([v is not MISSING for v in c_full], dtype=bool)
+        # attributes wanted when it was taken; unrecorded is not absent).
+        # (round 7) on the column's codes: the same rows, values and code
+        # numbering as the per-row passes over the column (sub_codes)
+        call, uall = raw(a)
+        known = _not_code(call, uall, MISSING)
         na = int(known.sum())
         if na < N_LOCAL:
             continue
         if na == n:
             ix = None
-            c0, wa = c_full, w
+            wa = w
             l, cc, k = lev(a)
-            c0codes, uniq0 = raw(a)
+            c0codes, uniq0 = call, uall
         else:
             ix = np.flatnonzero(known)
-            c0 = [c_full[i] for i in ix]
             wa = w[ix]
-            c0codes, uniq0 = codes_uniq(c0)
-            l, cc, k = level_codes(hier, a, c0, raw=(c0codes, uniq0), gen=gcm)
+            c0codes, uniq0 = sub_codes(call, uall, ix)
+            l, cc, k = level_codes(hier, a, (), raw=(c0codes, uniq0), gen=gcm)
 
         def sub(arr: np.ndarray) -> np.ndarray:
             return arr if ix is None else arr[ix]
@@ -942,7 +1124,7 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
         H = w_entropy(cc, wa, na)
         k0 = len(uniq0)
         H0 = w_entropy(c0codes, wa, na)
-        pres = np.asarray([v is not ABSENT for v in c0])
+        pres = _not_code(c0codes, uniq0, ABSENT)
         cov_probe = float(wa[pres].sum() / wsa)
         cov = min(1.0, float(coverage(a))) if coverage is not None else cov_probe
         S = float(stability(a)) if stability is not None else 1.0
@@ -957,12 +1139,39 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
         # penalised_gain takes it for a float hb)
         cg: List[Tuple[np.ndarray, int]] = []
         chg: List[Tuple[float, int]] = []
-        for (ca, ccodes, ck), hc in zip(ctx_codes, ctx_h):
-            if same_source(ca, a):
-                continue
-            cs = sub(ccodes)
-            cg.append((cs, ck))
-            chg.append(hc if ix is None else w_plugin(cs, wa))
+        if PNB.enabled():
+            # (round 7, PG4) the contexts' entropies on a's rows and both joint
+            # entropies per context in one batch (w_plugin_rows): the floats of
+            # the w_plugin / penalised_gains_b calls in the other branch
+            cx = [(ca, sub(ccodes), ck, hc) for (ca, ccodes, ck), hc in zip(ctx_codes, ctx_h)
+                  if not same_source(ca, a)]
+            if cx:
+                nc_ = len(cx)
+                cc64 = np.asarray(cc, dtype=np.int64)
+                c064 = np.asarray(c0codes, dtype=np.int64)
+                zz = np.zeros(na, dtype=np.int64)
+                xs_ = [cc64] * nc_ + ([c064] * nc_ if hp0 > 0 else []) + ([zz] * nc_ if ix is not None else [])
+                ys_ = [np.asarray(c[1], dtype=np.int64) for c in cx]
+                ks_ = [max(int(c[2]), 1) for c in cx]
+                reps = len(xs_) // nc_
+                hh = w_plugin_rows(np.stack(xs_), np.stack(ys_ * reps), np.asarray(ks_ * reps, dtype=np.int64),
+                                   np.ones((len(xs_), na), dtype=bool), wa)
+                hcs = [c[3] for c in cx] if ix is None else hh[(reps - 1) * nc_:]
+                kb1 = int(np.unique(cc).size)
+                for q in range(nc_):
+                    gain = max(gain, _pg_value(hp, kb1, hcs[q][0], hcs[q][1], hh[q][0], na) if na > 1 else 0.0)
+                if hp0 > 0:
+                    kb0 = int(np.unique(c0codes).size)
+                    for q in range(nc_):
+                        gain0 = max(gain0, _pg_value(hp0, kb0, hcs[q][0], hcs[q][1], hh[nc_ + q][0], na)
+                                    if na > 1 else 0.0)
+        else:
+            for (ca, ccodes, ck), hc in zip(ctx_codes, ctx_h):
+                if same_source(ca, a):
+                    continue
+                cs = sub(ccodes)
+                cg.append((cs, ck))
+                chg.append(hc if ix is None else w_plugin(cs, wa))
         if cg:
             for v in penalised_gains_b(cc, (hp, int(np.unique(cc).size)), cg, chg, wa, na):
                 gain = max(gain, v)
@@ -985,7 +1194,8 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
             wp = wa[pres]
             # the level is chosen on the present values (a closed set of user names
             # is kept as values, not only as their common shape)
-            _, ccp, kp = level_codes(hier, a, [v for v, p_ in zip(c0, pres) if p_], text_values=True)
+            _, ccp, kp = level_codes(hier, a, (), text_values=True,
+                                     raw=sub_codes(c0codes, uniq0, np.flatnonzero(pres)))
             hpp, _ = w_plugin(ccp, wp)
             H_p = hpp
             gp = 0.0
@@ -1019,6 +1229,25 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
                 bcs = sub(bc)[m_b]
                 hb_ = w_plugin(bcs, wa[m_b])
             tsub.append((b, bcs, bk, m_b, hb_))
+        # (round 7, PG4) with numba: every level's joint entropies in one batch
+        # (w_plugin_rows; row 0 = the grouping alone, then per target its joint
+        # with the grouping and, for a target not recorded on every row of a,
+        # the grouping on the target's rows) - the same floats as the loop below
+        nbt = None
+        if PNB.enabled() and tsub:
+            nr = 1 + sum(1 if t_[3] is None else 2 for t_ in tsub)
+            TX = np.zeros((nr, na), dtype=np.int64)
+            TM = np.ones((nr, na), dtype=bool)
+            j = 1
+            for b, bc, bk, m_b, hb_ in tsub:
+                TX[j] = sub(tgt_full[b])
+                if m_b is not None:
+                    TM[j] = m_b
+                    TM[j + 1] = m_b
+                    j += 2
+                else:
+                    j += 1
+            nbt = (TX, TM, [None if m_b is None else int(m_b.sum()) for _, _, _, m_b, _ in tsub])
         for lv in range(0, L - 1):
             if lv == 0 and len(uniq0) > LEVEL_CARD:
                 card[0] = len(uniq0)
@@ -1028,6 +1257,24 @@ def evaluate(probe: StratifiedProbe, t: float, hier: Any, names: Sequence[str],
             if gk > LEVEL_CARD or gk < 2:
                 continue
             s_ = 0.0
+            if nbt is not None:
+                TX, TM, nms = nbt
+                kk = np.full(TX.shape[0], max(gk, 1), dtype=np.int64)
+                gc64 = np.asarray(gc, dtype=np.int64)
+                hh = w_plugin_rows(TX, np.broadcast_to(gc64, TX.shape), kk, TM, wa)
+                hg = hh[0]
+                j = 1
+                for (b, bc, bk, m_b, hb_), nm in zip(tsub, nms):
+                    if m_b is None:
+                        v = _pg_value(hb_[0], hb_[1], hg[0], hg[1], hh[j][0], na) if na > 1 else 0.0
+                        j += 1
+                    else:
+                        hgm = hh[j + 1]
+                        v = _pg_value(hb_[0], hb_[1], hgm[0], hgm[1], hh[j][0], nm) if nm > 1 else 0.0
+                        j += 2
+                    s_ += max(0.0, v)
+                U_s[lv] = s_
+                continue
             hg = w_plugin(gc, wa)
             # the targets recorded on every row of a: one batch (penalised_gains_g)
             full = [(bc, hb_) for b, bc, bk, m_b, hb_ in tsub if m_b is None]
@@ -1178,20 +1425,19 @@ def who_proxies(probe: StratifiedProbe, t: float, hier: Any, attrs: Sequence[str
     # unweighted: one heavy automated source (a health monitor) would otherwise make
     # every attribute look like a function of the IP
     w = np.ones(len(rows))
-    ip = probe.column(rows, "net.src")
     cip, uip = probe.codes(rows, "net.src")
     out = []
     for a in attrs:
         if a in WHO_ATTRS or not targetable(a):
             continue                                    # who, time / calendar context, bookkeeping
-        col = probe.column(rows, a)
-        known = np.array([v is not MISSING and v is not ABSENT for v in col], dtype=bool)
+        ca, ua = probe.codes(rows, a)
+        rec = _not_code(ca, ua, MISSING)
+        known = rec & _not_code(ca, ua, ABSENT)
         if known.sum() < N_LOCAL:
             continue
-        rec = np.array([v is not MISSING for v in col], dtype=bool)
         if known.sum() < min_cov * max(1, int(rec.sum())):
             continue                                    # an action's field, not a source property
-        l, cc, k = level_codes(hier, a, [col[i] for i in np.flatnonzero(known)])
+        l, cc, k = level_codes(hier, a, (), raw=sub_codes(ca, ua, np.flatnonzero(known)))
         ci = cip[known]
         wk = w[known]
         if k < 2 or w_entropy(cc, wk) < min_h:
@@ -1221,7 +1467,7 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
     codes = {}
     pres: Dict[str, np.ndarray] = {}
     for a in kept:
-        col = probe.column(rows, a)
+        col = ()
         # (round 6, evaluator) a text attribute with few distinct values is
         # compared on its VALUES, as a categorical one is: at its shape level
         # every username of a login form is one shape ([a-z]{4}), constant on
@@ -1230,9 +1476,10 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
         # days 1-27 after the round-6 present-rows rule; no node target, and
         # P08 never screened source -> username). A text attribute with more
         # than LEVEL_CARD values is still compared on its shapes.
-        l, cc, k = level_codes(hier, a, col, text_values=True, raw=probe.codes(rows, a))
+        ca, ua = probe.codes(rows, a)
+        l, cc, k = level_codes(hier, a, col, text_values=True, raw=(ca, ua))
         codes[a] = (cc, k)
-        pres[a] = np.fromiter((v is not ABSENT and v is not MISSING for v in col), dtype=bool, count=len(col))
+        pres[a] = _not_code(ca, ua, ABSENT) & _not_code(ca, ua, MISSING)
     H = {a: w_entropy(codes[a][0], w, n) for a in kept}
 
     def g3(x: str, y: str) -> float:
@@ -1249,6 +1496,27 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
         m = pres[y]
         if e <= RED_G3 and m.any() and not m.all():
             e = max(e, w_g3(cx[m], cy[m], ky, w[m]))
+        # (round 7) ... and over the rows where y takes a NON-MODAL value: g3 is
+        # a share of mass, so a dependent dominated by one value (O-real
+        # finance: the service account svc_sync carries > 99 % of the
+        # username's rows) looked like a function of anything constant on its
+        # rows (http.ctype) although its other values (three clerks) are not.
+        # A true function y = f(x) holds on every subset of rows, so the
+        # non-modal rows leave real redundancies (a header copied from the body
+        # format) redundant. Rows of one value cannot judge it (g3 = 0). The
+        # non-modal rows are a fraction of the probe, so they are held to a
+        # looser bound (RED_G3_NM): a near-function whose binned values differ
+        # at a few bin edges (response length / bytes down) stays redundant,
+        # a dependent whose other values x does not determine (three clerks
+        # behind one content type: g3 ~ 0.67 there) does not.
+        if e <= RED_G3 and m.any():
+            cym = cy[m]
+            if cym.size >= 2:
+                bc = np.bincount(cym, weights=w[m], minlength=max(int(ky), 1))
+                nm = m.copy()
+                nm[m] = cym != int(np.argmax(bc))
+                if int(nm.sum()) >= 2 and w_g3(cx[nm], cy[nm], ky, w[nm]) > RED_G3_NM:
+                    return 1.0
         return e
     # numeric pairs: the same quantity under two names (response size and bytes
     # down) is redundant when the rank correlation is ~1 where both are present
@@ -1595,7 +1863,16 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
             continue
         for nid in path:
             by_node.setdefault(int(nid), []).append(i)
-    cols: Dict[str, List[Any]] = {a: probe.column(rows, a) for a in pool}
+    # (round 7) each attribute's column as codes once (probe.codes): a node's
+    # recorded / present rows and its values' codes are slices of them, not
+    # per-row passes over the column for every (node, attribute)
+    cods: Dict[str, Tuple[np.ndarray, List[Any], np.ndarray, np.ndarray]] = {}
+    luts: Dict[str, LevelLUT] = {}
+    for a in pool:
+        ca, ua = probe.codes(rows, a)
+        rec_a = _not_code(ca, ua, MISSING)
+        cods[a] = (ca, ua, rec_a, rec_a & _not_code(ca, ua, ABSENT))
+        luts[a] = LevelLUT(hier, a, ca, ua, text_values=True)
     out: Dict[int, List[str]] = {}
     default = list(targets_sys[:m_t])
     h_sys: Dict[str, float] = {}
@@ -1604,14 +1881,13 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
         # entropy of the attribute over every probe row, absence as one more
         # value: what knowing the node says about it (bits / event)
         if a not in h_sys:
-            col = cols[a]
-            rec = np.asarray([v is not MISSING for v in col])
-            pres = np.asarray([v is not ABSENT and v is not MISSING for v in col])
+            ca, ua, rec, pres = cods[a]
             if not pres.any():
                 h_sys[a] = 0.0
             else:
-                _, cc, k = level_codes(hier, a, [v for v, p in zip(col, pres) if p], text_values=True)
-                full = np.full(len(col), int(k), dtype=np.int64)
+                _, cc, k = level_codes(hier, a, (), text_values=True,
+                                       raw=sub_codes(ca, ua, np.flatnonzero(pres)))
+                full = np.full(ca.size, int(k), dtype=np.int64)
                 full[pres] = cc
                 h_sys[a], _ = w_plugin(full[rec], w[rec])
         return h_sys[a]
@@ -1626,16 +1902,15 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
         nd = tree.nodes.get(nid) if hasattr(tree, "nodes") else None
         ctx_attrs = [c[0] for c in (getattr(nd, "ctx", None) or ())]
         for a in pool:
-            col = cols[a]
-            vals = [col[i] for i in idx]
+            ca, ua, rec_a, pres_a = cods[a]
             # rows that did not RECORD the attribute (MISSING: not wanted when
             # probed) say nothing about it: before, their sentinel counted as a
             # value, so a constant key set looked variable on young probes
-            rec = np.asarray([v is not MISSING for v in vals])
-            pres = np.asarray([v is not ABSENT and v is not MISSING for v in vals])
+            rec = rec_a[ii]
+            pres = pres_a[ii]
             if not pres.any():
                 continue
-            l, cc, k = level_codes(hier, a, [v for v, p in zip(vals, pres) if p], text_values=True)
+            l, cc, k = luts[a].level_codes(ii[pres])
             h, _ = w_plugin(cc, wn[pres])
             cov = float(wn[pres].sum()) / (float(wn[rec].sum()) or tot)
             if h < INV_H:

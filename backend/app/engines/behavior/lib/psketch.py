@@ -365,7 +365,10 @@ class DecayedSpaceSaving:
             return
         p = self.primary
         m = self._m
-        i = min(range(len(m)), key=lambda j: m[j][p])
+        # the first counter with the least primary mass (min over a key lambda
+        # did the same in 64 Python calls per eviction; PG4 pair churn)
+        pv = [r[p] for r in m]
+        i = pv.index(min(pv))
         del self._idx[self._keys[i]]
         self._keys[i] = key
         self._idx[key] = i

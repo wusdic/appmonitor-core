@@ -445,6 +445,9 @@ class BindingEngine(Engine):
                             continue
                         rec.update({"x": X, "y": Y,
                                     "dir": dirs.get((X, Y), "rev" if "net.src" in Y else "fwd")})
+                        # (round 7) only the sources with evidence keep an entry
+                        rec["table"] = FD.compact_table(
+                            rec["table"], (st.get("bound") or {}).get((kind, nid, pair_key(X, Y))) or ())
                         old = ((prev or {}).get("pairs") or {}).get(pk)
                         cv = int((old or {}).get("cver", 0))
                         rec["cver"] = cv + 1 if old and FD.material_change(old, rec) else cv

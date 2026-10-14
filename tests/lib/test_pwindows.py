@@ -149,15 +149,16 @@ def test_rendering():
 
 
 def test_fit_cost_is_bounded():
+    # thread CPU time (round 7): wall time failed under concurrent runs
     m = np.random.default_rng(0).uniform(480, 1200, 256)
-    t0 = time.perf_counter()
+    t0 = time.thread_time()
     for _ in range(10):
         W.fit_daytype(hist(m), 300, None)
-    slot = (time.perf_counter() - t0) / 10
-    t0 = time.perf_counter()
+    slot = (time.thread_time() - t0) / 10
+    t0 = time.thread_time()
     for _ in range(10):
         W.fit_daytype(hist(m), 300, pts(m, 3600.0))
-    minute = (time.perf_counter() - t0) / 10
+    minute = (time.thread_time() - t0) / 10
     assert slot < 0.02 and minute < 0.06, (slot, minute)
 
 

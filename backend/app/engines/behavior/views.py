@@ -360,6 +360,69 @@ def part_hold(nd: Any, gids: Sequence[str], p_node: float) -> float:
     return float((ps + m * p_node) / (n + m))
 
 
+def hold_without_when(nd: Any) -> Optional[float]:
+    """(round 7) The node's held-out hold probability of every constraint
+    EXCEPT its time windows: P04's '~when' facet record (the tests judged on
+    all constraints but 'when', pnode HoldRecord facet_tests) under the
+    node's prior, (passes + a) / (tests + a + b); None when P04 keeps no
+    such record (then the caller falls back to the full p_hold).
+    A group's part that states its OWN windows (part_when) does not state
+    the node's windows, so the node's failed 'when' tests - of windows the
+    part replaces - are not the part's: its confidence composes the node's
+    other constraints with its own windows, min(p_hold without 'when', own
+    window confidence), not min(p_hold, own)."""
+    hr = getattr(nd, "hold", None)
+    ft = getattr(hr, "facet_tests", None) if hr is not None else None
+    if not callable(ft):
+        return None
+    try:
+        rec = ft().get("~when")
+    except Exception:
+        return None
+    if not rec or float(rec[1]) <= 0.0:
+        return None
+    meta = getattr(nd, "meta", None) or {}
+    pr = meta.get("hold_prior")
+    a, b = (float(pr[0]), float(pr[1])) if pr is not None else (1.0, 1.0)
+    return float((float(rec[0]) + a) / (float(rec[1]) + a + b))
+
+
+def compose_conf(nd: Any, t: float, conf: float, part: Optional[Sequence[Any]], own_when: bool,
+                 when_c: Optional[float]) -> float:
+    """A statement's confidence from P04's held-out record (round 7: one
+    helper for the node, its groups' parts and the parts with their own
+    windows; `conf` = the min-over-parts fallback when P04 has no record).
+    The calibrated confidence when P04 has checked the node's constraints on
+    held-out data (pnode.HoldRecord: the probability that every constraint
+    holds on new events); the min-over-parts formula states the weakest part's
+    NOMINAL coverage and was under-confident on pack O (PG2 ECE 0.36-0.43).
+    A group's part of the node (or a group view's restriction of it) states the
+    node's own constraints for a subset of its sources, so the node's held-out
+    hold rate - pooled with the group's own tests (part_hold) - is its
+    confidence too (pack O: parts stated the min-of-parts 0.09 where their
+    held-out hold was 1.0, ptree open issue 2); unless the part states its own
+    windows: then it states the node's other constraints plus its own windows,
+    and both must hold - min(hold of the node's constraints without 'when',
+    own window confidence). Evaluator round 3: the min of the parts' NOMINAL
+    coverages stated 0.85-0.97 for mail parts whose node held ~0.5 of its
+    tests, and 0.10 (a workflow edge's dependency strength, no coverage at
+    all) for /docs parts that held 1.0 - the two ends of PG2's reliability
+    diagram. (Round 7) the node's 'when' tests judged windows the part does
+    not state: P04's '~when' facet record when kept (hold_without_when), else
+    the full p_hold as before."""
+    ph = getattr(nd, "p_hold", None)
+    ph = ph(t) if callable(ph) else None
+    if ph is None or not math.isfinite(float(ph)):
+        return float(conf)
+    if part is not None:
+        ph = part_hold(nd, list(part[4]) if len(part) > 4 else [part[0]], float(ph))
+    if not own_when:
+        return float(ph)
+    own = when_c if (when_c is not None and math.isfinite(float(when_c))) else 1.0
+    rest = hold_without_when(nd)
+    return float(min(float(rest if rest is not None else ph), float(own)))
+
+
 def drift_conf(drift: Any, when_ev: Optional[Mapping[str, Any]], when_c: Optional[float]) -> float:
     """(round 6) The bound on a drifting statement (P09 recent_drift: its
     latest dates contradict the windows): the probability the stated windows
@@ -671,27 +734,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     # holds on new events); the min-over-parts formula above states the
     # weakest part's NOMINAL coverage and was under-confident on pack O
     # (PG2 ECE 0.36-0.43)
-    ph = getattr(nd, "p_hold", None)
-    ph = ph(t) if callable(ph) else None
-    if part is not None and ph is not None and math.isfinite(float(ph)):
-        ph = part_hold(nd, list(part[4]) if len(part) > 4 else [part[0]], float(ph))
-    # A group's part of the node (or a group view's restriction of it) states the
-    # node's own constraints for a subset of its sources, so the node's held-out
-    # hold rate is its confidence too - unless the part states its own windows
-    # (pack O: parts stated the min-of-parts 0.09 where their held-out hold was
-    # 1.0, ptree open issue 2)
-    if ph is not None and math.isfinite(float(ph)) and not own_when:
-        conf = float(ph)
-    elif ph is not None and math.isfinite(float(ph)):
-        # a part with its own windows states the node's other constraints (whose
-        # held-out hold rate is p_hold) plus its own windows (their stated
-        # coverage): both must hold, so min(p_hold, own coverage). Evaluator
-        # round 3: the min of the parts' NOMINAL coverages stated 0.85-0.97 for
-        # mail parts whose node held ~0.5 of its tests, and 0.10 (a workflow
-        # edge's dependency strength, no coverage at all) for /docs parts that
-        # held 1.0 - the two ends of PG2's reliability diagram
-        own = when_c if (when_c is not None and math.isfinite(float(when_c))) else 1.0
-        conf = float(min(float(ph), float(own)))
+    conf = compose_conf(nd, t, conf, part, own_when, when_c)
     if drift and when_c is not None and math.isfinite(float(when_c)):
         # P04's hold rate is the windows' past record; a drifting window holds
         # only as far as the young arrivals support it: (round 6) the

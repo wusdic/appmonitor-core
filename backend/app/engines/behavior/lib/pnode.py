@@ -761,6 +761,47 @@ HOLD_BATCH_S = 7 * DAY             # ... or of a week, whichever comes first (M4
 HOLD_TEST_HALF_DAYS = 14.0         # (round 3; kept for reference) the test record forgot at two weeks
 HOLD_TEST_HALF_N = 14.0            # the test record forgets per TEST: half weight after 14 newer tests
 HOLD_TEST_LAMBDA = 2.0 ** (-1.0 / HOLD_TEST_HALF_N)
+HOLD_FAIL_KEEP = 64                # (round 7) recent failed tests whose failing keys are kept (drop())
+
+
+class _KC:
+    """(round 7) One constraint's per-cluster checks of the current batch:
+    (n, hits) per cluster in the order the constraint first saw each cluster
+    (the order a {cluster: [n, hits]} dict iterated; cluster_tol sums in it),
+    as flat float arrays with the cluster's batch ordinal -> position. A dict
+    of two-float lists per (constraint, cluster) was most of P04's held-out
+    records' memory on PG4's 340-attribute point (HoldRecord.bc: ~20 stated
+    constraints x ~50 clusters per node and per tracked group)."""
+
+    __slots__ = ("n", "h", "pos")
+
+    def __init__(self) -> None:
+        from array import array
+        self.n = array("d")
+        self.h = array("d")
+        self.pos = array("l")                       # batch ordinal -> position (-1: not seen)
+
+    def add(self, g: int, w: float, hit: bool) -> None:
+        pos = self.pos
+        while len(pos) <= g:
+            pos.append(-1)
+        j = pos[g]
+        if j < 0:
+            j = pos[g] = len(self.n)
+            self.n.append(0.0)
+            self.h.append(0.0)
+        self.n[j] += w
+        if hit:
+            self.h[j] += w
+
+    def values(self) -> Iterable[Tuple[float, float]]:
+        return zip(self.n, self.h)
+
+    def __len__(self) -> int:
+        return len(self.n)
+
+    def __bool__(self) -> bool:
+        return len(self.n) > 0
 
 
 class HoldRecord:
@@ -787,7 +828,8 @@ class HoldRecord:
     ECE 0.37-0.41) although 35-45 % of them held; that product is kept as
     p_constraints() (diagnosis). O(constraints) floats per node."""
 
-    __slots__ = ("c", "L", "b", "bt0", "bn", "blast", "T", "F", "seg", "TF", "lite", "bc", "bu", "bw0", "bwr")
+    __slots__ = ("c", "L", "b", "bt0", "bn", "blast", "T", "F", "seg", "TF", "lite", "bc", "bu", "bw0", "bwr",
+                 "ti", "fl")
 
     def __init__(self, lite: bool = False) -> None:
         self.lite = bool(lite)                       # tests only: no per-constraint counts / facets
@@ -802,9 +844,11 @@ class HoldRecord:
         self.seg = 0                                 # confidence segment (drop(None) starts a new one)
         self.TF: Dict[str, List[float]] = {}         # facet -> [passes, tests] of its keys alone (diagnosis)
         self.bc: Dict[str, Dict[Any, List[float]]] = {}   # current batch: key -> cluster -> [n, hits]
-        self.bu: set = set()                         # current batch: its independent units (clusters)
+        self.bu: Dict[Any, int] = {}                 # current batch: its independent units (clusters) -> ordinal
         self.bw0: Optional[float] = None             # current batch: time of its first 'when' check
         self.bwr: Optional[list] = None              # [t0, {hour: [n, hits, units]}]: 'when' checks of the last day
+        self.ti = 0                                  # tests closed so far (round 7)
+        self.fl: List[list] = []                     # recent FAILED tests: [test index, [keys that failed it]]
 
     def _f(self, t: float) -> float:
         if self.L is None:
@@ -823,7 +867,7 @@ class HoldRecord:
         T = getattr(self, "T", None)
         if T is None:
             T = self.T = [0.0, 0.0]
-            self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, set()
+            self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, {}
         return T
 
     def _close(self) -> None:
@@ -900,6 +944,18 @@ class HoldRecord:
             T[1] += 1.0
             if not failed:
                 T[0] += 1.0
+            # (round 7) which keys failed each recent failed test: a constraint
+            # the statement no longer states as it was (M45 drop) takes its
+            # failures with it (drop())
+            ti = int(getattr(self, "ti", 0) or 0)
+            if failed:
+                fl = getattr(self, "fl", None)
+                if fl is None:
+                    fl = self.fl = []
+                fl.append([ti, sorted(set(failed))])
+                if len(fl) > HOLD_FAIL_KEEP:
+                    del fl[0]
+            self.ti = ti + 1
             F = self._F()
             for k in list(F):
                 F[k] *= lam
@@ -917,13 +973,18 @@ class HoldRecord:
                 return
             fac_fail = {hold_facet(k) for k in failed}
             # '~net': the statement without its transport measures (what a reader
-            # who sees only who / when / request content / bindings would judge)
-            if fac_fail - {"net"}:
+            # who sees only who / when / request content / bindings would judge);
+            # (round 7) '~when': the statement without its time windows (P14
+            # composes a group's part that states its own windows from it)
+            fac0 = set(fac_fail)
+            if fac0 - {"net"}:
                 fac_fail.add("~net")
+            if fac0 - {"when"}:
+                fac_fail.add("~when")
             # sorted: TF's key order must not follow str-hash set order (evaluator
             # round 5: model.ptree hold_facets differed in key order between two
             # PYTHONHASHSEED runs of pack O seed 0)
-            for fac in sorted({hold_facet(k) for k in judged} | {"~net"}):
+            for fac in sorted({hold_facet(k) for k in judged} | {"~net", "~when"}):
                 r = TF.get(fac)
                 if r is None:
                     r = TF[fac] = [0.0, 0.0]
@@ -932,7 +993,7 @@ class HoldRecord:
         self._reset_batch()
 
     def _reset_batch(self) -> None:
-        self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, set()
+        self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, {}
         self.bw0 = None
 
     def _F(self) -> Dict[str, float]:
@@ -980,21 +1041,26 @@ class HoldRecord:
         bv[2] = float(nominal)
         if cluster is not None:
             bu = getattr(self, "bu", None)
-            if bu is None:
-                bu = self.bu = set()
-            bu.add(cluster)
+            if not isinstance(bu, dict):              # (round 7) cluster -> ordinal in the batch
+                bu = self.bu = {c: i for i, c in enumerate(bu or ())}
+            g = bu.get(cluster)
+            if g is None:
+                g = bu[cluster] = len(bu)
             bc = getattr(self, "bc", None)
             if bc is None:
                 bc = self.bc = {}
             kc = bc.get(key)
             if kc is None:
-                kc = bc[key] = {}
-            cv = kc.get(cluster)
-            if cv is None:
-                cv = kc[cluster] = [0.0, 0.0]
-            cv[0] += float(w)
-            if hit:
-                cv[1] += float(w)
+                kc = bc[key] = _KC()
+            if isinstance(kc, _KC):
+                kc.add(g, float(w), hit)
+            else:                                     # a batch begun before round 7 (checkpoint)
+                cv = kc.get(cluster)
+                if cv is None:
+                    cv = kc[cluster] = [0.0, 0.0]
+                cv[0] += float(w)
+                if hit:
+                    cv[1] += float(w)
 
     def counts(self, t: float) -> Dict[str, Tuple[float, float, float]]:
         if self.L is None:
@@ -1054,25 +1120,59 @@ class HoldRecord:
         if keys is None:
             self.c.clear()
             self.L = None
-            self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, set()
+            self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, {}
             self.T = [0.0, 0.0]
             self.F = {}
             self.TF = {}
             self.bw0 = self.bwr = None
             self.seg = int(getattr(self, "seg", 0)) + 1
+            self.ti, self.fl = 0, []
             return
-        self._T()
+        T = self._T()
+        keys = list(keys)
         for k in keys:
             self.c.pop(k, None)
             self.b.pop(k, None)
             (getattr(self, "bc", None) or {}).pop(k, None)
             if k == "when":
                 self.bw0 = self.bwr = None
+        # (round 7) the tests a dropped constraint FAILED were tests of a
+        # statement no longer made: a test that failed on dropped constraints
+        # only is a pass of what remains stated (its weight forgotten as any
+        # test's). Before, the failures of a young node's first, narrower
+        # windows or bands stayed in the record for HOLD_TEST_HALF_N tests
+        # after the constraint was re-stated (M45 restarted the constraint's
+        # counts, not the tests): pack O, days >= 7, statements stated 0.88
+        # and held 0.94 on the evaluator's held-out events; nodes without a
+        # test of their own stated the kind prior fitted on those records.
+        fl = getattr(self, "fl", None)
+        if fl:
+            # a key also covers its attribute's other constraints ('a' drops
+            # 'a#range' / 'a#grammar': an accepted change of the attribute,
+            # Node.reset_confidence, re-states all of them)
+            ks = set(keys)
+
+            def gone(k: str) -> bool:
+                return k in ks or k.split("#", 1)[0] in ks
+            ti = int(getattr(self, "ti", 0) or 0)
+            F = self._F()
+            for k in [k for k in F if gone(k)]:
+                F.pop(k, None)
+            keep = []
+            for ent in fl:
+                rest = [k for k in ent[1] if not gone(k)]
+                if rest:
+                    ent[1] = rest
+                    keep.append(ent)
+                else:
+                    T[0] = min(T[1], T[0] + HOLD_TEST_LAMBDA ** max(0, ti - 1 - int(ent[0])))
+            self.fl = keep
 
     def nbytes(self) -> int:
         bwr = getattr(self, "bwr", None)
         return int(64 + 80 * len(self.c) + 80 * len(getattr(self, "b", None) or ()) + 64
-                   + (64 * len(bwr[1]) if bwr else 0))
+                   + (64 * len(bwr[1]) if bwr else 0)
+                   + sum(72 + 8 * len(e[1]) for e in (getattr(self, "fl", None) or ())))
 
 
 # ===================================================== split row reservoir
@@ -1359,13 +1459,16 @@ class PairSketch:
         self.y: Dict[Hashable, PS.DecayedSpaceSaving] = {}
 
     def update(self, xv: Hashable, yv: Hashable, t: float, mass: float, evidence: float) -> None:
-        before = set(self.y.keys())
         self.x.add(xv, t, mass, evidence)
         if xv not in self.x:
             return
         tab = self.y.get(xv)
         if tab is None:
-            for gone in before - set(self.x.keys()):
+            # y tables of x no longer tracked (the add does not touch y: the
+            # same keys as y's keys before it minus x's; round 7, PG4: no set
+            # of every tracked x per update)
+            x = self.x
+            for gone in [k for k in self.y if k not in x]:
                 self.y.pop(gone, None)
             tab = self.y[xv] = PS.DecayedSpaceSaving(PAIR_KY, (PS.H_L,), PS.EV_HALF_LIVES, 0)
         tab.add(yv, t, mass, evidence)

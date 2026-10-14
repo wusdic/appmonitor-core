@@ -768,10 +768,13 @@ class PatternTreeEngine(Engine):
         asg = lc.store.batch_at(s, EV.PAT_ASSIGN, ts_b)
         damp_col = None
         pwho_col = None
+        conf_col = None
         pother: List[np.ndarray] = []
         flag_col = None
         if asg is not None and asg.n == b.n and asg.has("damp"):
             damp_col = asg.dense("damp", 1.0)
+            if asg.has("conf"):
+                conf_col = asg.dense("conf", np.nan)
             if asg.has("p_who"):
                 pwho_col = asg.dense("p_who", 1.0)
             pother = [np.asarray(asg.dense(c, np.nan), dtype=float) for c in SUS_OTHER_P if asg.has(c)]
@@ -842,7 +845,13 @@ class PatternTreeEngine(Engine):
             sess = b.get("sess.key", i, "∅")
             if ip in aux.get("watch", ()):                  # heavy sources of confident nodes only
                 aux["seen"].put(ip, ts)
-            self._learn_one(lc, tr, s, kind, get, ip, ts, float(mass[i]) * f, f, sess, b.rid[i], sus)
+            # (round 7) the node P03 scored (and damped) the row against
+            cn = None
+            if damp < 1.0 and not sus and conf_col is not None:
+                c_ = float(conf_col[i])
+                cn = int(c_) if c_ == c_ else None
+            self._learn_one(lc, tr, s, kind, get, ip, ts, float(mass[i]) * f, f, sess, b.rid[i], sus,
+                            damped_at=cn, damp=damp)
             n += 1
         _expire_runs(aux["burst"], float(b.t0) - PS.TAU_BURST)
         return n
@@ -850,7 +859,7 @@ class PatternTreeEngine(Engine):
     # ---------------------------------------------------------- one event
     def _learn_one(self, lc: _LC, tr: PT.Tree, s: str, kind: int, get: Callable[[str], Any], ip: str,
                    ts: float, mass: float, factor: float, sess: Any, rid: Any = 0,
-                   suspicious: bool = False) -> None:
+                   suspicious: bool = False, damped_at: Optional[int] = None, damp: float = 1.0) -> None:
         hier = lc.hier
         if kind == EV.KIND_TXN:
             self._route_partition(lc, tr, get, ts)
@@ -861,6 +870,28 @@ class PatternTreeEngine(Engine):
             if rev:
                 path = tr.route(get, hier, lc.gone, ts)
                 leaf = tr.nodes[path[-1]]
+        # (round 7) P03 damps a row its most specific CONFIRMED node finds
+        # unlikely. When that node is a mixture of actions (a root above the
+        # route partition, stated as no action) and the row's own action has a
+        # node below it that is not confirmed yet, the verdict compares the
+        # action with every other action, not with its own pattern: the new
+        # action's node learned its rows at the damped weight and confirmed days
+        # late (pack O, GA's 17:00 POST /report/generate: 20-60 KB bodies
+        # against the root's 0.2-1.5 KB, eligible on day 12, confirmed on day
+        # 15-16 on 4 of 5 seeds; its GET /report/form, no outlier for the root,
+        # on day 12). Nodes BELOW the mixture learn such a row at its undamped
+        # weight; the mixture and its ancestors keep the damped one. A row
+        # damped as foreign (who) is not concerned (damped_at is None then).
+        # A route still waiting for a node of its own (route partition) keeps the
+        # row undamped for the same reason: it is replayed into that node.
+        undamp_from = len(path)
+        mixed = False
+        if damped_at is not None and 0.0 < damp < 1.0:
+            dc = next((j for j, nid in enumerate(path) if nid == damped_at), None)
+            if dc is not None and not _states_action(tr.nodes[path[dc]], ts):
+                mixed = True
+                if dc < len(path) - 1 and any(_states_action(tr.nodes[nid], ts) for nid in path[dc + 1:]):
+                    undamp_from = dc + 1
         # burst runs: consecutive learned rows of one source on one leaf (§6.5.4); the
         # session key separates sources only behind a shared address (NAT, VDI),
         # an unshared IP's rows are one source whatever cookies they carry
@@ -869,6 +900,12 @@ class PatternTreeEngine(Engine):
         omega = lc.aux["burst"].unit(src + (leaf.id,), ts, factor)
         if omega <= 0.0:
             return
+        if mixed:
+            # the deep part of the path (from the mixture's child on) learns the
+            # row as P03 would have weighed it at a node of its own action
+            mass_u, omega_u, factor_u = mass / damp, omega / damp, min(1.0, factor / damp)
+        else:
+            mass_u, omega_u, factor_u = mass, omega, factor
         lc.row_factor = float(factor)       # trust x damp: < 1 keeps the row out of hard ranges
         lc.row_mass = float(mass)
         lc.row_sus = bool(suspicious)
@@ -886,8 +923,8 @@ class PatternTreeEngine(Engine):
         keys = lc.who_keys(ip)
         if lc.rpart_wait is not None and kind == EV.KIND_TXN and (leaf.meta.get("rpart_other")
                                                                   or leaf.id == tr.root):
-            self._keep_route_row(lc, tr, kind, get, ip, ts, mass, omega, day, daytype, minute,
-                                 factor, suspicious)
+            self._keep_route_row(lc, tr, kind, get, ip, ts, mass_u, omega_u, day, daytype, minute,
+                                 factor_u, suspicious)
         code = None
         if leaf.who.levels[0].total_evidence(ts) > 0:
             code = leaf.who.code_lengths(keys, ts, lc.space_bits, lc.escape_bits)
@@ -895,6 +932,9 @@ class PatternTreeEngine(Engine):
         nlast = len(path) - 1
         for d, nid in enumerate(path):
             nd = tr.nodes[nid]
+            if d == undamp_from:
+                mass, omega, factor = mass_u, omega_u, factor_u
+                lc.row_mass, lc.row_factor = float(mass), float(factor)
             nd.update_core(ts, mass, omega, keys, ip, daytype, minute, day,
                            code if d == nlast else None, suspicious=suspicious)
             if nd.state == "stale":
@@ -3051,6 +3091,18 @@ class PatternTreeEngine(Engine):
         for tr in m.kinds.values():
             for nd in tr.nodes.values():
                 cons = nd.ref.get("hold") if isinstance(nd.ref, Mapping) else None
+                if nd.state in PN.CONFIDENT_STATES and not cons and nd.meta.get("hold") is None:
+                    # (round 7) confirmed, not referenced yet (its reference is
+                    # built at SNAPSHOT_HOUR): it states the pooled base rate, not
+                    # P14's min-over-parts fallback (pack O seed 0, day 17: oa's
+                    # new GET /docs nodes stated 0.08 - a workflow edge's
+                    # dependency strength - and held 1.0)
+                    pr = prior.get("*")
+                    if pr is not None:
+                        nd.meta["hold_prior"] = (round(float(pr[0]), 4), round(float(pr[1]), 4))
+                        nd.meta["hold_prior_seg"] = 0
+                        nd.meta["hold_prior_n"] = 0.0
+                    continue
                 if not cons or nd.state not in PN.CONFIDENT_STATES:
                     nd.meta.pop("hold_prior", None)
                     nd.meta.pop("hold_prior_seg", None)
@@ -3058,7 +3110,17 @@ class PatternTreeEngine(Engine):
                     continue
                 k = PN.hold_kind(len(cons))
                 hr = nd.meta.get("hold")
-                if hr is not None:
+                if hr is not None and _states_action(nd, t):
+                    # (round 7) the prior is the hold rate of STATEMENTS like this
+                    # one: only nodes P14 states as an action's pattern join the
+                    # pool. A tree's root over several actions (oa / portal: the
+                    # mixture of every route) is never stated, and its transport
+                    # bands fail almost every test (pack O seed 1, days 10-21:
+                    # (0 of 6.8) - (0.7 of 12.6) tests for oa's root, (0 of 9.8) -
+                    # (1.8 of 19.6) for portal's): two or three such records made
+                    # the beta-binomial fit U-shaped (strength 0.5) with mean
+                    # 0.65-0.85, the confidence of every untested statement, which
+                    # held 0.88-0.95 on the evaluator's held-out events
                     ps, n = hr.tests(t)
                     if n > 0:
                         pool.setdefault(k, []).append((ps, n))
@@ -3957,6 +4019,22 @@ HOLD_CAT_OTHER = 0.05          # a categorical target is a closed set when its `
 
 _UNSTATED = ("ctx.", "ev.", "net.src", "net.peer_src", "net.dst", "sess.", "http.route",
              "http.path", "http.host")
+
+
+def _states_action(nd: PN.Node, t: float) -> bool:
+    """Whether P14 states the node as an action's pattern (views.walk_routes /
+    _route_of_node): not a node split on the route itself (the route
+    partition: a mixture of actions, whatever host or SNI they share), and a
+    route in its context, a route-like invariant, or a route target holding
+    >= 99 % of its mass."""
+    try:
+        from .views import ROUTE_ATTRS, _route_of_node
+    except Exception:                                  # pragma: no cover - defensive
+        return nd.depth > 0
+    sp = nd.split
+    if sp is not None and getattr(sp, "attr", None) in ROUTE_ATTRS:
+        return False
+    return _route_of_node(nd, t) is not None
 
 
 def _unstated_prefixes() -> Tuple[str, ...]:

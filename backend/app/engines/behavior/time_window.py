@@ -301,7 +301,7 @@ def _src_admit(extra: Sequence[Any], ip2g: Optional[Mapping[str, Any]]) -> Optio
 
 def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, str]],
              t: Optional[float] = None, drop: Optional[set] = None,
-             ip2g: Optional[Mapping[str, Any]] = None
+             ip2g: Optional[Mapping[str, Any]] = None, off: float = 0.0
              ) -> Tuple[List[Tuple[float, float, float, str]], Optional[int]]:
     """A node created by a source split (P04 seeds its who summary, not its
     arrivals; its own minute reservoir starts when P09 asks for it) reads the
@@ -327,7 +327,15 @@ def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, 
     Space-Saving): pack O seed 0, day 21, the 销售部 part of OA's GET /docs
     (context grp G10 | G7, 20 members) read the ancestor's arrivals of the 8
     tracked members only, none after 16:59 of the department's 7 %, and
-    stated 09:31-16:59 at 0.98 against a held-out 0.91 (law to 17:30)."""
+    stated 09:31-16:59 at 0.98 against a held-out 0.91 (law to 17:30).
+    Round 7: of the ancestors reachable by source restrictions, the one whose
+    reservoir holds the node's sources on the most local dates (`off`: the
+    local offset), then the most arrivals - not the nearest one holding more
+    arrivals than the node: pack O seed 3, day 16, the 综合部 login node
+    (created after D1) read its parent's young reservoir (GA's arrivals of
+    days 10-16 only), regime_cut had two dates before the change and the
+    node stated the union of both laws, 08:35-09:23 (IoU 0.30), while the
+    grandparent held the same sources since day 9."""
     if tree is None:
         return own, None
     try:
@@ -337,6 +345,7 @@ def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, 
     if not members:
         return own, None
     cur = node
+    best: Optional[Tuple[Tuple[int, int], List[Tuple[float, float, float, str]], int]] = None
     while cur.parent is not None:
         anc = tree.nodes.get(cur.parent)
         if anc is None:
@@ -352,11 +361,21 @@ def _backoff(tree: Any, node: Any, d: int, own: List[Tuple[float, float, float, 
             else:
                 pts = _points(anc, d, members=members - _suspects(node, t), drop=drop)
             if len(pts) > len(own):
-                seen = {(round(p[0], 3), round(p[1], 3), p[3]) for p in pts}
-                pts += [p for p in own if (round(p[0], 3), round(p[1], 3), p[3]) not in seen]
-                return pts, int(anc.id)
+                # (round 7) the ancestor whose reservoir holds the node's sources
+                # over the most DATES (then the most arrivals; the nearest on
+                # ties), not the first one that holds more arrivals than the
+                # node: a time-of-day law and its changes are statements about
+                # dates, and a young intermediate node's reservoir starts late
+                score = (len({PW._local_date(p[1], off) for p in pts}), len(pts))
+                if best is None or score > best[0]:
+                    best = (score, pts, int(anc.id))
         cur = anc
-    return own, None
+    if best is None:
+        return own, None
+    pts = list(best[1])
+    seen = {(round(p[0], 3), round(p[1], 3), p[3]) for p in pts}
+    pts += [p for p in own if (round(p[0], 3), round(p[1], 3), p[3]) not in seen]
+    return pts, best[2]
 
 
 class TimeWindowEngine(Engine):
@@ -470,7 +489,7 @@ class TimeWindowEngine(Engine):
         since0 = rg.get("when_t0") if rg.get("when_t0") is not None else rg.get("regime_t0")
         for d, dk in enumerate(DT_KEYS):
             n_m = node.when.evidence(d, now, conf=False)
-            pts, anc = _backoff(tree, node, d, _points(node, d, t=now, drop=drop), now, drop, ip2g)
+            pts, anc = _backoff(tree, node, d, _points(node, d, t=now, drop=drop), now, drop, ip2g, off)
             if n_m < N_FIT_MIN and len(pts) < PW.MIN_POINTS:
                 by[dk] = None
                 continue

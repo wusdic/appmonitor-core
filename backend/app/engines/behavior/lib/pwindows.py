@@ -124,10 +124,15 @@ def unwrap_cut(hist: np.ndarray) -> int:
     return int(best_mid * (DAY_MIN // n))
 
 
+BB_MATRIX_MAX = 640              # bayesian_blocks: cells up to which the fitness matrix is formed
+
+
 def bayesian_blocks(counts: np.ndarray, widths: np.ndarray, ncp: float) -> List[Tuple[int, int]]:
     """Optimal partition of consecutive cells into blocks (Scargle et al. 2013,
     Algorithm 1, binned form). counts >= 0 (may be fractional), widths > 0.
-    Returns [(first cell, last cell)] in order. O(M^2) time, O(M) memory."""
+    Returns [(first cell, last cell)] in order. O(M^2) time; O(M^2)
+    transient memory up to BB_MATRIX_MAX cells (~3 MB per matrix), O(M)
+    beyond."""
     c = np.asarray(counts, dtype=np.float64)
     w = np.asarray(widths, dtype=np.float64)
     M = c.size
@@ -137,16 +142,34 @@ def bayesian_blocks(counts: np.ndarray, widths: np.ndarray, ncp: float) -> List[
     cumT = np.concatenate(([0.0], np.cumsum(w)))
     best = np.zeros(M)
     last = np.zeros(M, dtype=np.int64)
-    for r in range(M):
-        N = cumN[r + 1] - cumN[: r + 1]
-        T = cumT[r + 1] - cumT[: r + 1]
+    if M > BB_MATRIX_MAX:
         with np.errstate(divide="ignore", invalid="ignore"):
-            fit = np.where(N > 0, N * (np.log(np.maximum(N, 1e-300)) - np.log(T)), 0.0)
-        A = fit - ncp
-        A[1:] += best[:r]
-        j = int(np.argmax(A))
-        last[r] = j
-        best[r] = A[j]
+            for r in range(M):
+                N = cumN[r + 1] - cumN[: r + 1]
+                T = cumT[r + 1] - cumT[: r + 1]
+                fit = np.where(N > 0, N * (np.log(np.maximum(N, 1e-300)) - np.log(T)), 0.0)
+                A = fit - ncp
+                A[1:] += best[:r]
+                j = int(A.argmax())
+                last[r] = j
+                best[r] = A[j]
+    else:
+        # (round 7, cost) every block's fitness at once: row r, column j = the
+        # block of cells j..r (the upper triangle is never read); the same
+        # element-wise arithmetic as the per-row vectors above, so the DP sees
+        # bit-identical values (tests/lib/test_pwindows_round7.py) with three
+        # array operations per row instead of ten
+        Nm = cumN[1:, None] - cumN[None, :M]
+        Tm = cumT[1:, None] - cumT[None, :M]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            F = np.where(Nm > 0, Nm * (np.log(np.maximum(Nm, 1e-300)) - np.log(Tm)), 0.0)
+        F -= ncp
+        for r in range(M):
+            A = F[r, : r + 1]
+            A[1:] += best[:r]
+            j = int(A.argmax())
+            last[r] = j
+            best[r] = A[j]
     out: List[Tuple[int, int]] = []
     r = M - 1
     while r >= 0:
@@ -175,6 +198,25 @@ def window_len(s: float, e: float) -> float:
     if s == 0 and e >= DAY_MIN:
         return float(DAY_MIN)
     return float(e - s) if s <= e else float(DAY_MIN - s + e)
+
+
+def in_windows_mask(minutes: np.ndarray, windows: Iterable[Sequence[float]]) -> np.ndarray:
+    """in_windows of every minute of an array (bool array; the same tests,
+    vectorised)."""
+    m = np.remainder(np.asarray(minutes, dtype=np.float64), float(DAY_MIN))
+    out = np.zeros(m.shape, dtype=bool)
+    for w in windows:
+        s, e = float(w[0]), float(w[1])
+        if s == 0 and e >= DAY_MIN:
+            out[:] = True
+            break
+        out |= ((m >= s) & (m < e)) if s <= e else ((m >= s) | (m < e))
+    return out
+
+
+def local_dates(ts: np.ndarray, tz_offset_s: float) -> np.ndarray:
+    """_local_date of every timestamp of an array (int64)."""
+    return np.floor_divide(np.asarray(ts, dtype=np.float64) + float(tz_offset_s), 86400.0).astype(np.int64)
 
 
 def as_intervals(windows: Iterable[Sequence[float]]) -> List[List[int]]:
@@ -338,23 +380,40 @@ def _sessions(pts: Sequence[Sequence[Any]], tz_offset_s: float) -> List[Any]:
     """(round 6) The independent unit of each arrival for _extend: its
     source's session - the source's arrivals of one local date split where
     they are more than SESSION_GAP_MIN apart (the usual inactivity rule).
-    An arrival without a source is a unit of its own."""
-    keys: List[Any] = [None] * len(pts)
-    grp: Dict[Tuple[int, str], List[int]] = {}
-    for i, p in enumerate(pts):
-        if len(p) > 3 and p[3]:
-            grp.setdefault((_local_date(float(p[1]), tz_offset_s), str(p[3])), []).append(i)
-        else:
-            keys[i] = ("pt", i)
-    for k, idx in grp.items():
-        idx.sort(key=lambda j: float(pts[j][1]))
-        sess, last = 0, None
-        for j in idx:
-            ts = float(pts[j][1])
-            if last is not None and ts - last > SESSION_GAP_MIN * 60.0:
-                sess += 1
-            keys[j] = (k[0], k[1], sess)
-            last = ts
+    An arrival without a source is a unit of its own: ('pt', index); a
+    session is (local date, source, k-th session of the source that date).
+    (Round 7: vectorised - one stable sort by (date, source, ts) - with the
+    keys of the former per-group loop.)"""
+    n = len(pts)
+    keys: List[Any] = [None] * n
+    if not n:
+        return keys
+    ts = np.asarray([float(p[1]) for p in pts], dtype=np.float64)
+    dl = local_dates(ts, tz_offset_s)
+    src = [str(p[3]) if (len(p) > 3 and p[3]) else None for p in pts]
+    has = np.asarray([x is not None for x in src], dtype=bool)
+    for i in np.flatnonzero(~has).tolist():
+        keys[i] = ("pt", i)
+    idx = np.flatnonzero(has)
+    if not idx.size:
+        return keys
+    names = sorted({src[i] for i in idx.tolist()})
+    code = {nm: k for k, nm in enumerate(names)}
+    sc = np.asarray([code[src[i]] for i in idx.tolist()], dtype=np.int64)
+    order = idx[np.lexsort((ts[idx], sc, dl[idx]))]
+    o_d, o_t = dl[order], ts[order]
+    o_s = np.asarray([code[src[i]] for i in order.tolist()], dtype=np.int64)
+    new_grp = np.ones(order.size, dtype=bool)
+    new_grp[1:] = (o_d[1:] != o_d[:-1]) | (o_s[1:] != o_s[:-1])
+    gap = np.zeros(order.size, dtype=bool)
+    gap[1:] = (~new_grp[1:]) & ((o_t[1:] - o_t[:-1]) > SESSION_GAP_MIN * 60.0)
+    # the session counter restarts at each (date, source) group
+    cg = np.cumsum(gap)
+    base = np.maximum.accumulate(np.where(new_grp, cg, 0))
+    sess = (cg - base).tolist()
+    od, oi = o_d.tolist(), order.tolist()
+    for j, i in enumerate(oi):
+        keys[i] = (od[j], src[i], sess[j])
     return keys
 
 
@@ -493,8 +552,9 @@ def _persistence(pts: Sequence[Sequence[Any]], wts: np.ndarray, cut: int, tz_off
     date: finance's ledger) is never significantly stale."""
     if not pts or len(pts[0]) < 4:
         return None
-    clean = [(float(p[0]), _local_date(float(p[1]), tz_offset_s), str(p[3]))
-             for p, w in zip(pts, wts) if w >= CLEAN_W and p[3]]
+    sel = [i for i, (p, w) in enumerate(zip(pts, wts)) if w >= CLEAN_W and p[3]]
+    dl = local_dates(np.asarray([float(pts[i][1]) for i in sel], dtype=np.float64), tz_offset_s).tolist()
+    clean = [(float(pts[i][0]), d, str(pts[i][3])) for i, d in zip(sel, dl)]
     if len({c[2] for c in clean}) < 2:
         return None
     dates = sorted({c[1] for c in clean})
@@ -623,7 +683,7 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
     # coverage: reservoir fraction in minute mode (edges are minute-exact),
     # slot mass share in slot mode (edges are slot edges)
     if minute_mode:
-        inside = np.asarray([in_windows(m, windows) for m in mins], dtype=np.float64)
+        inside = in_windows_mask(mins, windows).astype(np.float64)
         cov = float(np.sum(inside * cw) / max(float(cw.sum()), 1e-12))
         if not info.get("all_day"):
             cov = predictive_coverage(cov, n_units, len(windows))
@@ -640,13 +700,22 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
             cov = predictive_coverage(cov, float(n), len(windows))
     dates, stab = None, None
     if pts:
-        by_date: Dict[int, List[bool]] = {}
-        for p, w in zip(pts, wts):
-            if w < CLEAN_W:
-                continue                        # damped outliers are not the pattern's days
-            by_date.setdefault(_local_date(p[1], tz_offset_s), []).append(in_windows(p[0], windows))
-        dates = len(by_date)
-        stab = float(np.mean([all(v) for v in by_date.values()])) if by_date else None
+        # damped outliers are not the pattern's days; a date is stable when all
+        # of its clean arrivals are inside (vectorised, round 7: the same
+        # dates and flags as the former per-point loop)
+        ok = wts >= CLEAN_W
+        if ok.any():
+            ts_ = np.asarray([float(p[1]) for p in pts], dtype=np.float64)[ok]
+            m_ = np.asarray([float(p[0]) for p in pts], dtype=np.float64)[ok]
+            dd = local_dates(ts_, tz_offset_s)
+            ins = in_windows_mask(m_, windows)
+            ud, inv = np.unique(dd, return_inverse=True)
+            out_ = np.zeros(ud.size, dtype=bool)
+            np.logical_or.at(out_, inv, ~ins)
+            dates = int(ud.size)
+            stab = float(np.mean(~out_))
+        else:
+            dates = 0
     return {"windows": windows, "labels": [label(s, e) for s, e in windows],
             "shares": [round(float(x[2]), 4) for x in wins_u], "coverage": cov,
             "res": "minute" if minute_mode else "slot", "n": float(n), "n_points": len(pts),
@@ -661,8 +730,19 @@ FWD_PRIOR = 2.0                  # out-of-sample coverage: Beta prior strength c
 CV_FOLDS = 5                     # date folds of the out-of-sample coverage
 
 
+def _log_scores(windows: Sequence[Sequence[float]], c: float) -> Tuple[float, float]:
+    """ln(density x 1440) of a minute inside / outside the windows under the
+    windowed law of a fit - share c spread uniformly over the windows, 1 - c
+    over the rest of the day: the log score of the windows against a uniform
+    (flat) day (0 = no better); (0, 0) for windows covering the day."""
+    L = float(sum(window_len(s, e) for s, e in windows))
+    if L <= 0.0 or L >= DAY_MIN:
+        return 0.0, 0.0
+    return math.log(c / L * DAY_MIN), math.log((1.0 - c) / (DAY_MIN - L) * DAY_MIN)
+
+
 def cv_coverage(hist: np.ndarray, pts: Sequence[Sequence[Any]], tz_offset_s: float = 0.0,
-                folds: int = CV_FOLDS) -> Optional[Tuple[float, float]]:
+                folds: int = CV_FOLDS, info: Optional[Dict[str, Any]] = None) -> Optional[Tuple[float, float]]:
     """Out-of-sample coverage of the windows a node's arrivals give: blocked
     cross-validation by DATE - the dates are dealt into min(folds, #dates)
     folds; the windows fitted on the other folds' arrivals are checked on the
@@ -683,19 +763,25 @@ def cv_coverage(hist: np.ndarray, pts: Sequence[Sequence[Any]], tz_offset_s: flo
     (A forward split - train on the older two thirds of the dates - was
     tried first: on a department's part of the mail node, ~20 arrivals, it
     halved the stated coverage, 0.86 -> 0.47, against ~0.68 held: a third of
-    the dates missing from training is too pessimistic for small samples.)"""
+    the dates missing from training is too pessimistic for small samples.)
+    `info` (round 7), when given, receives 'dates' (clean dates) and 'llr':
+    the mean out-of-sample log score of the training folds' windowed laws
+    against a flat day (_log_scores; nats per arrival, weighted) - the test of
+    the windowed alternative that _flat needs before it declares a day flat."""
     rows = [p for p in pts if len(p) >= 2]
     if not rows:
         return None
     wts = [float(p[2]) if len(p) > 2 else 1.0 for p in rows]
-    day = [_local_date(float(p[1]), tz_offset_s) for p in rows]
+    day = local_dates(np.asarray([float(p[1]) for p in rows], dtype=np.float64), tz_offset_s).tolist()
     dates = sorted({d for d, w in zip(day, wts) if w >= CLEAN_W})
+    if info is not None:
+        info["dates"] = len(dates)
     if len(dates) < 3:
         return None
     K = min(int(folds), len(dates))
     fold_of = {d: i % K for i, d in enumerate(dates)}
     n_all = float(np.sum(wts))
-    hits, tot = 0.0, 0.0
+    hits, tot, score = 0.0, 0.0, 0.0
     for j in range(K):
         train = [p for p, d in zip(rows, day) if fold_of.get(d, -1) != j]
         test = [(float(p[0]), w) for p, w, d in zip(rows, wts, day) if w >= CLEAN_W and fold_of.get(d, -1) == j]
@@ -705,19 +791,27 @@ def cv_coverage(hist: np.ndarray, pts: Sequence[Sequence[Any]], tz_offset_s: flo
         if r2 is None or r2.get("res") != "minute":
             continue
         t_ = float(sum(w for _, w in test))
-        h_ = float(sum(w for m, w in test if in_windows(m, r2["windows"])))
+        ins_ = in_windows_mask(np.asarray([m for m, _ in test], dtype=np.float64), r2["windows"]).tolist()
+        h_ = float(sum(w for (_, w), ok_ in zip(test, ins_) if ok_))
         n_tr = float(np.sum([float(p[2]) if len(p) > 2 else 1.0 for p in train]))
         edge = 2.0 * len(r2["windows"]) * (1.0 / (n_tr + 1.0) - 1.0 / (n_all + 1.0))
         hits += min(t_, h_ + max(0.0, edge) * t_)
         tot += t_
+        if info is not None and not r2.get("all_day"):
+            eps = 0.5 / (n_tr + 1.0)
+            c = min(1.0 - eps, max(eps, float(r2.get("coverage") or 0.0)))
+            ls_in, ls_out = _log_scores(r2["windows"], c)
+            score += float(sum(w * (ls_in if ok_ else ls_out) for (_, w), ok_ in zip(test, ins_)))
     if tot <= 0:
         return None
+    if info is not None:
+        info["llr"] = score / tot
     return hits, tot
 
 
 def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offset_s: float = 0.0,
                since0: Optional[float] = None, provisional0: bool = False,
-               young: bool = True) -> Optional[Dict[str, Any]]:
+               young: bool = True, cv: bool = True) -> Optional[Dict[str, Any]]:
     """Windows of one node (or one group's part of it) and day type from its
     arrivals [(minute, ts, weight, source)]: P09's pipeline shared by the
     node fit (behavior.time_window) and part_when.
@@ -743,7 +837,9 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
         dates (recent_drift) - is not fitted: the windows of the established
         law are stated, marked 'drift' and provisional, at the confidence the
         young arrivals show; regime_cut fits the new law once it has its
-        dates. `young` False: no step 4 (the recursive established fit)."""
+        dates. `young` False: no step 4 (the recursive established fit).
+      `cv` False (round 7): no step 3; the record carries the arrivals it
+      was fitted on ('_use', for _apply_cv) - the lazy established fit."""
     pts = list(pts)
     since, provisional, cut = since0, bool(provisional0), None
     young_cut = None
@@ -786,16 +882,10 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
         old = fit_regime(hist, n, old_pts, tz_offset_s=tz_offset_s, young=False) if old_pts else None
         if old is not None:
             _young_edges(rec, old, use, tz_offset_s)
-    if rec.get("res") == "minute" and not rec.get("all_day"):
-        fc = cv_coverage(hist, use, tz_offset_s)
-        if fc is not None:
-            h, m = fc
-            c_in = float(rec["coverage"])
-            rec["coverage_in"] = c_in
-            rec["cv"] = [round(h, 3), round(m, 3)]
-            rec["coverage"] = float(min(c_in, (h + FWD_PRIOR * c_in) / (m + FWD_PRIOR)))
-            if rec["coverage"] < FLAT_SHARE:
-                _flat(rec, use, tz_offset_s)
+    if not cv:
+        rec["_use"] = use                       # _apply_cv later (the lazy established fit of 4b)
+        return rec
+    _apply_cv(rec, hist, use, tz_offset_s)
     if young and since0 is None:
         # 4b a change whose arrivals are too few for the KS test (3 logins on
         # one date): the established law (the dates before the young ones)
@@ -803,15 +893,72 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
         yd = _young_dates(use, tz_offset_s)
         if yd:
             est_pts = [p for p in use if _local_date(float(p[1]), tz_offset_s) < yd]
-            est = fit_regime(hist, n, est_pts, tz_offset_s=tz_offset_s, young=False)
+            young_pts = [p for p in use if _local_date(float(p[1]), tz_offset_s) >= yd]
+            # (round 7, cost) the established fit's cross-validation only lowers
+            # its coverage c (or declares it flat: never a drift), and
+            # recent_drift's binomial tail grows as c falls - so when the
+            # in-sample windows (c_in >= c) show no drift, the cross-validated
+            # ones cannot either: the date-CV (CV_FOLDS refits) runs only when
+            # the in-sample test fires (exact)
+            est = fit_regime(hist, n, est_pts, tz_offset_s=tz_offset_s, young=False, cv=False)
             if est is not None:
-                dr = recent_drift(est, [p for p in use if _local_date(float(p[1]), tz_offset_s) >= yd],
-                                  tz_offset_s)
-                if dr is not None:
-                    est["drift"] = dr
-                    est["provisional"] = True
-                    return est
+                est_use = est.pop("_use", est_pts)
+                c0 = float(est.get("coverage") or 0.0)
+                if c0 >= 1.0 or recent_drift(est, young_pts, tz_offset_s) is not None:
+                    _apply_cv(est, hist, est_use, tz_offset_s)
+                    dr = recent_drift(est, young_pts, tz_offset_s)
+                    if dr is not None:
+                        est["drift"] = dr
+                        est["provisional"] = True
+                        return est
     return rec
+
+
+def _apply_cv(rec: Dict[str, Any], hist: np.ndarray, use: Sequence[Sequence[Any]], tz_offset_s: float) -> None:
+    """fit_regime step 3: the stated coverage lowered to the date
+    cross-validated coverage when smaller (cv_coverage), and the flat-day
+    rule on it (_flat, when _flat_supported); minute-mode windows only."""
+    if rec.get("res") != "minute" or rec.get("all_day"):
+        return
+    cvi: Dict[str, Any] = {}
+    fc = cv_coverage(hist, use, tz_offset_s, info=cvi)
+    if fc is None:
+        return
+    h, m = fc
+    c_in = float(rec["coverage"])
+    rec["coverage_in"] = c_in
+    rec["cv"] = [round(h, 3), round(m, 3)]
+    rec["coverage"] = float(min(c_in, (h + FWD_PRIOR * c_in) / (m + FWD_PRIOR)))
+    if rec["coverage"] < FLAT_SHARE and _flat_supported(cvi):
+        _flat(rec, use, tz_offset_s)
+    elif rec["coverage"] < FLAT_SHARE:
+        rec["flat_rejected"] = {"dates": int(cvi.get("dates") or 0),
+                                "llr": round(float(cvi.get("llr", 0.0)), 4)}
+
+
+FLAT_DATES = 5                   # _flat_supported: dates of evidence before a day is declared flat
+
+
+def _flat_supported(cvi: Mapping[str, Any]) -> bool:
+    """(round 7) May windows whose out-of-sample coverage is below FLAT_SHARE
+    be replaced by one all-day window? Only on sufficient dated evidence -
+    >= FLAT_DATES clean dates (each a fold of cv_coverage; with fewer, the
+    leave-dates-out coverage is the share of one or two dates' arrivals in
+    windows fitted on the other one or two) - AND when the windowed law is
+    no better than a flat day out of sample (cv_coverage's mean log score
+    'llr' <= 0): a law whose windows are narrow holds few fresh arrivals
+    while still concentrating them far above the day's mean rate, and that
+    is a time-of-day law, stated at its lowered coverage. Otherwise the
+    fitted windows stay, at their predictive coverage (min of the in-sample
+    and the cross-validated one).
+    Why (round 6, O60 seed 0, day 8): 财务部's mail part (law 09:15-09:33,
+    13:30-14:03; three addresses, three workdays) was stated '工作日 全天
+    (覆盖 100 %)' - each date's arrivals fell partly outside the windows the
+    other two dates gave, CV coverage < 0.5 - and the day-8 agreement of
+    O60 with pack O failed (0.076 > 0.05); O-real stated 10.168.7.121's mail
+    '全天' on six workdays. Synthetic (tests/lib): with three dates of one
+    session per address 10 % of such fits were declared flat."""
+    return int(cvi.get("dates") or 0) >= FLAT_DATES and float(cvi.get("llr", 0.0)) <= 0.0
 
 
 def _flat(rec: Dict[str, Any], pts: Sequence[Sequence[Any]], tz_offset_s: float) -> None:
