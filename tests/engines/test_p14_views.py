@@ -115,6 +115,9 @@ def store():
     return st
 
 
+# (round 7) no P04 record in this fixture: the statement states the min over its
+# parts, where the workflow clause contributes its dependency (0.95), not the
+# edge's share-bounded confidence (0.93) - prender.workflow_block
 GOLDEN_ZH = ("【oa · 192.168.100.100:8080】工作日 09:00–09:21（覆盖 97 %，21 个工作日），"
              "综合部（10.168.7.121、192.168.1.21、192.168.1.23）访问 POST /login（登录）："
              "提交数据量 90 % 在 1–2 KB，全部在 0.5–3 KB（n = 183，下次越界概率 ≤ 1.1 %）；"
@@ -123,7 +126,7 @@ GOLDEN_ZH = ("【oa · 192.168.100.100:8080】工作日 09:00–09:21（覆盖 9
              "绑定：10.168.7.121 → username=mike、192.168.1.21 → username=jack、"
              "192.168.1.23 → username=rose（g3 = 0.00，各 ≥ 60 次）。"
              "流程：POST /login → GET /home（间隔 1 秒–5 秒）。"
-             "置信 0.93 · 依据 45 次 · 首次 2026-09-01 · 最近 2026-09-21 · v1.0")
+             "置信 0.95 · 依据 45 次 · 首次 2026-09-01 · 最近 2026-09-21 · v1.0")
 GOLDEN_EN = ("[oa · 192.168.100.100:8080] On workdays 09:00–09:21 (coverage 97 %, 21 dates), "
              "综合部 (10.168.7.121, 192.168.1.21, 192.168.1.23) opens POST /login (log in): "
              "90 % of submitted size within 1–2 KB, all within 0.5–3 KB (n = 183, P(next outside) ≤ 1.1 %); "
@@ -132,7 +135,7 @@ GOLDEN_EN = ("[oa · 192.168.100.100:8080] On workdays 09:00–09:21 (coverage 9
              "bound values 10.168.7.121 → username=mike, 192.168.1.21 → username=jack, "
              "192.168.1.23 → username=rose (g3 = 0.00, each ≥ 60 times). "
              "Workflow: POST /login → GET /home. "
-             "Confidence 0.93, support 45 events, first seen 2026-09-01, last seen 2026-09-21, v1.0.")
+             "Confidence 0.95, support 45 events, first seen 2026-09-01, last seen 2026-09-21, v1.0.")
 
 
 def _login_stmt(v):

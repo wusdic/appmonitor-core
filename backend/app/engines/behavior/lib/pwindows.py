@@ -1387,6 +1387,49 @@ def drift_hold(drift: Mapping[str, Any], nominal: Optional[float]) -> Optional[f
     return float(p) if any_ else None
 
 
+def window_hold(rec: Optional[Mapping[str, Any]]) -> Optional[float]:
+    """(round 7) The probability that one day type's windows HOLD at their
+    stated coverage c - the share theta of new arrivals inside them is >=
+    c - eps, eps = pnode.hold_eps(c), the tolerance of "holds" of P04's
+    held-out tests and of the statement contract - under theta's posterior
+    from the fit's own evidence: Beta(s m + FWD_PRIOR c, (1 - s) m +
+    FWD_PRIOR (1 - c)), m = the fit's independent units (sessions,
+    'w_points'), s = its date cross-validated share ('cv'; the in-sample
+    coverage when the fit was not cross-validated). 1.0 for an all-day
+    record (no time constraint); None for a drifting record (drift_hold) or
+    one without minute evidence.
+    Why: P14 composed a group's part that states its OWN windows (part_when)
+    as min(hold of the node's other constraints, coverage x day stability) -
+    a coverage, not a probability that the statement holds. Pack O seed 2,
+    days 12-20: the mail parts of 销售部 / 财务部 (two windows, 9 sessions on
+    3 dates, coverage 0.65-0.69, stability 0.67) stated 0.20-0.46 and held
+    (parts of that run: stated 0.876, held 0.976)."""
+    if not rec:
+        return None
+    if rec.get("all_day"):
+        return 1.0
+    if rec.get("drift") or rec.get("res") != "minute" or not rec.get("windows"):
+        return None
+    c = float(rec.get("coverage") or 0.0)
+    m = float(rec.get("w_points") or rec.get("n_points") or 0.0)
+    if not (0.0 < c <= 1.0) or m <= 0.0:
+        return None
+    cv = rec.get("cv")
+    if cv and float(cv[1]) > 0:
+        s_ = float(cv[0]) / float(cv[1])
+    else:
+        s_ = float(rec.get("coverage_in", c))
+    s_ = min(max(s_, 0.0), 1.0)
+    from scipy.special import betainc
+    from . import pnode as PN
+    x = max(0.0, c - PN.hold_eps(c))
+    a = s_ * m + FWD_PRIOR * c
+    b = (1.0 - s_) * m + FWD_PRIOR * (1.0 - c)
+    if x <= 0.0:
+        return 1.0
+    return float(1.0 - betainc(a, max(b, 1e-9), x))
+
+
 def entropy_gain_bits(hist: np.ndarray) -> float:
     """log2(96) - H(slot shares): bits per event the node's time density saves
     against a uniform day (the P12 full-information utility of the when facet)."""
@@ -1510,6 +1553,11 @@ def part_when(when: Any, members: Iterable[str], tz_offset_s: float = 0.0,
                            for dk in DAYTYPES}
     out.update(block_coverage(by))
     out["confidence"] = float(min(r["confidence"] for r in fitted))
+    # (round 7) the probability that the part's windows hold at their stated
+    # coverages on every fitted day type (window_hold; None when any is drifting)
+    holds = [window_hold(r) for r in fitted]
+    if all(h is not None for h in holds):
+        out["hold"] = float(np.prod(holds))
     drift = {DT_LONG[dk]: by[dk]["drift"] for dk in DAYTYPES if by.get(dk) and by[dk].get("drift")}
     if drift:
         out["drift"] = drift

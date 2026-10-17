@@ -177,7 +177,8 @@ class AttributeSelectionEngine(Engine):
             return None
         roles = prev.get("roles") or {}
         todo = SEL.names_to_evaluate(reg.names(), roles, prev.get("dropped_at") or {}, now,
-                                     self.run_index.get(key, 0), ustat=prev.get("ustat") or {})
+                                     self.run_index.get(key, 0), ustat=prev.get("ustat") or {},
+                                     rotate=prev.get("redundant_exact") or ())
         want = set(todo[:A_ROW]) | set(SEL.CONTEXT_SEEDS) | {"net.src", "ev.ch"}
         pt = MP.get_ptree(store, key)
         if pt is not None:
@@ -289,7 +290,8 @@ class AttributeSelectionEngine(Engine):
             stable = self._stab.get(key, {}).get("stable", 0) >= STABLE_RUNS
             a_probe = SEL.A_PROBE * (int(STABLE_PERIOD_S // self.eval_period_s) if stable else 1)
             todo = SEL.names_to_evaluate(names, roles_prev, prev.get("dropped_at") or {}, now, run_idx,
-                                         a_probe, ustat=prev.get("ustat") or {})
+                                         a_probe, ustat=prev.get("ustat") or {},
+                                         rotate=prev.get("redundant_exact") or ())
             tprev = list((prev.get("targets_sys") or {}).get(kind) or [])
             if not tprev:
                 tprev = SEL.bootstrap_selection(reg, kind, names)["targets_sys"][kind]
@@ -313,14 +315,24 @@ class AttributeSelectionEngine(Engine):
         # they are still evaluated (a pair must not dissolve because its keeper
         # dropped out of the top-U_t list for one run)
         prev_red = dict(prev.get("redundant") or {})
-        cand += [a for a in dict.fromkeys(list(prev_red) + list(prev_red.values()))
+        prev_x = set(prev.get("redundant_exact") or ())
+        cand += [a for a in dict.fromkeys([b for b in prev_red if b not in prev_x]
+                                          + [prev_red[b] for b in prev_red if b not in prev_x])
                  if a in stats and a not in cand and stats[a]["H"] >= SEL.RED_HB]
+        # (round 7, PG4) every other target-grade attribute evaluated this run is
+        # compared by its probe partition only (exact duplicates; pselect
+        # _exact_redundancy): O(attributes), not pairs
+        wider = [a for a, v in stats.items() if a not in cand and SEL.targetable(a)
+                 and v["U_t"] >= SEL.U_HI and v["H"] >= SEL.RED_HB]
         red = {}
+        red_x: set = set()
         if pr0 is not None and len(pr0):
+            present0 = set(pr0.names())
             red = SEL.redundancy(pr0, now, hier, cand,
                                  cost=lambda a: float(getattr(reg.records.get(a), "cost_us", 0.0) or 0.0),
                                  cov=lambda a: reg.coverage(a, now), prev=prev_red,
-                                 distinct=lambda a: float(stats[a].get("distinct0", 0.0)))
+                                 distinct=lambda a: float(stats[a].get("distinct0", 0.0)),
+                                 wider=[a for a in wider if a in present0], exact_out=red_x)
         out = SEL.assign_roles(stats, prev, red, ipinfo, now,
                                lambda a: reg.records[a].kinds if a in reg.records else ())
         proxies: List[str] = []
@@ -379,6 +391,7 @@ class AttributeSelectionEngine(Engine):
         model = {"version": version, "t": now, "roles": out["roles"], "levels": out["levels"],
                  "targets_sys": out["targets_sys"], "split_cands": out["split_cands"],
                  "redundant": out["redundant"], "node_overrides": overrides,
+                 "redundant_exact": sorted(red_x),
                  "who_mode": out["who_mode"], "who_proxies": proxies, "ip_info": {int(k): float(v) for k, v in ipinfo.items()},
                  "low": out["low"], "dropped_at": out["dropped_at"], "ustat": out["ustat"],
                  "runs": run_idx + 1,

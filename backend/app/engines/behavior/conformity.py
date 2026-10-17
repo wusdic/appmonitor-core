@@ -178,6 +178,27 @@ implementation report):
     integer counts, put counts of 2-3 at the 1e-9 floor (~40 clean
     intensity findings per run). rate.ip_h's band still gates the test
     (count > band90 top) and is what the finding states as expected.
+  * round 7 (conformity / scoring owner):
+    - engine families (P12): the members' transaction batches of a tick are
+      scored in one time order with one same-tick session overlay
+      (_score_family), as P10 keeps one session LRU per family: a workflow
+      spread over a load-balanced replica pair is one session (O-real oa /
+      oa-r2: missing_predecessor MEDIUMs on SALES users);
+    - 'when' calibration under drift: the node's 'when' calibration restarts
+      the first time P09's fit of the node shows an ACCEPTED new regime
+      (CalStore.segment), and arrivals outside P09's windows are calibrated
+      apart from those inside them (_cal_type: 'when_out'); the node-routine
+      test reads the calibration before the event's own score is added
+      (O-red A4: D1's out-of-window logins mapped a 03:05 login's 4.7e-4 to
+      0.036);
+    - when_ptab: a CONTENT-split child's p is at least its parent's (a content
+      split is not a time sub-population; pack O seed 1, D4);
+    - intensity: hour counts in event mass (the rows' evt.batch `w`: sampled
+      sensors, aggregated records), and the hour count enters the tick's
+      conf_content once (no Sidak over the tick's events) (O-real A7);
+    - an event routed into a specific, not yet confident action child of a
+      route partition is not content-checked against the partition's value
+      records (the mixture of the other actions; tree owner OI-f).
 """
 from __future__ import annotations
 
@@ -224,6 +245,7 @@ SIG_STANDING = 0.02             # share of an address's own signature that is a 
 GROUP_MIN_MEMBERS = 2           # other members with standing that make a node a pattern of their group
 MEMBER_EV = 3.0                 # a source recurring at an ANCESTOR population (back-off) is a member
 CAL_TYPES = ("when", "content", "seq")
+WHEN_OUT = "when_out"           # the 'when' calibration of arrivals outside P09's windows (_cal_type)
 INT_P = 1e-3                    # an hour count is a finding only at this tail (§6.16.4)
 E_MAX = 1.0                     # a node's routine: >= this many such scores per day
 SEQ_P = 0.02                    # per-day p of a missing required predecessor to emit
@@ -414,6 +436,17 @@ def _nan(x: Any) -> bool:
     return x is None or (isinstance(x, float) and math.isnan(x))
 
 
+def _cal_type(typ: str, flags: Set[str]) -> str:
+    """The calibration stratum of a type's score (round 7): 'when' scores of
+    arrivals OUTSIDE the node's P09 windows are calibrated among themselves.
+    A when finding needs such an arrival, so its calibrated p and its routine
+    are the exceedance frequency of out-of-window arrivals; in-window arrivals
+    a lagging density scores low (a new regime's, after P09 accepted it, on
+    the H_m-decayed counts of the old one) neither mask them nor make them
+    routine (O-red A4 after D1)."""
+    return WHEN_OUT if (typ == "when" and "outside_windows" in flags) else typ
+
+
 def _is_content(attr: str, hier: Any) -> bool:
     if attr.startswith(NON_CONTENT_PREFIX) or attr.startswith("@"):
         return False
@@ -505,6 +538,7 @@ class CalStore:
     def __init__(self, cap: int = 32768) -> None:
         self.h = PS.LRU(cap)
         self.L: Optional[float] = None
+        self.seg = PS.LRU(cap)                  # key -> start of the last segmented regime (segment)
 
     def _g(self, t: float) -> float:
         if self.L is None:
@@ -564,6 +598,38 @@ class CalStore:
         a[bo] = max(0.0, float(a[bo]) - g)
         a[bn] += g
 
+    SEG_TOL = 2.0 * DAY             # a regime start this close to the segmented one is the same change
+
+    def segment(self, key: Hashable, since: float, t: float) -> bool:
+        """(round 7) Start the key's histogram afresh the first time P03 sees
+        the node's accepted time-of-day regime starting at `since` (P09: an
+        accepted regime_cut, or P04's accepted '@when' change). Every score
+        before the acceptance was taken against a density that had not learned
+        the new law (its own counts, H_m-decayed, of the old law or of both) -
+        the change's own arrivals, out of the old windows, among them - and is
+        not the accepted regime's exceedance frequency. O-red seed 0: the
+        综合部 login node, created on D1's day, took D1's out-of-window logins
+        (p_when 3e-4 - 7e-4, before P09 accepted the new window on its own
+        dates) as its normal and mapped A4's 03:05 login, p_when 4.7e-4, to
+        0.036 (no finding). The segment's start is kept per key (the
+        histogram's first-score slot then holds the reset time, so per_day
+        reads the segment's own rate); a later change (> SEG_TOL after it)
+        segments again. Returns whether it reset."""
+        seg = getattr(self, "seg", None)
+        if seg is None:                         # a state saved before segments existed
+            seg = self.seg = PS.LRU(self.h.cap)
+        prev = seg.peek(key)
+        if prev is not None and float(since) <= float(prev) + self.SEG_TOL:
+            return False
+        seg.put(key, float(since))
+        a = self.h.peek(key)
+        if a is None:
+            return False
+        a[:] = 0.0
+        if len(a) > self.NB + 1:
+            a[self.NB + 1] = float(t) / DAY
+        return True
+
     def per_day(self, key: Hashable, p_model: float, t: float) -> float:
         """Expected number of events per day at this key scoring at least as
         extreme as p_model: the H_m-decayed weight W(>= s) turned into a daily
@@ -584,7 +650,7 @@ class CalStore:
         return float(w_ge * math.log(2.0) / hd / max(1.0 - 2.0 ** (-age / hd), 1e-9))
 
     def nbytes(self) -> int:
-        return int(len(self.h) * (4 * (self.NB + 2) + 200) + 128)
+        return int(len(self.h) * (4 * (self.NB + 2) + 200) + 100 * len(getattr(self, "seg", None) or ()) + 128)
 
 
 LEDGER_CAP = 16_384             # (system, action) entries remembered (LRU)
@@ -786,17 +852,28 @@ class ConfState:
         return lg
 
 
+def _run_consts(config: Mapping[str, Any], now: float) -> Dict[str, Any]:
+    """The per-run constants of every tree context: tz offset, sensitive-route
+    patterns, configured address pools, session gap."""
+    pc = EV.pconfig(config)
+    return {"tz": PW.tz_offset(config, now),
+            "sens": [re.compile(p) for p in (config.get("sensitive_patterns") or []) if isinstance(p, str)],
+            "pool": {f"reg:{it.get('name', 'dhcp_scopes')}"
+                     for it in (config.get("dhcp_scopes") or []) if isinstance(it, Mapping)},
+            "gap": float(pc["defaults"].get("session_gap_s", 1800.0))}
+
+
 # ================================================================ node info
 class _NodeInfo:
     """Per node, per batch: everything the event checks read."""
 
     __slots__ = ("nd", "who_l", "who_heavy", "who_U", "who_grp", "who_ref", "evolving", "when_ok", "wins",
-                 "content", "binds", "route", "write", "sens", "rate", "refc")
+                 "content", "binds", "route", "write", "sens", "rate", "refc", "when_seg", "when_moving")
 
 
 class _TreeCtx:
     def __init__(self, eng: "ConformityEngine", store: Any, s: str, key: str,
-                 config: Mapping[str, Any], now: float) -> None:
+                 config: Mapping[str, Any], now: float, run: Optional[Mapping[str, Any]] = None) -> None:
         self.store = store
         self.s = s
         self.key = key
@@ -819,14 +896,15 @@ class _TreeCtx:
         self.groups = wg.get("groups") or {}
         ws = store.get_model(ORG, ORG, WG_STATE)
         self.sigs = getattr(ws, "sigs", None)
-        self.tz = PW.tz_offset(config, now)
-        self.sens = [re.compile(p) for p in (config.get("sensitive_patterns") or []) if isinstance(p, str)]
+        # (round 7, cost) what depends on the configuration and the tick only is
+        # computed once per run (ConformityEngine._run_consts), not per system
+        rc = run if run is not None else _run_consts(config, now)
+        self.tz = rc["tz"]
+        self.sens = rc["sens"]
         # configured address POOLS (DHCP scopes): reg-level items whose new
         # addresses are re-addressed members, not strangers
-        self.pool_regions: Set[str] = {f"reg:{it.get('name', 'dhcp_scopes')}"
-                                       for it in (config.get("dhcp_scopes") or []) if isinstance(it, Mapping)}
-        pc = EV.pconfig(config)
-        self.gap = float(pc["defaults"].get("session_gap_s", 1800.0))
+        self.pool_regions: Set[str] = rc["pool"]
+        self.gap = rc["gap"]
         self.info: Dict[Tuple[int, int], _NodeInfo] = {}
         self.content_nodes: Dict[int, Set[int]] = {}
         self.whokeys: Dict[str, List[Any]] = {}
@@ -1005,7 +1083,16 @@ class _TreeCtx:
         else:
             f = self.when_pred(kind, tree, nd, daytype)
             hier = _hdr_table(f) if f is not None else own
-            out = np.maximum(hier, np.minimum(own, pt))
+            # (round 7) a CONTENT split (an attribute that is neither a source
+            # nor a time attribute) does not make a time sub-population: the
+            # child's own slot counts are a sample of its parent's law, so a
+            # slot its parent's population uses is no rarer for the child
+            # (pack O seed 1, D4: a PUB visitor's 21:45 Saturday login on the
+            # young net.pkts_down child of the portal login node, p_own 5.8e-4
+            # from 3 non-workday dates, MEDIUM; the parent's population uses
+            # that slot)
+            out = np.maximum(hier, pt if self.content_child(kind, tree, nd)
+                             else np.minimum(own, pt))
         self.info[k] = out
         return out
 
@@ -1043,9 +1130,58 @@ class _TreeCtx:
                 rc = np.asarray(refw, dtype=np.float64) * Nd
                 ref = _hdr_table(SC.when_density(rc, Nd))
                 if prior is not None and pt is not None:
-                    ref = np.maximum(_hdr_table(SC.when_density_prior(rc, Nd, prior)), np.minimum(ref, pt))
+                    ref = np.maximum(_hdr_table(SC.when_density_prior(rc, Nd, prior)),
+                                     pt if self.content_child(kind, tree, nd) else np.minimum(ref, pt))
         self.info[k] = (cur, ref)
         return cur, ref
+
+    def content_child(self, kind: int, tree: Any, nd: Any) -> bool:
+        """Whether the node is a child of a CONTENT split (its parent split
+        on an attribute that is neither a source, a route nor a time
+        attribute), per node and tick."""
+        k = ("cc", kind, nd.id)
+        r = self.info.get(k)
+        if r is None:
+            par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
+            r = self.info[k] = bool(par is not None and par.split is not None
+                                    and _is_content(par.split.attr, self.hier))
+        return r
+
+    def content_plan(self, kind: int, tree: Any, chain: Sequence[Any], mix: bool, x_is_conf: bool
+                     ) -> List[Tuple[Any, "_NodeInfo", List[Tuple[str, str, Any]], List[Tuple[str, Any, Any, float]]]]:
+        """(round 7, cost) The content checks of an event covered along `chain`
+        (exception node, covering node, ancestors): per node its value records
+        and broken-invariant tests, each attribute at the FIRST node of the
+        chain holding it - the per-event 'seen' bookkeeping, which never
+        depended on the event's values (an attribute the event lacks is
+        skipped at every node alike), done once per chain and tick. With `mix`
+        (OI-f) the route partition's own value records are left out."""
+        k = ("cp", kind, tuple(nd.id for nd in chain), mix, x_is_conf)
+        out = self.info.get(k)
+        if out is not None:
+            return out
+        t = self.now
+        seen: Set[str] = set()
+        out = []
+        for i, nd in enumerate(chain):
+            ni = self.node_info(kind, tree, nd.id)
+            recs: List[Tuple[str, str, Any]] = []
+            invs: List[Tuple[str, Any, Any, float]] = []
+            if not (mix and (i > 0 or x_is_conf)):
+                for a, typ, rec in ni.content:
+                    if a not in seen:
+                        seen.add(a)
+                        recs.append((a, typ, rec))
+                if nd.confident and nd.inv and nd.n_c(t) >= N_MIN:
+                    p_inv = SC.invariant_p(0.0, nd.n_c(t))
+                    for a, (lv, val) in nd.inv.items():
+                        if a in seen or a.startswith(SKIP_PREFIX):
+                            continue
+                        seen.add(a)
+                        invs.append((a, lv, val, p_inv))
+            out.append((nd, ni, recs, invs))
+        self.info[k] = out
+        return out
 
     def sig_share(self, ip: str, t: float, route: Optional[str] = None) -> float:
         """Share of the address's own P11 signature mass on this system (or on
@@ -1129,6 +1265,20 @@ class _TreeCtx:
         ni.when_ok = None
         went = PW.lookup(self.pwin, kind, nid)
         ni.wins = (went or {}).get("when") if went and went.get("status") == "fitted" else None
+        # (round 7) P09's accepted time-of-day regime (an accepted regime_cut or
+        # P04's accepted '@when' change): its start, the calibration segment of
+        # the node's 'when' scores; and whether a change is under way (a young
+        # drift or a provisional regime) - see CalStore.segment
+        ni.when_seg, ni.when_moving = None, False
+        if ni.wins is not None:
+            for rec in ((went or {}).get("by_daytype") or {}).values():
+                if not isinstance(rec, Mapping):
+                    continue
+                since = rec.get("since")
+                if since is not None and rec.get("regime") == "new" and not rec.get("provisional"):
+                    ni.when_seg = float(since) if ni.when_seg is None else max(ni.when_seg, float(since))
+                if rec.get("drift") or (since is not None and rec.get("provisional")):
+                    ni.when_moving = True
         # content records (own fitted entries; walked up the path at event time)
         recs: List[Tuple[str, str, Any]] = []
         for mdl, typ in ((self.pb, "num"), (self.pg, "pg")):
@@ -1598,6 +1748,58 @@ def _fmt_expected(typ: str, rec: Mapping[str, Any]) -> str:
 
 
 # ================================================================== engine
+class _BatchJob:
+    """One batch being scored: its inputs and the pat.assign columns filled
+    row by row (ConformityEngine._score_row), written by close()."""
+
+    COLS = ("leaf", "conf", "act_node", "exc", "p_who", "p_when", "p_content", "p_seq", "p_novel", "p_ev",
+            "vtype", "damp", "think")
+
+    def __init__(self, st: ConfState, tc: _TreeCtx, store: Any, s: str, ts_b: float, b: Any, series: str,
+                 agg: Dict[str, Dict[str, Any]], cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]],
+                 overlay: Dict[Tuple[str, str], List[Any]]) -> None:
+        self.st, self.tc, self.s, self.ts_b, self.b = st, tc, s, ts_b, b
+        self.agg, self.cands, self.overlay = agg, cands, overlay
+        self.kind = getattr(b, "kind", EV.KIND_TXN)
+        self.tree = tc.ptm.kinds.get(self.kind) if tc.ptm is not None else None
+        self.txn = series == EV.EVT_BATCH
+        cb = store.batch_at(s, EV.EVT_CTX, ts_b) if self.txn else None
+        self.cb = cb if (cb is None or cb.n == b.n) else None
+        n = self.n = b.n
+        blk = np.full((len(self.COLS), n), NAN)     # one allocation for the float columns
+        self.out_f = {c: blk[j] for j, c in enumerate(self.COLS)}
+        self.act_col = np.empty(n, dtype=object)
+        self.prev_col = np.empty(n, dtype=object)
+        self.readdr: Dict[int, str] = {}
+        self.flags_col: Dict[int, str] = {}
+        self.hs = st.hour.get(s)
+        self.order = np.argsort(b.ts, kind="stable").tolist()
+        self.shared = tc.hier.shared
+        self.sk_col = b.dense("sess.key", None) if self.txn and b.has("sess.key") else None
+        w = getattr(b, "w", None)
+        self.w = np.maximum(np.asarray(w, dtype=np.float64), 0.0) if (self.txn and w is not None
+                                                                      and len(w) == n) else None
+
+    def close(self, store: Any) -> None:
+        if not self.txn:
+            return
+        n, b = self.n, self.b
+        rows = np.arange(n, dtype=np.int32)
+        cols = {c: EV.Col(rows, v) for c, v in self.out_f.items()}
+        cols["act"] = EV.Col(rows, self.act_col)
+        cols["prev_act"] = EV.Col(rows, self.prev_col)
+        if self.readdr:
+            ks = sorted(self.readdr)
+            cols["readdr"] = EV.Col(np.asarray(ks, dtype=np.int32),
+                                    np.asarray([self.readdr[k] for k in ks], dtype=object))
+        if self.flags_col:
+            ks = sorted(self.flags_col)
+            cols["flags"] = EV.Col(np.asarray(ks, dtype=np.int32),
+                                   np.asarray([self.flags_col[k] for k in ks], dtype=object))
+        store.add_batch(self.s, EV.PAT_ASSIGN, self.ts_b,
+                        b.aligned(cols, {"kind": self.kind, "tree_key": self.tc.key}))
+
+
 class ConformityEngine(Engine):
     name = "behavior.conformity"
     layer = "behavior"
@@ -1635,38 +1837,65 @@ class ConformityEngine(Engine):
         t0 = time.perf_counter()
         n = 0
         stats: Dict[str, Any] = {}
-        tz = PW.tz_offset(ctx.config, now)
-        for s in sorted(set(store.batch_systems(EV.EVT_BATCH)) | set(store.batch_systems(EV.EVT_WIN))):
-            self._hour_roll(st, store, s, now, tz, k_int)
-            # (round 6, cost) the batches retained for D + 1 ticks keep every
-            # system of the last hour in the list: the tree context (models,
-            # hierarchies) is built only for a system with a new non-empty
-            # batch - O-servers (100 systems, ~24 events a tick) built ~85 a
-            # tick for ~11 that had events
-            todo: List[Tuple[str, float, Any]] = []
-            for series in (EV.EVT_BATCH, EV.EVT_WIN):
-                last = st.last_batch.get((s, series), -math.inf)
-                for ts_b, b in store.batches_since(s, series, last):
-                    st.last_batch[(s, series)] = ts_b
-                    if b.n == 0:
-                        continue
-                    todo.append((series, ts_b, b))
-            if not todo:
-                stats[s] = {"ips": 0, "violations": 0}
+        rc = _run_consts(ctx.config, now)
+        tz = rc["tz"]
+        systems = sorted(set(store.batch_systems(EV.EVT_BATCH)) | set(store.batch_systems(EV.EVT_WIN)))
+        # (round 7) the members of an engine family (P12: one tree key, one P10
+        # model, e.g. O-real's oa / oa-r2 replica pair behind a load balancer)
+        # are scored together, their transaction events in one time order with
+        # one same-tick session overlay: a user's document read served by one
+        # member and the comment served by the other within one tick is one
+        # session (scored per member, the comment read 'without the required
+        # predecessor': ~20 MEDIUM incidents on O-real seed 2's SALES users)
+        fam: Dict[str, List[str]] = {}
+        tkey: Dict[str, str] = {}
+        for s in systems:
+            tkey[s] = MP.tree_key(store, s)
+            fam.setdefault(tkey[s], []).append(s)
+        done: Set[str] = set()
+        for s0 in systems:
+            if s0 in done:
                 continue
-            key = MP.tree_key(store, s)
-            tc = _TreeCtx(self, store, s, key, ctx.config, now)
-            agg: Dict[str, Dict[str, Any]] = {}
-            cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]] = []
-            for series, ts_b, b in todo:
-                n += self._score_batch(st, tc, store, s, ts_b, b, series, agg, cands)
-            self._write_scores(store, s, now, dt, agg)
-            cands.sort(key=lambda x: (-x[0], x[1]))  # highest severity, then smallest p
-            for _, _, build in cands[:self.v_max]:
-                store.add_event(build())
-            st.stats["violations"] += min(len(cands), self.v_max)
-            st.stats["suppressed"] += max(0, len(cands) - self.v_max)
-            stats[s] = {"ips": len(agg), "violations": len(cands)}
+            members = fam[tkey[s0]]
+            done.update(members)
+            work: List[Tuple[str, _TreeCtx, List[Tuple[str, float, Any]], Dict[str, Dict[str, Any]],
+                             List[Tuple[int, float, Callable[[], BehaviorEvent]]]]] = []
+            for s in members:
+                self._hour_roll(st, store, s, now, tz, k_int)
+                # (round 6, cost) the batches retained for D + 1 ticks keep every
+                # system of the last hour in the list: the tree context (models,
+                # hierarchies) is built only for a system with a new non-empty
+                # batch - O-servers (100 systems, ~24 events a tick) built ~85 a
+                # tick for ~11 that had events
+                todo: List[Tuple[str, float, Any]] = []
+                for series in (EV.EVT_BATCH, EV.EVT_WIN):
+                    last = st.last_batch.get((s, series), -math.inf)
+                    for ts_b, b in store.batches_since(s, series, last):
+                        st.last_batch[(s, series)] = ts_b
+                        if b.n == 0:
+                            continue
+                        todo.append((series, ts_b, b))
+                if not todo:
+                    stats[s] = {"ips": 0, "violations": 0}
+                    continue
+                key = tkey[s]
+                tc = _TreeCtx(self, store, s, key, ctx.config, now, rc)
+                agg: Dict[str, Dict[str, Any]] = {}
+                cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]] = []
+                if len(members) == 1:
+                    for series, ts_b, b in todo:
+                        n += self._score_batch(st, tc, store, s, ts_b, b, series, agg, cands)
+                work.append((s, tc, todo, agg, cands))
+            if len(members) > 1 and work:
+                n += self._score_family(st, store, work)
+            for s, tc, todo, agg, cands in work:
+                self._write_scores(store, s, now, dt, agg)
+                cands.sort(key=lambda x: (-x[0], x[1]))  # highest severity, then smallest p
+                for _, _, build in cands[:self.v_max]:
+                    store.add_event(build())
+                st.stats["violations"] += min(len(cands), self.v_max)
+                st.stats["suppressed"] += max(0, len(cands) - self.v_max)
+                stats[s] = {"ips": len(agg), "violations": len(cands)}
         store.put_model(ORG, ORG, STATE, st, ts=now)
         us = (time.perf_counter() - t0) * 1e6
         st.stats["us"] += us
@@ -1696,72 +1925,77 @@ class ConformityEngine(Engine):
     # ------------------------------------------------------------ batches
     def _score_batch(self, st: ConfState, tc: _TreeCtx, store: Any, s: str, ts_b: float, b: Any,
                      series: str, agg: Dict[str, Dict[str, Any]],
-                     cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]]) -> int:
-        kind = getattr(b, "kind", EV.KIND_TXN)
-        tree = tc.ptm.kinds.get(kind) if tc.ptm is not None else None
-        txn = series == EV.EVT_BATCH
-        cb = store.batch_at(s, EV.EVT_CTX, ts_b) if txn else None
-        if cb is not None and cb.n != b.n:
-            cb = None
-        n = b.n
-        out_f = {c: np.full(n, NAN) for c in ("leaf", "conf", "act_node", "exc", "p_who", "p_when",
-                                                "p_content", "p_seq", "p_novel", "p_ev", "vtype",
-                                                "damp", "think")}
-        act_col = np.empty(n, dtype=object)
-        prev_col = np.empty(n, dtype=object)
-        readdr: Dict[int, str] = {}
-        flags_col: Dict[int, str] = {}
-        overlay: Dict[Tuple[str, str], List[Any]] = {}
-        hs = st.hour.get(s)
-        order = np.argsort(b.ts, kind="stable").tolist()
-        shared = tc.hier.shared
-        sk_col = b.dense("sess.key", None) if txn and b.has("sess.key") else None
-        for i in order:
-            ip = b.ip_of(i)
-            ts = float(b.ts[i])
+                     cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]],
+                     overlay: Optional[Dict[Tuple[str, str], List[Any]]] = None) -> int:
+        job = _BatchJob(st, tc, store, s, ts_b, b, series, agg, cands,
+                        {} if overlay is None else overlay)
+        for i in job.order:
+            self._score_row(job, i)
+        job.close(store)
+        return job.n
 
-            def get(a: str, i: int = i, ip: str = ip) -> Any:
-                v = b.get(a, i)
-                if v is EV.ABSENT and cb is not None:
-                    v = cb.get(a, i)
-                if v is EV.ABSENT and a == "net.src":
-                    return ip
-                return v
-            r = self._score_event(st, tc, kind, tree, s, get, ip, ts, txn, hs, overlay, sk_col, i,
-                                  shared, agg, cands)
-            st.last_active.put((s, ip), ts)
-            if r is None:
-                continue
-            for c, v in r["num"].items():
-                out_f[c][i] = v
-            act_col[i] = r.get("act")
-            prev_col[i] = r.get("prev")
-            if r.get("readdr"):
-                readdr[i] = r["readdr"]
-            if r.get("flags"):
-                flags_col[i] = ",".join(sorted(r["flags"]))
-        if txn:
-            rows = np.arange(n, dtype=np.int32)
-            cols = {c: EV.Col(rows, v) for c, v in out_f.items()}
-            cols["act"] = EV.Col(rows, act_col)
-            cols["prev_act"] = EV.Col(rows, prev_col)
-            if readdr:
-                ks = sorted(readdr)
-                cols["readdr"] = EV.Col(np.asarray(ks, dtype=np.int32),
-                                        np.asarray([readdr[k] for k in ks], dtype=object))
-            if flags_col:
-                ks = sorted(flags_col)
-                cols["flags"] = EV.Col(np.asarray(ks, dtype=np.int32),
-                                       np.asarray([flags_col[k] for k in ks], dtype=object))
-            store.add_batch(s, EV.PAT_ASSIGN, ts_b, b.aligned(cols, {"kind": kind, "tree_key": tc.key}))
+    def _score_family(self, st: ConfState, store: Any,
+                      work: Sequence[Tuple[str, _TreeCtx, List[Tuple[str, float, Any]],
+                                           Dict[str, Dict[str, Any]],
+                                           List[Tuple[int, float, Callable[[], BehaviorEvent]]]]]) -> int:
+        """(round 7) The members of one family: their transaction batches
+        scored in one time order (ties: member, batch, row order) with one
+        same-tick session overlay - the family's merged session view, as P10
+        keeps one session LRU per family - then each member's window batches
+        (content only, no sessions)."""
+        overlay: Dict[Tuple[str, str], List[Any]] = {}
+        jobs: List[_BatchJob] = []
+        for s, tc, todo, agg, cands in work:
+            for series, ts_b, b in todo:
+                if series == EV.EVT_BATCH:
+                    jobs.append(_BatchJob(st, tc, store, s, ts_b, b, series, agg, cands, overlay))
+        for _, j, i in heapq.merge(*[[(float(jb.b.ts[i]), j, i) for i in jb.order]
+                                     for j, jb in enumerate(jobs)]):
+            self._score_row(jobs[j], i)
+        n = 0
+        for jb in jobs:
+            jb.close(store)
+            n += jb.n
+        for s, tc, todo, agg, cands in work:
+            for series, ts_b, b in todo:
+                if series != EV.EVT_BATCH:
+                    n += self._score_batch(st, tc, store, s, ts_b, b, series, agg, cands)
         return n
+
+    def _score_row(self, job: "_BatchJob", i: int) -> None:
+        b, cb = job.b, job.cb
+        ip = b.ip_of(i)
+        ts = float(b.ts[i])
+
+        def get(a: str, i: int = i, ip: str = ip) -> Any:
+            v = b.get(a, i)
+            if v is EV.ABSENT and cb is not None:
+                v = cb.get(a, i)
+            if v is EV.ABSENT and a == "net.src":
+                return ip
+            return v
+        r = self._score_event(job.st, job.tc, job.kind, job.tree, job.s, get, ip, ts, job.txn, job.hs,
+                              job.overlay, job.sk_col, i, job.shared, job.agg, job.cands,
+                              float(job.w[i]) if job.w is not None else 1.0)
+        job.st.last_active.put((job.s, ip), ts)
+        if r is None:
+            return
+        for c, v in r["num"].items():
+            job.out_f[c][i] = v
+        job.act_col[i] = r.get("act")
+        job.prev_col[i] = r.get("prev")
+        if r.get("readdr"):
+            job.readdr[i] = r["readdr"]
+        if r.get("flags"):
+            job.flags_col[i] = ",".join(sorted(r["flags"]))
 
     # --------------------------------------------------------------- event
     def _score_event(self, st: ConfState, tc: _TreeCtx, kind: int, tree: Any, s: str,
                      get: Callable[[str], Any], ip: str, ts: float, txn: bool, hs: Optional[HourSS],
                      overlay: Dict[Tuple[str, str], List[Any]], sk_col: Any, i: int,
                      shared: Set[str], agg: Dict[str, Dict[str, Any]],
-                     cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]]) -> Optional[Dict[str, Any]]:
+                     cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]],
+                     w_ev: float = 1.0) -> Optional[Dict[str, Any]]:
         t = tc.now
         num: Dict[str, float] = {}
         res: Dict[str, Any] = {"num": num}
@@ -1908,15 +2142,24 @@ class ConformityEngine(Engine):
             seen_attr: Set[str] = set()
             bind_top: Dict[Tuple[str, str], str] = {}
             worst: Tuple[float, str, Any, str, Any] = (2.0, "", None, "", None)
-            for ci_, nd in enumerate(chain):
-                ni = tc.node_info(kind, tree, nd.id)
-                for a, typ, rec in ni.content:
-                    if a in seen_attr:
-                        continue
+            # (round 7, tree owner OI-f) an event routed into a specific child of a
+            # ROUTE split whose action node is not confident yet is covered by the
+            # route partition's node, whose value records describe the mixture of
+            # the OTHER actions: they say nothing about this action's content
+            # (pack O: POST /report/generate's 20-60 KB bodies against the oa
+            # root's 0.2-1.5 KB band - content p ~1e-9, damped 0.1, untrusted by
+            # B28, never learned: GA.oa.report#1 confirmed days late on every
+            # seed). Its value records are not checked there (bindings are: a
+            # credential's binding holds across actions); the novel / seq types
+            # speak for a new action
+            sp_ = conf_nd.split
+            mix = bool(sp_ is not None and sp_.attr in ROUTE_ATTRS and conf_i < len(path) - 1
+                       and path[conf_i + 1] != sp_.other)
+            for ci_, (nd, ni, recs_, invs_) in enumerate(tc.content_plan(kind, tree, chain, mix, X is conf_nd)):
+                for a, typ, rec in recs_:
                     v = get(a)
                     if v is EV.ABSENT:
                         continue
-                    seen_attr.add(a)
                     r_ = tc.content_p(ni, a, typ, rec, v)
                     if r_ is None:
                         continue
@@ -1928,21 +2171,17 @@ class ConformityEngine(Engine):
                     if p < worst[0]:
                         worst = (p, a, v, typ, rec.rec if isinstance(rec, _NumFast) else rec)
                 # invariants
-                if nd.confident and nd.inv and nd.n_c(t) >= N_MIN:
-                    for a, (lv, val) in nd.inv.items():
-                        if a in seen_attr or a.startswith(SKIP_PREFIX):
-                            continue
-                        v = get(a)
-                        if v is EV.ABSENT:
-                            continue
-                        seen_attr.add(a)
-                        g = tc.hier.gen(a, lv, v)
-                        if g != val and str(g) != str(val):
-                            p = SC.invariant_p(0.0, nd.n_c(t))
-                            ps.append(p)
-                            flags.add("invariant")
-                            if p < worst[0]:
-                                worst = (p, a, v, "inv", {"value": val})
+                for a, lv, val, p_inv in invs_:
+                    v = get(a)
+                    if v is EV.ABSENT:
+                        continue
+                    g = tc.hier.gen(a, lv, v)
+                    if g != val and str(g) != str(val):
+                        p = p_inv
+                        ps.append(p)
+                        flags.add("invariant")
+                        if p < worst[0]:
+                            worst = (p, a, v, "inv", {"value": val})
                 # bindings
                 for rec in ni.binds:
                     X_, Y_ = rec.get("x"), rec.get("y")
@@ -2009,7 +2248,14 @@ class ConformityEngine(Engine):
             # per-IP intensity (upper tail, guaranteed count, heavy only)
             if hs is not None and txn:
                 ck = (ip, kind, conf_nd.id)
-                hs.add(ck)
+                # (round 7) the hour count is the IP's EVENTS, the rows' event mass
+                # (an aggregated record's rows carry count / rows, a sampled sensor's
+                # rows the sample rate; evt.batch `w`): O-real's portal is sampled
+                # 1 in 4 (R12), so A7's 400 logins in an hour were ~100 rows, a
+                # Cantelli p ~1.4e-4 against one-row IP-hours - LOW, no incident.
+                # Every count P03 closes (pat.rate -> P06's rate.ip_h band, the
+                # RateTally rank reference) is in the same unit
+                hs.add(ck, w_ev)
                 g_cnt = hs.guaranteed(ck)
                 if g_cnt > hs.N / hs.k:
                     rrec = None
@@ -2200,10 +2446,17 @@ class ConformityEngine(Engine):
         pm = {k: (v if _nan(v) else max(float(v), P_FLOOR)) for k, v in pt.items()}
         pt = dict(pm)
         if conf_nd is not None:
+            cinfo = tc.node_info(kind, tree, conf_nd.id)
+            if cinfo.when_seg is not None:
+                sk_ = ("seg", kind, conf_nd.id)
+                if sk_ not in tc.info:                 # once per node and tick
+                    tc.info[sk_] = [st.cal.segment((tc.key, kind, conf_nd.id, w_), cinfo.when_seg, ts)
+                                    for w_ in ("when", WHEN_OUT)]
             for k in CAL_TYPES:
                 if not _nan(pm[k]) and pm[k] <= CAL_P:
-                    pt[k] = st.cal.p((tc.key, kind, conf_nd.id, k), pm[k], ts)
+                    pt[k] = st.cal.p((tc.key, kind, conf_nd.id, _cal_type(k, flags)), pm[k], ts)
         details["pm"] = pm
+        p_c_ev = pt["content"]                    # the event's own content p (tick aggregation)
         if not _nan(p_int):
             pt["content"] = p_int if _nan(pt["content"]) else min(1.0, 2.0 * min(pt["content"], p_int))
         for k, v in pt.items():
@@ -2230,9 +2483,6 @@ class ConformityEngine(Engine):
                 # D2 mike -> mike.w) carries no such flag and is learned as before.
                 damp = DAMP
         num["damp"] = damp
-        if conf_nd is not None:                     # prequential: the calibration learns after scoring
-            for k in CAL_TYPES:
-                st.cal.add((tc.key, kind, conf_nd.id, k), pm[k], ts, damp)
         res["flags"] = flags
         if readdr_src is not None and "readdress_candidate" in bind_fl:
             res["readdr"] = readdr_src
@@ -2240,17 +2490,33 @@ class ConformityEngine(Engine):
         a = agg.get(ip)
         if a is None:
             a = agg[ip] = {"p": {t_: 1.0 for t_ in TYPES}, "n": {t_: 0 for t_ in TYPES},
-                           "axes": {t_: set() for t_ in TYPES}}
+                           "axes": {t_: set() for t_ in TYPES}, "int": 1.0}
         for k, v in pt.items():
+            if k == "content":
+                # (round 7) the hour count enters the tick score ONCE (below), not
+                # as part of every event's p: Sidak over the tick's n events
+                # multiplied the cumulative statistic by n (O-real A7, ~25 rows a
+                # tick: an hour-count p of 1e-4 read as a tick p of 5e-3)
+                v = p_c_ev
             if _nan(v):
                 continue
             a["n"][k] += 1
             if v < a["p"][k]:
                 a["p"][k] = v
+        if not _nan(p_int) and p_int < a.get("int", 1.0):
+            a["int"] = p_int
         # ---- discrete findings
         if conf_nd is not None and conf_nd.state in ("confirmed", "stable"):
             self._findings(st, tc, s, kind, tree, conf_nd, path, conf_i, ip, ts, pt, flags, bind_fl,
                            lb_x, details, cap_low, route_key, seq_missing, res, a, cands)
+        if conf_nd is not None:
+            # prequential: the calibration learns after scoring - and after the
+            # findings' node-routine test (round 7: the event's own score counted
+            # in its routine, over the 1-hour age floor of a key it had just
+            # created: ~24 a day, so a young node's - or calibration stratum's -
+            # first extreme score was 'routine' and never a finding)
+            for k in CAL_TYPES:
+                st.cal.add((tc.key, kind, conf_nd.id, _cal_type(k, flags)), pm[k], ts, damp)
         return res
 
     @staticmethod
@@ -2307,7 +2573,8 @@ class ConformityEngine(Engine):
         def routine(typ: str) -> bool:
             """The node itself produced such scores >= E_MAX times a day (its
             H_m-decayed history, damped outliers at 0.1): part of its routine."""
-            return st.cal.per_day((tc.key, kind, conf_nd.id, typ), pm.get(typ, NAN), ts) >= E_MAX
+            return st.cal.per_day((tc.key, kind, conf_nd.id, _cal_type(typ, flags)), pm.get(typ, NAN),
+                                  ts) >= E_MAX
         # who
         p = pt["who"]
         if not _nan(p) and p < 1.0:
@@ -2502,11 +2769,18 @@ class ConformityEngine(Engine):
             scores: Dict[str, float] = {}
             pms: Dict[str, float] = {}
             axes: Dict[str, List[str]] = {}
+            p_int = float(a.get("int", 1.0))
             for t_ in TYPES:
                 n = a["n"][t_]
-                if n <= 0:
+                if t_ == "content" and p_int < 1.0:
+                    # the IP's hour count at its node (one statistic, no multiplicity),
+                    # combined with the events' content p as on each event
+                    p = p_int if n <= 0 else min(1.0, 2.0 * min(float(SC.tick_p(a["p"][t_], n)), p_int))
+                    n = max(n, 1)
+                elif n <= 0:
                     continue
-                p = float(SC.tick_p(a["p"][t_], n))
+                else:
+                    p = float(SC.tick_p(a["p"][t_], n))
                 sc = -math.log10(max(p, 1e-300))
                 rec[DETS[t_]] = {"score": sc, "p": p, "n": n, "axes": sorted(a["axes"][t_])}
                 scores[DETS[t_]] = sc

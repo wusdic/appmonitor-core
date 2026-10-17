@@ -34,7 +34,8 @@ def _state(ps: PN.PairSketch):
     x = ps.x
     return (list(x._keys), [list(r) for r in x._m], [list(r) for r in x._err], [list(r) for r in x._e],
             list(x._tot_m), list(x._evict_e),
-            {k: (list(v._keys), [list(r) for r in v._m], [list(r) for r in v._e]) for k, v in ps.y.items()},
+            {k: (list(v._keys), [list(r) for r in v._m], [list(r) for r in v._e])
+             for k, v in ((k, v.to_dss() if hasattr(v, "to_dss") else v) for k, v in ps.y.items())},
             list(ps.y.keys()))
 
 

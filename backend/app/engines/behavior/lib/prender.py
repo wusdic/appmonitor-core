@@ -457,6 +457,17 @@ def binding_block(bind: Optional[Mapping[str, Any]], labels: Any = None
 
 # ================================================================ workflow
 def workflow_block(edges: Sequence[Mapping[str, Any]]) -> Tuple[List[Dict[str, Any]], str, str, float]:
+    """The workflow clause ("A -> B (interval)") and its part of the
+    statement's fallback confidence (views: min over the parts' nominal
+    coverages when P04 has no held-out record). The clause states that B is
+    A's successor - the dependency measure `dep` (the truth's and the
+    reader's semantics) - not how often A's next step is B: an edge's
+    'confidence' (pdfg.mine_scope) is min(dep, the Jeffreys lower bound of
+    B's share of A's outgoing steps), a frequency. (Round 7) Pack O seed 1
+    day 9: oa GET /docs (and its three group parts) stated 0.107 = the
+    share bound of GET /docs/{num} -> GET /docs (dep 0.98, about one reader
+    in ten goes back to the list) and held 1.0. The edge's own 'confidence'
+    stays in the evidence."""
     ev = []
     zh, en, confs = [], [], []
     for e in edges:
@@ -468,7 +479,9 @@ def workflow_block(edges: Sequence[Mapping[str, Any]]) -> Tuple[List[Dict[str, A
             bz = f"（间隔 {_dur_zh(band[0])}–{_dur_zh(band[1])}）"
         zh.append(f"{route_text(e.get('from'))} → {route_text(e.get('to'))}{bz}")
         en.append(f"{route_text(e.get('from'))} → {route_text(e.get('to'))}")
-        c = e.get("confidence")
+        c = e.get("dep")
+        if c is None or not math.isfinite(float(c)):
+            c = e.get("confidence")
         if c is not None and math.isfinite(float(c)):
             confs.append(float(c))
     return ev, ("流程：" + "；".join(zh)) if zh else "", ("workflow: " + "; ".join(en)) if en else "", \

@@ -121,3 +121,66 @@ def test_clustered_batch_checks_are_compact_and_give_the_same_tolerance():
             n += size(o.n, seen) + size(o.h, seen) + size(o.pos, seen)
         return n
     assert size(hr.bc) < 0.4 * size(ref), (size(hr.bc), size(ref))
+
+
+def test_a_group_record_keeps_its_tests_without_the_windows():
+    """(round 7, temporal owner's OI7-6) A group's lite record keeps the '~when'
+    pair: a group's part that states its OWN windows is not judged by the
+    node's union windows it does not state. Fails on round-6 code (no facet
+    in lite records)."""
+    hr = PN.HoldRecord(lite=True)
+    for d in range(4):                    # the node's windows miss half of the group's checks
+        _test(hr, T0 + d * DAY, {"who": lambda i: True, "when": lambda i: i % 2 == 0,
+                                 "body.len": lambda i: True})
+    ps, n = hr.tests()
+    assert n > 0 and ps < 0.5 * n
+    ft = hr.facet_tests()
+    assert set(ft) == {"~when"}
+    p_w, n_w = ft["~when"]
+    assert abs(n_w - n) < 1e-9 and p_w > 0.95 * n_w
+
+
+def test_pair_y_tables_are_bit_equal_to_the_space_saving_they_replace():
+    """(round 7, PG4 memory) PairSketch's per-source value tables (YTable) give
+    the same floats as DecayedSpaceSaving(PAIR_KY, (H_L,), EV_HALF_LIVES, 0)
+    on every read, through evictions, landmark rescales (weeks apart),
+    confidence resets, merges and copies, at under half its memory."""
+    import random
+    from app.engines.behavior.lib import psketch as PS
+    from app.eval.pscale import deep_sizeof
+    rnd = random.Random(7)
+    for trial in range(30):
+        a = PS.DecayedSpaceSaving(PN.PAIR_KY, (PS.H_L,), PS.EV_HALF_LIVES, 0)
+        b = PN.YTable(PN.PAIR_KY)
+        t = T0 + rnd.random() * DAY
+        for step in range(rnd.randint(1, 400)):
+            t += rnd.choice([1.0, 60.0, 3600.0, 5 * DAY, 400 * DAY]) * rnd.random()
+            k = "v%d" % rnd.randint(0, 7)
+            w, ev = rnd.choice([0.0, 0.1, 1.0, 2.5]), rnd.choice([0.0, 0.1, 1.0])
+            a.add(k, t, w, ev)
+            b.add(k, t, w, ev)
+            if rnd.random() < 0.05:
+                a.reset_confidence(t)
+                b.reset_confidence(t)
+            q = t + rnd.random() * 3 * DAY
+            assert a.items(q, 0) == b.items(q, 0)
+            assert a.total_evidence(q) == b.total_evidence(q)
+            assert a.unseen(q) == b.unseen(q)
+            assert a.keys() == b.keys()
+        c = PS.DecayedSpaceSaving(PN.PAIR_KY, (PS.H_L,), PS.EV_HALF_LIVES, 0)
+        d = PN.YTable(PN.PAIR_KY)
+        for _ in range(20):
+            t += 3600.0
+            k = "v%d" % rnd.randint(0, 9)
+            c.add(k, t, 1.0, 1.0)
+            d.add(k, t, 1.0, 1.0)
+        a.merge(c)
+        b.merge(d)
+        assert a.items(t, 0) == b.items(t, 0) and a.total_evidence(t) == b.total_evidence(t)
+        assert b.copy().items(t, 0) == b.items(t, 0)
+    full_a = PS.DecayedSpaceSaving(PN.PAIR_KY, (PS.H_L,), PS.EV_HALF_LIVES, 0)
+    full_b = PN.YTable(PN.PAIR_KY)
+    for j in range(6):
+        full_a.add("v%d" % j, T0 + j, 1.0, 1.0)
+        full_b.add("v%d" % j, T0 + j, 1.0, 1.0)
+    assert deep_sizeof(full_b) < 0.6 * deep_sizeof(full_a)

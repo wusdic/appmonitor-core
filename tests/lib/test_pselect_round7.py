@@ -148,3 +148,132 @@ def test_evaluate_is_the_same_with_and_without_the_kernels():
         PNB.set_enabled(old)
     assert a == b
     assert any(v.get("U_s") for v in a.values())
+
+
+def _dept_probe(n_dup: int = 6, n: int = 3000):
+    """A stream where n_dup synthetic attributes are each a relabelling of the
+    source's department (PG4's 340-attribute point: meta.f### by_dept), and one
+    near-copy differs on a handful of rows. As in P05 with more attributes than
+    a probe row keeps, each hour's rows record a different slice of them
+    (the others are MISSING on those rows, not absent)."""
+    rng = np.random.default_rng(5)
+    t0 = 1_780_000_000.0
+    pr = SEL.StratifiedProbe(R=4096)
+    depts = ["GA", "FIN", "SALES", "DEV", "PUB"]
+    reg = {"dept": {"type": "categorical"}, "near": {"type": "categorical"},
+           "http.route": {"type": "categorical"}}
+    dups = [f"meta.f{j:03d}" for j in range(n_dup)]
+    for a in dups:
+        reg[a] = {"type": "categorical"}
+    for i in range(n):
+        d = depts[int(rng.integers(0, 5))]
+        row = {"dept": d, "http.route": f"GET /p{int(rng.integers(0, 4))}"}
+        for j, a in enumerate(dups):
+            row[a] = f"{d.lower()}-{j % 7}"
+        row["near"] = d if i % 500 else "GA"
+        hour = i // 100
+        want = ["dept", "http.route", "near"] + [a for j, a in enumerate(dups) if (j + hour) % 3 != 0]
+        wid = pr.want_id(want)
+        pr.offer(("http", "x"), {k: v for k, v in row.items() if k in want}, 1.0, t0 + i,
+                 (i * 0.61803398875) % 1.0 + 1e-9, wid)
+    t = t0 + n
+    pr.rebalance(t)
+    from app.engines.behavior.lib.phier import Hierarchies
+    return pr, t, Hierarchies(registry=reg)
+
+
+def test_exact_duplicates_outside_the_pairwise_window_are_redundant():
+    """(round 7, PG4) The pairwise redundancy test compares the 3 M_T strongest
+    attributes only; 30 department-valued synthetic attributes (one partition)
+    kept 'split' roles at PG4's 340-attribute point. Attributes outside the
+    window with EXACTLY the partition of a representative on the rows that
+    recorded both are redundant with it; a near-copy (differs on a few rows) is
+    not judged by this rule; the window's own verdicts are unchanged. Fails on
+    round-6 code (no `wider` argument)."""
+    pr, t, hier = _dept_probe()
+    rows, _w, _ = pr.rows(t)
+    col = pr.column(rows, "meta.f001")
+    assert any(v == SEL.MISSING for v in col) and any(v != SEL.MISSING for v in col)
+    window = ["dept", "http.route"]
+    wider = [f"meta.f{j:03d}" for j in range(6)] + ["near"]
+    base = SEL.redundancy(pr, t, hier, window, cost=lambda a: 0.0, cov=lambda a: 1.0)
+    xo = set()
+    red = SEL.redundancy(pr, t, hier, window, cost=lambda a: 0.0, cov=lambda a: 1.0,
+                         wider=wider, exact_out=xo)
+    for j in range(6):
+        assert red.get(f"meta.f{j:03d}") == "dept", red
+    assert "near" not in red
+    assert {k: v for k, v in red.items() if k in window} == base
+    assert xo == {f"meta.f{j:03d}" for j in range(6)}
+
+
+def test_the_exact_path_compares_attributes_of_one_kind_only():
+    """(round 7) The exact path compares attributes of one hierarchy kind only:
+    equivalence at the evaluation level says nothing of the other levels a split
+    may use (pack O oa: hdr.user-agent.len's coarse length bins split GET /home
+    by department, while the header itself splits at its shape levels). A text
+    header and a categorical code of it, both outside the window, are not made
+    redundant by the exact path. Fails without the kind check."""
+    rng = np.random.default_rng(3)
+    t0 = 1_780_000_000.0
+    pr = SEL.StratifiedProbe(R=4096)
+    uas = ["Mozilla/5.0 (X11; Linux x86_64) Firefox/1%02d" % k for k in range(6)] + \
+          ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/12%d.0" % k for k in range(6)]
+    for i in range(2000):
+        k = int(rng.integers(0, len(uas)))
+        row = {"http.route": f"GET /p{int(rng.integers(0, 3))}", "hdr.user-agent": uas[k],
+               "client.ua_code": f"c{k}", "client.os": "linux" if k < 6 else "windows"}
+        pr.offer(("http", "x"), row, 1.0, t0 + i, (i * 0.61803398875) % 1.0 + 1e-9)
+    t = t0 + 2000
+    pr.rebalance(t)
+    from app.engines.behavior.lib.phier import Hierarchies
+    hier = Hierarchies(registry={"http.route": {"type": "categorical"}, "hdr.user-agent": {"type": "text"},
+                                 "client.ua_code": {"type": "categorical"}, "client.os": {"type": "categorical"}})
+    assert hier.kind("hdr.user-agent") != hier.kind("client.ua_code")
+    red = SEL.redundancy(pr, t, hier, ["http.route", "client.os"], cost=lambda a: 0.0,
+                         cov=lambda a: 1.0, wider=["hdr.user-agent", "client.ua_code"])
+    assert "client.ua_code" not in red and "hdr.user-agent" not in red, red
+
+
+def test_exact_redundant_attributes_rotate_instead_of_every_run():
+    """Exact duplicates are re-judged on the rotating slice: the every-run set
+    does not grow with them."""
+    names = ["a", "b"] + [f"m{j}" for j in range(40)]
+    roles = {"a": "split", "b": "target"}
+    roles.update({f"m{j}": "redundant" for j in range(40)})
+    every = SEL.names_to_evaluate(names, roles, {}, 0.0, 0, a_probe=4)
+    rot = SEL.names_to_evaluate(names, roles, {}, 0.0, 0, a_probe=4,
+                                rotate=[f"m{j}" for j in range(40)])
+    assert len(every) == 42
+    assert {"a", "b"} <= set(rot) and len(rot) <= 2 + max(4, SEL.E_MIN_SLICE)
+
+
+def test_numeric_copies_outside_the_window_are_redundant():
+    """(round 7, PG4) Route-valued numeric copies (PG4's meta.f### by_route:
+    the route's level plus small noise, recorded on different hours' rows)
+    outside the pairwise window are the same quantity as the window's keeper
+    (Spearman |rho| >= RED_RHO on the rows recording both)."""
+    rng = np.random.default_rng(9)
+    t0 = 1_780_000_000.0
+    pr = SEL.StratifiedProbe(R=4096)
+    base = {f"GET /p{k}": float(25 * k) for k in range(40)}       # 40 routes, levels 25 apart
+    names = [f"meta.g{j}" for j in range(5)]
+    for i in range(3000):
+        r = f"GET /p{int(rng.integers(0, 40))}"
+        row = {"http.route": r}
+        for a in names:
+            row[a] = round(base[r] + float(rng.normal(0.0, 2.0)), 3)
+        want = ["http.route"] + [a for j, a in enumerate(names) if (j + i // 100) % 3 != 0]
+        pr.offer(("http", "x"), {k: v for k, v in row.items() if k in want}, 1.0, t0 + i,
+                 (i * 0.61803398875) % 1.0 + 1e-9, pr.want_id(want))
+    t = t0 + 3000
+    pr.rebalance(t)
+    from app.engines.behavior.lib.phier import Hierarchies
+    hier = Hierarchies(registry={"http.route": {"type": "categorical"},
+                                 **{a: {"type": "numeric"} for a in names}})
+    xo = set()
+    red = SEL.redundancy(pr, t, hier, ["http.route", "meta.g0"], cost=lambda a: 0.0,
+                         cov=lambda a: 1.0, wider=names[1:], exact_out=xo)
+    assert all(red.get(a) in ("meta.g0", "http.route") for a in names[1:]), red
+    assert xo == set(names[1:])
+

@@ -969,6 +969,16 @@ class HoldRecord:
             if TF is None:
                 TF = self.TF = {}
             if getattr(self, "lite", False):
+                # (round 7) a group's (lite) record keeps one facet, '~when': a
+                # group's part that states its OWN windows does not state the
+                # node's (union) windows, so P14 composes it from the group's
+                # tests judged without 'when' (2 floats per group record)
+                fl0 = {hold_facet(k) for k in failed}
+                r = TF.get("~when")
+                if r is None:
+                    r = TF["~when"] = [0.0, 0.0]
+                r[0] = r[0] * lam + (0.0 if fl0 - {"when"} else 1.0)
+                r[1] = r[1] * lam + 1.0
                 self._reset_batch()
                 return
             fac_fail = {hold_facet(k) for k in failed}
@@ -1447,6 +1457,223 @@ def fit_hold_prior(recs: Sequence[Tuple[float, float]]) -> Optional[Tuple[float,
 
 
 # ============================================================ bindings
+class YTable:
+    """(round 7, PG4 memory) A source's value table in a PairSketch: the
+    DecayedSpaceSaving(PAIR_KY, (H_L,), EV_HALF_LIVES, 0) it replaces, with the
+    same arithmetic (the same floats in the same order: add, landmark
+    rescale, eviction of the first least-mass counter, Good-Turing unseen,
+    confidence reset) on flat per-channel lists - one mass channel, two
+    evidence channels - instead of a list per counter, an index dict, a
+    landmark object and per-instance half-life arrays (~0.7 KB instead of
+    ~1.5-1.9 KB per table: up to 64 tables per pair sketch; PG4's 340-
+    attribute point held 3.7 MB of portal pair sketches). merge / copy go
+    through DecayedSpaceSaving (to_dss / from_dss: lossless)."""
+
+    __slots__ = ("k", "L", "keys_", "m", "err", "e0", "e1", "tm", "te0", "te1", "ee0", "ee1")
+    _H = PS.H_L
+    _HE0, _HE1 = PS.EV_HALF_LIVES
+    _HMIN = float(min(PS.H_L, *PS.EV_HALF_LIVES))
+
+    def __init__(self, k: int = PAIR_KY) -> None:
+        self.k = int(k)
+        self.L: Optional[float] = None
+        self.keys_: List[Hashable] = []
+        self.m: List[float] = []
+        self.err: List[float] = []
+        self.e0: List[float] = []
+        self.e1: List[float] = []
+        self.tm = self.te0 = self.te1 = self.ee0 = self.ee1 = 0.0
+
+    def _rescale_to(self, L: float) -> None:
+        if self.L is None:
+            self.L = float(L)
+            return
+        if L == self.L:
+            return
+        d = float(L) - self.L
+        fm = 2.0 ** (-d / self._H)
+        f0 = 2.0 ** (-d / self._HE0)
+        f1 = 2.0 ** (-d / self._HE1)
+        self.m = [v * fm for v in self.m]
+        self.err = [v * fm for v in self.err]
+        self.tm *= fm
+        self.e0 = [v * f0 for v in self.e0]
+        self.e1 = [v * f1 for v in self.e1]
+        self.te0 *= f0
+        self.te1 *= f1
+        self.ee0 *= f0
+        self.ee1 *= f1
+        self.L = float(L)
+
+    def add(self, key: Hashable, t: float, w: float = 1.0, ev: float = 0.0) -> None:
+        w = float(w)
+        ev = float(ev)
+        if not (0.0 <= w < math.inf and 0.0 <= ev < math.inf) or (w == 0.0 and ev == 0.0):
+            return
+        t = float(t)
+        L = self.L
+        if L is None:
+            self.L = L = t
+        elif (t - L) / self._HMIN > PS.RESCALE_EXP:
+            self._rescale_to(t)
+            L = t
+        dlt = t - L
+        g = w * 2.0 ** (dlt / self._H)
+        g0 = ev * 2.0 ** (dlt / self._HE0)
+        g1 = ev * 2.0 ** (dlt / self._HE1)
+        self.tm += g
+        self.te0 += g0
+        self.te1 += g1
+        ks = self.keys_
+        try:
+            i = ks.index(key)
+        except ValueError:
+            i = -1
+        if i >= 0:
+            self.m[i] += g
+            self.e0[i] += g0
+            self.e1[i] += g1
+            return
+        if len(ks) < self.k:
+            ks.append(key)
+            self.m.append(g)
+            self.err.append(0.0)
+            self.e0.append(g0)
+            self.e1.append(g1)
+            return
+        m = self.m
+        i = m.index(min(m))
+        ks[i] = key
+        old = m[i]
+        self.err[i] = old
+        m[i] = old + g
+        self.e0[i] = g0
+        self.e1[i] = g1
+        self.ee0 += g0
+        self.ee1 += g1
+
+    # ------------------------------------------------------------- reads
+    def __len__(self) -> int:
+        return len(self.keys_)
+
+    def __contains__(self, key: Hashable) -> bool:
+        return key in self.keys_
+
+    def keys(self) -> List[Hashable]:
+        return list(self.keys_)
+
+    def _f(self, t: Optional[float], h: float) -> float:
+        if self.L is None or t is None:
+            return 1.0
+        return 2.0 ** (-(float(t) - self.L) / h)
+
+    def total_evidence(self, t: Optional[float] = None, ch: int = -1) -> float:
+        t = t if t is not None else self.L
+        if ch % 2 == 0:
+            return float(self.te0 * self._f(t, self._HE0))
+        return float(self.te1 * self._f(t, self._HE1))
+
+    def eviction_evidence(self, t: Optional[float] = None, ch: int = -1) -> float:
+        t = t if t is not None else self.L
+        if ch % 2 == 0:
+            return float(self.ee0 * self._f(t, self._HE0))
+        return float(self.ee1 * self._f(t, self._HE1))
+
+    def n1(self, t: Optional[float] = None, ch: int = -1, thr: float = PS.N1_EVIDENCE) -> int:
+        if not self.keys_:
+            return 0
+        t = t if t is not None else self.L
+        if ch % 2 == 0:
+            f, e = self._f(t, self._HE0), self.e0
+        else:
+            f, e = self._f(t, self._HE1), self.e1
+        return sum(1 for v in e if v * f < thr)
+
+    def unseen(self, t: Optional[float] = None, ch: int = -1) -> float:
+        N = self.total_evidence(t, ch)
+        u = (self.n1(t, ch) + self.eviction_evidence(t, ch) + 0.5) / (N + 1.0)
+        return float(min(1.0, max(0.0, u)))
+
+    def items(self, t: Optional[float] = None, ch: Optional[int] = None,
+              n: Optional[int] = None) -> List[Tuple[Hashable, float, float, float]]:
+        """[(key, count, guaranteed, evidence_conf)] sorted by count desc."""
+        if not self.keys_:
+            return []
+        fm = self._f(t, self._H)
+        fe = self._f(t if t is not None else self.L, self._HE1)
+        m = self.m
+        order = sorted(range(len(self.keys_)), key=lambda j: -m[j])
+        if n is not None:
+            order = order[:int(n)]
+        out = []
+        for i in order:
+            v = m[i]
+            out.append((self.keys_[i], float(v * fm), float(max(0.0, v - self.err[i]) * fm),
+                        float(self.e1[i] * fe)))
+        return out
+
+    def reset_confidence(self, t: float, src: int = PS.EV_M, dst: int = -1) -> None:
+        if self.L is None:
+            return
+        dst = dst % 2
+        src = src % 2
+        if src == dst:
+            return
+        f0 = self._f(t, self._HE0)
+        f1 = self._f(t, self._HE1)
+        fs, fd = (f0, f1) if src == 0 else (f1, f0)
+        conv = fs / fd
+        if src == 0:
+            self.e1 = [v * conv for v in self.e0]
+            self.te1 = self.te0 * conv
+            self.ee1 = self.ee0 * conv
+        else:
+            self.e0 = [v * conv for v in self.e1]
+            self.te0 = self.te1 * conv
+            self.ee0 = self.ee1 * conv
+
+    # ------------------------------------------------------ conversion
+    def to_dss(self) -> PS.DecayedSpaceSaving:
+        d = PS.DecayedSpaceSaving(self.k, (self._H,), PS.EV_HALF_LIVES, 0)
+        d._lm.L = self.L
+        d._keys = list(self.keys_)
+        d._idx = {k: i for i, k in enumerate(d._keys)}
+        d._m = [[v] for v in self.m]
+        d._err = [[v] for v in self.err]
+        d._e = [[a, b] for a, b in zip(self.e0, self.e1)]
+        d._tot_m = [self.tm]
+        d._tot_e = [self.te0, self.te1]
+        d._evict_e = [self.ee0, self.ee1]
+        return d
+
+    @classmethod
+    def from_dss(cls, d: PS.DecayedSpaceSaving) -> "YTable":
+        y = cls(d.k)
+        y.L = d._lm.L
+        y.keys_ = list(d._keys)
+        y.m = [r[0] for r in d._m]
+        y.err = [r[0] for r in d._err]
+        y.e0 = [r[0] for r in d._e]
+        y.e1 = [r[1] for r in d._e]
+        y.tm = d._tot_m[0]
+        y.te0, y.te1 = d._tot_e
+        y.ee0, y.ee1 = d._evict_e
+        return y
+
+    def merge(self, other: "YTable") -> "YTable":
+        d = self.to_dss().merge(other.to_dss() if isinstance(other, YTable) else other)
+        y = YTable.from_dss(d)
+        for sl in YTable.__slots__:
+            setattr(self, sl, getattr(y, sl))
+        return self
+
+    def copy(self) -> "YTable":
+        return YTable.from_dss(self.to_dss())
+
+    def nbytes(self) -> int:
+        return int(8 * 5 * len(self.keys_) + 200)
+
+
 class PairSketch:
     """Binding pair counts (X, Y) at a node (§6.12): SpaceSaving(64) over x
     (mass at H_l, evidence at H_m and on the confidence channel), each tracked
@@ -1456,7 +1683,7 @@ class PairSketch:
 
     def __init__(self, k_x: int = PAIR_KX, k_y: int = PAIR_KY) -> None:
         self.x = PS.DecayedSpaceSaving(k_x, (PS.H_L,), PS.EV_HALF_LIVES, 0)
-        self.y: Dict[Hashable, PS.DecayedSpaceSaving] = {}
+        self.y: Dict[Hashable, Any] = {}           # x -> YTable (round 7; DecayedSpaceSaving before)
 
     def update(self, xv: Hashable, yv: Hashable, t: float, mass: float, evidence: float) -> None:
         self.x.add(xv, t, mass, evidence)
@@ -1470,7 +1697,7 @@ class PairSketch:
             x = self.x
             for gone in [k for k in self.y if k not in x]:
                 self.y.pop(gone, None)
-            tab = self.y[xv] = PS.DecayedSpaceSaving(PAIR_KY, (PS.H_L,), PS.EV_HALF_LIVES, 0)
+            tab = self.y[xv] = YTable(PAIR_KY)
         tab.add(yv, t, mass, evidence)
 
     def table(self, t: float) -> Dict[Hashable, List[Tuple[Hashable, float, float]]]:

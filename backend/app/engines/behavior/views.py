@@ -388,7 +388,7 @@ def hold_without_when(nd: Any) -> Optional[float]:
 
 
 def compose_conf(nd: Any, t: float, conf: float, part: Optional[Sequence[Any]], own_when: bool,
-                 when_c: Optional[float]) -> float:
+                 when_c: Optional[float], own_hold: Optional[float] = None) -> float:
     """A statement's confidence from P04's held-out record (round 7: one
     helper for the node, its groups' parts and the parts with their own
     windows; `conf` = the min-over-parts fallback when P04 has no record).
@@ -409,7 +409,10 @@ def compose_conf(nd: Any, t: float, conf: float, part: Optional[Sequence[Any]], 
     all) for /docs parts that held 1.0 - the two ends of PG2's reliability
     diagram. (Round 7) the node's 'when' tests judged windows the part does
     not state: P04's '~when' facet record when kept (hold_without_when), else
-    the full p_hold as before."""
+    the full p_hold as before. (Round 7) The part's own windows enter as the
+    probability that they hold at their stated coverage (part_when 'hold',
+    pwindows.window_hold) when known - the same "holds" as P04's record -
+    not as their coverage x day stability (`when_c`)."""
     ph = getattr(nd, "p_hold", None)
     ph = ph(t) if callable(ph) else None
     if ph is None or not math.isfinite(float(ph)):
@@ -418,7 +421,10 @@ def compose_conf(nd: Any, t: float, conf: float, part: Optional[Sequence[Any]], 
         ph = part_hold(nd, list(part[4]) if len(part) > 4 else [part[0]], float(ph))
     if not own_when:
         return float(ph)
-    own = when_c if (when_c is not None and math.isfinite(float(when_c))) else 1.0
+    if own_hold is not None and math.isfinite(float(own_hold)):
+        own = float(own_hold)
+    else:
+        own = when_c if (when_c is not None and math.isfinite(float(when_c))) else 1.0
     rest = hold_without_when(nd)
     return float(min(float(rest if rest is not None else ph), float(own)))
 
@@ -677,12 +683,14 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
             who_ev = dict(who_ev, group_name=pn)
     wentry = PW.lookup(c.pwin, kind, nd.id)
     own_when = False
+    own_hold = None
     if part is not None:
         # the group's own arrival windows when the node's minute reservoir holds
         # enough of its arrivals, else the node's windows
         pw = PW.part_when(nd.when, part[1], c.tz, drop=c.ledger(kind))
         if pw is not None:
             by = pw.pop("by_daytype", None)
+            own_hold = pw.pop("hold", None)
             wentry = {"status": "fitted", "when": pw, "by_daytype": by}
             own_when = True
     when_ev, when_zh, when_en, when_c = PR.when_block(wentry)
@@ -734,7 +742,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     # holds on new events); the min-over-parts formula above states the
     # weakest part's NOMINAL coverage and was under-confident on pack O
     # (PG2 ECE 0.36-0.43)
-    conf = compose_conf(nd, t, conf, part, own_when, when_c)
+    conf = compose_conf(nd, t, conf, part, own_when, when_c, own_hold)
     if drift and when_c is not None and math.isfinite(float(when_c)):
         # P04's hold rate is the windows' past record; a drifting window holds
         # only as far as the young arrivals support it: (round 6) the

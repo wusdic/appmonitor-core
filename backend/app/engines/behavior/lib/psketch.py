@@ -206,6 +206,30 @@ class DecayedVector:
 _POW_CACHE: List[Any] = [None, None, None, None, None]   # [dlt, mass hl, ev hl, factors m, factors e]
 
 
+_CHANNELS: Dict[Tuple[Tuple[float, ...], Tuple[float, ...]], Tuple[Any, ...]] = {}
+
+
+def _channels(mass_hl: Sequence[float], ev_hl: Sequence[float]) -> Tuple[Any, ...]:
+    """(mass_hl array, ev_hl array, mass tuple, evidence tuple, min half-life),
+    one shared read-only instance per distinct pair of half-life lists (round 7,
+    PG4 memory: every summary of a node - its who levels, targets, pair
+    sketches' per-source y tables - held its own copies, ~0.4 KB each, a fifth
+    of a 4-slot pair table). The values are the ones _as_hl / tuple(float)
+    gave each instance before."""
+    key = (tuple(float(h) for h in mass_hl), tuple(float(h) for h in ev_hl))
+    hit = _CHANNELS.get(key)
+    if hit is None:
+        m = _as_hl(mass_hl)
+        e = _as_hl(ev_hl) if len(ev_hl) else np.zeros(0)
+        m.setflags(write=False)
+        e.setflags(write=False)
+        mh = tuple(float(h) for h in m)
+        eh = tuple(float(h) for h in e)
+        hmin = float(min(min(mh), min(eh) if eh else math.inf))
+        hit = _CHANNELS[key] = (m, e, mh, eh, hmin)
+    return hit
+
+
 class DecayedSpaceSaving:
     """Space-Saving heavy hitters (Metwally, Agrawal & El Abbadi 2005) with
     forward decay, several mass channels and several evidence channels.
@@ -235,14 +259,10 @@ class DecayedSpaceSaving:
         if int(k) < 1:
             raise ValueError("DecayedSpaceSaving: k must be >= 1")
         self.k = int(k)
-        self.mass_hl = _as_hl(mass_hl)
-        self.ev_hl = _as_hl(ev_hl) if len(ev_hl) else np.zeros(0)
+        self.mass_hl, self.ev_hl, self._mh, self._eh, hmin = _channels(mass_hl, ev_hl)
         if not 0 <= int(primary) < self.mass_hl.size:
             raise ValueError("DecayedSpaceSaving: primary channel out of range")
         self.primary = int(primary)
-        self._mh = tuple(float(h) for h in self.mass_hl)
-        self._eh = tuple(float(h) for h in self.ev_hl)
-        hmin = float(min(min(self._mh), min(self._eh) if self._eh else math.inf))
         self._lm = _Landmark(None, hmin)
         self._idx: Dict[Hashable, int] = {}
         self._keys: List[Hashable] = []

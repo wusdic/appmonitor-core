@@ -70,8 +70,16 @@ DAYS = 4.0
 # field, checked representation-free on this stream under PYTHONHASHSEED 0 and
 # 1 - but its canonical form is not: model.attrsel re-recorded (before:
 # 4b8e9e79e81bdbd30e5fba08d9c2d8c66f15ddee); model.ptree unchanged.
-GOLDEN = {"model.ptree": "6e0dcf9c554ed41d0c4235d8e0547b9e1b3fedce",
-          "model.attrsel": "c82b1447b9d3dfcf7b6343bf55b29c7cb04f4415"}
+# Round 7 (tree owner), re-recorded for these deliberate changes (each with its
+# own test): P04's held-out record keeps the failed keys per test ('fl' / 'ti',
+# M45 forgiveness), the '~when' facet (lite group records too) and clustered
+# batch checks as flat arrays; P05 judges redundancy on non-modal values too
+# and marks exact / numeric copies beyond the pairwise window
+# ('redundant_exact', empty on this stream); DecayedSpaceSaving shares its
+# half-life arrays (representation only). With the representation-only parts
+# undone, the verdict state equals round 6's on this stream.
+GOLDEN = {"model.ptree": "43cbe63182264bd3d863603d25e3fef1303b2249",
+          "model.attrsel": "ccf40899e2dff07c5b4938f2f5bf91418dc88c4e"}
 
 
 def _dec(v: Any) -> Any:

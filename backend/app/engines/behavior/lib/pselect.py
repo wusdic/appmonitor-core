@@ -42,7 +42,7 @@ import hashlib
 import heapq
 import math
 import zlib
-from typing import Any, Callable, Dict, Hashable, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Hashable, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -61,7 +61,10 @@ EVERY_ROLES = ("split", "target", "redundant")   # roles re-judged every run (na
 E_MAX = 72                 # attributes judged per run (every-run roles + the rotating slice)
 E_MIN_SLICE = 16           # the slice's floor when the every-run roles fill the budget
 M_T = 8                    # targets per node
-M_SYS = 32                 # system target list length (node overrides draw from it)
+M_SYS = 32                 # system target list length (node overrides draw from it).
+                           # (round 7, PG4: 2 M_T was tried - pack O seed 0 oa: the GET /docs and
+                           # GET /home nodes lost the who / prefix splits of days 17-21 (targets
+                           # ranked >= 16 system-wide predicted them), precision@21 0.969 -> 0.950)
 U_HI = 0.05                # bits / event: promote
 U_LO = 0.02                # bits / event: demote (after DEMOTE_RUNS consecutive runs)
 DEMOTE_RUNS = 3
@@ -83,6 +86,7 @@ N_CONST = 2                # structural constants a node tracks on top of its m_
 N_LOCAL = 8                # probe rows it must be present in (the penalised gain carries the small-sample cost)
 RED_G3 = 0.01
 RED_G3_NM = 0.1            # (round 7) g3 bound on the rows where the dependent takes a non-modal value
+RED_MIN_REC = 64           # (round 7) probe rows that recorded both attributes for a redundancy verdict
 RED_HB = 0.1
 RED_RHO = 0.99             # numeric pairs: |Spearman rho| where both are present
 IP_INFO_MIN = 0.02         # CR(net.src) below this at every level: who = none
@@ -933,21 +937,25 @@ class StratifiedProbe:
         return out_
 
     def _column(self, rows: Sequence[Tuple[int, tuple]], name: str) -> List[Any]:
+        # (round 7, PG4) rows are grouped per schema once per rows object, and
+        # only the REQUESTED column is read from each group's tuples - the
+        # full transposition (zip(*rows)) cost every column of a row (up to
+        # A_ROW) per evaluation whatever was asked; the same values
         if self._tcache is None or self._tcache[0] is not rows:
             groups: Dict[int, List[int]] = {}
             for p, (sid, _) in enumerate(rows):
                 groups.setdefault(sid, []).append(p)
             tg = []
             for sid, pos in groups.items():
-                cols = list(zip(*[rows[p][1] for p in pos])) if self._schema_list[sid] else []
-                tg.append((sid, pos, cols))
+                tups = [rows[p][1] for p in pos] if self._schema_list[sid] else []
+                tg.append((sid, pos, tups))
             self._tcache = (rows, tg)
         out: List[Any] = [None] * len(rows)
-        for sid, pos, cols in self._tcache[1]:
+        for sid, pos, tups in self._tcache[1]:
             i = self.schema_index(sid).get(name)
             if i is not None:
-                for p, v in zip(pos, cols[i]):
-                    out[p] = v
+                for p, tu in zip(pos, tups):
+                    out[p] = tu[i]
             else:
                 fill = ABSENT if self._in_want(self._sid_want[sid], name) else MISSING
                 for p in pos:
@@ -1450,7 +1458,8 @@ def who_proxies(probe: StratifiedProbe, t: float, hier: Any, attrs: Sequence[str
 def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
                cost: Callable[[str], float], cov: Callable[[str], float],
                prev: Optional[Mapping[str, str]] = None,
-               distinct: Optional[Callable[[str], float]] = None) -> Dict[str, str]:
+               distinct: Optional[Callable[[str], float]] = None,
+               wider: Sequence[str] = (), exact_out: Optional[Set[str]] = None) -> Dict[str, str]:
     """{b: a}: b is redundant given a when g3(a -> b) <= 0.01 and H(b) >= 0.1
     (and a -> b holds; the member of the pair with lower cost and higher
     coverage is kept). Keeper order, so that the choice is stable from run to
@@ -1462,10 +1471,11 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
     than raw paths), name."""
     rows, w, _ = probe.rows(t)
     n = len(rows)
-    if n == 0 or len(kept) < 2:
+    if n == 0 or len(kept) + len(wider) < 2:
         return {}
     codes = {}
     pres: Dict[str, np.ndarray] = {}
+    rec: Dict[str, np.ndarray] = {}
     for a in kept:
         col = ()
         # (round 6, evaluator) a text attribute with few distinct values is
@@ -1479,7 +1489,8 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
         ca, ua = probe.codes(rows, a)
         l, cc, k = level_codes(hier, a, col, text_values=True, raw=(ca, ua))
         codes[a] = (cc, k)
-        pres[a] = _not_code(ca, ua, ABSENT) & _not_code(ca, ua, MISSING)
+        rec[a] = _not_code(ca, ua, MISSING)
+        pres[a] = _not_code(ca, ua, ABSENT) & rec[a]
     H = {a: w_entropy(codes[a][0], w, n) for a in kept}
 
     def g3(x: str, y: str) -> float:
@@ -1492,8 +1503,18 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
         # http.ctype from day 9, so it was no node target and P08's
         # source -> username binding was never stated on the login node)
         (cx, _kx), (cy, ky) = codes[x], codes[y]
+        # (round 7) the pairwise window keeps judging every probe row, an
+        # unrecorded value (MISSING) included: judged on the rows recording
+        # both, pack O's hdr.user-agent.len became redundant with
+        # hdr.user-agent (equivalent at the evaluation level), and P04 lost
+        # its coarser length bins as a split candidate - the oa GET /home
+        # department splits (seed 1: DEV / FIN /home patterns missed days
+        # 5-10; seed 0: GET /docs, /home splits of days 17-21). Redundancy is
+        # judged at one level; a split candidate's other levels are not.
+        return _g3_rows(cx, cy, ky, w, pres[y])
+
+    def _g3_rows(cx: np.ndarray, cy: np.ndarray, ky: int, w: np.ndarray, m: np.ndarray) -> float:
         e = w_g3(cx, cy, ky, w)
-        m = pres[y]
         if e <= RED_G3 and m.any() and not m.all():
             e = max(e, w_g3(cx[m], cy[m], ky, w[m]))
         # (round 7) ... and over the rows where y takes a NON-MODAL value: g3 is
@@ -1529,11 +1550,6 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
                         and not isinstance(v, bool) else np.nan for v in col])
         nums[a] = (x, np.isfinite(x))
 
-    def ranks(v: np.ndarray) -> np.ndarray:
-        o = np.argsort(v, kind="stable")
-        r = np.empty(v.size)
-        r[o] = np.arange(v.size)
-        return r
     red: Dict[str, str] = {}
     was_red = set((prev or {}).keys())
     order = sorted(kept, key=lambda a: (a in was_red, round(cost(a), 1), -round(cov(a), 2),
@@ -1557,13 +1573,8 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
                         break
                     red[b] = a
                     continue
-            if a in nums and b in nums:
-                (xa, ma), (xb, mb) = nums[a], nums[b]
-                both = ma & mb
-                if both.sum() >= 32 and both.sum() >= 0.9 * max(ma.sum(), mb.sum()):
-                    ra, rb = ranks(xa[both]), ranks(xb[both])
-                    if ra.std() > 0 and rb.std() > 0 and abs(np.corrcoef(ra, rb)[0, 1]) >= RED_RHO:
-                        red[b] = a
+            if a in nums and b in nums and _same_quantity(nums[a], nums[b], None):
+                red[b] = a
     # resolve chains (b -> a -> c): every redundant attribute points at a keeper
     for b in list(red):
         k, hops = red[b], 0
@@ -1573,7 +1584,123 @@ def redundancy(probe: StratifiedProbe, t: float, hier: Any, kept: Sequence[str],
             del red[b]
         else:
             red[b] = k
+    if wider:
+        x = _exact_redundancy(probe, rows, hier, kept, wider, codes, red, was_red, cost, cov, distinct, rec)
+        if exact_out is not None:
+            exact_out.update(x)
     return red
+
+
+def _ranks(v: np.ndarray) -> np.ndarray:
+    o = np.argsort(v, kind="stable")
+    r = np.empty(v.size)
+    r[o] = np.arange(v.size)
+    return r
+
+
+def _same_quantity(a: Tuple[np.ndarray, np.ndarray], b: Tuple[np.ndarray, np.ndarray],
+                   rr: Optional[np.ndarray]) -> bool:
+    """Numeric pair: the same quantity under two names - |Spearman rho| >=
+    RED_RHO where both are present, both present on >= 90 % of the rows where
+    either is (among the rows recording both: round 7, an unrecorded value is
+    no value; unchanged when every row records both)."""
+    (xa, ma), (xb, mb) = a, b
+    if rr is not None and not rr.all():
+        ma, mb = ma & rr, mb & rr
+    both = ma & mb
+    if both.sum() >= 32 and both.sum() >= 0.9 * max(ma.sum(), mb.sum()):
+        ra, rb = _ranks(xa[both]), _ranks(xb[both])
+        if ra.std() > 0 and rb.std() > 0 and abs(np.corrcoef(ra, rb)[0, 1]) >= RED_RHO:
+            return True
+    return False
+
+
+def _bijective(ca: np.ndarray, cb: np.ndarray) -> bool:
+    """Whether two code arrays induce the same partition (each a function of
+    the other) with at least two classes."""
+    if ca.size == 0:
+        return False
+    nu_a = int(np.unique(ca).size)
+    if nu_a < 2 or nu_a != int(np.unique(cb).size):
+        return False
+    kb = int(cb.max()) + 1
+    return int(np.unique(ca.astype(np.int64) * kb + cb.astype(np.int64)).size) == nu_a
+
+
+def _exact_redundancy(probe: "StratifiedProbe", rows: Any, hier: Any, kept: Sequence[str],
+                      wider: Sequence[str], codes: Mapping[str, Tuple[np.ndarray, int]],
+                      red: Dict[str, str], was_red: Set[str], cost: Callable[[str], float],
+                      cov: Callable[[str], float], distinct: Optional[Callable[[str], float]],
+                      rec: Mapping[str, np.ndarray]) -> List[str]:
+    """(round 7, PG4) Exact redundancy beyond the pairwise comparison's window.
+    The pairwise test (g3 both ways) runs over the 3 M_T strongest attributes
+    only (quadratic in them); an attribute outside that window that induces
+    EXACTLY the same partition as a class representative on the probe rows
+    recording both (each a function of the other: g3 = 0 both ways on every
+    subset of those rows, so the pairwise rule would call the pair redundant
+    too) is redundant with the representative's keeper. Each outside
+    attribute is compared with the representatives only - the window's
+    keepers, then the outside attributes that matched none (in the keeper
+    order) - not with every other attribute. Measured on PG4's 340-attribute
+    point: 30 synthetic department-valued attributes (one partition) held
+    'split' roles in four systems, P04 tested them as split candidates and
+    targets and P05 re-judged them every run. Members inside the window keep
+    the pairwise verdict."""
+    inside = set(kept)
+    extra = [a for a in dict.fromkeys(wider) if a not in inside]
+    added: List[str] = []
+    if not extra:
+        return added
+
+    def okey(a: str) -> Tuple:
+        return (a in was_red, round(cost(a), 1), -round(cov(a), 2),
+                distinct(a) if distinct is not None else 0.0, a)
+    allc: Dict[str, np.ndarray] = {a: np.asarray(codes[a][0]) for a in kept}
+    allr: Dict[str, np.ndarray] = {a: rec[a] for a in kept}
+    for a in extra:
+        ca, ua = probe.codes(rows, a)
+        _l, cc, _k = level_codes(hier, a, (), text_values=True, raw=(ca, ua))
+        allc[a] = np.asarray(cc)
+        allr[a] = _not_code(ca, ua, MISSING)
+    numv: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+
+    def num_of(a: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        if hier.kind(a) != "num":
+            return None
+        v = numv.get(a)
+        if v is None:
+            col = probe.column(rows, a)
+            x = np.asarray([float(u) if isinstance(u, (int, float, np.integer, np.floating))
+                            and not isinstance(u, bool) else np.nan for u in col])
+            v = numv[a] = (x, np.isfinite(x))
+        return v
+    reps = [a for a in sorted(kept, key=okey) if a not in red]
+    for b in sorted(extra, key=okey):
+        cb, rb = allc[b], allr[b]
+        nb = num_of(b)
+        hit = None
+        kb = hier.kind(b)
+        for r in reps:
+            m = allr[r] & rb
+            if int(m.sum()) < RED_MIN_REC:
+                continue
+            # one kind of attribute only: equivalence at the evaluation level says
+            # nothing of the other levels a split may use (a text header and its
+            # numeric length: the length's coarse bins are a split of their own)
+            if hier.kind(r) == kb and _bijective(allc[r][m], cb[m]):
+                hit = r
+                break
+            if nb is not None:
+                nr = num_of(r)
+                if nr is not None and _same_quantity(nr, nb, m):
+                    hit = r
+                    break
+        if hit is None:
+            reps.append(b)
+        else:
+            red[b] = red.get(hit, hit)
+            added.append(b)
+    return added
 
 
 # ==================================================================== roles
@@ -1742,8 +1869,8 @@ def every_run(registry_names: Iterable[str], roles: Mapping[str, str],
 
 def names_to_evaluate(registry_names: Sequence[str], roles: Mapping[str, str],
                       dropped_at: Mapping[str, float], t: float, run_index: int,
-                      a_probe: int = A_PROBE, ustat: Optional[Mapping[str, Mapping[str, Any]]] = None
-                      ) -> List[str]:
+                      a_probe: int = A_PROBE, ustat: Optional[Mapping[str, Mapping[str, Any]]] = None,
+                      rotate: Iterable[str] = ()) -> List[str]:
     """Every attribute whose role feeds the trees (split, target, redundant:
     re-judged every run, with hysteresis), dropped ones due for their 7-day
     re-probe, plus a rotating crc32 slice of A_probe others - the others being
@@ -1760,6 +1887,12 @@ def names_to_evaluate(registry_names: Sequence[str], roles: Mapping[str, str],
     E_MAX attributes (plus the weekly re-probes): the slice gets the budget the
     every-run roles leave, never less than E_MIN_SLICE."""
     kept = every_run(registry_names, roles, ustat)
+    rot = set(rotate)
+    if rot:
+        # (round 7, PG4) exact duplicates of another attribute's probe partition
+        # (redundant by _exact_redundancy) are re-judged on the rotating slice,
+        # not every run: their verdict is re-checked whenever they are evaluated
+        kept = [a for a in kept if a not in rot]
     reprobe = [a for a in registry_names if roles.get(a) == "dropped"
                and t - float(dropped_at.get(a, t)) >= REPROBE_S]
     rset = set(reprobe)

@@ -473,10 +473,10 @@ def _distinct_payloads(specs: List[Dict[str, Any]], y_sig: Mapping[str, bytes],
     _factorize, equal - presence included) bind the same sources to the same
     groups of values, so their pairs with one X say one thing; only the most
     identifier-like of them (registry card, then screen score, then name) is
-    screened. Why (PG4, 340 attributes): the synthetic department-valued
-    attributes (meta.f002, f006, f013, ...; each a function of the
-    department) were seven pairs 'sess.key -> meta.fXXX' at portal's root and
-    a dozen 'net.src@1 -> meta.fXXX' on OA's nodes - P08's records and P04's
+    screened. Why (PG4, 340 attributes): the scale pack's department-valued
+    synthetic attributes (each a function of the department) were seven
+    pairs 'sess.key -> <synthetic>' at portal's root and a dozen
+    'net.src@1 -> <synthetic>' on OA's nodes - P08's records and P04's
     pair sketches grew with the attribute count without any new binding
     (model.pbind 0.47 -> 1.19 MB)."""
     def payload(d: Mapping[str, Any]) -> str:
