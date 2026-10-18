@@ -729,7 +729,6 @@ class PatternTreeEngine(Engine):
                         aux["last"][(s, kind)] = ts_b
                 self._rates(lc, m, s, aux, D)
                 n += self._held(lc, m, s)
-            self._confirm_due(lc, m, ss[0])
             self._maintain(lc, m, ss[0])
             stats.update(aux["stats"])
             aux["stats"] = Counter()
@@ -950,13 +949,6 @@ class PatternTreeEngine(Engine):
                 lc.row_mass, lc.row_factor = float(mass), float(factor)
             nd.update_core(ts, mass, omega, keys, ip, daytype, minute, day,
                            code if d == nlast else None, suspicious=suspicious)
-            if nd.state == "candidate" and nd.n_obs() >= N_CONF and not nd.meta.get("rpart_other"):
-                # (round 8) the confirmation rule may be met: checked at the end of
-                # the tick (_confirm_due), not at the next day end
-                cd_ = lc.aux.get("conf_due")
-                if cd_ is None:
-                    cd_ = lc.aux["conf_due"] = set()
-                cd_.add((kind, nid))
             if nd.state == "stale":
                 nd.state = "confirmed"
                 nd.meta.pop("stale_at", None)
@@ -3373,7 +3365,19 @@ class PatternTreeEngine(Engine):
 
     def _confirm(self, lc: _LC, tr: PT.Tree, kind: int, nd: PN.Node, s: str, t: float) -> bool:
         """Confirm a candidate node whose evidence meets the confirmation rule
-        (>= N_CONF observations on >= CONF_DATES dates, no fitter pending)."""
+        (>= N_CONF observations on >= CONF_DATES dates, no fitter pending).
+
+        Checked by the daily lifecycle (_maintain), its reference built at the
+        next snapshot. Round 8 measured confirming within the tick in which the
+        rule is met (reference and prior at once): the young statements reached
+        the evaluator a day earlier (pack O recall@12 +1 pattern on seeds 0 and
+        2) but with companion fits from ~20 arrivals (P09 windows 1024-1031 for
+        a 1021-1034 law, P14 parts on their prior), so recall@14 was unchanged
+        on seeds 0-2 while precision@14 fell 0.983 -> 0.931 (seed 1), PG2 CE
+        rose 0.061 -> 0.071 / 0.088 -> 0.092 / 0.106 -> 0.126 (O s1 / s2 /
+        O-real s0), FAR>=MEDIUM doubled on seed 2 and O-real D4 failed; it was
+        withdrawn. Earlier confirmation needs statements whose windows and
+        bands state their small-sample uncertainty first (open issue OI8-f)."""
         if nd.state != "candidate" or nd.meta.get("rpart_other"):
             return False            # routes waiting for (or too rare for) a node of their own: never a pattern
         if nd.n_obs() < N_CONF or nd.n_days() < CONF_DATES.get(kind, 3) or self._fitter_pending(lc, kind, nd.id):
@@ -3384,41 +3388,6 @@ class PatternTreeEngine(Engine):
                    f"模式已确认：{ctx_text(nd.ctx, lc.hier)}（证据 {nd.n_c(t):.0f}，{nd.n_days()} 天）",
                    {"n_c": round(nd.n_c(t), 1), "days": nd.n_days()})
         return True
-
-    def _confirm_due(self, lc: _LC, m: PT.PTreeModel, s: str) -> None:
-        """(round 8) Confirmation as soon as the rule is met, not at the next day
-        end. A candidate whose observations reached N_CONF in this tick
-        (_learn_one notes it) is confirmed now and gets its reference statement
-        and its kind's prior at once, so the views state it within their cadence.
-        Before, the rule was checked by the daily lifecycle at the first tick
-        after midnight - after the views' last run of the day - and the
-        reference waited for SNAPSHOT_HOUR: a pattern whose 20th observation came
-        on day d was stated on day d + 1 at the earliest, and on Monday when it
-        came on a Friday (pack O: GA's 17:00 report form, eligible on Friday day
-        12 and stated on day 13 on every seed).
-
-        The reference is built now, from the fits of the moment (measured: one
-        left to the next snapshot stated the young statements on their prior
-        and the views' fallbacks for up to a day - PG2 calibration error on
-        pack O seeds 0 / 1 0.046 / 0.071 with it, 0.089 / 0.089 without; on
-        O-real seed 0 0.126 with it, 0.111 without, where a few young fits
-        failed their first test on constraints the evaluator does not judge)."""
-        due = lc.aux.pop("conf_due", None)
-        if not due:
-            return
-        t = lc.now
-        for kind, nid in sorted(due):
-            tr = m.kinds.get(kind)
-            nd = tr.nodes.get(nid) if tr is not None else None
-            if nd is None or not self._confirm(lc, tr, kind, nd, s, t):
-                continue
-            self._reference(lc, tr, kind, nd, t)
-            hp_ = getattr(self, "_hp", None) or {}
-            pr = (hp_.get("prior0") or hp_.get("prior") or {}).get("*")
-            if pr is not None and isinstance(nd.ref, Mapping):
-                nd.meta["hold_prior"] = (round(float(pr[0]), 4), round(float(pr[1]), 4))
-                nd.meta["hold_prior_seg"] = 0
-                nd.meta["hold_prior_n"] = 0.0
 
     def _collapse(self, lc: _LC, tr: PT.Tree, nid: int, op: str, reason: Any) -> None:
         gone = tr.collapse(nid, lc.now, op=op, reason=reason)

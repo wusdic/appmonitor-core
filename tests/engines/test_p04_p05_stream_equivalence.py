@@ -102,8 +102,10 @@ DAYS = 4.0
 # order). With the 'early' slot skipped and these records in a
 # representation-free form, model.ptree is the same before (0325e551...) and
 # after on this stream (3476cd0a... both): representation only here.
-# model.attrsel unchanged.
-GOLDEN = {"model.ptree": "9fed17a999076fb085cb048c931cf66ef0d42cc4",
+# model.attrsel unchanged. Re-recorded (2cf8bb21...) when confirmation within
+# the tick the rule is met was withdrawn (PatternTree._confirm): candidates
+# confirm at the daily lifecycle again; model.attrsel unchanged.
+GOLDEN = {"model.ptree": "2cf8bb21f0387f2b55bee904df5b54cfed6664ae",
           "model.attrsel": "7403502379ac9b92580d1d91151056b8df6b29bb"}
 
 

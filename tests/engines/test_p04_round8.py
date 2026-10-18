@@ -1,5 +1,8 @@
-"""P04 round 8: confirmation as soon as the rule is met (docs/lib3/progressive.md
-§16.15.11 item 1, GA.oa.report)."""
+"""P04 round 8 (docs/lib3/progressive.md §16.15.11): evidence units of waiting
+route rows, untested-statement priors, per-day-type window tests, transport
+alarms, facet records after a re-statement, compact per-key records.
+(Confirmation within the tick the rule is met was measured and withdrawn: see
+PatternTree._confirm.)"""
 from __future__ import annotations
 
 from ptree_sim import DAY, MON, Sim, daily
@@ -18,32 +21,6 @@ def _org(d, t0, rng):
         ev.append((t0 + 17 * 3600 + 300 * j + 7, "oa", f"192.168.1.{21 + 2 * j}",
                    {"http.route": "POST oa /report/generate", "net.bytes_up": float(rng.uniform(2e4, 6e4))}))
     return ev
-
-
-def _report(sim):
-    tr = sim.tree()
-    for nd in tr.nodes.values():
-        if any("/report/generate" in str(v) for a, l, vals, n in nd.ctx for v in vals if not n):
-            return nd
-    return None
-
-
-def test_a_pattern_is_confirmed_the_day_its_evidence_meets_the_rule():
-    """The report's 20th observation comes at 17:05 of day 10: it is confirmed
-    (and referenced, so its held-out record starts) that evening, not at the
-    first tick after midnight with its reference at 04:00 of day 11 (round 7:
-    a pattern eligible on Friday was stated on Monday)."""
-    sim = Sim()
-    sim.add(daily(_org, 11, seed=4))
-    sim.run_until(MON + 9 * DAY + 17 * 3600)
-    nd = _report(sim)
-    assert nd is not None and nd.state == "candidate" and nd.n_obs() < P4.N_CONF, (nd and nd.state, nd and nd.n_obs())
-    sim.run_until(MON + 9 * DAY + 20 * 3600)
-    nd = _report(sim)
-    assert nd.n_obs() >= P4.N_CONF
-    assert nd.state == "confirmed", (nd.state, nd.n_obs(), nd.n_days())
-    assert isinstance(nd.ref, dict) and nd.ref.get("t", 0) <= MON + 9 * DAY + 20 * 3600
-    assert MON + 9 * DAY + 17 * 3600 <= nd.meta["confirmed_at"] < MON + 10 * DAY
 
 
 def test_the_rule_still_needs_its_dates():
