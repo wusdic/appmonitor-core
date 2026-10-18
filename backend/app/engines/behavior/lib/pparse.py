@@ -41,6 +41,10 @@ from .template import _entropy_bits, _looks_random, mask_segment
 K_BODY = 64
 BODY_CAP = 4096
 PAYLOAD_NS = ("body.", "q.", "hdr.", "meta.")          # sess.key is already an HMAC
+# value types the policy passes unchanged under every mode (ValuePolicy._apply
+# transforms str and frozenset values only): apply_all skips them (round 7,
+# input cost: numeric meta fields were ~60 % of its calls with 300 fields)
+_PASS_TYPES = frozenset({int, float, bool, type(None)})
 _FORM_RE = re.compile(r"^[^=&\s]{1,128}=[^&]*(?:&[^=&\s]{1,128}=[^&]*)*$")
 _BOUNDARY_RE = re.compile(r'boundary="?([^";]+)"?', re.I)
 _CD_NAME_RE = re.compile(r'name="([^"]*)"', re.I)
@@ -154,10 +158,9 @@ class ValuePolicy:
         replaced by shape also keep '<name>.len'. modes collects non-clear modes."""
         extra: Dict[str, Any] = {}
         ns = PAYLOAD_NS
-        for nm in list(attrs.keys()):
-            if not nm.startswith(ns):
+        for nm, v in list(attrs.items()):
+            if v.__class__ in _PASS_TYPES or not nm.startswith(ns):
                 continue                         # apply() passes it unchanged ('clear')
-            v = attrs[nm]
             nv, mode = self.apply(nm, v)
             if mode != "clear":
                 attrs[nm] = nv

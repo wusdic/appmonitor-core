@@ -1,0 +1,279 @@
+{
+ "gate": {
+  "name": "PG9 bounded mode",
+  "value": 0.441475619743099,
+  "target": "A/E: no accuracy loss and no cost increase; large populations: p95 <= 0.5 x full",
+  "pass": false,
+  "details": {
+   "checks": [
+    {
+     "name": "A seed 0: gate 1 recall drop (full 1.0, bounded 1.0)",
+     "value": 0.0,
+     "target": "<= 0.03",
+     "pass": true
+    },
+    {
+     "name": "A seed 0: gate 3 incidents >= MEDIUM (full 7)",
+     "value": 8,
+     "target": "<= 7",
+     "pass": false
+    },
+    {
+     "name": "A seed 0: gate 3 incidents HIGH (full 2)",
+     "value": 2,
+     "target": "<= 2",
+     "pass": true
+    },
+    {
+     "name": "A seed 0: gate 8 t9 kept",
+     "value": true,
+     "target": "True",
+     "pass": true
+    },
+    {
+     "name": "A seed 0: lib-3 CPU p95 bounded / full (no cost increase)",
+     "value": 0.9770203498752299,
+     "target": "<= 1.0",
+     "pass": true
+    },
+    {
+     "name": "E seed 0: gate 1 recall drop (full 1.0, bounded 1.0)",
+     "value": 0.0,
+     "target": "<= 0.03",
+     "pass": true
+    },
+    {
+     "name": "E seed 0: gate 3 incidents >= MEDIUM (full 1)",
+     "value": 0,
+     "target": "<= 1",
+     "pass": true
+    },
+    {
+     "name": "E seed 0: gate 3 incidents HIGH (full 0)",
+     "value": 0,
+     "target": "<= 0",
+     "pass": true
+    },
+    {
+     "name": "E seed 0: lib-3 CPU p95 bounded / full (no cost increase)",
+     "value": 0.7795908926144112,
+     "target": "<= 1.0",
+     "pass": true
+    },
+    {
+     "name": "O-scale 1000 IPs (7-day pack, first 84 h): lib-3 CPU p95 bounded / full (unearned IPs dominate)",
+     "value": 0.441475619743099,
+     "target": "<= 0.5",
+     "pass": true
+    },
+    {
+     "name": "O-scale 2000 IPs (7-day pack, first 30 h): lib-3 CPU p95 bounded / full (unearned IPs dominate) - 30.0 h compared, < 48 h: not judged",
+     "value": 0.6580920694323169,
+     "target": "<= 0.5",
+     "pass": null
+    },
+    {
+     "name": "O-scale 20000 IPs (7-day pack, first 14 h): lib-3 CPU p95 bounded / full (unearned IPs dominate) - 13.5 h compared, < 48 h: not judged",
+     "value": 0.875354826144238,
+     "target": "<= 0.5",
+     "pass": null
+    },
+    {
+     "name": "O-scale 5000 IPs (2-day pack, first 14 h): lib-3 CPU p95 bounded / full (unearned IPs dominate) - 14.0 h compared, < 48 h: not judged",
+     "value": 0.8323854165579208,
+     "target": "<= 0.5",
+     "pass": null
+    },
+    {
+     "name": "O-scale 5000 IPs (7-day pack, first 62 h): lib-3 CPU p95 bounded / full (unearned IPs dominate) - 33.5 h compared, < 48 h: not judged",
+     "value": 0.6925188503688013,
+     "target": "<= 0.5",
+     "pass": null
+    }
+   ]
+  }
+ },
+ "pairs": {
+  "A seed 0": {
+   "full": {
+    "pack": "A",
+    "seed": 0,
+    "n_scenarios": 12,
+    "detected": 12,
+    "recall": 1.0,
+    "within_deadline": 8,
+    "n_low": 18,
+    "n_medium": 7,
+    "n_high": 2,
+    "twins_ok": false,
+    "t9": true,
+    "t9b": true,
+    "t19": null,
+    "cost": {
+     "p95_ms": 1433.7223971284925,
+     "mean_ms": 843.4653223942101,
+     "n_ticks": 384,
+     "basis": "thread CPU"
+    }
+   },
+   "bounded": {
+    "pack": "A",
+    "seed": 0,
+    "n_scenarios": 12,
+    "detected": 12,
+    "recall": 1.0,
+    "within_deadline": 8,
+    "n_low": 19,
+    "n_medium": 8,
+    "n_high": 2,
+    "twins_ok": null,
+    "t9": true,
+    "t9b": false,
+    "t19": null,
+    "cost": {
+     "p95_ms": 1400.775958066433,
+     "mean_ms": 772.0467174718239,
+     "n_ticks": 384,
+     "basis": "thread CPU"
+    }
+   }
+  },
+  "E seed 0": {
+   "full": {
+    "pack": "E",
+    "seed": 0,
+    "n_scenarios": 3,
+    "detected": 3,
+    "recall": 1.0,
+    "within_deadline": 0,
+    "n_low": 6,
+    "n_medium": 1,
+    "n_high": 0,
+    "twins_ok": false,
+    "t9": null,
+    "t9b": null,
+    "t19": null,
+    "cost": {
+     "p95_ms": 408.4168264277279,
+     "mean_ms": 253.29487427987493,
+     "n_ticks": 1440,
+     "basis": "thread CPU"
+    }
+   },
+   "bounded": {
+    "pack": "E",
+    "seed": 0,
+    "n_scenarios": 3,
+    "detected": 3,
+    "recall": 1.0,
+    "within_deadline": 2,
+    "n_low": 2,
+    "n_medium": 0,
+    "n_high": 0,
+    "twins_ok": null,
+    "t9": null,
+    "t9b": null,
+    "t19": null,
+    "cost": {
+     "p95_ms": 318.39803827353745,
+     "mean_ms": 210.47869593113623,
+     "n_ticks": 1440,
+     "basis": "thread CPU"
+    }
+   }
+  }
+ },
+ "large": {
+  "O-scale 1000 IPs (7-day pack, first 84 h)": {
+   "full": {
+    "p95_ms": 7735.665,
+    "mean_ms": 4048.2705357142854,
+    "n_ticks": 336,
+    "span_h": 84.0,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 8248.1475
+   },
+   "bounded": {
+    "p95_ms": 3415.1075,
+    "mean_ms": 1752.407142857143,
+    "n_ticks": 336,
+    "span_h": 84.0,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 3624.0
+   }
+  },
+  "O-scale 20000 IPs (7-day pack, first 14 h)": {
+   "full": {
+    "p95_ms": 40890.447999999844,
+    "mean_ms": 9169.635740740741,
+    "n_ticks": 54,
+    "span_h": 13.5,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 40890.447999999844
+   },
+   "bounded": {
+    "p95_ms": 35793.65099999987,
+    "mean_ms": 7565.485185185185,
+    "n_ticks": 54,
+    "span_h": 13.5,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 35793.65099999987
+   }
+  },
+  "O-scale 2000 IPs (7-day pack, first 30 h)": {
+   "full": {
+    "p95_ms": 6717.4195,
+    "mean_ms": 2809.9980833333334,
+    "n_ticks": 120,
+    "span_h": 30.0,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 6770.895
+   },
+   "bounded": {
+    "p95_ms": 4420.6804999999995,
+    "mean_ms": 1715.690833333333,
+    "n_ticks": 120,
+    "span_h": 30.0,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 4530.2775
+   }
+  },
+  "O-scale 5000 IPs (2-day pack, first 14 h)": {
+   "full": {
+    "p95_ms": 21552.524999999998,
+    "mean_ms": 4483.510714285714,
+    "n_ticks": 56,
+    "span_h": 14.0,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 21552.524999999998
+   },
+   "bounded": {
+    "p95_ms": 17940.0075,
+    "mean_ms": 3392.813035714286,
+    "n_ticks": 56,
+    "span_h": 14.0,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 17940.0075
+   }
+  },
+  "O-scale 5000 IPs (7-day pack, first 62 h)": {
+   "full": {
+    "p95_ms": 19193.059499999996,
+    "mean_ms": 7272.84880597015,
+    "n_ticks": 134,
+    "span_h": 33.5,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 19901.96
+   },
+   "bounded": {
+    "p95_ms": 13291.555499999999,
+    "mean_ms": 4459.336865671641,
+    "n_ticks": 134,
+    "span_h": 33.5,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 14656.965
+   }
+  }
+ },
+ "generated": "2026-10-17 19:58:53"
+}

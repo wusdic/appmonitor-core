@@ -7,8 +7,6 @@ N idle known IPs that were seen once, 12 h of 1-h ticks; the cost is measured
 on the ticks after the idle IPs left the (test: 6-h) linger window."""
 from __future__ import annotations
 
-import time
-
 import numpy as np
 import pytest
 
@@ -18,6 +16,7 @@ from app.engines.behavior.resource_governor import ResourceGovernorEngine
 from app.models.schema import ORG, SYSTEM_ENTITY, Observation
 from app.pipeline import build
 from app.pipeline.orchestrator import Pipeline
+from helpers import cpu_s
 
 T0 = 1_790_000_000.0
 ACTIVE = [f"192.168.1.{i}" for i in range(1, 6)]
@@ -33,32 +32,50 @@ def obs(ts, ip, r):
                        user_agent=f"ua-{ip}")
 
 
-def run(n_idle, mode, hours=12, dt=3600.0):
+CONFIGS = ((20, "bounded"), (400, "bounded"), (20, "full"))
+SNAPSHOTS = {}                     # config -> signature.rule_match snapshots of the measured ticks
+
+
+def _pipeline(n_idle, mode, dt):
     reg = build.build_registry()
     i = next(k for k, e in enumerate(reg._engines) if e.name == "behavior.feature_vector")
     reg._engines.insert(i, ResourceGovernorEngine())
     st = MetricStore()
     cfg = {"strict": True, "tz": "Asia/Shanghai", "grain_mode": "tick",
            "lib3": {"resource_mode": mode, "linger_s": LINGER}}
-    pipe = Pipeline(st, reg, window_s=int(dt), config=cfg)
-    r = np.random.default_rng(0)
-    times = []
+    return st, reg, Pipeline(st, reg, window_s=int(dt), config=cfg)
+
+
+def run_all(configs=CONFIGS, hours=12, dt=3600.0):
+    """The configurations tick by tick, interleaved, so that a change of
+    machine load hits all of them alike; each tick's cost is the process CPU
+    time of run_tick (helpers.cpu_s), not wall time."""
+    state = {k: (*_pipeline(*k, dt), np.random.default_rng(0)) for k in configs}
+    times = {k: [] for k in configs}
+    stats = {}
     for h in range(hours):
         t1 = T0 + (h + 1) * dt
-        o = [obs(t1 - dt + r.uniform(0, dt), ip, r) for ip in ACTIVE for _ in range(3)]
-        if h == 0:
-            o += [obs(t1 - 10.0, f"10.9.{k // 256}.{k % 256}", r) for k in range(n_idle)]
-        t0 = time.perf_counter()
-        stats = pipe.run_tick(o, now=t1, dt=dt)
-        el = time.perf_counter() - t0
-        if h >= hours - 5:
-            times.append(el)
-    return st, float(np.median(times)), stats
+        for k in configs:
+            st, reg, pipe, r = state[k]
+            n_idle = k[0]
+            o = [obs(t1 - dt + r.uniform(0, dt), ip, r) for ip in ACTIVE for _ in range(3)]
+            if h == 0:
+                o += [obs(t1 - 10.0, f"10.9.{j // 256}.{j % 256}", r) for j in range(n_idle)]
+            rm = next(e for e in reg._engines if e.name == "signature.rule_match")
+            if h == hours - 5:
+                rm.n_snapshots = 0
+            t0 = cpu_s()
+            stats[k] = pipe.run_tick(o, now=t1, dt=dt)
+            el = cpu_s() - t0
+            if h >= hours - 5:
+                times[k].append(el)
+            SNAPSHOTS[k] = rm.n_snapshots
+    return {k: (state[k][0], float(np.median(times[k])), stats[k]) for k in configs}
 
 
 @pytest.fixture(scope="module")
 def runs():
-    return {k: run(*k) for k in ((20, "bounded"), (400, "bounded"), (20, "full"))}
+    return run_all()
 
 
 def test_bounded_cost_flat_in_idle_known_ips(runs):
@@ -68,8 +85,11 @@ def test_bounded_cost_flat_in_idle_known_ips(runs):
     assert len(st_b.entities("oa")) == 405                  # the idle IPs are still known
     rec = st_b.get_model(ORG, ORG, "model.budget")["systems"]["oa"]
     assert set(rec["active"]) == set(ACTIVE)                 # ... but not processed
-    # 20x the idle known IPs: per-tick cost within noise (log-log slope <= 0.1 -> x1.35)
+    # 20x the idle known IPs: per-tick CPU within noise (log-log slope <= 0.1 -> x1.35)
     assert t_big <= 1.35 * t_small + 0.05, (t_small, t_big)
+    # and by operation count: lib-4 snapshots only the IPs with records of
+    # the tick (it took a store snapshot of every known IP before round 7)
+    assert SNAPSHOTS[(400, "bounded")] == SNAPSHOTS[(20, "bounded")] == 5 * len(ACTIVE)
 
 
 def test_full_mode_unchanged_processes_every_known_ip(runs):

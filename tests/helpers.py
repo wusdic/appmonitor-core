@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
@@ -21,6 +22,17 @@ from app.models.schema import (  # noqa: E402
     Observation,
     RawMetric,
 )
+
+def cpu_s() -> float:
+    """CPU seconds of this process (all its threads): the clock a timing test
+    reads. Wall time also counts the time other processes hold the core, so a
+    wall-time bound fails whenever the machine is loaded (progressive.md
+    16.14.12 item 12: B13's 80 ms bound read 76-97 ms under two concurrent
+    runs). CPU time still rises somewhat under contention (shared caches), so
+    bounds stay generous; compare against a reference measured interleaved
+    with the code under test, or count operations, where possible."""
+    return time.process_time()
+
 
 T0 = 1_700_000_000.0          # fixed epoch so tests are deterministic
 DT = 900.0                    # 15-minute ticks by default

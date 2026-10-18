@@ -122,6 +122,32 @@ def root_windows(store: Any, key: str) -> Tuple[List[Tuple[int, int, str]],
     return allw, by
 
 
+# (round 7, evaluator; the conformity owner's OC7-2, cost) the Regions of a
+# tree are the same for every system and tick until the config or P11's
+# covers change: one-entry memo on the identity of the config object and of
+# P11's covers dict (P11 assigns a new covers dict when it re-clusters and bumps
+# who_groups['version'] on any change). The memo keeps references to both
+# objects, so an id cannot be reused while it is held; Regions is immutable
+# after __init__. O-servers-300 (2 days): m_ptree.hierarchies was 30 % of P03's
+# CPU (two Regions.__init__ per call); P03 scoring p95 622 -> 361 us/event.
+# The config is read-only during a run (a caller that edits ip_classes in place
+# must pass a new config object).
+_REG_MEMO: List[Any] = [None, None, None, None]
+
+
+def _regions(config: Optional[Mapping[str, Any]], wg: Mapping[str, Any]) -> Regions:
+    covers = wg.get("covers")
+    ver = wg.get("version")
+    m = _REG_MEMO
+    if m[3] is not None and m[0] is config and m[1] is covers and m[2] == ver:
+        return m[3]
+    regions = Regions.from_config(config)
+    if not len(regions) and covers:
+        regions = Regions([(str(g), list(c)) for g, c in (covers or {}).items()])
+    m[0], m[1], m[2], m[3] = config, covers, ver, regions
+    return regions
+
+
 def hierarchies(store: Any, key: str, config: Optional[Mapping[str, Any]] = None,
                 registry: Optional[AttrRegistry] = None) -> Hierarchies:
     """The Hierarchies of a tree from the current models: registry types and
@@ -130,9 +156,7 @@ def hierarchies(store: Any, key: str, config: Optional[Mapping[str, Any]] = None
     and the registry's snat flags), family members (net.dst levels)."""
     reg = registry if registry is not None else get_registry(store, key)
     wg = who_groups(store)
-    regions = Regions.from_config(config)
-    if not len(regions) and wg.get("covers"):
-        regions = Regions([(str(g), list(c)) for g, c in (wg.get("covers") or {}).items()])
+    regions = _regions(config, wg)
     allw, by = root_windows(store, key)
     fam = get_org_model(store, SYSFAM) or {}
     members = {}

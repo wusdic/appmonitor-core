@@ -29,16 +29,30 @@ class CorrelationEngine(Engine):
     produces = ["match.composite.*"]
     description = "Temporal composition of primitive signatures into higher-level activity patterns."
 
-    def __init__(self, rules: List[Dict[str, Any]], min_confidence: float = 0.5, **p):
+    def __init__(self, rules: List[Dict[str, Any]], min_confidence: float = 0.5,
+                 scan_all: bool = False, **p):
         super().__init__(**p)
+        self.scan_all = bool(scan_all)   # reference path: every known entity (tests)
         self.rules = rules or []
         self.min_confidence = min_confidence
         self._emitted: set = set()   # (system,entity,rule_id,bucket) dedupe
 
     def run(self, ctx: Context, observations=None) -> int:
         n = 0
+        if not self.rules:
+            return 0
+        # Only an entity with a primitive match inside the longest rule window
+        # can satisfy a rule (every rule reads `recent` matches only), so the
+        # candidates come from the system's match index over that window
+        # (O(matches of the window)) instead of every known entity, each with
+        # its own index read, per tick (round 7: the scan grew with idle known
+        # IPs). The per-entity read below is the one the full scan made.
+        horizon = max(float(r.get("window_s", 300)) for r in self.rules)
         for system in ctx.store.systems():
-            for entity in ctx.store.entities(system):
+            cand = {m.entity for m in ctx.store.matches(system=system, since=ctx.now - horizon,
+                                                         limit=1 << 30)
+                    if not m.signature_id.startswith("composite:")}
+            for entity in (ctx.store.entities(system) if self.scan_all else sorted(cand)):
                 matches = ctx.store.matches(system=system, entity=entity, limit=100)
                 # exclude composite matches to avoid feedback loops
                 matches = [m for m in matches if not m.signature_id.startswith("composite:")]

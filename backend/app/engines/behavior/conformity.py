@@ -186,11 +186,14 @@ implementation report):
       oa-r2: missing_predecessor MEDIUMs on SALES users);
     - 'when' calibration under drift: the node's 'when' calibration restarts
       the first time P09's fit of the node shows an ACCEPTED new regime
-      (CalStore.segment), and arrivals outside P09's windows are calibrated
-      apart from those inside them (_cal_type: 'when_out'); the node-routine
-      test reads the calibration before the event's own score is added
-      (O-red A4: D1's out-of-window logins mapped a 03:05 login's 4.7e-4 to
-      0.036);
+      (CalStore.segment); the node-routine test reads the calibration before
+      the event's own score is added (O-red A4: D1's out-of-window logins
+      mapped a 03:05 login's 4.7e-4 to 0.036). The calibration stays one
+      histogram per (node, type): a 'when_out' stratum for arrivals outside
+      P09's windows was tried and removed - with the segmentation it changed
+      nothing for O-red A4 (shadow replay: 5.5e-4 either way) and it made a
+      portal node's daily in-window extremes stop covering an equally rare
+      22:55 login (O-real seed 0, PG5 D4: a MEDIUM false alarm);
     - when_ptab: a CONTENT-split child's p is at least its parent's (a content
       split is not a time sub-population; pack O seed 1, D4);
     - intensity: hour counts in event mass (the rows' evt.batch `w`: sampled
@@ -198,17 +201,31 @@ implementation report):
       conf_content once (no Sidak over the tick's events) (O-real A7);
     - an event routed into a specific, not yet confident action child of a
       route partition is not content-checked against the partition's value
-      records (the mixture of the other actions; tree owner OI-f).
+      records (the mixture of the other actions; tree owner OI-f);
+    - the action ledger (recurring actions) is the family's (tree key);
+    - numeric checks: the grid CDF is mid-p across ties (pscore.grid_mid_cdf):
+      a point mass (oa login net.pkts_down = 2) read each of its values at
+      p = 0 (O-red / O-real MEDIUM false alarms);
+    - day-type exposure: a node's own day-type 'when' table speaks only after
+      it lived through one complete local date of that day type
+      (ConfState.day_seen / exposure, _TreeCtx.day_exposed); before, all day
+      types (pack O's first non-workday: PUB evening logins p ~1e-5 against
+      slots not yet reached that day - most MEDIUM false alarms of pack O);
+    - cost: the members of a family share one tree context per tick
+      (_TreeCtx.for_member); tree keys from P12's member map once per tick;
+      the state size (diagnostic) once an hour.
 """
 from __future__ import annotations
 
 import bisect
+import copy
 import datetime as _dt
 import heapq
 import math
 import re
 import time
-from typing import Any, Callable, Dict, Hashable, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from collections.abc import Mapping       # isinstance against typing.Mapping costs ~2.5 us (typing's __instancecheck__)
+from typing import Any, Callable, Dict, Hashable, Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -245,7 +262,8 @@ SIG_STANDING = 0.02             # share of an address's own signature that is a 
 GROUP_MIN_MEMBERS = 2           # other members with standing that make a node a pattern of their group
 MEMBER_EV = 3.0                 # a source recurring at an ANCESTOR population (back-off) is a member
 CAL_TYPES = ("when", "content", "seq")
-WHEN_OUT = "when_out"           # the 'when' calibration of arrivals outside P09's windows (_cal_type)
+DT_DATES = 8                    # local dates per day type remembered per tree (ConfState.day_seen)
+EXPO_DATES = 1                  # complete dates of a day type before a node's own day-type table speaks
 INT_P = 1e-3                    # an hour count is a finding only at this tail (§6.16.4)
 E_MAX = 1.0                     # a node's routine: >= this many such scores per day
 SEQ_P = 0.02                    # per-day p of a missing required predecessor to emit
@@ -434,17 +452,6 @@ def _own_standing(nd: Any, ip: Any, t: float) -> bool:
 
 def _nan(x: Any) -> bool:
     return x is None or (isinstance(x, float) and math.isnan(x))
-
-
-def _cal_type(typ: str, flags: Set[str]) -> str:
-    """The calibration stratum of a type's score (round 7): 'when' scores of
-    arrivals OUTSIDE the node's P09 windows are calibrated among themselves.
-    A when finding needs such an arrival, so its calibrated p and its routine
-    are the exceedance frequency of out-of-window arrivals; in-window arrivals
-    a lagging density scores low (a new regime's, after P09 accepted it, on
-    the H_m-decayed counts of the old one) neither mask them nor make them
-    routine (O-red A4 after D1)."""
-    return WHEN_OUT if (typ == "when" and "outside_windows" in flags) else typ
 
 
 def _is_content(attr: str, hier: Any) -> bool:
@@ -664,7 +671,7 @@ class ActionLedger:
     k-slot Space-Saving can lose a weekly or monthly action between two of its
     occurrences, and which learns nothing from quarantined sources).
 
-    Per (system, action route): [first local day, last local day, number of
+    Per (tree key: a system or its family, action route): [first local day, last local day, number of
     local dates, up to LEDGER_SRC distinct sources, the day of `grp`, and grp =
     {group: up to LEDGER_GRP_SRC distinct member sources that performed it on
     that day}]. LRU-bounded (LEDGER_CAP entries); O(1) per scored event.
@@ -851,6 +858,29 @@ class ConfState:
             lg = self.ledger = ActionLedger()
         return lg
 
+    def day_seen(self, key: str, daytype: int, lday: int) -> None:
+        """(round 7) Record that the tree `key` scored an event of day type
+        `daytype` on local date `lday` (the last DT_DATES dates per day type)."""
+        dd = getattr(self, "dt_dates", None)
+        if dd is None:                          # a state saved before the tracker existed
+            dd = self.dt_dates = {}
+        lst = dd.setdefault(key, {}).setdefault(int(daytype), [])
+        if lst and lst[-1] >= lday:
+            if lday in lst or lday < lst[0]:
+                return
+            bisect.insort(lst, int(lday))       # a late row of an earlier date
+        else:
+            lst.append(int(lday))
+        if len(lst) > DT_DATES:
+            del lst[:len(lst) - DT_DATES]
+
+    def exposure(self, key: str, daytype: int, after: int, today: int) -> int:
+        """The number of COMPLETE local dates of a day type the tree `key`
+        has scored events on after local date `after` (exclusive) and before
+        `today`."""
+        lst = (getattr(self, "dt_dates", None) or {}).get(key, {}).get(int(daytype)) or ()
+        return sum(1 for d in lst if after < d < today)
+
 
 def _run_consts(config: Mapping[str, Any], now: float) -> Dict[str, Any]:
     """The per-run constants of every tree context: tz offset, sensitive-route
@@ -910,6 +940,21 @@ class _TreeCtx:
         self.whokeys: Dict[str, List[Any]] = {}
         self.cmemo: Dict[Tuple[Any, ...], Tuple[float, List[str]]] = {}
         self.pmemo: Dict[Tuple[Any, ...], Any] = {}
+        # the per-tick memos (created here so that for_member's copies share them)
+        for m in ("_succ", "_coarse", "_meth", "_seq", "_sens", "_bloom"):
+            self.__dict__[m] = {}
+
+    def for_member(self, s: str) -> "_TreeCtx":
+        """(round 7, cost) The context of another member of the same family
+        (same tree key) in the same tick: everything here is a function of the
+        key's models and of the tick, never of the member (`s` names the
+        system in the descriptions only), so the members share the models, the
+        Hierarchies and every memo. O-servers: 300 servers in 12 families
+        built one context (models, Hierarchies with its Regions) per server
+        with a batch, ~0.4 ms each for ~0.7 events."""
+        c = copy.copy(self)
+        c.s = s
+        return c
 
     def successor_of(self, route_key: Optional[str], ip: str, lday: int) -> Optional[str]:
         """lib/pdfg.successor_candidate for P03's local day (P10's route ledger
@@ -1018,10 +1063,33 @@ class _TreeCtx:
         d = 1 if daytype else 0
         N = nd.when.evidence(d, t)
         h = nd.when.hist[d]
-        if N < SC.N_MIN:
+        if N < SC.N_MIN or not self.day_exposed(nd, d):
             N = nd.when.evidence(0, t) + nd.when.evidence(1, t)
             h = nd.when.hist.sum(axis=0)
         return h, float(N)
+
+    def day_exposed(self, nd: Any, d: int) -> bool:
+        """(round 7) Whether the node has lived through a COMPLETE local date
+        of day type d (EXPO_DATES, after its creation date): before that its
+        day-type slot counts cover only the hours of the day type seen so far,
+        and the slots still ahead are empty because they have not happened
+        yet, not because the population avoids them. Pack O, the first
+        non-workday (day 4): the portal nodes' non-workday tables held 600
+        evidence units of that morning and afternoon, and every PUB login or
+        comment after 20:00 (the law runs to 23:00) scored p ~1e-5 - 5 of 8
+        MEDIUM false alarms on seed 0, 6 of 13 on seed 1, 5 of 7 on O-red.
+        Until then the day type backs off to all day types, as with too little
+        evidence. Per node and tick."""
+        st = getattr(self, "st", None)
+        if st is None:
+            return True
+        k = ("dx", id(nd), d)
+        r = self.info.get(k)
+        if r is None:
+            today = int((self.now + self.tz) // DAY)
+            born = int((float(nd.created) + self.tz) // DAY)
+            r = self.info[k] = st.exposure(self.key, d, born, today) >= EXPO_DATES
+        return r
 
     def when_pred(self, kind: int, tree: Any, nd: Any, daytype: int) -> Optional[np.ndarray]:
         """The node's slot predictive with hierarchical back-off (round 3): its
@@ -1124,7 +1192,7 @@ class _TreeCtx:
                 else _hdr_table(SC.when_density(h, N))
         ref = None
         refw = ((nd.ref or {}).get("when") or {}).get("nwd" if daytype else "wd")
-        if refw is not None:
+        if refw is not None and self.day_exposed(nd, d):
             Nd = nd.when.evidence(d, t)
             if Nd >= SC.N_MIN:
                 rc = np.asarray(refw, dtype=np.float64) * Nd
@@ -1645,18 +1713,9 @@ class _NumFast:
         if not math.isfinite(y):
             return SC.conformal_rank_p(0, nn), flags
         if self.lo <= y <= self.hi:
-            if y <= self.vmin:
-                F = 0.0
-            elif y >= self.vmax:
-                F = 1.0
-            else:
-                # np.interp over the grid (quantile levels i / (m - 1)), in pure
-                # Python: a scalar np.interp call costs more than the search
-                ql = self.ql
-                j = bisect.bisect_right(ql, y)             # ql[j-1] <= y < ql[j]
-                x0, x1 = ql[j - 1], ql[j]
-                m1 = len(ql) - 1
-                F = ((j - 1) + ((y - x0) / (x1 - x0) if x1 > x0 else 0.0)) / m1
+            # the grid CDF, mid-p across ties (round 7: SC.grid_mid_cdf; a point
+            # mass read every one of its values at F = 0, p = 0)
+            F = SC.grid_mid_cdf(self.ql, y)
             # SC.numeric_p(F) (F is a finite float here)
             F = min(1.0, max(0.0, F))
             return float(min(1.0, 2.0 * min(F, 1.0 - F))), flags
@@ -1849,8 +1908,13 @@ class ConformityEngine(Engine):
         # predecessor': ~20 MEDIUM incidents on O-real seed 2's SALES users)
         fam: Dict[str, List[str]] = {}
         tkey: Dict[str, str] = {}
+        # (cost) P12's member map read once per tick (MP.tree_key per system read
+        # the org model for each of O-servers' 300 systems every tick)
+        sf = store.get_model(ORG, ORG, MP.SYSFAM)
+        mem = (sf.get("member") or {}) if isinstance(sf, Mapping) else {}
         for s in systems:
-            tkey[s] = MP.tree_key(store, s)
+            k_ = mem.get(s)
+            tkey[s] = str(k_) if k_ else s
             fam.setdefault(tkey[s], []).append(s)
         done: Set[str] = set()
         for s0 in systems:
@@ -1860,8 +1924,9 @@ class ConformityEngine(Engine):
             done.update(members)
             work: List[Tuple[str, _TreeCtx, List[Tuple[str, float, Any]], Dict[str, Dict[str, Any]],
                              List[Tuple[int, float, Callable[[], BehaviorEvent]]]]] = []
+            kctx: Dict[str, _TreeCtx] = {}
             for s in members:
-                self._hour_roll(st, store, s, now, tz, k_int)
+                self._hour_roll(st, store, s, now, tz, k_int, tkey[s])
                 # (round 6, cost) the batches retained for D + 1 ticks keep every
                 # system of the last hour in the list: the tree context (models,
                 # hierarchies) is built only for a system with a new non-empty
@@ -1879,7 +1944,10 @@ class ConformityEngine(Engine):
                     stats[s] = {"ips": 0, "violations": 0}
                     continue
                 key = tkey[s]
-                tc = _TreeCtx(self, store, s, key, ctx.config, now, rc)
+                if key not in kctx:
+                    kctx[key] = _TreeCtx(self, store, s, key, ctx.config, now, rc)
+                    kctx[key].st = st
+                tc = kctx[key] if kctx[key].s == s else kctx[key].for_member(s)
                 agg: Dict[str, Dict[str, Any]] = {}
                 cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]] = []
                 if len(members) == 1:
@@ -1900,13 +1968,19 @@ class ConformityEngine(Engine):
         us = (time.perf_counter() - t0) * 1e6
         st.stats["us"] += us
         st.stats["events"] += n
+        # (cost) the state's size is a diagnostic: measured once an hour (it
+        # walks every system's hour sketch - O-servers: 300 a tick)
+        hb = int(now // HOUR)
+        if getattr(self, "_nb_hour", None) != hb:
+            self._nb_hour, self._nb = hb, st.nbytes()
         self.last_stats = {"events": n, "systems": stats,
                            "us_per_event": us / n if n else None,
-                           "state_bytes": st.nbytes()}
+                           "state_bytes": self._nb}
         return n
 
     # ----------------------------------------------------------- hour roll
-    def _hour_roll(self, st: ConfState, store: Any, s: str, now: float, tz: float, k_int: int) -> None:
+    def _hour_roll(self, st: ConfState, store: Any, s: str, now: float, tz: float, k_int: int,
+                   key: Optional[str] = None) -> None:
         hid = int((now - 1e-6 + tz) // HOUR)
         hs = st.hour.get(s)
         if hs is None:
@@ -1917,7 +1991,7 @@ class ConformityEngine(Engine):
         rows = [(k[1], k[2], k[0], g) for k, g in hs.rows() if g > 0]
         # long-run tally of finished IP-hours per node (the rank reference of
         # the hour count, see RateTally)
-        st.tally().close_hour(MP.tree_key(store, s), rows, now)
+        st.tally().close_hour(key if key is not None else MP.tree_key(store, s), rows, now)
         store.add_batch(s, EV.PAT_RATE, now, {"rows": rows, "hour": hs.hour, "N": hs.N,
                                               "untracked": max(0.0, hs.N - sum(g for *_, g in rows))})
         st.hour[s] = HourSS(k_int, hid)
@@ -2000,6 +2074,13 @@ class ConformityEngine(Engine):
         num: Dict[str, float] = {}
         res: Dict[str, Any] = {"num": num}
         route_key = _route_key(get) if txn else None
+        # the event's local date and day type (the 'when' checks; ConfState.day_seen)
+        lday_ev = int((ts + tc.tz) // DAY)
+        dt_raw = get("ctx.daytype")
+        daytype = 0 if dt_raw in ("workday", "wd", 0, "makeup") else 1 if dt_raw is not EV.ABSENT else None
+        if daytype is None:
+            daytype = 0 if ((lday_ev + 3) % 7) < 5 else 1
+        st.day_seen(tc.key, daytype, lday_ev)
         path: List[int] = []
         conf_i = -1
         if tree is not None:
@@ -2063,7 +2144,9 @@ class ConformityEngine(Engine):
                 k10 = route_key
                 led = st.led()
                 lday = int((ts + tc.tz) // DAY)
-                le = led.peek(s, route_key)
+                # (round 7) the ledger is the family's (tree key): the members of a
+                # replica pair serve one population's actions
+                le = led.peek(tc.key, route_key)
                 g_ip = tc.ip2g.get(ip)
                 g_ip = str(g_ip) if g_ip is not None else None
                 if all(acts.id_of(x) is None for x in {key, route_key, k10} if x):
@@ -2091,7 +2174,7 @@ class ConformityEngine(Engine):
                         if ActionLedger.coordinated(le, g_ip, ip, lday):
                             novel_coord = True
                             flags.add("group_action")
-                led.add(s, route_key, ip, g_ip, lday)
+                led.add(tc.key, route_key, ip, g_ip, lday)
             # (round 6) a content variant also marks its bare route in the session's
             # Bloom set, as P10's session pass does (workflow.py `hb`): a requirement
             # mined before the predecessor's node split names the bare route, and a
@@ -2411,13 +2494,9 @@ class ConformityEngine(Engine):
                         flags.add("unknown_ip")
                 break
             # ---- when
-            dt_raw = get("ctx.daytype")
-            daytype = 0 if dt_raw in ("workday", "wd", 0, "makeup") else 1 if dt_raw is not EV.ABSENT else None
             minute = get("ctx.tod_min")
             if minute is EV.ABSENT:
                 minute = ((ts + tc.tz) % DAY) / 60.0
-            if daytype is None:
-                daytype = 0 if ((int((ts + tc.tz) // DAY) + 3) % 7) < 5 else 1
             minute = float(minute)
             slot = int(minute // 15) % 96
             for j in range(conf_i, -1, -1):
@@ -2450,11 +2529,10 @@ class ConformityEngine(Engine):
             if cinfo.when_seg is not None:
                 sk_ = ("seg", kind, conf_nd.id)
                 if sk_ not in tc.info:                 # once per node and tick
-                    tc.info[sk_] = [st.cal.segment((tc.key, kind, conf_nd.id, w_), cinfo.when_seg, ts)
-                                    for w_ in ("when", WHEN_OUT)]
+                    tc.info[sk_] = st.cal.segment((tc.key, kind, conf_nd.id, "when"), cinfo.when_seg, ts)
             for k in CAL_TYPES:
                 if not _nan(pm[k]) and pm[k] <= CAL_P:
-                    pt[k] = st.cal.p((tc.key, kind, conf_nd.id, _cal_type(k, flags)), pm[k], ts)
+                    pt[k] = st.cal.p((tc.key, kind, conf_nd.id, k), pm[k], ts)
         details["pm"] = pm
         p_c_ev = pt["content"]                    # the event's own content p (tick aggregation)
         if not _nan(p_int):
@@ -2516,7 +2594,7 @@ class ConformityEngine(Engine):
             # created: ~24 a day, so a young node's - or calibration stratum's -
             # first extreme score was 'routine' and never a finding)
             for k in CAL_TYPES:
-                st.cal.add((tc.key, kind, conf_nd.id, _cal_type(k, flags)), pm[k], ts, damp)
+                st.cal.add((tc.key, kind, conf_nd.id, k), pm[k], ts, damp)
         return res
 
     @staticmethod
@@ -2573,7 +2651,7 @@ class ConformityEngine(Engine):
         def routine(typ: str) -> bool:
             """The node itself produced such scores >= E_MAX times a day (its
             H_m-decayed history, damped outliers at 0.1): part of its routine."""
-            return st.cal.per_day((tc.key, kind, conf_nd.id, _cal_type(typ, flags)), pm.get(typ, NAN),
+            return st.cal.per_day((tc.key, kind, conf_nd.id, typ), pm.get(typ, NAN),
                                   ts) >= E_MAX
         # who
         p = pt["who"]

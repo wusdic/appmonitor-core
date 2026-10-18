@@ -37,6 +37,7 @@
     "ece": null,
     "calib": [],
     "mean_depth": null,
+    "stmt_depth": {},
     "per_pattern": {}
    },
    "2": {
@@ -69,6 +70,7 @@
     "ece": null,
     "calib": [],
     "mean_depth": null,
+    "stmt_depth": {},
     "per_pattern": {}
    },
    "3": {
@@ -108,6 +110,9 @@
      ]
     ],
     "mean_depth": 1.0,
+    "stmt_depth": {
+     "p:oa:0:1@1.0": 1.0
+    },
     "per_pattern": {
      "GA.oa.documents#0": {
       "recovered": false,
@@ -450,7 +455,7 @@
     "n_unobservable": 0,
     "n_unjudged": 0,
     "n_duplicate": 0,
-    "ece": 0.42897280929083087,
+    "ece": 0.29727899194259655,
     "calib": [
      [
       0.5161,
@@ -465,7 +470,7 @@
       1
      ],
      [
-      0.3216,
+      0.9194,
       1,
       0,
       1
@@ -477,7 +482,7 @@
       1
      ],
      [
-      0.3689,
+      0.6055,
       1,
       0,
       1
@@ -513,13 +518,13 @@
       1
      ],
      [
-      0.0872,
+      0.8533,
       1,
       0,
       1
      ],
      [
-      0.0872,
+      0.6955,
       1,
       0,
       1
@@ -568,6 +573,27 @@
      ]
     ],
     "mean_depth": 1.0,
+    "stmt_depth": {
+     "p:code:0:1@1.0": 1.0,
+     "p:crm:0:1@1.0": 1.0,
+     "p:crm:0:3@1.0": 1.0,
+     "p:finance:0:6@1.0": 1.0,
+     "p:finance:0:7@1.0": 1.0,
+     "p:finance:0:5@1.0": 1.0,
+     "p:finance:0:1@1.0": 1.0,
+     "p:mail:0:1@2.0": 1.0,
+     "p:oa:0:4@1.0": 1.0,
+     "p:oa:0:3@1.0": 1.0,
+     "p:oa:0:6@1.0": 1.0,
+     "p:oa:0:5@2.0": 1.0,
+     "p:oa:0:10@1.0": 1.0,
+     "p:oa:0:1@1.0": 1.0,
+     "p:portal:0:5@1.0": 1.0,
+     "p:portal:0:4@1.0": 1.0,
+     "p:portal:0:3@1.0": 1.0,
+     "p:portal:0:6@1.0": 1.0,
+     "p:portal:0:1@1.0": 1.0
+    },
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": false,
@@ -970,7 +996,7 @@
     "n_unobservable": 0,
     "n_unjudged": 2,
     "n_duplicate": 0,
-    "ece": 0.4272007248286454,
+    "ece": 0.25220384417839575,
     "calib": [
      [
       0.5161,
@@ -985,7 +1011,7 @@
       1
      ],
      [
-      0.3216,
+      0.9194,
       1,
       0,
       1
@@ -997,7 +1023,7 @@
       1
      ],
      [
-      0.3679,
+      0.6055,
       1,
       0,
       1
@@ -1057,19 +1083,19 @@
       1
      ],
      [
-      0.0867,
+      0.8523,
       1,
       0,
       1
      ],
      [
-      0.0867,
+      0.6955,
       1,
       0,
       1
      ],
      [
-      0.063,
+      0.0537,
       1,
       0,
       1
@@ -1088,7 +1114,7 @@
      ],
      [
       0.9008,
-      0,
+      1,
       0,
       1
      ],
@@ -1100,7 +1126,7 @@
      ],
      [
       0.7469,
-      1,
+      0,
       0,
       1
      ],
@@ -1112,6 +1138,33 @@
      ]
     ],
     "mean_depth": 1.24,
+    "stmt_depth": {
+     "p:code:0:1@1.0": 1.0,
+     "p:crm:0:1@1.0": 1.0,
+     "p:crm:0:3@1.0": 1.0,
+     "p:finance:0:6@1.0": 1.0,
+     "p:finance:0:7@1.0": 1.0,
+     "p:finance:0:5@1.0": 1.0,
+     "p:finance:0:1@1.0": 1.0,
+     "p:mail:0:1@2.0": 1.0,
+     "p:mail:0:3@1.0": 2.0,
+     "p:mail:0:4@1.0": 2.0,
+     "p:mail:0:4@1.0|grp:G11": 2.0,
+     "p:mail:0:4@1.0|grp:dept:综合部": 2.0,
+     "p:oa:0:4@1.0": 1.0,
+     "p:oa:0:3@1.0": 1.0,
+     "p:oa:0:6@1.0": 1.0,
+     "p:oa:0:5@2.0": 1.0,
+     "p:oa:0:13@1.0": 2.0,
+     "p:oa:0:14@1.0": 2.0,
+     "p:oa:0:10@1.0": 1.0,
+     "p:oa:0:1@1.0": 1.0,
+     "p:portal:0:5@1.0": 1.0,
+     "p:portal:0:4@2.0": 1.0,
+     "p:portal:0:3@2.0": 1.0,
+     "p:portal:0:6@1.0": 1.0,
+     "p:portal:0:1@1.0": 1.0
+    },
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": false,
@@ -1514,64 +1567,64 @@
     "n_unobservable": 0,
     "n_unjudged": 6,
     "n_duplicate": 0,
-    "ece": 0.1972217391304348,
+    "ece": 0.17644054950835655,
     "calib": [
      [
-      0.7412,
+      0.687,
       1,
       0,
       1
      ],
      [
-      0.65,
+      0.9194,
       1,
       0,
       1
      ],
      [
-      0.65,
+      0.8941,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.0,
       1,
       0,
       1
      ],
      [
-      0.65,
+      0.806,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.8176,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.8986,
       1,
       0,
       1
      ],
      [
-      0.9479,
+      0.7941,
       1,
       0,
       1
      ],
      [
-      0.8833,
+      0.6667,
       1,
       0,
       1
      ],
      [
-      0.65,
+      0.8186,
       1,
       0,
       1
@@ -1589,73 +1642,104 @@
       1
      ],
      [
-      0.8833,
+      0.6667,
       1,
       0,
       1
      ],
      [
-      0.8833,
+      0.6667,
       1,
       0,
       1
      ],
      [
-      0.8833,
+      0.6667,
       1,
       0,
       1
      ],
      [
-      0.8833,
+      0.6667,
       1,
       0,
       1
      ],
      [
-      0.65,
+      0.8938,
+      0,
+      0,
+      1
+     ],
+     [
+      0.6716,
       1,
       0,
       1
      ],
      [
-      0.65,
+      0.925,
       1,
       0,
       1
      ],
      [
-      0.9852,
+      0.9222,
       1,
       0,
       1
      ],
      [
-      0.9846,
-      0,
-      0,
-      1
-     ],
-     [
-      0.9282,
+      0.9222,
       1,
       0,
       1
      ],
      [
-      0.9479,
+      0.7941,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.8986,
       1,
       0,
       1
      ]
     ],
     "mean_depth": 1.3448275862068966,
+    "stmt_depth": {
+     "p:code:0:1@1.0": 1.0,
+     "p:crm:0:1@1.0": 1.0,
+     "p:crm:0:3@1.0": 1.0,
+     "p:finance:0:6@1.0": 1.0,
+     "p:finance:0:7@1.0": 1.0,
+     "p:finance:0:5@1.0": 1.0,
+     "p:finance:0:1@1.0": 1.0,
+     "p:mail:0:1@2.0": 1.0,
+     "p:mail:0:3@1.0": 2.0,
+     "p:mail:0:4@1.0": 2.0,
+     "p:mail:0:4@1.0|grp:G11": 2.0,
+     "p:mail:0:4@1.0|grp:dept:综合部": 2.0,
+     "p:oa:0:4@2.0": 1.0,
+     "p:oa:0:3@2.0": 1.0,
+     "p:oa:0:5@2.0": 1.0,
+     "p:oa:0:13@1.0": 2.0,
+     "p:oa:0:14@1.0": 2.0,
+     "p:oa:0:6@2.0": 1.0,
+     "p:oa:0:10@1.0": 1.0,
+     "p:oa:0:1@1.0": 1.0,
+     "p:portal:0:5@1.0": 1.0,
+     "p:portal:0:4@2.0": 1.0,
+     "p:portal:0:11@1.0": 2.0,
+     "p:portal:0:10@1.0": 2.0,
+     "p:portal:0:3@2.0": 1.0,
+     "p:portal:0:7@1.0": 2.0,
+     "p:portal:0:8@1.0": 2.0,
+     "p:portal:0:6@2.0": 1.0,
+     "p:portal:0:1@1.0": 1.0
+    },
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": false,
@@ -2063,71 +2147,71 @@
      "sporadic": 0.5,
      "monthly": null
     },
-    "precision": 0.9333333333333333,
+    "precision": 0.8666666666666667,
     "n_precision": 30,
-    "precision_all": 0.9333333333333333,
+    "precision_all": 0.8666666666666667,
     "n_precision_all": 30,
     "n_unobservable": 0,
     "n_unjudged": 9,
     "n_duplicate": 0,
-    "ece": 0.16190369929773554,
+    "ece": 0.15575704430261322,
     "calib": [
      [
-      0.7412,
+      0.687,
       1,
       0,
       1
      ],
      [
-      0.65,
+      0.9194,
       1,
       0,
       1
      ],
      [
-      0.65,
+      0.8941,
       1,
       0,
       1
      ],
      [
-      0.75,
+      0.0,
       1,
       0,
       1
      ],
      [
-      0.65,
+      0.806,
       1,
       0,
       1
      ],
      [
-      0.75,
+      0.8176,
       1,
       0,
       1
      ],
      [
-      0.75,
+      0.8967,
       1,
       0,
       1
      ],
      [
-      0.9479,
+      0.7941,
       1,
       0,
       1
      ],
      [
-      0.8833,
+      0.6667,
       1,
       0,
       1
      ],
      [
-      0.65,
+      0.8186,
       1,
       0,
       1
@@ -2145,7 +2229,7 @@
       1
      ],
      [
-      0.8833,
+      0.6667,
       1,
       0,
       1
@@ -2163,7 +2247,7 @@
       1
      ],
      [
-      0.8833,
+      0.6667,
       1,
       0,
       1
@@ -2181,25 +2265,25 @@
       1
      ],
      [
-      0.8833,
+      0.6667,
+      0,
+      0,
+      1
+     ],
+     [
+      0.6667,
       1,
       0,
       1
      ],
      [
-      0.8833,
-      1,
-      0,
-      1
-     ],
-     [
-      0.65,
+      0.8938,
       0,
       0,
       1
      ],
      [
-      0.65,
+      0.6418,
       1,
       0,
       1
@@ -2223,37 +2307,78 @@
       1
      ],
      [
-      0.9874,
+      0.935,
+      0,
+      0,
+      1
+     ],
+     [
+      0.9334,
       1,
       0,
       1
      ],
      [
-      0.987,
+      0.9334,
       1,
       0,
       1
      ],
      [
-      0.95,
+      0.8252,
       1,
       0,
       1
      ],
      [
-      0.9585,
-      1,
-      0,
-      1
-     ],
-     [
-      0.75,
+      0.8967,
       1,
       0,
       1
      ]
     ],
     "mean_depth": 1.435897435897436,
+    "stmt_depth": {
+     "p:code:0:1@1.0": 1.0,
+     "p:crm:0:1@1.0": 1.0,
+     "p:crm:0:3@1.0": 1.0,
+     "p:finance:0:6@1.0": 1.0,
+     "p:finance:0:7@1.0": 1.0,
+     "p:finance:0:5@1.0": 1.0,
+     "p:finance:0:1@1.0": 1.0,
+     "p:mail:0:1@2.0": 1.0,
+     "p:mail:0:3@1.0": 2.0,
+     "p:mail:0:4@1.0": 2.0,
+     "p:mail:0:4@1.0|grp:G11": 2.0,
+     "p:mail:0:4@1.0|grp:dept:综合部": 2.0,
+     "p:oa:0:4@2.0": 1.0,
+     "p:oa:0:18@1.0": 2.0,
+     "p:oa:0:19@1.0": 2.0,
+     "p:oa:0:3@2.0": 1.0,
+     "p:oa:0:16@1.0": 2.0,
+     "p:oa:0:17@1.0": 2.0,
+     "p:oa:0:5@2.0": 1.0,
+     "p:oa:0:13@1.0": 2.0,
+     "p:oa:0:14@1.0": 2.0,
+     "p:oa:0:6@2.0": 1.0,
+     "p:oa:0:20@1.0": 2.0,
+     "p:oa:0:10@1.0": 1.0,
+     "p:oa:0:1@1.0": 1.0,
+     "p:oa:0:9@1.0": 1.0,
+     "p:oa:0:8@1.0": 1.0,
+     "p:oa:0:7@1.0": 1.0,
+     "p:portal:0:5@1.0": 1.0,
+     "p:portal:0:4@2.0": 1.0,
+     "p:portal:0:11@1.0": 2.0,
+     "p:portal:0:10@1.0": 2.0,
+     "p:portal:0:3@2.0": 1.0,
+     "p:portal:0:7@1.0": 2.0,
+     "p:portal:0:8@1.0": 2.0,
+     "p:portal:0:6@2.0": 1.0,
+     "p:portal:0:13@1.0": 2.0,
+     "p:portal:0:14@1.0": 2.0,
+     "p:portal:0:1@1.0": 1.0
+    },
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": true,
@@ -2646,16 +2771,16 @@
     "n_truth": 34,
     "n_stmt": 40,
     "n_confirmed": 40,
-    "recall": 0.5,
+    "recall": 0.5294117647058824,
     "components": {
      "who": 0.6470588235294118,
-     "when": 0.8235294117647058,
+     "when": 0.8529411764705882,
      "content": 0.8529411764705882,
      "bindings": 0.0,
      "workflow": 0.9166666666666666
     },
     "recall_by_period": {
-     "daily": 0.4482758620689655,
+     "daily": 0.4827586206896552,
      "weekly": null,
      "continuous": 1.0,
      "sporadic": 0.5,
@@ -2668,196 +2793,238 @@
     "n_unobservable": 0,
     "n_unjudged": 9,
     "n_duplicate": 0,
-    "ece": 0.26121336405529944,
+    "ece": 0.11724516129032253,
     "calib": [
      [
-      0.4404,
+      0.4822,
       1,
       0,
       1
      ],
      [
-      0.9333,
+      0.975,
       1,
       0,
       1
      ],
      [
-      0.9333,
+      0.975,
       1,
       0,
       1
      ],
      [
-      0.85,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.85,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.578,
+      0.6387,
       1,
       0,
       1
      ],
      [
-      0.5207,
+      0.6443,
       1,
       0,
       1
      ],
      [
-      0.425,
+      0.475,
       1,
       0,
       1
      ],
      [
-      0.425,
+      0.475,
       1,
       1,
       1
      ],
      [
-      0.2857,
+      0.475,
       0,
       1,
       1
      ],
      [
-      0.425,
+      0.475,
       1,
       1,
       1
      ],
      [
-      0.9479,
+      0.987,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.9479,
+      0.987,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.8833,
+      0.975,
       1,
       0,
       1
      ],
      [
-      0.8833,
+      0.975,
       1,
       0,
       1
      ],
      [
-      0.9333,
+      0.975,
       0,
       0,
       1
      ],
      [
-      0.8,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.8,
+      0.95,
       1,
       0,
       1
      ],
      [
-      0.9937,
+      0.9969,
       0,
       0,
       1
      ],
      [
-      0.6947,
+      0.8839,
       1,
       0,
       1
      ],
      [
-      0.9677,
+      0.9968,
       1,
       0,
       1
      ],
      [
-      0.9802,
+      0.991,
       1,
       0,
       1
      ],
      [
-      0.85,
+      0.95,
       1,
       0,
       1
      ]
     ],
     "mean_depth": 1.45,
+    "stmt_depth": {
+     "p:code:0:1@1.0": 1.0,
+     "p:crm:0:1@1.0": 1.0,
+     "p:crm:0:3@1.0": 1.0,
+     "p:finance:0:6@1.0": 1.0,
+     "p:finance:0:7@1.0": 1.0,
+     "p:finance:0:5@1.0": 1.0,
+     "p:finance:0:1@1.0": 1.0,
+     "p:mail:0:1@2.0": 1.0,
+     "p:mail:0:3@1.0": 2.0,
+     "p:mail:0:4@1.0": 2.0,
+     "p:mail:0:4@1.0|grp:G11": 2.0,
+     "p:mail:0:4@1.0|grp:dept:综合部": 2.0,
+     "p:mail:0:4@1.0|grp:dept:财务部": 2.0,
+     "p:oa:0:4@2.0": 1.0,
+     "p:oa:0:18@1.0": 2.0,
+     "p:oa:0:19@1.0": 2.0,
+     "p:oa:0:3@2.0": 1.0,
+     "p:oa:0:16@1.0": 2.0,
+     "p:oa:0:17@1.0": 2.0,
+     "p:oa:0:5@2.0": 1.0,
+     "p:oa:0:13@1.0": 2.0,
+     "p:oa:0:14@1.0": 2.0,
+     "p:oa:0:6@2.0": 1.0,
+     "p:oa:0:20@1.0": 2.0,
+     "p:oa:0:10@1.0": 1.0,
+     "p:oa:0:1@1.0": 1.0,
+     "p:oa:0:9@1.0": 1.0,
+     "p:oa:0:8@1.0": 1.0,
+     "p:oa:0:7@1.0": 1.0,
+     "p:portal:0:5@1.0": 1.0,
+     "p:portal:0:4@2.0": 1.0,
+     "p:portal:0:11@1.0": 2.0,
+     "p:portal:0:10@1.0": 2.0,
+     "p:portal:0:3@2.0": 1.0,
+     "p:portal:0:7@1.0": 2.0,
+     "p:portal:0:8@1.0": 2.0,
+     "p:portal:0:6@2.0": 1.0,
+     "p:portal:0:13@1.0": 2.0,
+     "p:portal:0:14@1.0": 2.0,
+     "p:portal:0:1@1.0": 1.0
+    },
     "per_pattern": {
      "GA.oa.approvals#0": {
       "recovered": true,
@@ -3028,16 +3195,16 @@
       "stmt": null
      },
      "FIN.mail#0": {
-      "recovered": false,
+      "recovered": true,
       "components": {
        "who": true,
-       "when": false,
+       "when": true,
        "content": true,
        "bindings": null,
        "workflow": null
       },
       "period": "daily",
-      "stmt": null
+      "stmt": "p:mail:0:4@1.0|grp:dept:财务部"
      },
      "SALES.oa.login#0": {
       "recovered": false,
@@ -3275,16 +3442,16 @@
    "n_truth": 34,
    "n_stmt": 40,
    "n_confirmed": 40,
-   "recall": 0.5,
+   "recall": 0.5294117647058824,
    "components": {
     "who": 0.6470588235294118,
-    "when": 0.8235294117647058,
+    "when": 0.8529411764705882,
     "content": 0.8529411764705882,
     "bindings": 0.0,
     "workflow": 0.9166666666666666
    },
    "recall_by_period": {
-    "daily": 0.4482758620689655,
+    "daily": 0.4827586206896552,
     "weekly": null,
     "continuous": 1.0,
     "sporadic": 0.5,
@@ -3297,8 +3464,50 @@
    "n_unobservable": 0,
    "n_unjudged": 9,
    "n_duplicate": 0,
-   "ece": 0.26121336405529944,
-   "mean_depth": 1.45
+   "ece": 0.11724516129032253,
+   "mean_depth": 1.45,
+   "stmt_depth": {
+    "p:code:0:1@1.0": 1.0,
+    "p:crm:0:1@1.0": 1.0,
+    "p:crm:0:3@1.0": 1.0,
+    "p:finance:0:6@1.0": 1.0,
+    "p:finance:0:7@1.0": 1.0,
+    "p:finance:0:5@1.0": 1.0,
+    "p:finance:0:1@1.0": 1.0,
+    "p:mail:0:1@2.0": 1.0,
+    "p:mail:0:3@1.0": 2.0,
+    "p:mail:0:4@1.0": 2.0,
+    "p:mail:0:4@1.0|grp:G11": 2.0,
+    "p:mail:0:4@1.0|grp:dept:综合部": 2.0,
+    "p:mail:0:4@1.0|grp:dept:财务部": 2.0,
+    "p:oa:0:4@2.0": 1.0,
+    "p:oa:0:18@1.0": 2.0,
+    "p:oa:0:19@1.0": 2.0,
+    "p:oa:0:3@2.0": 1.0,
+    "p:oa:0:16@1.0": 2.0,
+    "p:oa:0:17@1.0": 2.0,
+    "p:oa:0:5@2.0": 1.0,
+    "p:oa:0:13@1.0": 2.0,
+    "p:oa:0:14@1.0": 2.0,
+    "p:oa:0:6@2.0": 1.0,
+    "p:oa:0:20@1.0": 2.0,
+    "p:oa:0:10@1.0": 1.0,
+    "p:oa:0:1@1.0": 1.0,
+    "p:oa:0:9@1.0": 1.0,
+    "p:oa:0:8@1.0": 1.0,
+    "p:oa:0:7@1.0": 1.0,
+    "p:portal:0:5@1.0": 1.0,
+    "p:portal:0:4@2.0": 1.0,
+    "p:portal:0:11@1.0": 2.0,
+    "p:portal:0:10@1.0": 2.0,
+    "p:portal:0:3@2.0": 1.0,
+    "p:portal:0:7@1.0": 2.0,
+    "p:portal:0:8@1.0": 2.0,
+    "p:portal:0:6@2.0": 1.0,
+    "p:portal:0:13@1.0": 2.0,
+    "p:portal:0:14@1.0": 2.0,
+    "p:portal:0:1@1.0": 1.0
+   }
   },
   "pg1_last_by_system": {
    "code": {
@@ -3311,7 +3520,7 @@
     "recall": 0.6666666666666666
    },
    "mail": {
-    "recall": 0.5
+    "recall": 0.75
    },
    "oa": {
     "recall": 0.1875
@@ -3333,7 +3542,7 @@
     "5": 0.41935483870967744,
     "6": 0.40625,
     "7": 0.46875,
-    "8": 0.5
+    "8": 0.5294117647058824
    },
    "precision": {
     "1": null,
@@ -3342,7 +3551,7 @@
     "4": 0.9473684210526315,
     "5": 0.9130434782608695,
     "6": 0.9130434782608695,
-    "7": 0.9333333333333333,
+    "7": 0.8666666666666667,
     "8": 0.9032258064516129
    },
    "precision_all": {
@@ -3352,16 +3561,16 @@
     "4": 0.9473684210526315,
     "5": 0.9130434782608695,
     "6": 0.9130434782608695,
-    "7": 0.9333333333333333,
+    "7": 0.8666666666666667,
     "8": 0.9032258064516129
    },
    "calibration_observable": {
     "n": 61,
-    "ece": 0.19880819672131142,
-    "ece_null": 0.1033735245901639,
-    "ce": 0.21172968674519724,
-    "conf": 0.7687098360655736,
-    "hold": 0.9180327868852459
+    "ece": 0.13618524590163927,
+    "ece_null": 0.08414075409836066,
+    "ce": 0.16282715260021274,
+    "conf": 0.8035,
+    "hold": 0.8852459016393442
    },
    "recall_violations": [],
    "recall_monotone": true,
@@ -3376,26 +3585,41 @@
     "weekly": null
    },
    "depth_nondecreasing": true,
-   "median_conf": [
+   "depth_steps": [
     [
-     4,
-     0.3689
+     3,
+     5,
+     1,
+     0.0
     ],
     [
      5,
-     0.8195
+     7,
+     21,
+     0.0
+    ]
+   ],
+   "depth_mean_nondecreasing": true,
+   "median_conf": [
+    [
+     4,
+     0.6054774435762147
+    ],
+    [
+     5,
+     0.8670551635463972
     ],
     [
      6,
-     0.8
+     0.8985844266837946
     ],
     [
      7,
-     0.75
+     0.8967036730897995
     ],
     [
      8,
-     0.85
+     0.95
     ]
    ],
    "conf_steps": [
@@ -3403,7 +3627,7 @@
      5,
      7,
      13,
-     0.08660000000000001
+     0.03420000000000001
     ]
    ],
    "conf_nondecreasing": true,
@@ -3414,7 +3638,7 @@
     ],
     [
      6,
-     0.000998348697233946
+     0.0009982767355499332
     ],
     [
      7,
@@ -3436,32 +3660,32 @@
    "U_nonincreasing": true,
    "calibration": {
     "n": 61,
-    "ece": 0.19880819672131142,
-    "ece_null": 0.1033735245901639,
-    "ce": 0.21172968674519724,
-    "conf": 0.7687098360655736,
-    "hold": 0.9180327868852459
+    "ece": 0.13618524590163927,
+    "ece_null": 0.08414075409836066,
+    "ce": 0.16282715260021274,
+    "conf": 0.8035,
+    "hold": 0.8852459016393442
    },
    "calibration_by_kind": {
     "node": {
      "n": 56,
-     "ece": 0.19092142857142846,
-     "ece_null": 0.09416941071428568,
-     "ce": 0.21809930539215958,
-     "conf": 0.7992071428571429,
-     "hold": 0.9464285714285714
+     "ece": 0.13807678571428564,
+     "ece_null": 0.076117375,
+     "ce": 0.20430780922847896,
+     "conf": 0.8319374999999999,
+     "hold": 0.9107142857142857
     },
     "part": {
      "n": 5,
-     "ece": 0.28714,
-     "ece_null": 0.2951418,
-     "ce": 0.08808970427921739,
-     "conf": 0.42713999999999996,
+     "ece": 0.11500000000000002,
+     "ece_null": 0.26625,
+     "ce": 0.0,
+     "conf": 0.48500000000000004,
      "hold": 0.6
     }
    },
-   "ece": 0.21172968674519724,
-   "ece_last_day": 0.26121336405529944
+   "ece": 0.16282715260021274,
+   "ece_last_day": 0.11724516129032253
   },
   "false_splits": {
    "n": null,
@@ -3485,12 +3709,12 @@
    "far": {
     "entity_days": 2869,
     "ks_conf_two": null,
-    "inc_low": 18,
-    "inc_medium": 16,
-    "pv_low": 77,
-    "far_low": 0.006273963053328686,
-    "far_medium": 0.0055768560474032764,
-    "pv_far_low": 0.026838619728128267,
+    "inc_low": 6,
+    "inc_medium": 5,
+    "pv_low": 26,
+    "far_low": 0.0020913210177762286,
+    "far_medium": 0.001742767514813524,
+    "pv_far_low": 0.009062391077030324,
     "ks_conf": null
    }
   },
@@ -4479,8 +4703,8 @@
        "10.168.7.121",
        "192.168.1.23"
       ],
-      "header_zh": "综合部（2 个 IP）使用 mail、oa",
-      "header_en": "综合部 (2 IPs) uses mail, oa",
+      "header_zh": "综合部（2 个 IP）使用 oa",
+      "header_en": "综合部 (2 IPs) uses oa",
       "statements": [
        {
         "text_zh": "综合部 在 crm 中从未执行写操作（5 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 5 天",
@@ -4493,18 +4717,8 @@
         "negative": true
        },
        {
-        "text_zh": "综合部 访问 mail（占其活动 5 %）：邮件（TLS mail.corp.local）。置信 0.69 · 依据 2 个成员",
-        "text_en": "综合部 uses mail (5 % of its activity): mail (TLS mail.corp.local). Confidence 0.69, support 2 members.",
-        "negative": false
-       },
-       {
-        "text_zh": "【mail】工作日 08:58–09:33、13:01–14:04（覆盖 86 %，2 个工作日），综合部（10.168.7.121、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 2–80 KB（n = 113，下次越界概率 ≤ 4.2 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 107，下次越界概率 ≤ 4.4 %）；时长 90 % 在 40–150，全部在 5–350（n = 107，下次越界概率 ≤ 4.4 %）；每 IP 每小时次数 90 % 在 2–7。置信 0.65 · 依据 65 次 · 首次 2025-09-04 · 最近 2025-09-06 · v1.0",
-        "text_en": "[mail] On workdays 08:58–09:33, 13:01–14:04 (coverage 86 %, 2 dates), 综合部 (10.168.7.121, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 2–80 KB (n = 113, P(next outside) ≤ 4.2 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 107, P(next outside) ≤ 4.4 %); 90 % of duration within 40–150, all within 5–350 (n = 107, P(next outside) ≤ 4.4 %); 90 % of events per IP-hour within 2–7. Confidence 0.65, support 65 events, first seen 2025-09-04, last seen 2025-09-06, v1.0.",
-        "negative": false
-       },
-       {
-        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs/{num}）、文档（GET /docs）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、提交报告（POST /report/generate）、查看报告（GET /report/form）。置信 0.69 · 依据 2 个成员",
-        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs/{num}), documents (GET /docs), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), submit reports (POST /report/generate), view report (GET /report/form). Confidence 0.69, support 2 members.",
+        "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs/{num}）、文档（GET /docs）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、提交报告（POST /report/generate）、查看报告（GET /report/form）。置信 0.68 · 依据 2 个成员",
+        "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs/{num}), documents (GET /docs), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), submit reports (POST /report/generate), view report (GET /report/form). Confidence 0.68, support 2 members.",
         "negative": false
        },
        {
@@ -4604,11 +4818,6 @@
         "negative": true
        },
        {
-        "text_zh": "【mail】工作日 08:58–09:33、13:01–14:04（覆盖 86 %，2 个工作日），综合部（10.168.7.121、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 2–80 KB（n = 113，下次越界概率 ≤ 4.2 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 107，下次越界概率 ≤ 4.4 %）；时长 90 % 在 40–150，全部在 5–350（n = 107，下次越界概率 ≤ 4.4 %）；每 IP 每小时次数 90 % 在 2–7。置信 0.65 · 依据 65 次 · 首次 2025-09-04 · 最近 2025-09-06 · v1.0",
-        "text_en": "[mail] On workdays 08:58–09:33, 13:01–14:04 (coverage 86 %, 2 dates), 综合部 (10.168.7.121, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 2–80 KB (n = 113, P(next outside) ≤ 4.2 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 107, P(next outside) ≤ 4.4 %); 90 % of duration within 40–150, all within 5–350 (n = 107, P(next outside) ≤ 4.4 %); 90 % of events per IP-hour within 2–7. Confidence 0.65, support 65 events, first seen 2025-09-04, last seen 2025-09-06, v1.0.",
-        "negative": false
-       },
-       {
         "text_zh": "【oa】工作日 08:51–11:41（覆盖 60 %，3 个工作日），192.168.1.21访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 24）；net.pkts_down 90 % 在 5–15，观测范围 4–16（n = 15）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 16）；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。置信 0.60 · 依据 24 次 · 首次 2025-09-01 · 最近 2025-09-06 · v1.0",
         "text_en": "[oa] On workdays 08:51–11:41 (coverage 60 %, 3 dates), 192.168.1.21 opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 24); 90 % of net.pkts_down within 5–15, observed range 4–16 (n = 15); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 16); header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Confidence 0.60, support 24 events, first seen 2025-09-01, last seen 2025-09-06, v1.0.",
         "negative": false
@@ -4621,6 +4830,11 @@
        {
         "text_zh": "【oa】工作日 08:43–12:02（覆盖 50 %，2 个工作日），192.168.1.21访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 700–1200，观测范围 600–1200（n = 6）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 17）；上行字节 90 % 在 1.3–1.78 KB，观测范围 1.3–1.8 KB（n = 6）；时长 90 % 在 10–60，观测范围 5–70（n = 21）；net.pkts_down 90 % 在 3–13，观测范围 2–14（n = 6）；net.resp_len 90 % 在 2000–16000，观测范围 2000–18000（n = 6）；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 60 秒–6 分钟）。置信 0.50 · 依据 21 次 · 首次 2025-09-01 · 最近 2025-09-06 · v1.0",
         "text_en": "[oa] On workdays 08:43–12:02 (coverage 50 %, 2 dates), 192.168.1.21 opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 700–1200, observed range 600–1200 (n = 6); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 17); 90 % of bytes up within 1.3–1.78 KB, observed range 1.3–1.8 KB (n = 6); 90 % of duration within 10–60, observed range 5–70 (n = 21); 90 % of net.pkts_down within 3–13, observed range 2–14 (n = 6); 90 % of net.resp_len within 2000–16000, observed range 2000–18000 (n = 6); body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.50, support 21 events, first seen 2025-09-01, last seen 2025-09-06, v1.0.",
+        "negative": false
+       },
+       {
+        "text_zh": "【mail】工作日 13:43–13:56（覆盖 50 %，1 个工作日），综合部（10.168.7.121、192.168.1.21、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 2–80 KB（n = 113，下次越界概率 ≤ 4.2 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 107，下次越界概率 ≤ 4.4 %）；时长 90 % 在 40–150，全部在 5–350（n = 107，下次越界概率 ≤ 4.4 %）；每 IP 每小时次数 90 % 在 2–7。置信 0.50 · 依据 68 次 · 首次 2025-09-04 · 最近 2025-09-06 · v1.0",
+        "text_en": "[mail] On workdays 13:43–13:56 (coverage 50 %, 1 dates), 综合部 (10.168.7.121, 192.168.1.21, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 2–80 KB (n = 113, P(next outside) ≤ 4.2 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 107, P(next outside) ≤ 4.4 %); 90 % of duration within 40–150, all within 5–350 (n = 107, P(next outside) ≤ 4.4 %); 90 % of events per IP-hour within 2–7. Confidence 0.50, support 68 events, first seen 2025-09-04, last seen 2025-09-06, v1.0.",
         "negative": false
        }
       ]
@@ -4638,7 +4852,7 @@
       "pattern_id": "p:oa:0:9@1.0",
       "route": "POST oa.corp.local /approval/{num}/approve",
       "state": "confirmed",
-      "confidence": 0.8,
+      "confidence": 0.95,
       "support": 25.480994721683107,
       "who": {
        "level": "ip",
@@ -4949,14 +5163,14 @@
         false
        ]
       ],
-      "text_zh": "【oa】工作日 09:02–12:03（覆盖 67 %，3 个工作日），综合部（192.168.1.21）访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.80 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
-      "text_en": "[oa] On workdays 09:02–12:03 (coverage 67 %, 3 dates), 综合部 (192.168.1.21) opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 800–1400, observed range 600–1400 (n = 10); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 22); 90 % of bytes up within 1.4–2 KB, observed range 1.3–2 KB (n = 10); 90 % of duration within 10–70, observed range 5–80 (n = 26); 90 % of net.pkts_down within 4–14, observed range 2–14 (n = 10); 90 % of net.resp_len within 2800–17400, observed range 2000–18000 (n = 10); 90 % of events per IP-hour within 5–5; body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; header x-client-ver matching `[0-9]\\.[0-9]\\.[0-9]`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.80, support 28 events, first seen 2025-09-01, last seen 2025-09-08, v1.0."
+      "text_zh": "【oa】工作日 09:02–12:03（覆盖 67 %，3 个工作日），综合部（192.168.1.21）访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.95 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+      "text_en": "[oa] On workdays 09:02–12:03 (coverage 67 %, 3 dates), 综合部 (192.168.1.21) opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 800–1400, observed range 600–1400 (n = 10); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 22); 90 % of bytes up within 1.4–2 KB, observed range 1.3–2 KB (n = 10); 90 % of duration within 10–70, observed range 5–80 (n = 26); 90 % of net.pkts_down within 4–14, observed range 2–14 (n = 10); 90 % of net.resp_len within 2800–17400, observed range 2000–18000 (n = 10); 90 % of events per IP-hour within 5–5; body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; header x-client-ver matching `[0-9]\\.[0-9]\\.[0-9]`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.95, support 28 events, first seen 2025-09-01, last seen 2025-09-08, v1.0."
      },
      {
       "pattern_id": "p:oa:0:8@1.0",
       "route": "GET oa.corp.local /approval/{num}",
       "state": "confirmed",
-      "confidence": 0.8,
+      "confidence": 0.95,
       "support": 24.92189864111498,
       "who": {
        "level": "ip",
@@ -5147,14 +5361,14 @@
         false
        ]
       ],
-      "text_zh": "【oa】工作日 08:57–12:01（覆盖 67 %，3 个工作日），综合部（192.168.1.21）访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–100，观测范围 5–120（n = 26）；net.pkts_down 90 % 在 8–28，观测范围 5–30（n = 15）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 15）；每 IP 每小时次数 90 % 在 5–5；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）；GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.80 · 依据 27 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
-      "text_en": "[oa] On workdays 08:57–12:01 (coverage 67 %, 3 dates), 综合部 (192.168.1.21) opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–100, observed range 5–120 (n = 26); 90 % of net.pkts_down within 8–28, observed range 5–30 (n = 15); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 15); 90 % of events per IP-hour within 5–5; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}; GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.80, support 27 events, first seen 2025-09-01, last seen 2025-09-08, v1.0."
+      "text_zh": "【oa】工作日 08:57–12:01（覆盖 67 %，3 个工作日），综合部（192.168.1.21）访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–100，观测范围 5–120（n = 26）；net.pkts_down 90 % 在 8–28，观测范围 5–30（n = 15）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 15）；每 IP 每小时次数 90 % 在 5–5；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）；GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.95 · 依据 27 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+      "text_en": "[oa] On workdays 08:57–12:01 (coverage 67 %, 3 dates), 综合部 (192.168.1.21) opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–100, observed range 5–120 (n = 26); 90 % of net.pkts_down within 8–28, observed range 5–30 (n = 15); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 15); 90 % of events per IP-hour within 5–5; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}; GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.95, support 27 events, first seen 2025-09-01, last seen 2025-09-08, v1.0."
      },
      {
       "pattern_id": "p:oa:0:7@1.0",
       "route": "GET oa.corp.local /approval/list",
       "state": "confirmed",
-      "confidence": 0.8,
+      "confidence": 0.95,
       "support": 27.709505584152133,
       "who": {
        "level": "ip",
@@ -5345,8 +5559,8 @@
         false
        ]
       ],
-      "text_zh": "【oa】工作日 09:01–11:52（覆盖 71 %，4 个工作日），综合部（192.168.1.21）访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 29）；net.pkts_down 90 % 在 5–15，观测范围 4–16（n = 15）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 16）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）。置信 0.80 · 依据 30 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
-      "text_en": "[oa] On workdays 09:01–11:52 (coverage 71 %, 4 dates), 综合部 (192.168.1.21) opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 29); 90 % of net.pkts_down within 5–15, observed range 4–16 (n = 15); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 16); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}. Confidence 0.80, support 30 events, first seen 2025-09-01, last seen 2025-09-08, v1.0."
+      "text_zh": "【oa】工作日 09:01–11:52（覆盖 71 %，4 个工作日），综合部（192.168.1.21）访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 29）；net.pkts_down 90 % 在 5–15，观测范围 4–16（n = 15）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 16）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）。置信 0.95 · 依据 30 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+      "text_en": "[oa] On workdays 09:01–11:52 (coverage 71 %, 4 dates), 综合部 (192.168.1.21) opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 29); 90 % of net.pkts_down within 5–15, observed range 4–16 (n = 15); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 16); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}. Confidence 0.95, support 30 events, first seen 2025-09-01, last seen 2025-09-08, v1.0."
      }
     ],
     "finance_statements": [],
@@ -5359,8 +5573,8 @@
        "10.168.7.121",
        "192.168.1.23"
       ],
-      "header_zh": "综合部（2 个 IP）使用 mail、oa",
-      "header_en": "综合部 (2 IPs) uses mail, oa",
+      "header_zh": "综合部（2 个 IP）使用 oa",
+      "header_en": "综合部 (2 IPs) uses oa",
       "statements": [
        {
         "text_zh": "综合部 在 crm 中从未执行写操作（6 天、0 次）（封闭的写操作：客户（POST /crm/visit））。置信 1.00 · 依据 6 天",
@@ -5373,16 +5587,6 @@
         "negative": true
        },
        {
-        "text_zh": "综合部 访问 mail（占其活动 5 %）：邮件（TLS mail.corp.local）。置信 0.68 · 依据 2 个成员",
-        "text_en": "综合部 uses mail (5 % of its activity): mail (TLS mail.corp.local). Confidence 0.68, support 2 members.",
-        "negative": false
-       },
-       {
-        "text_zh": "【mail】工作日 13:36–13:59（覆盖 40 %，2 个工作日），综合部（10.168.7.121、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 1–80 KB（n = 170，下次越界概率 ≤ 2.8 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 163，下次越界概率 ≤ 2.9 %）；时长 90 % 在 20–200，全部在 5–400（n = 163，下次越界概率 ≤ 2.9 %）；每 IP 每小时次数 90 % 在 2–8。置信 0.20 · 依据 69 次 · 首次 2025-09-04 · 最近 2025-09-08 · v1.0",
-        "text_en": "[mail] On workdays 13:36–13:59 (coverage 40 %, 2 dates), 综合部 (10.168.7.121, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 1–80 KB (n = 170, P(next outside) ≤ 2.8 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 163, P(next outside) ≤ 2.9 %); 90 % of duration within 20–200, all within 5–400 (n = 163, P(next outside) ≤ 2.9 %); 90 % of events per IP-hour within 2–8. Confidence 0.20, support 69 events, first seen 2025-09-04, last seen 2025-09-08, v1.0.",
-        "negative": false
-       },
-       {
         "text_zh": "综合部 访问 oa（占其活动 95 %）：文档（GET /docs/{num}）、文档（GET /docs）、评论（POST /docs/{num}/comment）、首页（GET /home）、登录（POST /login）、提交报告（POST /report/generate）、查看报告（GET /report/form）。置信 0.68 · 依据 2 个成员",
         "text_en": "综合部 uses oa (95 % of its activity): documents (GET /docs/{num}), documents (GET /docs), comments (POST /docs/{num}/comment), home page (GET /home), log in (POST /login), submit reports (POST /report/generate), view report (GET /report/form). Confidence 0.68, support 2 members.",
         "negative": false
@@ -5393,8 +5597,8 @@
         "negative": true
        },
        {
-        "text_zh": "综合部 在 portal 中从未执行写操作（8 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））。置信 0.99 · 依据 8 天",
-        "text_en": "综合部 has never performed a write action on portal (8 days, 0 times) (closed write actions: log in (POST /login), comments (POST /comment)). Confidence 0.99, support 8 days.",
+        "text_zh": "综合部 在 portal 中从未执行写操作（8 天、0 次）（封闭的写操作：登录（POST /login）、评论（POST /comment））。置信 1.00 · 依据 8 天",
+        "text_en": "综合部 has never performed a write action on portal (8 days, 0 times) (closed write actions: log in (POST /login), comments (POST /comment)). Confidence 1.00, support 8 days.",
         "negative": true
        }
       ]
@@ -5425,18 +5629,18 @@
         "negative": false
        },
        {
-        "text_zh": "【oa】工作日 09:01–11:52（覆盖 71 %，4 个工作日），192.168.1.21访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 29）；net.pkts_down 90 % 在 5–15，观测范围 4–16（n = 15）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 16）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）。置信 0.80 · 依据 30 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
-        "text_en": "[oa] On workdays 09:01–11:52 (coverage 71 %, 4 dates), 192.168.1.21 opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 29); 90 % of net.pkts_down within 5–15, observed range 4–16 (n = 15); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 16); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}. Confidence 0.80, support 30 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "text_zh": "【oa】工作日 09:01–11:52（覆盖 71 %，4 个工作日），192.168.1.21访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 29）；net.pkts_down 90 % 在 5–15，观测范围 4–16（n = 15）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 16）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）。置信 0.95 · 依据 30 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 09:01–11:52 (coverage 71 %, 4 dates), 192.168.1.21 opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 29); 90 % of net.pkts_down within 5–15, observed range 4–16 (n = 15); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 16); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}. Confidence 0.95, support 30 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
         "negative": false
        },
        {
-        "text_zh": "【oa】工作日 08:57–12:01（覆盖 67 %，3 个工作日），192.168.1.21访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–100，观测范围 5–120（n = 26）；net.pkts_down 90 % 在 8–28，观测范围 5–30（n = 15）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 15）；每 IP 每小时次数 90 % 在 5–5；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）；GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.80 · 依据 27 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
-        "text_en": "[oa] On workdays 08:57–12:01 (coverage 67 %, 3 dates), 192.168.1.21 opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–100, observed range 5–120 (n = 26); 90 % of net.pkts_down within 8–28, observed range 5–30 (n = 15); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 15); 90 % of events per IP-hour within 5–5; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}; GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.80, support 27 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "text_zh": "【oa】工作日 08:57–12:01（覆盖 67 %，3 个工作日），192.168.1.21访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–100，观测范围 5–120（n = 26）；net.pkts_down 90 % 在 8–28，观测范围 5–30（n = 15）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 15）；每 IP 每小时次数 90 % 在 5–5；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）；GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.95 · 依据 27 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 08:57–12:01 (coverage 67 %, 3 dates), 192.168.1.21 opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–100, observed range 5–120 (n = 26); 90 % of net.pkts_down within 8–28, observed range 5–30 (n = 15); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 15); 90 % of events per IP-hour within 5–5; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}; GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.95, support 27 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
         "negative": false
        },
        {
-        "text_zh": "【oa】工作日 09:02–12:03（覆盖 67 %，3 个工作日），192.168.1.21访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.80 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
-        "text_en": "[oa] On workdays 09:02–12:03 (coverage 67 %, 3 dates), 192.168.1.21 opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 800–1400, observed range 600–1400 (n = 10); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 22); 90 % of bytes up within 1.4–2 KB, observed range 1.3–2 KB (n = 10); 90 % of duration within 10–70, observed range 5–80 (n = 26); 90 % of net.pkts_down within 4–14, observed range 2–14 (n = 10); 90 % of net.resp_len within 2800–17400, observed range 2000–18000 (n = 10); 90 % of events per IP-hour within 5–5; body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; header x-client-ver matching `[0-9]\\.[0-9]\\.[0-9]`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.80, support 28 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "text_zh": "【oa】工作日 09:02–12:03（覆盖 67 %，3 个工作日），192.168.1.21访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.95 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 09:02–12:03 (coverage 67 %, 3 dates), 192.168.1.21 opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 800–1400, observed range 600–1400 (n = 10); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 22); 90 % of bytes up within 1.4–2 KB, observed range 1.3–2 KB (n = 10); 90 % of duration within 10–70, observed range 5–80 (n = 26); 90 % of net.pkts_down within 4–14, observed range 2–14 (n = 10); 90 % of net.resp_len within 2800–17400, observed range 2000–18000 (n = 10); 90 % of events per IP-hour within 5–5; body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; header x-client-ver matching `[0-9]\\.[0-9]\\.[0-9]`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.95, support 28 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
         "negative": false
        },
        {
@@ -5484,23 +5688,23 @@
         "negative": true
        },
        {
-        "text_zh": "【mail】工作日 13:36–13:59（覆盖 40 %，2 个工作日），综合部（10.168.7.121、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 1–80 KB（n = 170，下次越界概率 ≤ 2.8 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 163，下次越界概率 ≤ 2.9 %）；时长 90 % 在 20–200，全部在 5–400（n = 163，下次越界概率 ≤ 2.9 %）；每 IP 每小时次数 90 % 在 2–8。置信 0.20 · 依据 69 次 · 首次 2025-09-04 · 最近 2025-09-08 · v1.0",
-        "text_en": "[mail] On workdays 13:36–13:59 (coverage 40 %, 2 dates), 综合部 (10.168.7.121, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 1–80 KB (n = 170, P(next outside) ≤ 2.8 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 163, P(next outside) ≤ 2.9 %); 90 % of duration within 20–200, all within 5–400 (n = 163, P(next outside) ≤ 2.9 %); 90 % of events per IP-hour within 2–8. Confidence 0.20, support 69 events, first seen 2025-09-04, last seen 2025-09-08, v1.0.",
+        "text_zh": "【oa】工作日 09:01–11:52（覆盖 71 %，4 个工作日），192.168.1.21访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 29）；net.pkts_down 90 % 在 5–15，观测范围 4–16（n = 15）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 16）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）。置信 0.95 · 依据 30 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 09:01–11:52 (coverage 71 %, 4 dates), 192.168.1.21 opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 29); 90 % of net.pkts_down within 5–15, observed range 4–16 (n = 15); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 16); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}. Confidence 0.95, support 30 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
         "negative": false
        },
        {
-        "text_zh": "【oa】工作日 09:01–11:52（覆盖 71 %，4 个工作日），192.168.1.21访问 GET /approval/list（查看审批）：上行字节 90 % 在 505–505 B，观测范围 505–505 B（n = 18）；时长 90 % 在 10–100，观测范围 10–120（n = 29）；net.pkts_down 90 % 在 5–15，观测范围 4–16（n = 15）；net.resp_len 90 % 在 6000–20000，观测范围 4000–20000（n = 16）；每 IP 每小时次数 90 % 在 5–5；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）。置信 0.80 · 依据 30 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
-        "text_en": "[oa] On workdays 09:01–11:52 (coverage 71 %, 4 dates), 192.168.1.21 opens GET /approval/list (view approve): 90 % of bytes up within 505–505 B, observed range 505–505 B (n = 18); 90 % of duration within 10–100, observed range 10–120 (n = 29); 90 % of net.pkts_down within 5–15, observed range 4–16 (n = 15); 90 % of net.resp_len within 6000–20000, observed range 4000–20000 (n = 16); 90 % of events per IP-hour within 5–5; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}. Confidence 0.80, support 30 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "text_zh": "【oa】工作日 08:57–12:01（覆盖 67 %，3 个工作日），192.168.1.21访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–100，观测范围 5–120（n = 26）；net.pkts_down 90 % 在 8–28，观测范围 5–30（n = 15）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 15）；每 IP 每小时次数 90 % 在 5–5；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）；GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.95 · 依据 27 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 08:57–12:01 (coverage 67 %, 3 dates), 192.168.1.21 opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–100, observed range 5–120 (n = 26); 90 % of net.pkts_down within 8–28, observed range 5–30 (n = 15); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 15); 90 % of events per IP-hour within 5–5; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}; GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.95, support 27 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
         "negative": false
        },
        {
-        "text_zh": "【oa】工作日 08:57–12:01（覆盖 67 %，3 个工作日），192.168.1.21访问 GET /approval/{num}（查看审批）：上行字节 90 % 在 506–506 B，观测范围 505–506 B（n = 16）；时长 90 % 在 10–100，观测范围 5–120（n = 26）；net.pkts_down 90 % 在 8–28，观测范围 5–30（n = 15）；net.resp_len 90 % 在 10000–40000，观测范围 5000–40000（n = 15）；每 IP 每小时次数 90 % 在 5–5；http.ctype 取值集合封闭 {text/html}；net.pkts_up 取值集合封闭 {2.0}。流程：GET /approval/list → GET /approval/{num}（间隔 24 秒–4 分钟）；GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.80 · 依据 27 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
-        "text_en": "[oa] On workdays 08:57–12:01 (coverage 67 %, 3 dates), 192.168.1.21 opens GET /approval/{num} (view approve): 90 % of bytes up within 506–506 B, observed range 505–506 B (n = 16); 90 % of duration within 10–100, observed range 5–120 (n = 26); 90 % of net.pkts_down within 8–28, observed range 5–30 (n = 15); 90 % of net.resp_len within 10000–40000, observed range 5000–40000 (n = 15); 90 % of events per IP-hour within 5–5; http.ctype in the closed set {text/html}; net.pkts_up in the closed set {2.0}. Workflow: GET /approval/list → GET /approval/{num}; GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.80, support 27 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "text_zh": "【oa】工作日 09:02–12:03（覆盖 67 %，3 个工作日），192.168.1.21访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.95 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
+        "text_en": "[oa] On workdays 09:02–12:03 (coverage 67 %, 3 dates), 192.168.1.21 opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 800–1400, observed range 600–1400 (n = 10); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 22); 90 % of bytes up within 1.4–2 KB, observed range 1.3–2 KB (n = 10); 90 % of duration within 10–70, observed range 5–80 (n = 26); 90 % of net.pkts_down within 4–14, observed range 2–14 (n = 10); 90 % of net.resp_len within 2800–17400, observed range 2000–18000 (n = 10); 90 % of events per IP-hour within 5–5; body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; header x-client-ver matching `[0-9]\\.[0-9]\\.[0-9]`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.95, support 28 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
         "negative": false
        },
        {
-        "text_zh": "【oa】工作日 09:02–12:03（覆盖 67 %，3 个工作日），192.168.1.21访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.80 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0",
-        "text_en": "[oa] On workdays 09:02–12:03 (coverage 67 %, 3 dates), 192.168.1.21 opens POST /approval/{num}/approve (approve): 90 % of viewstate.len= within 800–1400, observed range 600–1400 (n = 10); 90 % of submitted size within 0.8–1.4 KB, observed range 0.8–1.5 KB (n = 22); 90 % of bytes up within 1.4–2 KB, observed range 1.3–2 KB (n = 10); 90 % of duration within 10–70, observed range 5–80 (n = 26); 90 % of net.pkts_down within 4–14, observed range 2–14 (n = 10); 90 % of net.resp_len within 2800–17400, observed range 2000–18000 (n = 10); 90 % of events per IP-hour within 5–5; body.fmt matching `[a-z]{4}`, body.fmt in the closed set {form}; form keys always carry id=, opinion=, sign=, viewstate=; opinion= matching `[\\u0080-\\U0010ffff]{2,8}`, opinion= in the closed set {同意, 同意，请尽快办理}; viewstate= matching `[A-Za-z0-9\\-_]{511,2046}`; header content-type matching `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`, header content-type in the closed set {application/x-www-form-urlencoded}; header user-agent matching `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`; header x-client-ver matching `[0-9]\\.[0-9]\\.[0-9]`; net.pkts_up in the closed set {2.0, 3.0}. Workflow: GET /approval/{num} → POST /approval/{num}/approve. Confidence 0.80, support 28 events, first seen 2025-09-01, last seen 2025-09-08, v1.0.",
+        "text_zh": "【mail】工作日 13:38–13:56（覆盖 57 %，2 个工作日），综合部（10.168.7.121、192.168.1.21、192.168.1.23）连接 TLS mail.corp.local（邮件）：下行字节 90 % 在 5–75 KB，全部在 1–80 KB（n = 170，下次越界概率 ≤ 2.8 %）；上行字节 90 % 在 1–200 KB，全部在 1–300 KB（n = 163，下次越界概率 ≤ 2.9 %）；时长 90 % 在 20–200，全部在 5–400（n = 163，下次越界概率 ≤ 2.9 %）；每 IP 每小时次数 90 % 在 2–8。置信 0.47 · 依据 72 次 · 首次 2025-09-04 · 最近 2025-09-08 · v1.0",
+        "text_en": "[mail] On workdays 13:38–13:56 (coverage 57 %, 2 dates), 综合部 (10.168.7.121, 192.168.1.21, 192.168.1.23) connects to TLS mail.corp.local (mail): 90 % of bytes down within 5–75 KB, all within 1–80 KB (n = 170, P(next outside) ≤ 2.8 %); 90 % of bytes up within 1–200 KB, all within 1–300 KB (n = 163, P(next outside) ≤ 2.9 %); 90 % of duration within 20–200, all within 5–400 (n = 163, P(next outside) ≤ 2.9 %); 90 % of events per IP-hour within 2–8. Confidence 0.47, support 72 events, first seen 2025-09-04, last seen 2025-09-08, v1.0.",
         "negative": false
        }
       ]
@@ -5553,7 +5757,7 @@
     "clause": "192.168.1.21 访问业务审批页面",
     "measured": "who Jaccard 1.00",
     "pass": true,
-    "statement": "【oa】工作日 09:02–12:03（覆盖 67 %，3 个工作日），综合部（192.168.1.21）访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.80 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0"
+    "statement": "【oa】工作日 09:02–12:03（覆盖 67 %，3 个工作日），综合部（192.168.1.21）访问 POST /approval/{num}/approve（审批）：viewstate.len= 90 % 在 800–1400，观测范围 600–1400（n = 10）；提交数据量 90 % 在 0.8–1.4 KB，观测范围 0.8–1.5 KB（n = 22）；上行字节 90 % 在 1.4–2 KB，观测范围 1.3–2 KB（n = 10）；时长 90 % 在 10–70，观测范围 5–80（n = 26）；net.pkts_down 90 % 在 4–14，观测范围 2–14（n = 10）；net.resp_len 90 % 在 2800–17400，观测范围 2000–18000（n = 10）；每 IP 每小时次数 90 % 在 5–5；body.fmt 取值 `[a-z]{4}`，body.fmt 取值集合封闭 {form}；表单键必含 id=、opinion=、sign=、viewstate=；opinion= 取值 `[\\u0080-\\U0010ffff]{2,8}`，opinion= 取值集合封闭 {同意, 同意，请尽快办理}；viewstate= 取值 `[A-Za-z0-9\\-_]{511,2046}`；请求头 content-type 取值 `[a-z]{11}/[a-z]\\-[a-z]{3}\\-[a-z]{4}\\-[a-z]{10}`，请求头 content-type 取值集合封闭 {application/x-www-form-urlencoded}；请求头 user-agent 取值 `[A-Z][a-z]{6}/[0-9]\\.[0-9] \\([A-Z][a-z]{6} [A-Z]{2} [0-9]{2}\\.[0-9]; [A-Z][a-z]{2}[0-9]{2}; [a-z][0-9]{2}\\) [A-Za-z0-9]{11}/[0-9]{3}\\.[0-9]{2} \\([A-Z]{5}, [a-z]{4} [A-Z][a-z]{4}\\) [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]\\.[0-9]\\.[0-9] [A-Z][a-z]{5}/[0-9]{3}\\.[0-9]{2}`；请求头 x-client-ver 取值 `[0-9]\\.[0-9]\\.[0-9]`；net.pkts_up 取值集合封闭 {2.0, 3.0}。流程：GET /approval/{num} → POST /approval/{num}/approve（间隔 43 秒–5 分钟）。置信 0.95 · 依据 28 次 · 首次 2025-09-01 · 最近 2025-09-08 · v1.0"
    },
    {
     "clause": "下午 5 点提交报告（.23、.121）",
@@ -5576,36 +5780,36 @@
  },
  "anomalies": {},
  "engine_s": {
-  "raw.action_token": 28.0,
-  "raw.client_stack": 2.0,
-  "raw.event": 12.0,
-  "derived.event_context": 8.8,
-  "behavior.resource_governor": 14.7,
-  "behavior.attr_registry": 84.8,
-  "behavior.attr_select": 110.6,
-  "behavior.conformity": 45.6,
-  "behavior.pattern_tree": 145.3,
-  "behavior.content_bounds": 10.2,
-  "behavior.payload_grammar": 2.3,
-  "behavior.binding": 20.5,
-  "behavior.time_window": 13.8,
-  "behavior.workflow": 11.1,
-  "behavior.who_groups": 6.2,
-  "behavior.system_profile": 17.7,
-  "behavior.calibration": 108.1,
-  "behavior.fusion": 316.4,
-  "behavior.risk": 158.2,
-  "behavior.incident": 16.9,
-  "behavior.governor": 279.9,
-  "behavior.explain": 0.2,
-  "behavior.facets": 3.8,
-  "behavior.views": 20.7
+  "raw.action_token": 19.2,
+  "raw.client_stack": 1.6,
+  "raw.event": 7.5,
+  "derived.event_context": 5.2,
+  "behavior.resource_governor": 10.2,
+  "behavior.attr_registry": 47.5,
+  "behavior.attr_select": 46.7,
+  "behavior.conformity": 26.7,
+  "behavior.pattern_tree": 87.0,
+  "behavior.content_bounds": 5.4,
+  "behavior.payload_grammar": 1.4,
+  "behavior.binding": 11.4,
+  "behavior.time_window": 4.1,
+  "behavior.workflow": 6.9,
+  "behavior.who_groups": 3.5,
+  "behavior.system_profile": 10.0,
+  "behavior.calibration": 71.3,
+  "behavior.fusion": 222.0,
+  "behavior.risk": 105.5,
+  "behavior.incident": 11.7,
+  "behavior.governor": 190.9,
+  "behavior.explain": 0.1,
+  "behavior.facets": 2.5,
+  "behavior.views": 11.3
  },
- "wall_s": 1476.6763728149817,
+ "wall_s": 933.7567590659964,
  "registry": "progressive_decision",
  "resource_mode": "full",
- "incidents": 18,
- "events": 1720,
- "job_s": 1507.132307767868,
- "peak_rss_mb": 1213.6
+ "incidents": 6,
+ "events": 1630,
+ "job_s": 946.9084348678589,
+ "peak_rss_mb": 1209.8
 }

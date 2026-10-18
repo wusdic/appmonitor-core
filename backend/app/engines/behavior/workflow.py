@@ -74,6 +74,7 @@ Inert unless config['progressive']['enabled'].
 """
 from __future__ import annotations
 
+import heapq
 import math
 import time
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
@@ -166,12 +167,15 @@ class WorkflowEngine(Engine):
             router = self._router(store, key, ctx.config)
             rows = 0
             ta = time.perf_counter()
-            for s in systems:
-                for ts_b, b in store.batches_since(s, EV.EVT_BATCH, st.last_batch.get(s, -math.inf)):
-                    if getattr(b, "kind", EV.KIND_TXN) != EV.KIND_TXN:
-                        continue
-                    rows += self._sessions(st, store, s, ts_b, b, router, gap, shared, off)
-                    st.last_batch[s] = ts_b
+            if len(systems) == 1:
+                for s in systems:
+                    for ts_b, b in store.batches_since(s, EV.EVT_BATCH, st.last_batch.get(s, -math.inf)):
+                        if getattr(b, "kind", EV.KIND_TXN) != EV.KIND_TXN:
+                            continue
+                        rows += self._sessions(st, store, s, ts_b, b, router, gap, shared, off)
+                        st.last_batch[s] = ts_b
+            else:
+                rows += self._family_sessions(st, store, systems, router, gap, shared, off)
             tb = time.perf_counter()
             counted = self._count(st, store, now, D, ip2g, off)
             if st.today is not None and st.ren_day != st.today:
@@ -255,8 +259,60 @@ class WorkflowEngine(Engine):
     def _sessions(self, st: DF.FlowState, store: Any, s: str, ts_b: float, b: Any,
                   router: Optional[Callable], gap: float, shared: frozenset = frozenset(),
                   off: float = 8 * 3600.0) -> int:
-        if b.n == 0:
+        bc = self._batch_ctx(st, store, s, ts_b, b)
+        if bc is None:
             return 0
+        n = 0
+        for i in np.argsort(b.ts, kind="stable").tolist():
+            n += self._row(st, bc, i, router, gap, shared, off)
+        st.n_rows += n
+        return n
+
+    def _family_sessions(self, st: DF.FlowState, store: Any, systems: List[str],
+                         router: Optional[Callable], gap: float, shared: frozenset = frozenset(),
+                         off: float = 8 * 3600.0) -> int:
+        """(round 7, evaluator; conformity owner's OC7-1) the members of a
+        replica family (one tree key, several systems) share one session state,
+        so their new rows are taken in ONE time order: every member's
+        transaction batches since its last_batch, rows merged by event time
+        (ties: member order, then batch, then row). Run member by member, a
+        session that moved between replicas within a tick read its rows out of
+        order: O-real's report form (served by oa-r2, 17:03) and generate (oa,
+        17:06) of one tick were seen generate-first, so about half of the report
+        sessions read 'generate without form', P10 held no 'generate requires
+        form' and A5 (a generate on oa-r2 with no form) was not scored on any
+        seed; the out-of-order delays also fed the replica pair's
+        missing_predecessor alarms. Each row keeps its own batch's pending list,
+        context batch and learn / mass columns; a single-member key keeps the
+        member-by-member path (_sessions), which this equals for one member."""
+        ctxs: List[Any] = []
+        streams = []
+        last: Dict[str, float] = {}
+        for mi, s in enumerate(systems):
+            for ts_b, b in store.batches_since(s, EV.EVT_BATCH, st.last_batch.get(s, -math.inf)):
+                if getattr(b, "kind", EV.KIND_TXN) != EV.KIND_TXN:
+                    continue
+                last[s] = ts_b
+                bc = self._batch_ctx(st, store, s, ts_b, b)
+                if bc is None:
+                    continue
+                k = len(ctxs)
+                ctxs.append(bc)
+                order = np.argsort(b.ts, kind="stable").tolist()
+                tsl = b.ts
+                streams.append([(float(tsl[i]), mi, k, i) for i in order])
+        n = 0
+        for _, _, k, i in heapq.merge(*streams):
+            n += self._row(st, ctxs[k], i, router, gap, shared, off)
+        for s, ts_b in last.items():
+            st.last_batch[s] = ts_b
+        st.n_rows += n
+        return n
+
+    def _batch_ctx(self, st: DF.FlowState, store: Any, s: str, ts_b: float, b: Any) -> Optional[tuple]:
+        """The per-batch columns the session pass reads (None for an empty batch)."""
+        if b.n == 0:
+            return None
         cb = store.batch_at(s, EV.EVT_CTX, ts_b)
         if cb is not None and cb.n != b.n:
             cb = None
@@ -268,89 +324,90 @@ class WorkflowEngine(Engine):
         learn = b.learn
         pend = st.pending.setdefault((s, float(ts_b)), [])
         hcache: Dict[str, int] = {}
-        order = np.argsort(b.ts, kind="stable")
-        n = 0
-        for i in order.tolist():
-            if route[i] is not None and route[i] is not EV.ABSENT:
-                rk: Optional[str] = str(route[i])
+        return (b, cb, route, sid, skey, mass, learn, pend, hcache)
+
+    def _row(self, st: DF.FlowState, bc: tuple, i: int, router: Optional[Callable], gap: float,
+             shared: frozenset, off: float) -> int:
+        """The session step of row i of a prepared batch (1 when it had a route)."""
+        b, cb, route, sid, skey, mass, learn, pend, hcache = bc
+        if route[i] is not None and route[i] is not EV.ABSENT:
+            rk: Optional[str] = str(route[i])
+        else:
+            rk = DF.route_key(lambda a, i=i: b.get(a, i))
+        if rk is None:
+            return 0
+        key = rk
+        if router is not None:
+            def get(a: str, i: int = i) -> Any:
+                v = b.get(a, i)
+                if v is EV.ABSENT and cb is not None:
+                    v = cb.get(a, i)
+                if v is EV.ABSENT and a == "net.src":
+                    return b.ip_of(i)
+                return v
+            v = router(get)
+            if v:
+                key = f"{rk}#v{v}"
+        ip = b.ip_of(i)
+        # the session key separates users only behind a shared address (NAT,
+        # VDI: P11 / B17 `shared`); elsewhere per-request cookies (health
+        # checks) would turn every request into its own session
+        kv = skey[i] if skey is not None and skey[i] not in (None, EV.ABSENT) else None
+        sk = kv if (kv is not None and ip in shared) else DF.NO_KEY
+        ts = float(b.ts[i])
+        sd = sid[i] if sid is not None and sid[i] not in (None, EV.ABSENT) else None
+        h = hcache.get(key)
+        if h is None:
+            h = hcache[key] = DF.h64(key)
+        # (round 6) a content variant also marks its route in the session's
+        # Bloom set: a requirement mined before the predecessor's node split
+        # names the bare route (lib/pdfg._seen_action)
+        hb = DF.bloom_bits(h) | (DF.bloom_bits(DF.h64(rk)) if key != rk else 0)
+        # (round 6) an address whose session keys interleave (FlowState.track_key:
+        # a SNAT proxy) is counted on its keyed sessions; its address session
+        # stays up to date for P03, which reads it, but emits nothing
+        keys = [(ip, sk)]
+        if kv is not None and sk == DF.NO_KEY and st.track_key(ip, kv, ts, gap):
+            keys = [(ip, sk), (ip, DF.KEYED_PFX + str(kv))]
+        for j, k in enumerate(keys):
+            emit = j == len(keys) - 1
+            st.sess_hll.add(k, ts)
+            e = st.sessions.get(k)
+            if e is None:
+                new = True
+            elif sd is not None:
+                new = e[0] != sd
             else:
-                rk = DF.route_key(lambda a, i=i: b.get(a, i))
-            if rk is None:
-                continue
-            key = rk
-            if router is not None:
-                def get(a: str, i: int = i) -> Any:
-                    v = b.get(a, i)
-                    if v is EV.ABSENT and cb is not None:
-                        v = cb.get(a, i)
-                    if v is EV.ABSENT and a == "net.src":
-                        return b.ip_of(i)
-                    return v
-                v = router(get)
-                if v:
-                    key = f"{rk}#v{v}"
-            ip = b.ip_of(i)
-            # the session key separates users only behind a shared address (NAT,
-            # VDI: P11 / B17 `shared`); elsewhere per-request cookies (health
-            # checks) would turn every request into its own session
-            kv = skey[i] if skey is not None and skey[i] not in (None, EV.ABSENT) else None
-            sk = kv if (kv is not None and ip in shared) else DF.NO_KEY
-            ts = float(b.ts[i])
-            sd = sid[i] if sid is not None and sid[i] not in (None, EV.ABSENT) else None
-            h = hcache.get(key)
-            if h is None:
-                h = hcache[key] = DF.h64(key)
-            # (round 6) a content variant also marks its route in the session's
-            # Bloom set: a requirement mined before the predecessor's node split
-            # names the bare route (lib/pdfg._seen_action)
-            hb = DF.bloom_bits(h) | (DF.bloom_bits(DF.h64(rk)) if key != rk else 0)
-            # (round 6) an address whose session keys interleave (FlowState.track_key:
-            # a SNAT proxy) is counted on its keyed sessions; its address session
-            # stays up to date for P03, which reads it, but emits nothing
-            keys = [(ip, sk)]
-            if kv is not None and sk == DF.NO_KEY and st.track_key(ip, kv, ts, gap):
-                keys = [(ip, sk), (ip, DF.KEYED_PFX + str(kv))]
-            for j, k in enumerate(keys):
-                emit = j == len(keys) - 1
-                st.sess_hll.add(k, ts)
-                e = st.sessions.get(k)
-                if e is None:
-                    new = True
-                elif sd is not None:
-                    new = e[0] != sd
-                else:
-                    new = ts - e[1] > gap
-                if new:
-                    if emit and e is not None and e[5]:
-                        pend.append(("end", e[1], ip, e[2], e[6]))
-                    prev, prev2, delay, earlier, bits, start = None, None, None, b"", 0, True
-                else:
-                    prev, prev2, earlier, bits, start = e[2], e[7], e[3], e[4], False
-                    delay = ts - e[1] if ts >= e[1] else None
-                if j == 0:
-                    # the route ledger sees every event (rename detection, lib/pdfg.detect_renames)
-                    # in the ADDRESS session, also once the address is keyed: a rename
-                    # compares the new route's place with the old route's, recorded
-                    # before the address was keyed (a keyed session opened by the
-                    # renamed list page has no previous route where the old page
-                    # followed the home page: pack O seed 0, D3 never confirmed
-                    # with the ledger fed from keyed sessions)
-                    st.see_route(rk, ip, DF.EPOCH_ORD + int((ts + off) // 86400.0),
-                                 DF.split_key(prev)[0] if prev else None)
-                if emit:
-                    if learn[i]:
-                        pend.append(("row", ts, ip, key, prev, delay, start, earlier, float(mass[i]), int(i),
-                                     prev2 == key and prev != key))
-                hs = DF.unpack_hashes(earlier)
-                if h in hs:
-                    hs.remove(h)
-                hs.append(h)
-                st.sessions.put(k, [sd, max(ts, e[1]) if (e is not None and not new) else ts, key,
-                                    DF.pack_hashes(hs[-DF.E_MAX:]), bits | hb,
-                                    bool(learn[i]), float(mass[i]), prev])
-            n += 1
-        st.n_rows += n
-        return n
+                new = ts - e[1] > gap
+            if new:
+                if emit and e is not None and e[5]:
+                    pend.append(("end", e[1], ip, e[2], e[6]))
+                prev, prev2, delay, earlier, bits, start = None, None, None, b"", 0, True
+            else:
+                prev, prev2, earlier, bits, start = e[2], e[7], e[3], e[4], False
+                delay = ts - e[1] if ts >= e[1] else None
+            if j == 0:
+                # the route ledger sees every event (rename detection, lib/pdfg.detect_renames)
+                # in the ADDRESS session, also once the address is keyed: a rename
+                # compares the new route's place with the old route's, recorded
+                # before the address was keyed (a keyed session opened by the
+                # renamed list page has no previous route where the old page
+                # followed the home page: pack O seed 0, D3 never confirmed
+                # with the ledger fed from keyed sessions)
+                st.see_route(rk, ip, DF.EPOCH_ORD + int((ts + off) // 86400.0),
+                             DF.split_key(prev)[0] if prev else None)
+            if emit:
+                if learn[i]:
+                    pend.append(("row", ts, ip, key, prev, delay, start, earlier, float(mass[i]), int(i),
+                                 prev2 == key and prev != key))
+            hs = DF.unpack_hashes(earlier)
+            if h in hs:
+                hs.remove(h)
+            hs.append(h)
+            st.sessions.put(k, [sd, max(ts, e[1]) if (e is not None and not new) else ts, key,
+                                DF.pack_hashes(hs[-DF.E_MAX:]), bits | hb,
+                                bool(learn[i]), float(mass[i]), prev])
+        return 1
 
     # ------------------------------------------------------------- counting
     def _trust(self, store: Any, s: str, ip: str, at: float,

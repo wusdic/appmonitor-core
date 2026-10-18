@@ -31,5 +31,7 @@ def test_hold_record_facets_are_kept_in_sorted_order():
     h._close()
     assert list(h.TF) == sorted(h.TF)
     # (round 6, pnode.WHEN_SPAN_S) a batch spanning less than a day does not
-    # judge 'when' (its checks go to the trailing day's hourly bins)
-    assert set(h.TF) == {"who", "bind", "net", "content", "~net"}
+    # judge 'when' (its checks go to the trailing day's hourly bins); (round 7,
+    # pnode '~when') every record also keeps the statement judged without its
+    # time windows, as it keeps '~net'
+    assert set(h.TF) == {"who", "bind", "net", "content", "~net", "~when"}

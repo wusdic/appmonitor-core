@@ -474,6 +474,8 @@ def main() -> None:
                          "(comma list, e.g. O-red,O60) into the gates (O-red reported separately)")
     ap.add_argument("--bounded", action="store_true", help="lib3.resource_mode = bounded")
     ap.add_argument("--scale", default=None, help="directory with scale_*.json points (pscale.run_point)")
+    ap.add_argument("--pg9", default=None,
+                    help="pg9.json of scripts/progressive_pg9.py (bounded vs full, round 7)")
     ap.add_argument("--render", default=None, help="only re-render the HTML of a saved report dir")
     ap.add_argument("--assemble", action="store_true",
                     help="run nothing: build the report from <out>/runs/O_<seed>.json already saved")
@@ -569,7 +571,11 @@ def main() -> None:
                 if "error" not in pt:
                     scale_pts.append(pt)
     scores = [dict(r["score"], pack=r["score"].get("pack") or "O") for r in runs + variants if "score" in r]
-    gates = compute_pgates(scores, scale=pg4_summary(scale_pts) if scale_pts else None)
+    pg9 = None
+    if args.pg9 and os.path.exists(args.pg9):
+        with open(args.pg9, encoding="utf-8") as f:
+            pg9 = (json.load(f) or {}).get("gate")
+    gates = compute_pgates(scores, scale=pg4_summary(scale_pts) if scale_pts else None, pg9=pg9)
     rep = _clean({"generated": time.strftime("%Y-%m-%d %H:%M:%S"), "seeds": seeds,
                   "registry": registry_label(runs, args.registry, args.bounded),
                   "gates": gates, "runs": runs,

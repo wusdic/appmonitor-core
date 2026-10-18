@@ -310,16 +310,13 @@ def test_an_accepted_regime_change_segments_the_when_calibration():
     new window) as its normal and mapped a 03:05 login's p_when 4.7e-4 to
     0.036 - no finding. Once P09 accepts the new regime the calibration
     restarts (scores before the acceptance are not this regime's exceedance
-    frequency), and arrivals inside P09's windows are calibrated apart from
-    those outside them (a lagging density's in-window scores mask nothing)."""
+    frequency)."""
     fx, asg, n_drift = _regime_fixture(accept=True)
     v = [e for e in fx.violations(T3.GA[2]) if e.extra["type"] == "when" and e.extra["event_ts"] == asg.ts[0]]
     assert asg.get("p_when", 0) <= 1e-3, asg.get("p_when", 0)
     assert v and v[0].severity == CF.Severity.MEDIUM
     # the drift itself and the new regime's logins: at most one finding (its first login)
     assert n_drift <= 1, n_drift
-    st = fx.st.get_model(ORG, ORG, CF.STATE)
-    assert any(k[-1] == CF.WHEN_OUT for k in st.cal.h._d)
 
 
 def test_a_nodes_first_extreme_score_is_not_its_routine():
@@ -344,3 +341,124 @@ def test_a_nodes_first_extreme_score_is_not_its_routine():
     assert asg.get("p_when", 0) <= 1e-3
     w = [e for e in fx.violations("10.168.7.121") if e.extra["type"] == "when"]
     assert w and w[0].severity == CF.Severity.MEDIUM
+
+
+# ------------------------------------------------------------ cost (item 4)
+def test_the_members_of_a_family_share_one_tree_context_per_tick(monkeypatch):
+    """The tree context (models, Hierarchies, memos) is a function of the tree
+    key and the tick: the members of a family build it once per tick
+    (O-servers: one build per server with a batch, ~0.4 ms each for ~0.7
+    events), and the scores are those of per-member contexts."""
+    fx, days = _family_fixture()
+    calls = []
+    real = MP.hierarchies
+
+    def counting(store, key, *a, **k):
+        calls.append(key)
+        return real(store, key, *a, **k)
+    monkeypatch.setattr(MP, "hierarchies", counting)
+    t = days[20] + 17 * 3600 + 120
+    _score_tick(fx, {"oa": [(t, "192.168.1.21", {"http.route": GEN, "http.method": "POST"})],
+                     "oa-r2": [(t - 100, "192.168.1.23", {"http.route": FORM})]})
+    assert calls.count(FAM) == 1, calls
+    # the descriptions still name the member that served the event
+    v = [e for e in fx.violations("192.168.1.21") if e.extra["type"] == "seq"]
+    assert v and all(e.system == "oa" for e in v)
+
+
+def test_an_action_recurring_across_the_members_of_a_family_is_established():
+    """The action ledger (recurring actions P10's decayed dictionary lost) is
+    the family's: an action two users performed on earlier dates, one served
+    by each replica, is the population's recurring action on either member,
+    not a 'new_action' of the second member."""
+    fx, days = _family_fixture()
+    MON = "GET oa /archive/{num}/export"
+    t = days[20] + 10 * 3600
+    _score_tick(fx, {"oa": [(t, "192.168.1.21", {"http.route": MON})]})
+    t2 = days[20] + 10 * 3600 + 86400.0 * 1.0001
+    _score_tick(fx, {"oa-r2": [(t2, "192.168.1.23", {"http.route": MON})]})
+    t3 = t2 + 86400.0
+    _score_tick(fx, {"oa-r2": [(t3, "10.168.7.121", {"http.route": MON})]})
+    asg = fx.st.batch_at("oa-r2", EV.PAT_ASSIGN, t3 + 1.0)
+    fl = str(asg.get("flags", 0))
+    assert "recurring_action" in fl and "new_action" not in fl, fl
+
+
+def test_a_value_of_a_point_mass_is_not_extreme():
+    """A numeric record whose values are all equal (O-red: net.pkts_down = 2 on
+    every oa login) has a grid of one repeated value: the grid CDF read each
+    of its values at F = 0, p = 0 - four MEDIUM incidents on clean users. The
+    CDF is mid-p across ties; a value beyond the point mass stays extreme."""
+    from app.engines.behavior.lib import pscore as SC
+    rec = {"qgrid": [2.0] * 17, "band98": [2.0, 2.0], "n_c": 300.0}
+    fast = CF._NumFast(rec)
+    assert fast.p(2.0)[0] == 1.0
+    assert fast.p(3.0)[0] < 0.01
+    # mostly 2, some 3: a 2 is the bulk, a 3 the upper part
+    g = [2.0] * 12 + [3.0] * 5
+    assert abs(SC.grid_mid_cdf(g, 2.0) - 5.5 / 16) < 1e-12
+    p2 = CF._NumFast({"qgrid": g, "band98": [2.0, 3.0], "n_c": 300.0}).p(2.0)[0]
+    assert p2 > 0.5
+    # no ties: the interpolation as before
+    q = [float(x) for x in range(17)]
+    assert SC.grid_mid_cdf(q, 4.5) == 4.5 / 16 and SC.grid_mid_cdf(q, 4.0) == 4.0 / 16
+
+
+def test_a_nodes_daily_in_window_extremes_cover_an_equally_rare_night_arrival():
+    """The 'when' calibration is one histogram per node: a node whose density
+    puts one in-window arrival a day at its lowest p (a misspecified slot it
+    sees every day) makes an equally improbable night arrival part of its
+    routine. With a separate stratum for out-of-window arrivals (tried in
+    round 7) the night arrival met an empty stratum and was a MEDIUM finding
+    (O-real seed 0, PG5 D4: a portal visitor's 22:55 login, p 9.9e-4, against
+    an unstratified calibrated 9.9e-3)."""
+    fx = T3.Fx()
+    login = "POST portal /login"
+    days = T3.workdays(45)
+    for d in days[:30]:
+        for i in range(40):
+            fx.learn("portal", login, f"10.60.{i}.{i + 1}", d + (12 * 60 + 9 * i) * 60.0)
+    nd = fx.node("portal", login)
+    fx.put("portal", MP.PWIN, nd.id, attrs={})
+    fx.st.get_model("portal", SYSTEM_ENTITY, MP.PWIN)["nodes"][0][nd.id]["when"] = {
+        "workday": [[405, 1237]], "nonworkday": []}
+    for d in days[30:44]:                               # one 06:50 login a day, inside the window
+        fx.score("portal", [(d + (6 * 60 + 50) * 60.0, "10.60.1.2", {"http.route": login,
+                                                                   "http.method": "POST"})])
+    ts = days[44] + (22 * 60 + 55) * 60.0
+    _, asg = fx.score("portal", [(ts, "10.60.58.77", {"http.route": login, "http.method": "POST"})])
+    assert "outside_windows" in str(asg.get("flags", 0))
+    assert not [e for e in fx.violations("10.60.58.77") if e.extra["type"] == "when"]
+
+
+def test_a_day_type_seen_for_part_of_one_date_does_not_judge_its_later_hours():
+    """Pack O's first non-workday (day 4): the portal login node's non-workday
+    slot counts held that morning and afternoon only (hundreds of logins),
+    so every PUB login after 20:00 - the law runs to 23:00, and the workdays
+    had them - scored p ~1e-5 against slots that had simply not happened yet
+    (16 of 28 MEDIUM false alarms on pack O seeds 0-1 and O-red). A day type
+    speaks with its own table once the node has lived through one complete
+    date of it; before that it backs off to all day types."""
+    fx = T3.Fx()
+    login = "POST portal /login"
+    fx.tree("portal", [login])
+    days = T3.workdays(5)
+    for d in days:                                   # workdays: logins 07:00-23:00
+        for i in range(64):
+            fx.learn("portal", login, f"10.60.{i}.1", d + (7 * 60 + 15 * i) * 60.0)
+    nd = fx.node("portal", login)
+    fx.put("portal", MP.PWIN, nd.id, attrs={})
+    fx.st.get_model("portal", SYSTEM_ENTITY, MP.PWIN)["nodes"][0][nd.id]["when"] = {
+        "workday": [[420, 1380]], "nonworkday": [[420, 1170]]}
+    sat = _sat(1)[0]
+    if sat < days[-1]:
+        sat += 7 * T3.DAY
+    for i in range(48):                              # the first Saturday until 19:00
+        ts = sat + (7 * 60 + 15 * i) * 60.0
+        fx.learn("portal", login, f"10.61.{i}.1", ts)
+        fx.score("portal", [(ts, f"10.61.{i}.1", {"http.route": login, "http.method": "POST"})])
+    ts = sat + (21 * 60 + 30) * 60.0
+    _, asg = fx.score("portal", [(ts, "10.61.99.9", {"http.route": login, "http.method": "POST"})])
+    assert "outside_windows" in str(asg.get("flags", 0))
+    assert asg.get("p_when", 0) > 1e-3, asg.get("p_when", 0)
+    assert not [e for e in fx.violations("10.61.99.9") if e.extra["type"] == "when"]

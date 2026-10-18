@@ -863,7 +863,13 @@ Selection uses `seeded_uniform(s, ts, row)` (lib/combine) so runs are reproducib
 
 Per learned event, P02 updates at most A_ev = 32 attribute records: every attribute
 P05 marks `split` or `target` plus a uniform random subset of the rest with
-inclusion probability `q = (32 − n_kept)/n_rest` (HT weight 1/q). Registration of
+inclusion probability `q = (32 − n_kept)/n_rest` (HT weight 1/q). (Round 7, input cost, measured
+and left unchanged:) P05 may keep more than A_ev attributes - on pack O's `oa` 67 of 171 batches
+of the recorded stream, up to 46; at 340 attributes 53-57 per batch - and every kept attribute is
+observed in full, so P02's per-event cost follows P05's kept count (×2.3 from 40 to 340
+attributes). Sampling the kept attributes, or the rest by column, in P02 was measured (pack O
+seed 0: −1 / +2 recovered patterns, P05 +20 % CPU from role churn on noisier statistics) and not
+adopted; the bound belongs with P05's selection (§16.15). Registration of
 a new name is always done (a dict insert and an `attribute_new` INFO event). Type
 rules are those of §5.3; the entropy estimate is Chao–Shen on the SpaceSaving top
 plus other mass; stability `S_a = 1 − JSD(p_{H_s}, p_{H_l})` over the top-k (with
@@ -2904,9 +2910,30 @@ the two agree), not a designer's guess: two levels that induce the same partitio
 system's sources (every department in its own /24s) are equally right.
 
 **PG9 — Non-regression and bounded mode.** Packs A–E with the progressive core on (full mode):
-gates 1–15 not worse than without it beyond the bootstrap CI. Bounded mode: gate 1 recall drop
-≤ 0.03, gate 3 FAR not worse, gate 8 twins / T9 / T19 preserved (earned or forced), live lib-3
-p95 at 35 entities ≤ 50 % of full mode.
+gates 1–15 not worse than without it beyond the bootstrap CI. Bounded mode (paired runs of the
+same pack and seed in `full` and `bounded` mode, `scripts/progressive_pg9.py`,
+`pmetrics.pg9_bounded`), as decided by the lead in round 7:
+- *Packs A and E* (nearly every IP earns its per-IP models): gate 1 recall drop ≤ 0.03, gate 3
+  incidents ≥ MEDIUM and HIGH not more than full mode, gate 8 twins / T9 / T19 preserved (earned
+  or forced), and **no cost increase**: lib-3 thread-CPU p95 per live tick ≤ full mode's.
+- *Large populations dominated by unearned IPs* (pack O with many transient public IPs: PG4's
+  IP points 5 000 and 20 000, and smaller portal populations where full mode fits in memory, on
+  the lib-3 registry): lib-3 thread-CPU p95 per tick of bounded ≤ 0.5 × full, over the ticks both
+  runs completed, judged when they span ≥ 48 h (`PG9_MIN_SPAN_H`): bounded mode's active set keeps
+  every IP seen within the 24-h linger, so on day 1 every known IP is active and the saving the
+  target is about starts after it.
+
+*Why the cost target moved (round 7).* Bounded mode keeps §10.2's earned rule: an IP whose own
+models beat its class by τ_earn bits per row keeps them, because accuracy comes first (raising
+τ_earn to 13 bits per row cut pack A's p95 by 15 % but lost T9 and added MEDIUM false alarms,
+§16.14.8). On packs A and E 30 of 37 / most IPs earn their models, so bounded mode can only save
+on the few unearned ones and "≤ 50 % of full" was not reachable there by construction (paired
+ratios 0.94 / 0.81, §16.14.8). The saving bounded mode is designed for is the one that grows with
+the population: known IPs that are idle or unearned. The ≤ 0.5 target is therefore measured where
+those dominate, and packs A / E must show only that bounded mode costs no accuracy and no CPU. The
+lib-3 cost is the thread CPU of the behaviour-layer engines without the progressive core's learners
+(P15 counted, since in bounded mode it is part of what the B-library's sets cost), live ticks only
+(`pscale.lib3_tick_cpu`); thread CPU because the two runs share a loaded machine.
 
 **PG10 — Views.** Golden rendering tests for the OA example (zh and en) from a fixture; on pack
 O at day 11 (before D1) the OA system view contains a statement matching the GA login truth
@@ -5913,6 +5940,134 @@ Round 5 (re-scored) passed 4 / 4 / 3 of 10; round 6 passes 7 / 6 / 5. Gained on 
 13. **[P03, calibration under drift]** (16.14.9, O-red A4) P03's per-node calibration (`ConfState.cal`, CAL_TYPES) keeps the low p of a drift's arrivals as the node's normal: on O-red the 综合部 login node existed before D1 moved the window, absorbed the new regime's out-of-window logins, and mapped a 03:05 login's p_when 4.7 × 10⁻⁴ to 0.036 (no finding). Proposal: when P09 accepts a regime change at a node (`when['drift']` / `regime_cut`), restart (or exclude the drift dates from) that node's 'when' calibration ring, as P04 restarts its structural levels with the coder. Validate on pack O seeds 0–4 (D1–D3 and A4 share the nodes) and O-red.
 14. **[P08 / P09, O-red D1 and D2]** On the final code O-red fails D1 (2 LOW incidents during the drift) and D2 (10.168.7.121's binding not switched to `mike.w` by day 19); both pass on `code8`. Not diagnosed.
 15. **[evaluator, O60]** The O60 agreement compares day-8 recall totals; round 5 passed it by cancellation (16.14.11 item 8). A per-pattern agreement (share of truth patterns recovered by both or neither) would not hide opposite misses.
+
+### 16.15 Round 7: evaluation harness, bounded mode and input cost (harness owner, 2026-10-17)
+
+Owner of `eval/{pmetrics,pscale,resumable,runner}.py`, `pipeline/build.py`, the report and PG9
+scripts, P00-P02's input path and lib-4 (`engines/signature`). Every change below has a
+regression test that fails without it; numbers are thread / process CPU unless marked wall.
+
+**1. PG9 under the lead's decision** (§12 PG9 rewritten with its reason). New code:
+`pscale.lib3_tick_cpu` / `lib3_cost`, `pmetrics.pg9_run_summary` / `pg9_bounded`,
+`scripts/progressive_pg9.py` (pairs | large | summary), `progressive_report.py --pg9`
+(`tests/eval/test_pg9_bounded.py`). Paired runs, seed 0, working tree of 2026-10-17 16:00
+(the B-library and lib-3 code are round 6's; full and bounded runs of a pack started together):
+
+| | Pack A full | Pack A bounded | Pack E full | Pack E bounded |
+|---|---|---|---|---|
+| gate 1 detected (within deadline) | 12/12 (8) | 12/12 (8) | 3/3 (0) | 3/3 (2) |
+| gate 3 incidents ≥ LOW / ≥ MEDIUM / HIGH | 18 / 7 / 2 | 19 / **8** / 2 | 6 / 1 / 0 | 2 / 0 / 0 |
+| gate 8 T9 / T9b / twins_ok | ✓ / ✓ / ✗ | ✓ / ✗ / – | – | – |
+| lib-3 CPU p95 / mean per live tick (ms) | 1 434 / 844 | 1 401 / 772 (**0.98** / 0.91) | 408 / 253 | 318 / 211 (**0.78** / 0.83) |
+| lib-3 wall p95 at 35 entities (ms, gate 14) | 1 390 | 1 253 | 392 | 310 |
+
+Pack E passes PG9 (no accuracy loss, 22 % less lib-3 CPU at p95). Pack A has no cost increase
+(0.98) and the same detection, but one more MEDIUM incident than full mode: the round-6 open
+issue 16.14.12 item 11 is unchanged (bounded adds oa-portal 10.30.2.23 on 03-12 05:00 and
+api-gateway 10.40.4.57 on 03-13 18:30, and lacks full mode's api-gateway 10.40.4.55 on 03-13),
+and T9b (not one of PG9's gate-8 items) is lost as in rounds 5-6. Large populations: see item 4.
+
+**2. lib-4 and timing-bound tests.** `signature.rule_match` took a store snapshot of every known
+entity on every tick; it now evaluates the entities with a record of the tick (passive records
+touch last_seen; active probes are found among the tick's records) whenever every signature needs
+a metric only such a record writes (`observation_gated`; signatures that could match on derived
+or zero-filled values keep the full scan). `signature.correlation` reads only entities with a
+primitive match inside its longest rule window. Both equal the full scan on the production
+registry at 60 s and 900 s with idle IPs, a probe-only server and derived values on idle IPs
+(`tests/test_signature_active_only.py`; the v2 tick-mode golden test passes unchanged). Per tick
+with 5 active and 20 / 400 idle known IPs (`test_bounded_mode` setup, bounded mode, CPU):
+rule_match 1.97 → 27.3 ms before, 0.96 → 1.27 ms after; the whole pipeline 45.9 → 81.0 ms
+before, 42.9 → 54.7 ms after. The remaining growth (+12 ms at 400 idle IPs) is D2 session
+(+3.0 ms), B21 cross_system (+3.1), B17 entity_link (+1.1), B27 incident (+1.0), B23 feedback
+(+0.7): each iterates every known entity per tick (open issues below). Timing tests now read CPU
+(`tests/helpers.cpu_s`), interleave the configurations they compare, use best-of-N for micro
+benchmarks and assert operation counts where they can (`test_bounded_mode`: lib-4 snapshots
+5 × 5 in both configurations); no bound was loosened. Under three extra CPU-bound processes the
+four named tests pass (bounded idle-IP: 0.056 / 0.080 s against 1.35 × + 0.05; B13: 55 ms CPU
+against 80 ms).
+
+**3. Input cost, 40 → 340 attributes** (days 3-4 of a 4-day O-scale-500 run, per input record,
+paired): P00 44 → 184 µs (×4.2) before, 47 → 89 µs (×1.9) after (`event_builder.flatten_meta`
+memoises meta leaf names, the value policy skips values it passes unchanged; both exact,
+`tests/engines/test_p00_input_cost.py`); P01 flat (32 → 34 µs); P02 234 → 532 µs (×2.3),
+unchanged. P02 observes every attribute P05 keeps in full, and P05 keeps more than A_ev = 32
+(25-27 per batch at 40 attributes, 53-57 at 340; on pack O's `oa`, 67 of the recorded stream's
+171 batches, up to 46): P02's slope is P05's kept count. Column-level sampling in P02 (rest by
+column, kept beyond A_ev) cut its calls per batch 74 → 28 and its CPU ×2.3 → ×1.5, but changed
+pack O (seed 0: FIN.finance.login#0's binding lost on days 11-21, two patterns gained on days
+19-21, precision @14 0.943 → 0.925, CE 0.069 → 0.059, P05 +20 % CPU from role churn on noisier
+statistics); not adopted (accuracy first; §6.3).
+
+**4. Large populations (PG9's ≤ 0.5 target).** Full-mode lib-3 does not fit the evaluation
+machine at PG4's IP points for a multi-day window: the paired 3-day runs at 5 000 IPs were
+killed by the kernel for memory. `progressive_pg9.py large` therefore stops a run cleanly at
+8.5 GB RSS (`_GuardGen`) and the summary compares the ticks both modes completed. Pack O with
+portal_n transient public IPs (each active on Poisson(3) of the pack's days), lib-3 registry,
+seed 0, one run at a time:
+
+| Point (7-day pack unless noted) | ticks compared | full p95 / mean (s) | bounded p95 / mean (s) | ratio p95 / mean | ratio of the mean, last hours |
+|---|---|---|---|---|---|
+| 2 000 IPs, first 30 h | 120 (no stop) | 6.72 / 2.81 | 4.42 / 1.72 | **0.66** / 0.61 | 0.56 (24-30 h) |
+| 5 000 IPs, first 33.5 h (full stopped at 8.6 GB) | 134 | 19.2 / 7.27 | 13.3 / 4.46 | **0.69** / 0.61 | 0.57 (24-33.5 h) |
+| 20 000 IPs, first 13.5 h (both stopped at ~9 GB) | 54 | 40.9 / 9.17 | 35.8 / 7.57 | **0.88** / 0.83 | 0.83 (7-13.5 h) |
+| 5 000 IPs, 2-day pack (every IP active on day 1), 14 h | 56 | 21.6 / 4.48 | 17.9 / 3.39 | 0.83 / 0.76 | – |
+
+PG9's ≤ 0.5 is not met in any window full mode can run on this machine. The ratio falls as the
+known population outgrows the active one: an IP active within the 24-h linger is in A_t and
+bounded mode saves only its unearned per-IP models; an IP idle longer leaves A_t. On day 1 every
+known IP is still in A_t (20 000 IPs: 0.83-0.93 per window); from hour 24 on, the mean ratio
+reads 0.55-0.57 at 2 000 and 5 000 IPs. Memory: at 2 000 IPs after 30 h bounded holds RSS
+3.06 GB against 3.81 GB (store 664 against 958 MB: derived 227 / 349 MB, vector rings 390 /
+427 MB, checkpoints 8 / 143 MB; models 7 921 / 14 345); at 5 000 IPs both modes reach 8.5 GB
+within ~1.5 days, because the B-library's per-entity rings of unearned IPs are released only
+after their 1-day retention.
+
+Where full mode does run past the linger window - pack O with 1 000 transient public IPs (portal
+500 → 1 000; 1 044 known IPs by hour 84), 84 h, no stop - PG9's target is met:
+
+| 1 000 IPs, 84 h | full p95 / mean (s) | bounded p95 / mean (s) | ratio p95 / mean |
+|---|---|---|---|
+| day 1 | 3.80 / 1.42 | 2.42 / 0.89 | 0.64 / 0.63 |
+| day 2 | 6.69 / 3.91 | 3.35 / 1.93 | 0.50 / 0.50 |
+| day 3 | 7.89 / 5.68 | 3.63 / 2.23 | 0.46 / 0.39 |
+| day 4 (to hour 84) | 8.39 / 6.33 | 3.51 / 2.15 | 0.42 / 0.34 |
+| **all 336 ticks** | 7.74 / 4.05 | 3.42 / 1.75 | **0.44** / 0.43 |
+
+Bounded mode's cost is flat from day 2 (p95 3.3-3.6 s) while full mode's keeps growing with the
+known population; RSS 4.28 against 5.83 GB, store 1.12 against 1.97 GB, models 10 009 against
+18 240. `pg9.json` (reports/progressive/round7_harness/pg9/): PG9 fails on pack A's gate 3 only
+(item 1); pack E and the 1 000-IP point pass; the 2 000 / 5 000 / 20 000-IP points (≤ 33.5 h of
+full mode before 8.5 GB) are reported, not judged.
+
+**5. Evaluator: EV7-1** (eval.md): PG6 anomalies are matched on the truth family of the
+anomaly's system (O-real R9 routes oa's events, the injected ones included, to the replica
+oa-r2), `tests/eval/test_pmetrics_round7.py`.
+
+**Open issues (round 7, harness owner → owners).**
+- *[D2 `derived/session.py`]* `run` loops `store.entities(system)` every tick (+3.0 ms per tick
+  at 400 idle IPs). In bounded mode iterate `pactive.entities(store, system, now, config)`
+  (A_t ∪ E_t, linger 24 h ≥ the session gaps); a returning entity catches up from
+  `clock_ts` (`_points_after`), so its state equals the full loop's.
+- *[B27 incident]* `_system` builds its keys from `store.entities(s)` every tick (+1.0 ms):
+  iterate the keys with findings this tick ∪ open incidents ∪ B26's non-zero set.
+- *[B21 cross_system +3.1 ms, B17 entity_link +1.1 ms (`ents = store.entities(s)`, `_active`
+  per entity), B23 feedback +0.7 ms]*: the same pattern.
+- *[P05, tree owner]* P05 keeps more than A_ev attributes (53-57 per batch at 340 attributes);
+  P02 observes all of them, which is P02's whole growth with attributes, and it feeds P04's work
+  too. A P05-side bound on the kept set (the spec's A_ev assumes n_kept ≤ 32), validated on
+  pack O, is the lever; P02-side sampling was measured and rejected (item 3).
+- *[B14 changepoint, bounded mode]* pack A bounded: one more MEDIUM incident than full (item 1,
+  PG9 gate 3). Diagnosed for oa-portal 10.30.2.23 on 03-12 05:00 (watch dumps of B25 in both
+  modes, `reports/progressive/round7_harness`): B25 alarms through its accumulator path on a
+  `bocpd` (B14) change alarm (axes change / shape / volume, e_day 253) that full mode does not
+  raise from the same B25 inputs (e_day 231 / 253, q_all 0.97 / 0.98). B14 runs on earned IPs only
+  in bounded mode (`changepoint.py`, `PA.is_earned`), so this IP's BOCPD run starts or resumes when
+  P15 marks it earned, and the only burn-in is BOC_WINDOW_H = 3 h of steps. Proposal: in bounded
+  mode keep a B14 run unscored until it has ≥ 24 h of its own hourly steps after a (re)start, or
+  warm it from B01's stored rows when the IP is promoted; validate on pack A / E seeds 0-1.
+- *[B-library, bounded-mode memory]* bounded mode does not change the first day's memory (5 000
+  IPs: both modes 8.5 GB at ~1.5 days): unearned IPs' per-entity rings are released only after
+  their 1-day retention. At 1 000 IPs over 84 h it holds 4.3 against 5.8 GB.
 
 ## Appendix A. Review changes (adversarial review, 2026-09-29)
 

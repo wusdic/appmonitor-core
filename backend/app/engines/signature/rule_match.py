@@ -35,11 +35,11 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 from ...core.engine import Context, Engine
 from ..behavior.lib import grains as GR
-from ...models.schema import Severity, SignatureMatch
+from ...models.schema import Severity, SignatureMatch, is_pseudo_entity
 from .store import Signature, SignatureStore
 
 
@@ -79,6 +79,34 @@ GRAIN_MAPS: Dict[str, Tuple[str, ...]] = {
 _OTHER = "__other__"
 
 
+# Which entities a tick evaluates (round 7, evaluation-harness owner). A match
+# needs every ALL metric, and one ANY metric, fresh at now (`_member` gives 0
+# for an absent metric and an AND zero collapses the match). The passive raw
+# families below are written only by the raw engines, stamped ts = now from a
+# record of this tick (add_raw touch=True, so last_seen = now); the active
+# probe's family is written touch=False, also from a record of this tick
+# (raw/active_probe.py). A signature that needs such a metric can therefore
+# match only an entity that is touched at now or has a record of this tick;
+# evaluating every known entity each tick (a store snapshot each) made the
+# tick cost grow with idle known IPs (3 -> 52 ms per tick with 400 idle IPs,
+# progressive.md 16.14.12 item 12). Signatures that could match on values
+# written without a record of this tick (derived-only, act.events zero-fill)
+# keep the scan over every known entity.
+OBSERVATION_PREFIXES: Tuple[str, ...] = ("http.", "l3.", "l4.", "tls.", "dns.", "probe.")
+
+
+def _obs_metric(metric: Any) -> bool:
+    return isinstance(metric, str) and metric.startswith(OBSERVATION_PREFIXES)
+
+
+def observation_gated(sig: Signature) -> bool:
+    """True if `sig` can only match an entity with a record of this tick: an
+    ALL metric of the observation families, or ANY metrics all of them."""
+    if any(_obs_metric(c.get("metric")) for c in sig.all):
+        return True
+    return bool(sig.any) and all(_obs_metric(c.get("metric")) for c in sig.any)
+
+
 class RuleMatchEngine(Engine):
     name = "signature.rule_match"
     layer = "signature"
@@ -86,13 +114,18 @@ class RuleMatchEngine(Engine):
     produces = ["match.*"]
     description = "Evaluates the preset signature library (fuzzy) against each entity snapshot."
 
-    def __init__(self, store: SignatureStore, min_confidence: float = 0.55, **p):
+    def __init__(self, store: SignatureStore, min_confidence: float = 0.55,
+                 scan_all: bool = False, **p):
         super().__init__(**p)
         self.sig_store = store
         self.min_confidence = min_confidence
+        # reference path (equivalence tests): evaluate every known entity each
+        # tick, as before round 7
+        self.scan_all = bool(scan_all)
         # (tick end, Δt) of the recent ticks, to pro-rate a past tick that
         # straddles the start of the 900-s window (all entities share ticks)
         self._ticks: Deque[Tuple[float, float]] = deque()
+        self.n_snapshots = 0            # entity snapshots taken (cost counter, tests)
 
     def _log_tick(self, now: float, dt: float) -> None:
         tk = self._ticks
@@ -257,18 +290,41 @@ class RuleMatchEngine(Engine):
         n = 0
         now, dt = float(ctx.now), float(ctx.window_s)
         canon = GR.canonical(ctx.config)
+        prev = self._prev_tick(now, dt)
         self._log_tick(now, dt)
+        observed: Optional[Dict[str, Set[str]]] = None
         for system in ctx.store.systems():
             sigs = self.sig_store.for_system(system)
             if not sigs:
                 continue
+            gated = [False if self.scan_all else observation_gated(sig) for sig in sigs]
             names = self._metric_names(sigs)
+            if all(gated):
+                # every signature needs a value only a record of this tick can
+                # write (module docstring "Which entities"): the entities touched
+                # at now plus those with a record of this tick (active probes)
+                if observed is None:
+                    observed = self._observed(ctx.store, now, prev, dt)
+                entities = sorted(set(ctx.store.entities_active(system, now))
+                                  | observed.get(system, set()))
+                fresh = None                                  # all of them observation-gated
+                open_sigs, open_names = [], ()
+            else:
+                entities = ctx.store.entities(system)
+                if observed is None:
+                    observed = self._observed(ctx.store, now, prev, dt)
+                fresh = set(ctx.store.entities_active(system, now)) | observed.get(system, set())
+                open_sigs = [sig for sig, g in zip(sigs, gated) if not g]
+                open_names = self._metric_names(open_sigs)
             # spec v2.1 canonical grain mode only: tick mode keeps v2's per-tick
             # reading (the golden reference, cadence.md M8)
             counters = [m for m in names if m in ADDITIVE_COUNTERS] if canon else []
             ratios = [m for m in names if m in GRAIN_WEIGHTED] if canon else []
             maps = [m for m in names if m in GRAIN_MAPS] if canon else []
-            for entity in ctx.store.entities(system):
+            for entity in entities:
+                full = fresh is None or entity in fresh
+                if not full and not open_sigs:
+                    continue
                 # fresh-only (written at this tick): a match answers "what is
                 # the entity doing right now". Without `now` the latest value
                 # of any age was used, so a host that uploaded once kept
@@ -276,7 +332,9 @@ class RuleMatchEngine(Engine):
                 # (eval: the nightly backup hosts matched on ~150 of 152 ticks,
                 # which zeroed their warm-up trust and made B26 / B28 treat
                 # them as attackers from the first live tick)
-                snap = ctx.store.snapshot(system, entity, now=ctx.now, names=names)
+                snap = ctx.store.snapshot(system, entity, now=ctx.now,
+                                          names=names if full else open_names)
+                self.n_snapshots += 1
                 if not snap:
                     continue
                 for name in maps:
@@ -294,7 +352,7 @@ class RuleMatchEngine(Engine):
                     if isinstance(v, (int, float)):
                         snap[name] = self.per_grain(ctx.store, system, entity, name,
                                                     float(v), now, dt)
-                for sig in sigs:
+                for sig in (sigs if full else open_sigs):
                     conf, terms = self._evaluate(sig, snap)
                     if conf >= self.min_confidence:
                         ctx.store.add_match(SignatureMatch(
@@ -305,6 +363,35 @@ class RuleMatchEngine(Engine):
                             evidence={t: round(snap.get(t.split(" ")[0], 0.0), 3) for t in terms}))
                         n += 1
         return n
+
+    def _prev_tick(self, now: float, dt: float) -> float:
+        """End of the previous tick (now - dt before the first one)."""
+        for t, _ in reversed(self._ticks):
+            if t < now:
+                return t
+        return now - dt
+
+    @staticmethod
+    def _observed(store: Any, now: float, prev: float, dt: float) -> Dict[str, Set[str]]:
+        """{system: entities with a record of this tick}: the newest records
+        of the store's observation log whose ts lies after the start of the
+        previous tick, i.e. records up to one tick late still count (a
+        superset is harmless: the snapshot reads only values written at now;
+        passive records are covered exactly by last_seen, so this matters only
+        for active-probe records, which are our own and arrive with their
+        tick). O(records of two ticks), never O(known entities)."""
+        since = min(prev, now - dt) - dt
+        out: Dict[str, Set[str]] = {}
+        lim = 1024
+        while True:
+            obs = store.recent_observations(lim)
+            for o in obs:
+                if o.ts > since and o.entity and not is_pseudo_entity(o.entity):
+                    out.setdefault(o.system, set()).add(o.entity)
+            if len(obs) < lim or obs[0].ts <= since or lim >= 1 << 22:
+                break
+            lim *= 4
+        return out
 
     @staticmethod
     def _metric_names(sigs) -> Tuple[str, ...]:

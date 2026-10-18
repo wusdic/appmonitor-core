@@ -7,12 +7,11 @@ constraint asserted here is fitted by the engines under test."""
 from __future__ import annotations
 
 import random
-import time
 
 import numpy as np
 import pytest
 
-from helpers import set_trust
+from helpers import cpu_s, set_trust
 from pcontent_oracle import (OracleLearner, batch_of, ga_login_events, ga_login_row, org_truth,
                              statement)
 
@@ -292,10 +291,10 @@ def _scale_point(n_ip: int, n_attr: int, days: int = 4, per_day: int = 750, seed
         store.add_batch("portal", EV.EVT_BATCH, T, b)
         orc.learn(b)
         c = _ctx(store, T + 3600)
-        t0 = time.perf_counter()
+        t0 = cpu_s()                   # process CPU, not wall (helpers.cpu_s, round 7)
         for e in engs:
             e.safe_run(c)
-        cpu += time.perf_counter() - t0
+        cpu += cpu_s() - t0
         n_ev += per_day
     return _deep(store, "portal"), cpu / n_ev * 1e6
 

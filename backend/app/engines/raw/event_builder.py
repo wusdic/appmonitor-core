@@ -115,6 +115,48 @@ def channel(o: Observation) -> str:
     return "l4"
 
 
+_LEAF_NAMES: Dict[Tuple[str, str], str] = {}   # (prefix, key) -> attribute name of a scalar leaf
+_LEAF_NAMES_MAX = 1 << 15
+_FLAT_SCALAR = frozenset({str, int, float, bool, type(None)})
+
+
+def flatten_meta(prefix: str, obj: Any, out: Dict[str, Any], max_leaves: int = 64) -> int:
+    """EV.flatten(prefix, obj, out, max_leaves) - the same names, values,
+    insertion order and return value - with a fast path for the common case,
+    a plain dict whose first max_leaves values are scalars of exact type str,
+    int, float, bool or None (adapter / WAF meta fields): each leaf's name is
+    memoised per (prefix, key) instead of recomputed (template_key and
+    attr_name, three regular-expression passes) for every field of every
+    event, and the abstract-base-class tests of the general walk are skipped.
+
+    Why (round 7, input cost): with 300 synthetic meta fields (PG4 attribute
+    axis) the general walk cost P00 ~350 us per event, more than the rest of
+    P00 together, and grew with every field an event carries; anything else
+    (nested values, lists, other scalar types, dict subclasses) goes through
+    EV.flatten unchanged (tests/engines/test_p00_input_cost.py)."""
+    if type(obj) is not dict:
+        return EV.flatten(prefix, obj, out, max_leaves=max_leaves)
+    items = list(obj.items())[:max_leaves]
+    for _, v in items:
+        if v.__class__ not in _FLAT_SCALAR:
+            return EV.flatten(prefix, obj, out, max_leaves=max_leaves)
+    names = _LEAF_NAMES
+    n = 0
+    for k, v in items:
+        if v is None:
+            continue                          # EV.flatten writes nothing for None
+        nm = names.get((prefix, k)) if k.__class__ is str else None
+        if nm is None:
+            nm = EV.attr_name(f"{prefix}.{EV.template_key(str(k))}")
+            if k.__class__ is str:
+                if len(names) >= _LEAF_NAMES_MAX:
+                    names.clear()
+                names[(prefix, k)] = nm
+        out[nm] = int(v) if v.__class__ is bool else v
+        n += 1
+    return n
+
+
 def learning_strata(batch: EV.EventBatch, root_attr: Optional[Tuple[str, int]], hier: Any) -> List[Any]:
     """Stratum of every row (§6.2.2), column-wise: (ev.ch, repr(level value of
     the root's split attribute)) once the root has split, else the bootstrap
@@ -237,7 +279,7 @@ class EventBuilderEngine(Engine):
         ex = o.extra or {}
         meta = ex.get("meta")
         if isinstance(meta, Mapping):
-            EV.flatten("meta", meta, a, max_leaves=64)
+            flatten_meta("meta", meta, a, max_leaves=64)
         for k, v in ex.items():                        # unknown scalar extras are open too
             if k not in _EXTRA_KNOWN and isinstance(v, (str, int, float)) and not isinstance(v, bool):
                 a[EV.attr_name("x", k)] = v
@@ -347,7 +389,7 @@ class EventBuilderEngine(Engine):
                         # per-event adapter / WAF fields (§5.1.2): an aggregated
                         # record carries them on its ev_sample rows, not on the record
                         if isinstance(r.get("meta"), Mapping):
-                            EV.flatten("meta", r["meta"], e, max_leaves=64)
+                            flatten_meta("meta", r["meta"], e, max_leaves=64)
                     elif count > 1:
                         flags |= EV.FLAG_APPROX
                     if l7:

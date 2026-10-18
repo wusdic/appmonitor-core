@@ -519,12 +519,12 @@ def _grid_cdf(qgrid: Sequence[float], y: float) -> float:
     g = np.asarray(qgrid, dtype=np.float64)
     if g.size < 2 or not np.all(np.isfinite(g)):
         return NAN
-    ps = np.linspace(0.0, 1.0, g.size)
-    if y <= g[0]:
-        return 0.0
-    if y >= g[-1]:
-        return 1.0
-    return float(np.interp(y, g, ps))
+    # (round 7, evaluator; conformity owner's OC7-3) mid-p across ties, as
+    # P03's _NumFast (FIX9, pscore.grid_mid_cdf): the plain interpolation read
+    # a value AT the grid's minimum as F = 0, i.e. p = 0 for every value of a
+    # point mass (oa login net.pkts_down 2 against the range 2-2); identical to
+    # np.interp where the grid has no ties
+    return float(pscore.grid_mid_cdf(g.tolist(), float(y)))
 
 
 def p_value(rec: Mapping[str, Any], v: Any, num: Any = None, t: Optional[float] = None,

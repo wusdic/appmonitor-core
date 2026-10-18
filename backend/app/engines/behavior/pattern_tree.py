@@ -814,13 +814,13 @@ class PatternTreeEngine(Engine):
                             return v
                 return ip if nm == "net.src" else ABSENT
             trust, quar = self._trust(lc, s, ip, ts_b)
-            if quar:
-                self._hold(m, s, ip, ts, kind, b, cb, i, float(mass[i]))
-                continue
             damp = 1.0
             if damp_col is not None:
                 d = float(damp_col[i])
                 damp = d if d == d else 1.0
+            if quar:
+                self._hold(m, s, ip, ts, kind, b, cb, i, float(mass[i]), damp)
+                continue
             f = trust * damp
             if f <= 0.0:
                 continue
@@ -957,6 +957,23 @@ class PatternTreeEngine(Engine):
             if nd.ref is not None and nd.state in PN.CONFIDENT_STATES:
                 if not suspicious and factor >= 1.0 - 1e-9:
                     self._hold_check(lc, nd, get, keys, daytype, minute, ts, omega, mass / rho, day)
+                elif not suspicious and 0.0 < damp < 1.0 and factor >= damp * (1.0 - 1e-9):
+                    # (round 7) a row P03 damped (an outlier of the node's
+                    # reference: an arrival outside its windows, a value outside
+                    # its band) from a trusted source it does not find foreign
+                    # is the pattern's own traffic: the held-out data the
+                    # statement is judged on contains it. Unchecked (M45), the
+                    # record saw only the rows that agreed with the reference:
+                    # on O-real (35 d, seed 0) node statements stated 0.973 in
+                    # the top bin and held 0.937 - legit traffic that drifted
+                    # (R items: new schedules, readdressed sources) was damped,
+                    # never tested, and the statement's confidence stayed high
+                    # while it failed the evaluator's held-out events (who /
+                    # when: 93 of 107 failures). Weighed at its undamped unit; a
+                    # low-trust row (B28: a source under incident) still is not
+                    # a check, nor a source P03 found foreign (above / below)
+                    self._hold_check(lc, nd, get, keys, daytype, minute, ts, omega / max(factor, 1e-9),
+                                     None, day, outlier=True)
                 elif suspicious and nd.who.support(keys, ip, ts):
                     # (round 6) a row P03 damped as foreign whose source's colleagues
                     # (its /24, its learned group) use the node is a check of the
@@ -992,7 +1009,7 @@ class PatternTreeEngine(Engine):
     def _hold_check(lc: _LC, nd: PN.Node, get: Callable[[str], Any], keys: Sequence[Any],
                     daytype: int, minute: float, ts: float, omega: float,
                     mass: Optional[float] = None, day: Optional[int] = None,
-                    who_only: bool = False) -> None:
+                    who_only: bool = False, outlier: bool = False) -> None:
         """Held-out check of one learned event against the node's statement as
         of its last reference snapshot (built from earlier data only): the
         prequential record behind the node's calibrated confidence
@@ -1065,7 +1082,9 @@ class PatternTreeEngine(Engine):
         # of >= GNUM_SHARE of its mass each (refreshed daily), only the request's
         # own numeric attributes (facet 'content', not transport measures)
         gsum = None
-        if hg is not None and not who_only:
+        # (round 7) an outlier row (P03 damped it) is a check of the statement,
+        # not a sample of the group's numeric summaries (its bands)
+        if hg is not None and not who_only and not outlier:
             dk = int(ts // 86400.0)
             gq = nd.meta.get("gnum_q")
             if gq is None or gq[0] != dk:
@@ -2970,7 +2989,7 @@ class PatternTreeEngine(Engine):
 
     # ---------------------------------------------------------------- held
     def _hold(self, m: PT.PTreeModel, s: str, ip: str, ts: float, kind: int, b: EV.EventBatch,
-              cb: Optional[EV.EventBatch], i: int, mass: float) -> None:
+              cb: Optional[EV.EventBatch], i: int, mass: float, damp: float = 1.0) -> None:
         aux = self.aux(m)
         row: Dict[str, Any] = {}
         for nm in b.names():
@@ -2990,7 +3009,9 @@ class PatternTreeEngine(Engine):
             q = aux["held"][(s, ip)] = deque(maxlen=HELD_PER_IP)
         if len(q) == q.maxlen:
             aux["held_n"] -= 1
-        q.append((ts, kind, row, mass))
+        # (round 7) with P03's damping of the row: a release restores the
+        # source's trust, not the row's verdict
+        q.append((ts, kind, row, mass, float(damp)))
         aux["held_n"] += 1
         while aux["held_n"] > HELD_MAX:                    # FIFO over the tree
             oldest = min(aux["held"], key=lambda k: aux["held"][k][0][0] if aux["held"][k] else math.inf)
@@ -3012,7 +3033,9 @@ class PatternTreeEngine(Engine):
                 continue
             rel = ctl.get("release")
             keep: Deque = deque(maxlen=HELD_PER_IP)
-            for ts, kind, row, mass in q:
+            for e in q:
+                ts, kind, row, mass = e[:4]
+                dmp = float(e[4]) if len(e) > 4 else 1.0
                 if lc.now - ts > HELD_EXPIRE_S:
                     aux["held_n"] -= 1
                     continue
@@ -3028,11 +3051,20 @@ class PatternTreeEngine(Engine):
                         # (M29; measured on pack O: A8's and A1's held approval rows were
                         # released and made the finance approval statement 192.168.2.0/24
                         # (3 IPs) on day 21 instead of 192.168.2.10)
+                        # (round 7) ... at the weight P03 gave the row: P06's ledger
+                        # takes P03's outliers out of the key presences at mass x
+                        # damp (content_bounds._ledger), and P04 learned a released
+                        # row at the full mass - pack O seed 2, day 21: A10's 150
+                        # comment posts without viewstate, quarantined, damped 0.1
+                        # by P03 and released the same day, were learned at 10x the
+                        # ledger's weight and made viewstate optional (0.77) at the
+                        # portal comment node (PUB.portal.visit#3 missed at day 21)
+                        f *= dmp
                         self._learn_one(lc, tr, s, kind, get, ip, ts, mass * f, f,
                                         row.get("sess.key", "∅"), 0, True)
                         n += 1
                     continue
-                keep.append((ts, kind, row, mass))
+                keep.append(e)
             if keep:
                 aux["held"][(hs, ip)] = keep
             else:

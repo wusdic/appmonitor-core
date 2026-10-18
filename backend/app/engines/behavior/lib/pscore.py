@@ -8,13 +8,14 @@ function returns NaN when the model cannot speak (unscored, never 1).
     cat_p(pnode.CatSummary, value, t, parent_pred=None, alpha=2)   HDR p (§6.5.3 predictive)
     who_p(pnode.WhoSummary, key_by_level, t, n_days)               p_who, closed level, U
     when_p(pnode.WhenSummary, daytype, minute, t)                 HDR p over 96 slots (§6.13)
-    numeric_p(cdf, n)  /  tail_p(y, u, xi, sigma, tail_mass)  /  conformal_rank_p(k, n)
+    numeric_p(cdf, n)  /  grid_mid_cdf(qgrid, y)  /  tail_p(y, u, xi, sigma, tail_mass)  /  conformal_rank_p(k, n)
     invariant_p(n_viol, n);  unseen_p(U);  dual_anchor(p_cur, p_ref)
     content_p(ps) = min(1, m min p);  event_p(ps) = min(1, 5 min p)
     tick_p(p_min, n) (Sidak per tick);  day_p(p_min, n_day) (per-day multiplicity, §6.16.3)
 """
 from __future__ import annotations
 
+import bisect
 import math
 from typing import Any, Dict, Hashable, Iterable, Optional, Sequence, Tuple
 
@@ -192,6 +193,28 @@ def numeric_p(cdf: float) -> float:
         return NAN
     F = min(1.0, max(0.0, float(cdf)))
     return float(min(1.0, 2.0 * min(F, 1.0 - F)))
+
+
+def grid_mid_cdf(ql: Sequence[float], y: float) -> float:
+    """The CDF of y under a quantile grid ql (sorted, levels i / (m - 1)),
+    mid-p across ties (round 7): a value equal to a run of grid points
+    ql[jl..jr-1] gets the middle of its CDF jump, (F(y-) + F(y)) / 2 with
+    F(y-) = jl / (m - 1) and F(y) = (jr - 1) / (m - 1); between grid points
+    the linear interpolation of np.interp. The plain interpolation read a
+    value AT the grid's minimum as F = 0 (p = 0) - and every value of a
+    point mass: O-red's oa login node (net.pkts_down 2 on every login,
+    grid all 2.0) put the next login's 2 at p = 0, four MEDIUM incidents."""
+    m1 = len(ql) - 1
+    if y < ql[0]:
+        return 0.0
+    if y > ql[m1]:
+        return 1.0
+    jl = bisect.bisect_left(ql, y)
+    jr = bisect.bisect_right(ql, y)
+    if jr > jl:
+        return min(1.0, max(0.0, 0.5 * (jl + jr - 1) / m1))
+    x0, x1 = ql[jl - 1], ql[jl]
+    return ((jl - 1) + ((y - x0) / (x1 - x0) if x1 > x0 else 0.0)) / m1
 
 
 def conformal_rank_p(n_as_extreme: float, n: float) -> float:

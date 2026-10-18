@@ -149,3 +149,114 @@ def test_a_confirmed_node_without_a_reference_states_the_pooled_base_rate():
     eng._hold_priors(m, 2, MON + DAY)
     p = new.p_hold(MON + DAY)
     assert p is not None and p >= 0.85, p
+
+
+def _when_sim(damp_half: bool):
+    """GET /a ten times a workday hour (the action's node, confirmed and
+    referenced by day 3) and POST /b; from day 4 P03 damps every other /a row
+    (an arrival it finds unlikely) against the /a node itself."""
+    from ptree_sim import Sim, daily
+    from app.engines.behavior.lib import pevent as EV
+    sel = {"targets_sys": {0: ["net.bytes_up"]}, "split_cands": {0: []}, "roles": {}}
+    sim = Sim(sel=sel)
+
+    def a_node(tr):
+        for nd in tr.nodes.values():
+            if any(a == "http.route" and set(vals) == {"GET x /a"} and not neg for a, _l, vals, neg in nd.ctx):
+                return nd
+        return None
+
+    def damp(s):
+        b = s.st.batch_at("oa", EV.EVT_BATCH, s.now)
+        tr = s.tree()
+        if b is None or tr is None:
+            return
+        nd = a_node(tr)
+        rows = []
+        for i in range(b.n):
+            if (damp_half and nd is not None and s.now >= MON + 3 * DAY and b.get("http.route", i) == "GET x /a"
+                    and int(b.ts[i]) % 2 == 0):
+                rows.append({"damp": 0.2, "conf": float(nd.id), "p_who": 1.0, "p_when": 0.001})
+            else:
+                rows.append({"damp": 1.0})
+        s.st.add_batch("oa", EV.PAT_ASSIGN, s.now, b.aligned(EV.cols_from_rows(b.n, rows)))
+    sim.hooks.append(damp)
+
+    def day(d, t0, rng):
+        ev = [(float(int(t0 + 8 * 3600 + h * 1800 + rng.uniform(0, 600))), "oa", "10.0.0.%d" % (h % 5),
+               {"http.route": "GET x /a", "net.bytes_up": 500.0}) for h in range(10)]
+        ev += [(t0 + 15 * 3600 + k * 600, "oa", "10.0.0.%d" % k, {"http.route": "POST x /b", "net.bytes_up": 900.0})
+               for k in range(4)]
+        return ev
+    sim.add(daily(day, 10, seed=3))
+    sim.run_until(MON + 10 * DAY)
+    nd = a_node(sim.tree())
+    assert nd is not None and nd.meta.get("hold") is not None
+    c = nd.meta["hold"].c.get("when")                # checks of the node's windows: [n, hits, nominal]
+    return 0.0 if c is None else float(c[0])
+
+
+def test_rows_p03_damped_from_trusted_sources_are_held_out_checks():
+    """(round 7, calibration) A row P03 damped as an outlier of a node's
+    reference - not as a foreign source, not under an incident - is the
+    pattern's own traffic, and the evaluator's held-out events include it.
+    Before, such rows were never checks (M45): when legit traffic drifted
+    (O-real R items) the record saw only the rows that agreed with the
+    reference, and node statements stated 0.973 in the top bin while they
+    held 0.937. With every other /a row damped from day 4 the node's record
+    holds as many checks as without damping (round-6 code: ~0.6 as many)."""
+    n_plain = _when_sim(False)
+    n_damped = _when_sim(True)
+    assert n_plain > 0
+    assert n_damped >= 0.9 * n_plain, (n_damped, n_plain)
+
+
+def _released_gain(damp: float) -> float:
+    """Evidence a node gains from a quarantined source's 5 rows released by
+    B28, when P03 had damped each of them by `damp`."""
+    from ptree_sim import Sim
+    from app.engines.behavior.lib import m_ptree as MP
+    from app.engines.behavior.lib import pevent as EV
+    from app.engines.behavior.lib import psketch as PS
+    sel = {"targets_sys": {0: ["net.bytes_up"]}, "split_cands": {0: []}, "roles": {}}
+    sim = Sim(sel=sel)
+    q_ip = "10.9.9.1"
+
+    def quarantine(s):
+        s.st.add_vec("oa", q_ip, "behavior.quarantine", s.now, [1.0])
+    sim.hooks.append(quarantine)
+
+    def p03(s):
+        b = s.st.batch_at("oa", EV.EVT_BATCH, s.now)
+        if b is None:
+            return
+        rows = [{"damp": damp if b.ip_of(i) == q_ip else 1.0} for i in range(b.n)]
+        s.st.add_batch("oa", EV.PAT_ASSIGN, s.now, b.aligned(EV.cols_from_rows(b.n, rows)))
+    sim.hooks.append(p03)
+    t = MON + 9 * 3600.0
+    sim.add([(t + i * 60, "oa", ip, {"http.route": "GET x /a", "net.bytes_up": 500.0})
+             for i in range(5) for ip in (q_ip, "10.0.0.1")])
+    sim.run_until(MON + 14 * 3600.0)
+    root = sim.tree().nodes[0]
+    aux = sim.p04.aux(MP.get_ptree(sim.st, "oa"))
+    assert len(aux["held"][("oa", q_ip)]) == 5
+    sim.hooks.clear()
+    n0 = root.n_eff.get(PS.CH_S, sim.now)
+    sim.st.put_model("oa", q_ip, "model.control", {"version": 1, "release": (t - 1, t + 3600)})
+    sim.tick()
+    return root.n_eff.get(PS.CH_S, sim.now) - n0
+
+
+def test_a_released_row_keeps_the_damping_p03_gave_it():
+    """(round 7) B28's release restores a quarantined source's trust, not its
+    rows' verdict: a row P03 damped as an outlier is learned at that damping
+    when released. P06's ledger takes P03's outliers out of the key presences
+    at mass x damp; P04 learned released rows at the full mass - pack O seed
+    2, day 21: A10's 150 comment posts without viewstate (damped 0.1,
+    quarantined, released the same day) made viewstate optional at the portal
+    comment node (PUB.portal.visit#3 missed at day 21). Round-6 code: the
+    damped rows' gain equals the undamped rows' gain."""
+    full = _released_gain(1.0)
+    damped = _released_gain(0.1)
+    assert full > 0
+    assert damped <= 0.2 * full, (damped, full)

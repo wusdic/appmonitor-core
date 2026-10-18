@@ -1503,6 +1503,11 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
             calib.append([round(float(s.confidence), 4), int(bool(h["ok"])), int("|" in s.pattern_id),
                           int(ob)])
     depths = [s.depth for s in stmts if s.confirmed and math.isfinite(s.depth)]
+    stmt_depth: Dict[str, float] = {}
+    for s in stmts:
+        if s.confirmed and math.isfinite(s.depth) and s.pattern_id:
+            k = str(s.pattern_id)
+            stmt_depth[k] = max(float(s.depth), stmt_depth.get(k, -math.inf))
     return {
         "day": day, "n_truth": len(rows), "n_stmt": len(stmts),
         "n_confirmed": sum(1 for s in stmts if s.confirmed),
@@ -1517,6 +1522,7 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
         "n_unjudged": unjudged, "n_duplicate": dups,
         "ece": ece(conf, obs), "calib": calib,
         "mean_depth": float(np.mean(depths)) if depths else None,
+        "stmt_depth": stmt_depth,
         "per_pattern": {k: {"recovered": v["recovered"], "components": v["components"],
                             "period": v["period"], "stmt": v["stmt"]} for k, v in per.items()},
         "stmt_conf": {k: _stmt_conf(stmts, pt.by_tid[k]) for k, v in per.items() if v["recovered"]},
@@ -1568,7 +1574,21 @@ def pg2_convergence(pg1: Mapping[int, Mapping[str, Any]], pt: PTruth,
                             is not None and pg1[d]["recall_by_period"][period] >= 0.8), None)
     dep = [(d, pg1[d].get("mean_depth")) for d in tdays if d < drift_days[0]
            and pg1[d].get("mean_depth") is not None]
-    depth_ok = all(b[1] >= a[1] - 1e-9 for a, b in zip(dep, dep[1:])) if len(dep) >= 2 else None
+    depth_mean_ok = all(b[1] >= a[1] - 1e-9 for a, b in zip(dep, dep[1:])) if len(dep) >= 2 else None
+    # (round 7, evaluator; tree owner's OI-b) "statements specialise deeper over
+    # time" is judged on a FIXED cohort, as the confidence trend (round 4): per
+    # step the median depth change of the statements confirmed on both days.
+    # The mean over whatever is confirmed each day falls when new route nodes
+    # are confirmed at depth 1 although no statement lost depth (pack O seed 1,
+    # round 6: days 6 -> 7 and 8 -> 9). Runs scored before round 7 have no
+    # stmt_depth and keep the mean check.
+    pre = [d for d in tdays if d < drift_days[0]]
+    if any(pg1[d].get("stmt_depth") is not None for d in pre):
+        depth_steps = _paired_steps(pg1, pre, "stmt_depth", None)
+        depth_ok = all(x[3] >= -1e-9 for x in depth_steps) if depth_steps else None
+    else:
+        depth_steps = None
+        depth_ok = depth_mean_ok
     unchanged = {r["tid"] for r in pt.rows if int(r["valid_from_day"]) == 1
                  and int(r["valid_to_day"]) > pt.n_days}
     med_conf = [(d, _median(v for k, v in (pg1[d].get("stmt_conf") or {}).items()
@@ -1603,6 +1623,7 @@ def pg2_convergence(pg1: Mapping[int, Mapping[str, Any]], pt: PTruth,
             "recall_violations": viol, "recall_monotone": (not viol) if rec else None,
             "recall_violations_daily": rec_viol(days), "trend_days": tdays,
             "days_to_80": ttr, "depth_nondecreasing": depth_ok,
+            "depth_steps": depth_steps, "depth_mean_nondecreasing": depth_mean_ok,
             "median_conf": med_conf, "conf_steps": conf_steps, "conf_nondecreasing": conf_ok,
             "median_U": med_u, "U_steps": u_steps, "U_nonincreasing": u_ok,
             "calibration": cal, "calibration_by_kind": cal_kind,
@@ -1926,12 +1947,14 @@ def _d4_drift_incidents(run: Any, pt: "PTruth", dr: Mapping[str, Any],
     return out
 
 
-def _incidents_on(run: Any, system: str, ips: Iterable[str]) -> List[Dict[str, Any]]:
+def _incidents_on(run: Any, system: Any, ips: Iterable[str]) -> List[Dict[str, Any]]:
+    """Incidents of `system` (a name, or a set of names) on any of `ips`."""
     ips = set(ips)
+    systems = {system} if isinstance(system, str) else set(system)
     out = []
     for inc in getattr(run, "incidents", None) or []:
         ents = {inc.get("entity")} | set(inc.get("entities") or [])
-        if inc.get("system") == system and ents & ips:
+        if inc.get("system") in systems and ents & ips:
             out.append(inc)
     return out
 
@@ -2101,7 +2124,14 @@ def pg6_anomalies(run: Any, pt: PTruth, sbd: Mapping[int, List[LStmt]]) -> Dict[
         tick_end = t_first + dt - ((t_first - (pt.day_start[0] if pt.day_start else 0.0)) % dt)
         exp_types = set(row.get("expected_types") or [])
         exp_flags = set(row.get("expected_flags") or [])
-        hits = [e for e in pvs if e.get("system") == row["system"] and e.get("entity") in ents
+        # (round 7, evaluator) the anomaly's system and the truth family it is
+        # in: a load-balanced replica (O-real R9: oa / oa-r2) receives half of
+        # oa's events, the injected ones included, so an anomaly of 'oa' may be
+        # observed - and detected - on oa-r2. The IP set and the time window
+        # still have to match. (O-real seed 1: A4 detected on oa-r2, MEDIUM,
+        # was counted as missed; conformity owner's EVAL ISSUE.)
+        fam = pt.family_of(row["system"])
+        hits = [e for e in pvs if e.get("system") in fam and e.get("entity") in ents
                 and t_first <= float(e["ts"]) <= tick_end + dt]
         # a missing required predecessor is sequence evidence whatever finding
         # type P03 merged it into (its content finding carries the flag)
@@ -2109,7 +2139,7 @@ def pg6_anomalies(run: Any, pt: PTruth, sbd: Mapping[int, List[LStmt]]) -> Dict[
                  or ("seq" in exp_types and "missing_predecessor" in _ev_flags(e))]
         dl = max(4 * dt, 3600.0)
         req = sev_rank(row.get("required_severity", "low"))
-        incs = _incidents_on(run, row["system"], ents)
+        incs = _incidents_on(run, fam, ents)
         inc_ok = any(_inc_max_sev_between(i, float(row["t_start"]), t_first + dl) >= req for i in incs)
         tp = [i for i in incs if _inc_max_sev_between(i, float(row["t_start"]), t_first + dl) >= req]
         top_ok = None
@@ -2124,7 +2154,7 @@ def pg6_anomalies(run: Any, pt: PTruth, sbd: Mapping[int, List[LStmt]]) -> Dict[
         if row.get("check_days"):
             later = int(max(row["check_days"]))
             t0, t1 = pt.day_start[later - 1], pt.day_end(later)
-            rec["who_on_last_day"] = any(e.get("system") == row["system"] and e.get("entity") in ents
+            rec["who_on_last_day"] = any(e.get("system") in fam and e.get("entity") in ents
                                          and t0 <= float(e["ts"]) < t1 and _ev_type(e) == "who"
                                          for e in pvs)
             hn = row.get("heavy_node") or {}
@@ -2889,7 +2919,7 @@ def compute_pgates(scores: Sequence[Mapping[str, Any]],
                      lambda s: _ttr_ok(s, "daily", 7)),
         _share_check("weekly patterns: 80 % recall by day 21", O,
                      lambda s: _ttr_ok(s, "weekly", 21)),
-        _share_check("mean depth non-decreasing before day 12 (days 3-10)", O,
+        _share_check("statement depth non-decreasing before day 12 (days 3-10, paired)", O,
                      lambda s: s["pg2"]["depth_nondecreasing"]),
         _share_check("confidence of unchanged patterns non-decreasing (paired, days 3-21 ex. drift)", O,
                      lambda s: s["pg2"]["conf_nondecreasing"]),
@@ -3041,6 +3071,109 @@ def pg9_compare(gates_on: Mapping[str, Any], gates_off: Mapping[str, Any]) -> Di
                             f"not worse than {b.get('value')}", not worse))
     return gate("PG9 non-regression", sum(1 for c in checks if c["pass"]),
                 "no gate worse with the core on", checks)
+
+
+# --------------------------------------------------------------------------- #
+# PG9 bounded mode (round 7, lead decision)
+# --------------------------------------------------------------------------- #
+# Bounded mode keeps §10.2's earned rule (accuracy first): an IP whose own
+# models beat its class by tau_earn bits per row keeps them. On packs A and E
+# nearly every IP earns its models (pack A: 30 of 37), so bounded mode cannot
+# halve their cost and PG9 asks there only that it costs no accuracy (gates 1,
+# 3, 8) and no CPU. The <= 0.5 cost target applies where unearned IPs dominate:
+# large populations of transient addresses (PG4's IP points, pack O variants
+# with many portal IPs).
+PG9_RECALL_DROP = 0.03
+PG9_LARGE_RATIO = 0.5
+# a large-population point is judged only over >= 48 h: bounded mode's active
+# set keeps every IP seen within the 24-h linger, so on day 1 every known IP is
+# active and bounded mode can save only the unearned per-IP models; the saving
+# the target is about (known but idle or unearned IPs) starts after it
+PG9_MIN_SPAN_H = 48.0
+
+
+def pg9_run_summary(score: Mapping[str, Any], cost: Mapping[str, Any]) -> Dict[str, Any]:
+    """The parts of a lib-3 run's metrics.score_run that PG9 compares, plus
+    its lib-3 CPU (pscale.lib3_cost)."""
+    sc = list(score.get("scenarios") or [])
+    det = sum(1 for x in sc if x.get("detected"))
+    far = score.get("far") or {}
+    idn = score.get("identification") or {}
+
+    def _all(v: Any) -> Optional[bool]:
+        if v is None:
+            return None
+        if isinstance(v, (list, tuple)):
+            return None if not v else bool(all(v))
+        return bool(v)
+    return {"pack": score.get("pack"), "seed": score.get("seed"), "n_scenarios": len(sc),
+            "detected": det, "recall": det / len(sc) if sc else None,
+            "within_deadline": sum(1 for x in sc if x.get("within_deadline")),
+            "n_low": far.get("n_low"), "n_medium": far.get("n_medium"), "n_high": far.get("n_high"),
+            "twins_ok": _all(idn.get("twins_ok")), "t9": _all(idn.get("t9")),
+            "t9b": _all(idn.get("t9b")), "t19": _all(idn.get("t19")),
+            "cost": dict(cost or {})}
+
+
+def _ratio(b: Optional[float], f: Optional[float]) -> Optional[float]:
+    if b is None or f is None or not f > 0:
+        return None
+    return float(b) / float(f)
+
+
+def pg9_bounded(pairs: Mapping[str, Mapping[str, Mapping[str, Any]]],
+                large: Optional[Mapping[str, Mapping[str, Mapping[str, Any]]]] = None
+                ) -> Dict[str, Any]:
+    """PG9 bounded mode, from paired runs of the same pack and seed in `full`
+    and `bounded` mode.
+
+    pairs  {name: {'full': pg9_run_summary, 'bounded': ...}} for packs whose
+           IPs nearly all earn their models (A, E): gate 1 recall drop <=
+           0.03, gate 3 incidents >= MEDIUM and HIGH not more than full, gate 8
+           twins / T9 / T19 kept where full has them, and lib-3 CPU p95 not
+           above full's (no cost increase).
+    large  {name: {'full': lib3_cost, 'bounded': lib3_cost}} for populations
+           dominated by unearned IPs: lib-3 CPU p95 of bounded <= 0.5 x full,
+           judged when the runs compared span >= PG9_MIN_SPAN_H ('span_h').
+    A missing input leaves its checks unmeasured (None)."""
+    checks = []
+    for name in sorted(pairs or {}):
+        f, b = pairs[name].get("full") or {}, pairs[name].get("bounded") or {}
+        rf, rb = f.get("recall"), b.get("recall")
+        drop = None if rf is None or rb is None else float(rf) - float(rb)
+        checks.append(check(f"{name}: gate 1 recall drop (full {rf}, bounded {rb})", drop,
+                            f"<= {PG9_RECALL_DROP}", None if drop is None else drop <= PG9_RECALL_DROP + 1e-12))
+        for k, lbl in (("n_medium", ">= MEDIUM"), ("n_high", "HIGH")):
+            vf, vb = f.get(k), b.get(k)
+            checks.append(check(f"{name}: gate 3 incidents {lbl} (full {vf})", vb, f"<= {vf}",
+                                None if vf is None or vb is None else vb <= vf))
+        for k in ("twins_ok", "t9", "t19"):
+            vf, vb = f.get(k), b.get(k)
+            if vf is True:
+                checks.append(check(f"{name}: gate 8 {k} kept", vb, "True", vb is True))
+        cf = (f.get("cost") or {}).get("p95_ms")
+        cb = (b.get("cost") or {}).get("p95_ms")
+        r = _ratio(cb, cf)
+        checks.append(check(f"{name}: lib-3 CPU p95 bounded / full (no cost increase)", r, "<= 1.0",
+                            None if r is None else r <= 1.0))
+    for name in sorted(large or {}):
+        f, b = large[name].get("full") or {}, large[name].get("bounded") or {}
+        r = _ratio(b.get("p95_ms"), f.get("p95_ms"))
+        span = f.get("span_h", b.get("span_h"))
+        judged = span is None or float(span) >= PG9_MIN_SPAN_H
+        nm = f"{name}: lib-3 CPU p95 bounded / full (unearned IPs dominate)"
+        if not judged:
+            nm += f" - {float(span):.1f} h compared, < {PG9_MIN_SPAN_H:.0f} h: not judged"
+        checks.append(check(nm, r, f"<= {PG9_LARGE_RATIO}",
+                            None if r is None or not judged else r <= PG9_LARGE_RATIO))
+    if not checks:
+        return gate("PG9 bounded mode", None, "paired full / bounded runs",
+                    [check("comparison", None, "pg9_bounded", None)])
+    big = [c["value"] for c in checks if "unearned IPs dominate" in c["name"]
+           and c["value"] is not None and c["pass"] is not None]
+    return gate("PG9 bounded mode", max(big) if big else None,
+                "A/E: no accuracy loss and no cost increase; large populations: p95 <= 0.5 x full",
+                checks)
 
 
 # --------------------------------------------------------------------------- #

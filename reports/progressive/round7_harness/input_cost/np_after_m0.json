@@ -1,0 +1,15 @@
+{
+ "n_meta": 0,
+ "days": 4,
+ "events": 36234,
+ "cpu_s": {
+  "raw.event": 1.6991684180000846,
+  "derived.event_context": 1.1832919939999726,
+  "behavior.attr_registry": 7.797304429999997
+ },
+ "us_per_event": {
+  "raw.event": 46.89430970911532,
+  "derived.event_context": 32.65695186841013,
+  "behavior.attr_registry": 215.19303499475623
+ }
+}

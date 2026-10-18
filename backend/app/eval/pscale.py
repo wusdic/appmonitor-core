@@ -503,3 +503,47 @@ def pg4_summary(points: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
 
 def run_grid(packs: Iterable[str], seeds: Iterable[int] = (0,), **kw: Any) -> List[Dict[str, Any]]:
     return [run_point(p, s, **kw) for p in packs for s in seeds]
+
+
+# --------------------------------------------------------------------------- #
+# PG9: lib-3 cost of a run, bounded vs full (round 7, lead decision)
+# --------------------------------------------------------------------------- #
+def lib3_tick_cpu(timings: Mapping[str, Any], live_only: bool = True
+                  ) -> Optional[np.ndarray]:
+    """Per-tick THREAD CPU (ms) of the lib-3 engines of a run: every
+    behaviour-layer engine except the progressive core's learners and views
+    (P_ENGINES), with P15 (`behavior.resource_governor`) counted, because in
+    bounded mode it is part of what the B-library's sets cost. Live ticks only
+    (`training` = 0, as gate 14's lib3_p95_ms). None when the run has no
+    per-engine CPU (runs before round 6).
+
+    Thread CPU, not wall time: PG9 compares two runs, and the evaluation
+    machine runs several heavy processes on 4 cores (round 6: the same
+    unchanged engines read 17-40 % apart between two wall-clock runs)."""
+    cpu = timings.get("engine_cpu_ms") if isinstance(timings, Mapping) else None
+    names = list((timings or {}).get("engine_names") or [])
+    layers = list((timings or {}).get("engine_layers") or [])
+    if cpu is None or not names or len(layers) != len(names):
+        return None
+    arr = np.asarray(cpu, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != len(names):
+        return None
+    pcore = set(P_ENGINES) - {"behavior.resource_governor"}
+    idx = [i for i, (n, L) in enumerate(zip(names, layers)) if L == "behavior" and n not in pcore]
+    tot = arr[:, idx].sum(axis=1) if idx else np.zeros(arr.shape[0])
+    if live_only:
+        ticks = np.asarray(timings.get("ticks"), dtype=float)
+        cols = list(timings.get("columns") or [])
+        if ticks.ndim == 2 and "training" in cols and ticks.shape[0] == tot.shape[0]:
+            tot = tot[ticks[:, cols.index("training")] == 0]
+    return tot
+
+
+def lib3_cost(timings: Mapping[str, Any]) -> Dict[str, Any]:
+    """{'p95_ms', 'mean_ms', 'n_ticks'} of lib3_tick_cpu (None values when
+    the run carries no per-engine CPU)."""
+    t = lib3_tick_cpu(timings)
+    if t is None or not t.size:
+        return {"p95_ms": None, "mean_ms": None, "n_ticks": 0, "basis": "thread CPU"}
+    return {"p95_ms": float(np.quantile(t, 0.95)), "mean_ms": float(t.mean()),
+            "n_ticks": int(t.size), "basis": "thread CPU"}

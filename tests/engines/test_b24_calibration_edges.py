@@ -5,12 +5,11 @@ from __future__ import annotations
 
 import json
 import math
-import time
 
 import numpy as np
 import pytest
 
-from helpers import DT, T0, make_store, put_model, run_engine, set_trust
+from helpers import DT, T0, cpu_s, make_store, put_model, run_engine, set_trust
 from test_b24_calibration import E, S, Rig
 
 from app.engines.behavior import calibration as B24
@@ -460,9 +459,9 @@ def test_perf_40_keys_31_detectors():
         for e, sc in scores.items():
             emit.write_scores(rig.store, S, e, ts, sc, pm=pm[e])
             rig.write_tctx(e, ts, DT)
-        t0 = time.perf_counter()
+        t0 = cpu_s()                         # process CPU, not wall (helpers.cpu_s)
         n = run_engine(rig.eng, rig.store, ts, dt=DT)
-        times.append(time.perf_counter() - t0)
+        times.append(cpu_s() - t0)
         for e in ents:
             set_trust(rig.store, S, e, [ts], 1.0)
         rig.t = ts + DT

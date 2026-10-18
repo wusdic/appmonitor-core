@@ -770,14 +770,18 @@ def test_hot_path_is_cheap():
     ring = make_ring(rng.exponential(size=M))
     ring.gpd = K.GPDTail(u=float(ring.quantile(0.9)), xi=0.05, sigma=1.0, rate=0.1, n=M)
     xs = rng.exponential(size=1240).tolist()
-    t0 = time.perf_counter()
-    for i, x in enumerate(xs):
-        K.p_from_ring(ring, x, 0.5)
-    t_p = time.perf_counter() - t0
-    t0 = time.perf_counter()
+    # process CPU time, best of 3 (noise from other processes only adds time;
+    # wall-time bounds failed under load, progressive.md 16.14.12 item 12)
+    t_p = math.inf
+    for _ in range(3):
+        t0 = time.process_time()
+        for i, x in enumerate(xs):
+            K.p_from_ring(ring, x, 0.5)
+        t_p = min(t_p, time.process_time() - t0)
+    t0 = time.process_time()
     for i, x in enumerate(xs):
         ring.add(x, 1e4 + i)
-    t_add = time.perf_counter() - t0
+    t_add = time.process_time() - t0
     assert t_p < 0.05, t_p          # ~5 ms measured
     assert t_add < 0.08, t_add      # ~8 ms measured
 
@@ -845,13 +849,16 @@ def test_conformal_branch_meets_b24_per_tick_budget():
     rng = np.random.default_rng(13)
     ring = make_ring(rng.exponential(size=M))
     xs = (rng.exponential(size=1240) * 0.5).tolist()
+    # process CPU time and the best of 5 runs: other processes can only add
+    # time to a run, so the minimum estimates the code's own cost (the median
+    # of wall times exceeded the bound whenever the machine was loaded)
     runs = []
     for _ in range(5):
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         for x in xs:
             K.p_from_ring(ring, x, 0.5)
-        runs.append(time.perf_counter() - t0)
-    assert sorted(runs)[2] < 0.004, runs
+        runs.append(time.process_time() - t0)
+    assert min(runs) < 0.004, runs
 
 
 # ------------------------------------------------- spec v2.1 grain strata
