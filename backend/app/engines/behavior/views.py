@@ -1599,7 +1599,11 @@ def _group_mass(nd: Any, g: str, members: Set[str], t: float) -> float:
     tot0 = lv0.total(t)
     if tot0 <= 0:
         return 0.0
-    return float(sum(lv0.count(ip, t) for ip in members if ip in lv0) / tot0)
+    # (evaluator round 7) summed in a fixed order: `members` is a set, and its
+    # iteration order follows the process's str-hash salt, so the float sum
+    # (a group-view statement's support / n_obs) differed in the last digit
+    # between two runs of the same seed under different PYTHONHASHSEED values
+    return float(sum(lv0.count(ip, t) for ip in sorted(members) if ip in lv0) / tot0)
 
 
 # Display vocabulary for action names (a display aid, never a model input): the

@@ -17,22 +17,23 @@
 > 其中 [`progressive.md`](docs/lib3/progressive.md) 是渐进画像内核的规格与实测，[`summary.md`](docs/lib3/summary.md) 是现状摘要，
 > [`integration.md`](docs/lib3/integration.md) 是集成与各轮评估记录。
 
-## 现状（2026-10-12）
+## 现状（2026-10-18）
 
 - 60 个引擎已实现；默认注册表 `full` 注册 44 个（不含渐进内核），`full+progressive` 注册全部 60 个。严格模式下 0 异常。
-- **渐进画像内核**（组织包 O，21 天、种子 0–4，第六轮最终代码，`reports/progressive/`）：第 14 天模式召回 0.868（目标 0.90，未达标）；精确的主指标——按负责人的决定只评判“它所描述的真值行为已可观测满一个工作日”的陈述——0.960（通过），
-  全部陈述 0.877（同一评分器下第五轮 0.842 / 0.929 / 0.842）；第 21 天 0.881 / 0.969。**越用越准**：可观测陈述的精确率第 5 → 21 天 0.91 → 0.97（第五轮 0.69 → 0.91），陈述置信度中位数第 7 → 21 天 0.80 → 0.95；
-  池化校准误差 0.141，方向是偏保守（陈述 0.88、成立 0.94；目标 0.05）。需求示例逐条核对 50 项中 48 项通过——5/5 个种子还原“综合部 3 个 IP 的登录节点 + `username=` 语法与封闭集 {jack, mike, mike.w, rose} + 3 条 IP→用户名绑定”、
-  .21 的审批（改名后仍在）、17 点报告、“财务部（192.168.2.10）”独占财务审批与用户视角“综合部在财务系统中从未执行写操作”，差种子 3 的 90 % 带（抽样）与种子 4 的登录窗（IoU 0.68）。
-  示例异常 50/50，≥ MEDIUM 误报 0.0014/实体·日，PG3、PG6、PG7 通过；漂移 D2、D3、D5 5/5，D4 4/5，D1 3/5；两个散列种子下评分与完整结果都相同，续跑等于一次跑完。
-- **真实扰动包 O-real**（35 天，3 个种子）：召回不再随时间下降（第 35 天 0.52–0.66，第五轮 0.34–0.41）、精确 0.94–0.97、示例异常 5–7 / 10、第 35 天示例核对 5–7 / 10——主因是 P00 对聚合记录中可信代理之后来源的解析缺陷（以及节假日、数值尺度两个漂移缺陷），都在根因上修掉了；
-  误报上升（种子 2 ≥ MEDIUM 0.0036：副本对上拆开的会话），每个种子 12 个 R 项中 3–4 项通过。
-- **资源**：内存对 IP 数、服务器数次线性达标，对属性数 0.203（> 0.2）；每事件 CPU 对属性数斜率 0.293（> 0.2）；每事件 p95 打分 1.96 ms（第五轮 6.9 ms）、学习 3.8 ms，远超 100 / 250 µs 的目标；PG9（有界模式 p95 ≤ 完整的 0.5）在“挣得”规则下达不到，需要设计决定。
+- **渐进画像内核**（组织包 O，21 天、种子 0–4，第七轮最终代码，`reports/progressive/`）：第 14 天模式召回 0.868（目标 0.90，未达标，与第六轮相同）；精确的主指标（只评判“它所描述的真值行为已可观测满一个工作日”的陈述）0.960（通过），
+  全部陈述 0.884；第 21 天 0.881 / 0.971。**越用越准**：可观测陈述的精确率第 5 → 21 天 0.91 → 0.97，陈述置信度中位数第 7 → 21 天 0.88 → 0.98；**池化校准误差 0.141 → 0.066**（目标 0.05），陈述 0.94、成立 0.94，第六轮的“偏保守”消失。
+  需求示例逐条核对 50 项中 47 项通过——5/5 个种子还原“综合部 3 个 IP 的登录节点 + `username=` 语法与封闭集 {jack, mike, mike.w, rose} + 3 条 IP→用户名绑定”、.21 的审批（改名后仍在）、17 点报告、“财务部（192.168.2.10）”独占财务审批与用户视角“综合部在财务系统中从未执行写操作”，
+  差种子 1、3 的 90 % 带（1–2.5 KB、1–3 KB）与种子 4 的登录窗（IoU 0.68）。示例异常 50/50，**≥ MEDIUM 误报 0.0014 → 0.0005/实体·日**，PG3、PG6、PG7 通过；漂移 D2、D3、D4 5/5，D5 4/5，D1 3/5；两个散列种子下评分与完整结果都相同。
+  新出现的失败：“同一批模式的置信度不降”在置信度饱和于 0.95–0.98 时差千分之几（2/5，门限语义，交负责人）；种子 2 第 14 天的 6 条绑定只计到 3 条（时间窗过渡中的陈述带走了完好的绑定）。
+- **变体**：红队包 O-red 异常 10/10（第六轮漏 A4）、D1–D5 全过、第 21 天召回 0.705 → 0.818；O60 第 8 天一致性 0.046（在 0.05 以内）。**真实扰动包 O-real**（35 天，3 个种子）：第 35 天召回 0.59–0.70（第六轮 0.52–0.66）、精确 0.90–0.96、示例异常 8–9 / 10（5–7）、
+  ≥ MEDIUM 误报 0.0007–0.0014（0.0015–0.0036），第 35 天示例核对 6–7 / 10——综合部的登录仍被拆开、族登录节点上没有“地址 → 用户名”绑定（A2 漏检），每个种子 12 个 R 项中 3–4 项通过。
+- **资源**：内存对 IP 数、服务器数、**属性数（0.187）** 次线性，全部达标；每事件 CPU 对属性数斜率 0.260（> 0.2，P05 的评估节奏与 P02）；每事件 p95 打分 0.72 ms、学习 1.98 ms，远超 100 / 250 µs 的目标；同等负载下 P 内核耗时为第六轮的 0.74。
+  **PG9 按负责人的新定义**（有界模式保留“挣得”规则；A、E 包不损精度、不增 CPU，≤ 0.5 的成本目标只用于大规模临时 IP）只差一项：A 包有界模式多 1 个 MEDIUM；A / E 包库三 CPU p95 为完整的 0.88 / 0.77，1 000 个临时 IP、84 小时的点 0.47。
   验收仍**未通过**；真实日志试点未做。
 - **统计引擎库**（A–E 包第四轮，`reports/eval_report.json`）：15 项门限中第 15 项（鲁棒性）通过，第 12、13 项 n/a，其余未通过；
   期限内威胁召回 0.71（目标 0.95），对照实体 FAR ≥ LOW 0.156、≥ MEDIUM 0.042（均达标），单包墙钟与实时 p95 远超 360 s / 80 ms 目标。
-  第五、六轮改了共用的决策链，只在 A、E 包种子 0 上复测：第六轮 E 包类 ARI 回到第四轮的 0.755，有界模式下门限 15 通过（设计文档 3.5、3.10.2）。
-- 结果、原因与未决问题见设计文档库三 §3.0（逐句需求状态）、§3.8.0（第六轮实测，含 PG1 主指标的决定）、§3.8.0a（逐字学到的画像，两种视角，含 O-real 第 35 天）、§3.8.0c（如实结论）、§3.10、§3.11 与 `docs/lib3/progressive.md` §3.1、§16.14。
+  第五、六轮改了共用的决策链，只在 A、E 包种子 0 上复测；第七轮没有改 B 引擎，A、E 包与第六轮完全相同（设计文档 3.5、3.10.2）。
+- 结果、原因与未决问题见设计文档库三 §3.0（逐句需求状态）、§3.8.0（第七轮实测）、§3.8.0a（逐字学到的画像，两种视角，含 O-real 第 35 天）、§3.8.0b（修订汇总）、§3.8.0c（如实结论）、§3.10、§3.11 与 `docs/lib3/progressive.md` §3.1、§16.15。
 
 ## 架构一览
 
@@ -126,12 +127,12 @@ OMP_NUM_THREADS=1 ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8099
 其它参数：`--smoke`（同时跑 smoke 包，用于门限 14 的冒烟预算）、`--time-budget S`（单个包-种子的墙钟上限）。
 每个工作进程运行并评分一个 (包, 种子)，输出 `eval_report.json`（唯一的精度数据来源）与自包含的 `eval_report.html`。
 门限定义见 `docs/lib3/eval.md`，数据包与场景见 `docs/lib3/generator.md`。
-单个包-种子在单核上约 12–22 分钟（主机空闲时 A 包约 740 s、B 包约 1315 s；第四轮 4 进程并行时最长 2018 s）。最新的全矩阵结果（第四轮）在 `reports/eval_report.{json,html}`，历史各轮在 `reports/*/`；第五、六轮只在 A、E 包种子 0 上复测（第五轮 `reports/progressive/round5_eval/ae/`；第六轮见 `docs/lib3/progressive.md` §16.14.8）。
+单个包-种子在单核上约 12–22 分钟（主机空闲时 A 包约 740 s、B 包约 1315 s；第四轮 4 进程并行时最长 2018 s）。最新的全矩阵结果（第四轮）在 `reports/eval_report.{json,html}`，历史各轮在 `reports/*/`；第五至七轮只在 A、E 包种子 0 上复测（第五轮 `reports/progressive/round5_eval/ae/`；第六、七轮见 `docs/lib3/progressive.md` §16.14.8、§16.15.9）。
 
 ## 渐进画像内核：组织包 O 评估与伸缩实验
 
 ```bash
-# 包 O（需求中的组织：综合部/财务部/销售部/研发池、OA 与财务等 6 个系统、21 天、900 s 拍），种子 0–4（第六轮每个约 48 分钟，2 个并行）
+# 包 O（需求中的组织：综合部/财务部/销售部/研发池、OA 与财务等 6 个系统、21 天、900 s 拍），种子 0–4（第七轮每个约 28 分钟，2 个并行）
 .venv/bin/python scripts/progressive_report.py --seeds 0,1,2,3,4 --workers 3 --no-series --out reports/progressive
 # 可续跑：每约 600 s 在日末写检查点，跑满约 2 400 s 后在下一个检查点停下；再次执行同一命令从检查点继续（容器重启后也可）
 .venv/bin/python scripts/progressive_report.py --seeds 0 --workers 1 --no-series --checkpoint /tmp/pckpt --segment-s 600 --stop-after 2400 --out reports/progressive
@@ -140,17 +141,22 @@ OMP_NUM_THREADS=1 ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8099
 .venv/bin/python scripts/progressive_report.py --pack O60 --seeds 0 --no-series --out reports/progressive
 .venv/bin/python scripts/progressive_report.py --pack O-real --seeds 0,1,2 --workers 2 --no-series --checkpoint /tmp/pckpt --segment-s 900 --out reports/progressive
 # 不重跑，只把已保存的运行（含变体）汇总成报告
-.venv/bin/python scripts/progressive_report.py --assemble --seeds 0,1,2,3,4 --variants O-red,O60,O-real --scale reports/progressive/scale_r6 --out reports/progressive
+.venv/bin/python scripts/progressive_report.py --assemble --seeds 0,1,2,3,4 --variants O-red,O60,O-real --scale reports/progressive/scale_r7 --pg9 reports/progressive/pg9_r7/pg9.json --out reports/progressive
 # 只根据已保存的 JSON 重新生成 HTML
 .venv/bin/python scripts/progressive_report.py --render reports/progressive
 # PG4 伸缩实验（IP 数、属性数、服务器数；--days 指定天数，规格为 7 天）
-.venv/bin/python scripts/progressive_scale.py --days 7 --workers 2 --out reports/progressive/scale_r6
+.venv/bin/python scripts/progressive_scale.py --days 7 --workers 2 --out reports/progressive/scale_r7
+# PG9（有界 / 完整，负责人第七轮的定义）：A、E 包成对运行（同时启动）、大规模临时 IP 点（先后运行，8.5 GB RSS 时干净停止），再汇总成 pg9.json
+.venv/bin/python scripts/progressive_pg9.py pairs --packs A,E --out reports/progressive/pg9_r7
+.venv/bin/python scripts/progressive_pg9.py large --ips 1000 --hours 84 --sequential --out reports/progressive/pg9_r7
+.venv/bin/python scripts/progressive_pg9.py summary --out reports/progressive/pg9_r7
 ```
+- 代码快照（例如评估时把 `backend/`、`scripts/` 复制到别处运行）必须带上 `data/`：库四的签名库按代码位置查找（或设 `APPMON_SIGNATURE_DIR`），缺失时默认注册表静默地不带签名运行（第七轮评估中的陷阱，设计文档 3.8.0）。
 
 - `progressive_report.py` 用 `backend/app/eval/pmetrics.py` 评分（门限 PG1–PG11，`docs/lib3/progressive.md` §12），并从每天的快照中抽取需求示例的
   系统视角与群组视角陈述、逐条核对真值，写 `progressive_report.{json,html}` 与每个种子的 `runs/O_<种子>.json`。
 - 组织包的默认注册模式是 `progressive_decision`（`full+progressive` 在约 700 个来源上需要每进程 7 GB 以上内存；`--registry` 可覆盖）；
-  第六轮最终代码每次运行约 47–51 分钟（2 个并行，4 核机器上的负载使未改动的引擎也比第五轮慢 1.43 倍）、峰值 RSS 约 1.6 GB，O-real 每次约 1.9–2.1 小时、约 3.2–3.3 GB；第五轮起运行不再依赖散列顺序（`PYTHONHASHSEED` 0 与 1 评分与完整结果都相同），第六轮起续跑与一次跑完相同，评估入口仍固定散列种子 0。第一轮（提交 6001027）的运行保存在 `reports/progressive/round1/runs/`，第二轮在 `round2/runs/`（原样）与 `round2/rescored/`（用第三轮的真值与评分器重评），第三轮加 V10 之前的最终运行在 `round3_eval/pre_v10_runs/`，第三轮伸缩点在 `round3_eval/scale7/`，第三轮的运行与报告在 `round3/`，第四轮评估/成本/伸缩负责人的记录在 `round4_eval/`、合并后的伸缩点在 `scale_r4/`，第四轮的运行与报告在 `round4/`（用第五轮评分器重评的在 `round4/rescored_r5/`），第五轮的伸缩点在 `scale_r5/`、评估者的可复现 / O-real / A、E / PG9 记录在 `round5_eval/`，第五轮的运行与报告在 `round5/`（用第六轮评分器重评的在 `round5/rescored_r6/`），第六轮的伸缩点在 `scale_r6/`。其它参数：`--bounded`（统计引擎库有界模式）、`--keep-res`/`--rescore`（保存/重评运行结果）、`--assemble`、`--skip-existing`、`--checkpoint`/`--segment-s`/`--stop-after`（可续跑，`backend/app/eval/resumable.py`）。
+  第七轮最终代码每次运行约 26–28 分钟（2 个并行；这一轮机器较轻，未改动的引擎只用了第六轮 0.68 倍的时间）、峰值 RSS 约 1.5 GB，O-real 每次约 1.1 小时、约 3.0–3.3 GB；第五轮起运行不再依赖散列顺序（`PYTHONHASHSEED` 0 与 1 评分与完整结果都相同），第六轮起续跑与一次跑完相同，评估入口仍固定散列种子 0。第一轮（提交 6001027）的运行保存在 `reports/progressive/round1/runs/`，第二轮在 `round2/runs/`（原样）与 `round2/rescored/`（用第三轮的真值与评分器重评），第三轮加 V10 之前的最终运行在 `round3_eval/pre_v10_runs/`，第三轮伸缩点在 `round3_eval/scale7/`，第三轮的运行与报告在 `round3/`，第四轮评估/成本/伸缩负责人的记录在 `round4_eval/`、合并后的伸缩点在 `scale_r4/`，第四轮的运行与报告在 `round4/`（用第五轮评分器重评的在 `round4/rescored_r5/`），第五轮的伸缩点在 `scale_r5/`、评估者的可复现 / O-real / A、E / PG9 记录在 `round5_eval/`，第五轮的运行与报告在 `round5/`（用第六轮评分器重评的在 `round5/rescored_r6/`），第六轮的伸缩点在 `scale_r6/`、运行与报告原样在 `round6/`，第七轮的伸缩点在 `scale_r7/`、PG9 在 `pg9_r7/`、评估工具负责人的 PG9 / 输入成本 / B25 诊断在 `round7_harness/`。其它参数：`--bounded`（统计引擎库有界模式）、`--keep-res`/`--rescore`（保存/重评运行结果）、`--assemble`、`--skip-existing`、`--checkpoint`/`--segment-s`/`--stop-after`（可续跑，`backend/app/eval/resumable.py`）。
 - 生成器 `backend/app/pipeline/orggen.py`，评估包 `backend/app/eval/packs.py`（O、O60、O-real、O-red、O-servers、O-scale）。
 
 ## 测试
@@ -159,7 +165,7 @@ OMP_NUM_THREADS=1 ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8099
 OMP_NUM_THREADS=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests
 ```
 
-- 全套约 21–40 分钟；第六轮最终代码上为 `3244 passed, 4 skipped, 3 failed`（40 分钟，旁边同时跑一个伸缩点；第五轮 3165 passed）——3 个失败都是耗时上限：`test_b13_budget_edges::test_perf_forty_entities_generous_bound`（本机上第五轮代码同样失败）、`test_calib.py::test_conformal_branch_meets_b24_per_tick_budget`（单独运行通过）、`test_bounded_mode.py::test_bounded_cost_flat_in_idle_known_ips`（本机上不稳定，第五轮的树同样）。提速类改动各有在录制的包 O 事件流上与旧实现逐位比较的等价测试（`tests/lib/test_*_equivalence.py`、`tests/engines/test_p04_p05_stream_equivalence.py` 等），散列顺序测试在多个 `PYTHONHASHSEED` 下起子进程运行（`tests/engines/test_registry_hash_order.py`、`test_round5_hash_order_views.py`）。
+- 全套约 21–40 分钟；第七轮最终代码上为 `3319 passed, 4 skipped`（19 分钟，旁边同时跑一个库三运行；第六轮 3244 passed、3 个耗时上限失败）。耗时类测试读进程 CPU（`tests/helpers.cpu_s`）、交错比较配置、取 N 次中最好的一次或断言操作次数，不受机器负载影响。提速类改动各有在录制的包 O 事件流上与旧实现逐位比较的等价测试（`tests/lib/test_*_equivalence.py`、`tests/engines/test_p04_p05_stream_equivalence.py` 等），散列顺序测试在多个 `PYTHONHASHSEED` 下起子进程运行（`tests/engines/test_registry_hash_order.py`、`test_round5_hash_order_views.py`）。
 - 目录：`tests/engines/`（逐引擎规格测试，渐进内核为 `test_p00_*` … `test_p15_*` 与 `test_progressive_integration_fixes.py`）、`tests/lib/`、`tests/core/`、`tests/eval/`（含包 O 生成器、PG 指标与收敛实验）、`tests/api/`（API v2），
   以及顶层的流水线端到端、tick 模式黄金、节拍不变性等测试。
 - 引擎/库/核心单元测试通过各目录的 `conftest.py` 以 v2 的 `tick` 模式运行；流水线、Runtime、评估与脚本默认 `canonical`（双粒度）模式。
