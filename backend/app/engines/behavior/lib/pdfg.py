@@ -43,6 +43,10 @@ next item: list -> item -> approve -> item -> approve ...): a length-two loop
 patterns a b a) with (|aba| + |bab|) / (|aba| + |bab| + 1) >= 0.8 keeps both
 directions; the published `dep` is then max(dep, loop measure) and
 `dep_direct` keeps the classic value;
+(Round 8) acceptance has hysteresis: an edge (requirement) kept by the previous
+pass is retired only when the 95 % upper evidence bound of its dependency
+(share) is below the cut, its support fell to half the minimum, it went
+stale or the sketch evicted it (mine_scope);
 workflows = maximal simple paths (<= 8 actions) along kept edges from start
 actions (start share >= 0.1; also any action with kept out-edges and no kept
 in-edge, so that every kept edge is in a workflow — an addition to the text);
@@ -111,6 +115,21 @@ PATH_MAX = 8
 WF_MAX = 32                      # workflows per scope
 REQ_MIN_B = 15.0
 REQ_LB = 0.85
+# (round 8) hysteresis: an ACCEPTED edge / requirement is retired only when
+# the evidence says it no longer meets its acceptance cut - the 95 % upper
+# evidence bound of its dependency (share) below DEP_MIN (REQ_LB) - or its
+# support fell to RETIRE_FRAC of the acceptance minimum, it went stale, or the
+# sketch evicted it. A point estimate re-judged every 6 h against the same cut
+# flipped edges sitting at the cut (pack O seed 1 GA.oa.approvals list ->
+# item at dep 0.806, lost on days 19-21).
+RETIRE_Q = 0.95
+RETIRE_FRAC = 0.5
+# a loop edge (kept by the length-two loop measure, l2 = n / (n + 1) >= L2_MIN,
+# i.e. n >= 4 loop patterns) is retired when its loop evidence fell to
+# RETIRE_FRAC of that: l2 < L2_RETIRE (n < 2). Pack O seed 1: the approvals'
+# list -> item and item -> approve edges were kept at l2 = 0.804 (n ~ 4.1 decayed
+# loop patterns) and vanished whenever n dipped under 4 (days 8-10, 12-13)
+L2_RETIRE = (RETIRE_FRAC * L2_MIN / (1.0 - L2_MIN)) / (RETIRE_FRAC * L2_MIN / (1.0 - L2_MIN) + 1.0)
 REQ_MAX = 4                      # required predecessors kept per action
 ALPHA = 2.0
 SCOPES_MAX = 32
@@ -488,6 +507,10 @@ class FlowState:
         self.rledger = PS.LRU(R_LEDGER)
         self.renamed: Dict[str, Dict[str, Any]] = {}    # new route -> {'from', 'day', 'sources'}
         self.ren_day: Optional[int] = None
+        # (round 8) accepted edges (g, a, b) / requirements (g, b, a) -> time first
+        # accepted (mine_scope's hysteresis; bounded by the edge / prec sketches)
+        self.edges_on: Dict[Tuple[str, int, int], float] = {}
+        self.reqs_on: Dict[Tuple[str, int, int], float] = {}
 
     # ----------------------------------------------------------- routes
     def see_route(self, rk: str, src: str, day: int, prev: Optional[str]) -> None:
@@ -633,6 +656,11 @@ class FlowState:
             for ss in (self.cnt, self.starts, self.ends, self.out, self.pcnt):
                 ss.discard((g, aid))
         self.top_b.discard(aid)
+        for name in ("edges_on", "reqs_on"):
+            d = getattr(self, name, None)
+            if d:
+                for k in [k for k in d if aid in (k[1], k[2])]:
+                    del d[k]
         self.marg = None
 
     def _ref(self, ids: Iterable[int], ref: Tuple) -> None:
@@ -694,6 +722,7 @@ class FlowState:
         b += len(self.sessions) * SESSION_BYTES + len(self.burst) * 150
         b += sum(len(v) for v in self.pending.values()) * PENDING_BYTES
         b += len(self.grp_ips) * 200 + 1024
+        b += (len(getattr(self, "edges_on", ())) + len(getattr(self, "reqs_on", ()))) * 120
         return int(b)
 
 
@@ -954,20 +983,56 @@ def loop2_measure(c_aba: float, c_bab: float) -> float:
     return (c_aba + c_bab) / (c_aba + c_bab + 1.0)
 
 
+def dependency_upper(c_ab: float, c_ba: float, q: float = RETIRE_Q) -> float:
+    """(round 8) Upper evidence bound of the dependency a => b: with p the
+    share of a > b among the direct successions between a and b, Jeffreys
+    posterior Beta(c_ab + 1/2, c_ba + 1/2), dep = (2 p - 1) n / (n + 1)
+    (n = c_ab + c_ba; the point value is `dependency`), so its q-quantile
+    is (2 Q_q(p) - 1) n / (n + 1)."""
+    n = float(c_ab) + float(c_ba)
+    if n <= 0:
+        return 0.0
+    pq = pmdl.beta_quantile(q, float(c_ab) + 0.5, float(c_ba) + 0.5)
+    return float((2.0 * pq - 1.0) * n / (n + 1.0))
+
+
+def _accepted(st: FlowState, name: str) -> Dict[Tuple, float]:
+    """(round 8) The edges ('edges_on') / requirements ('reqs_on') a mining
+    pass accepted, keyed like their sketch: {key: time first accepted}."""
+    d = getattr(st, name, None)
+    if d is None:
+        d = {}
+        setattr(st, name, d)
+    return d
+
+
 def mine_scope(st: FlowState, g: str, t: float) -> Dict[str, Any]:
-    """Kept edges, workflows and required predecessors of one scope."""
+    """Kept edges, workflows and required predecessors of one scope.
+
+    (Round 8) Acceptance with hysteresis: a NEW edge is kept when dep >=
+    DEP_MIN, share >= SHARE_MIN and >= EDGE_MIN evidence units (as before); an
+    edge kept by the previous pass stays kept until the 95 % upper evidence
+    bound of its dependency falls below DEP_MIN (dependency_upper) and its
+    loop measure below L2_RETIRE, its share below RETIRE_FRAC x SHARE_MIN or
+    its evidence below RETIRE_FRAC x EDGE_MIN - or it goes stale. Required
+    predecessors likewise: accepted at a 5 % lower bound >= REQ_LB, retired
+    when the 95 % upper bound of the share falls below REQ_LB (or c(b) below
+    RETIRE_FRAC x REQ_MIN_B). Kept-but-below-the-cut entries carry 'held'."""
     edges: List[Dict[str, Any]] = []
     kept: Dict[int, List[Tuple[int, float]]] = {}
     indeg: Dict[int, int] = {}
     stale = 0
+    on_e = _accepted(st, "edges_on")
+    now_e: Dict[Tuple, float] = {}
     for key in st.edges.keys():
         if key[0] != g:
             continue
         _, a, b = key
         if a == b:
             continue
+        was = on_e.get(key)
         c_ab = st.edges.ev(key, t)
-        if c_ab < EDGE_MIN:
+        if c_ab < (EDGE_MIN if was is None else RETIRE_FRAC * EDGE_MIN):
             continue
         sd = edge_stale_days(getattr(st, "edge_days", {}).get(key), st.cal_cls if hasattr(st, "cal_cls") else {},
                              getattr(st, "cal_norm", {}), getattr(st, "today", None))
@@ -983,16 +1048,30 @@ def mine_scope(st: FlowState, g: str, t: float) -> Dict[str, Any]:
         dep = max(dep_d, l2) if loop else dep_d
         m_out = st.out.count((g, a), t) if (g, a) in st.out else 0.0
         share = st.edges.mass(key, t) / m_out if m_out > 0 else 0.0
-        if dep < DEP_MIN or share < SHARE_MIN:
-            continue
+        held = False
+        if dep < DEP_MIN or share < SHARE_MIN or c_ab < EDGE_MIN:
+            if was is None or share < RETIRE_FRAC * SHARE_MIN:
+                continue
+            if l2 >= L2_RETIRE:
+                dep = max(dep_d, l2)            # a loop edge held on its loop evidence
+            elif dependency_upper(c_ab, c_ba) < DEP_MIN:
+                continue
+            held = True
+        now_e[key] = t if was is None else was
         c_out = _ev(st.out, (g, a), t)
         conf = min(dep, pmdl.jeffreys_lower(min(c_ab, c_out), max(c_out, c_ab)))
-        edges.append({"a": a, "b": b, "count": round(c_ab, 2), "rev": round(c_ba, 2),
-                      "dep": round(dep, 4), "dep_direct": round(dep_d, 4),
-                      "loop2": round(l2, 4) if loop else None, "share": round(share, 4),
-                      "band": band(st.hist.get(key) or []), "confidence": round(conf, 4)})
+        e = {"a": a, "b": b, "count": round(c_ab, 2), "rev": round(c_ba, 2),
+             "dep": round(dep, 4), "dep_direct": round(dep_d, 4),
+             "loop2": round(l2, 4) if loop else None, "share": round(share, 4),
+             "band": band(st.hist.get(key) or []), "confidence": round(conf, 4)}
+        if held:
+            e["held"] = True
+        edges.append(e)
         kept.setdefault(a, []).append((b, c_ab))
         indeg[b] = indeg.get(b, 0) + 1
+    for key in [k for k in on_e if k[0] == g]:
+        del on_e[key]
+    on_e.update(now_e)
     # workflows: maximal simple paths from start actions along kept edges
     starts = []
     for a in kept:
@@ -1024,23 +1103,39 @@ def mine_scope(st: FlowState, g: str, t: float) -> Dict[str, Any]:
     # required predecessors
     reqs: List[Dict[str, Any]] = []
     per_b: Dict[int, List[Dict[str, Any]]] = {}
+    on_r = _accepted(st, "reqs_on")
     for key in st.prec.keys():
         if key[0] != g:
             continue
         _, b, a = key
         if a == b:
             continue
+        was = on_r.get(key)
         c_b = _ev(st.pcnt, (g, b), t)
-        if c_b < REQ_MIN_B:
+        if c_b < (REQ_MIN_B if was is None else RETIRE_FRAC * REQ_MIN_B):
             continue
         c_with = min(st.prec.ev(key, t), c_b)
         lb = pmdl.beta_quantile(0.05, 0.5 + c_with, 0.5 + max(0.0, c_b - c_with))
-        if lb >= REQ_LB:
-            per_b.setdefault(b, []).append({"b": b, "a": a, "c_b": round(c_b, 2),
-                                            "c_with": round(c_with, 2), "lb": round(lb, 4)})
+        held = False
+        if lb < REQ_LB or c_b < REQ_MIN_B:
+            if was is None or pmdl.beta_quantile(RETIRE_Q, 0.5 + c_with,
+                                                 0.5 + max(0.0, c_b - c_with)) < REQ_LB:
+                continue
+            held = True
+        r = {"b": b, "a": a, "c_b": round(c_b, 2), "c_with": round(c_with, 2), "lb": round(lb, 4)}
+        if held:
+            r["held"] = True
+        per_b.setdefault(b, []).append(r)
+    now_r: Dict[Tuple, float] = {}
     for b, lst in per_b.items():
         lst.sort(key=lambda r: -r["lb"])
         reqs.extend(lst[:REQ_MAX])
+        for r in lst[:REQ_MAX]:
+            k = (g, r["b"], r["a"])
+            now_r[k] = on_r.get(k, t)
+    for key in [k for k in on_r if k[0] == g]:
+        del on_r[key]
+    on_r.update(now_r)
     n_sess = _ss_total_ev(st.starts, g, t)
     return {"edges": edges, "workflows": flows, "requires": reqs, "sessions": round(n_sess, 2),
             "stale_edges": stale}

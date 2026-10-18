@@ -729,6 +729,7 @@ class PatternTreeEngine(Engine):
                         aux["last"][(s, kind)] = ts_b
                 self._rates(lc, m, s, aux, D)
                 n += self._held(lc, m, s)
+            self._confirm_due(lc, m, ss[0])
             self._maintain(lc, m, ss[0])
             stats.update(aux["stats"])
             aux["stats"] = Counter()
@@ -923,8 +924,20 @@ class PatternTreeEngine(Engine):
         keys = lc.who_keys(ip)
         if lc.rpart_wait is not None and kind == EV.KIND_TXN and (leaf.meta.get("rpart_other")
                                                                   or leaf.id == tr.root):
-            self._keep_route_row(lc, tr, kind, get, ip, ts, mass_u, omega_u, day, daytype, minute,
-                                 factor_u, suspicious)
+            # (round 8) the waiting row is replayed into its ROUTE's node: its
+            # evidence unit is its burst run among that route's rows, not among
+            # every route's rows at the mixture it waits at. Before, a source's
+            # 17:00 report form and its 17:01 report generate were one burst at
+            # the OA root (tau 5 min): each waiting generate row carried half a
+            # unit into its node, which held 17 observations for 18 events by
+            # day 11 and was confirmed on Monday day 15 instead of Friday day 12
+            # (pack O GA.oa.report#1, every seed)
+            om_r = lc.aux["burst"].unit(src + ("rpart", lc.rpart_wait), ts, factor)
+            if mixed:
+                om_r = om_r / damp
+            if om_r > 0.0:
+                self._keep_route_row(lc, tr, kind, get, ip, ts, mass_u, om_r, day, daytype, minute,
+                                     factor_u, suspicious)
         code = None
         if leaf.who.levels[0].total_evidence(ts) > 0:
             code = leaf.who.code_lengths(keys, ts, lc.space_bits, lc.escape_bits)
@@ -937,6 +950,13 @@ class PatternTreeEngine(Engine):
                 lc.row_mass, lc.row_factor = float(mass), float(factor)
             nd.update_core(ts, mass, omega, keys, ip, daytype, minute, day,
                            code if d == nlast else None, suspicious=suspicious)
+            if nd.state == "candidate" and nd.n_obs() >= N_CONF and not nd.meta.get("rpart_other"):
+                # (round 8) the confirmation rule may be met: checked at the end of
+                # the tick (_confirm_due), not at the next day end
+                cd_ = lc.aux.get("conf_due")
+                if cd_ is None:
+                    cd_ = lc.aux["conf_due"] = set()
+                cd_.add((kind, nid))
             if nd.state == "stale":
                 nd.state = "confirmed"
                 nd.meta.pop("stale_at", None)
@@ -1135,7 +1155,8 @@ class PatternTreeEngine(Engine):
                 slot = dt * 96 + min(95, max(0, int(minute // 15)))
                 hit = slot in wh[1]
             if hit is not None:
-                add("when", hit, wh[2])
+                # (round 8) each day type's windows are their own constraint
+                add("when" if dt == 0 else PN.WHEN_NWD, hit, wh[2])
         for a, c in cons.items():
             if a in ("who", "when"):
                 continue
@@ -2668,6 +2689,18 @@ class PatternTreeEngine(Engine):
         ev = nd.meta.setdefault("evolving", {})
         ev[key] = {"t0": ts, "dir": int(r), "mu": mu, "sd": sd, "ips": set(), "dsum": {}, "dn": {},
                    "kind": kind}
+        # (round 8) a shift of a transport measure (the connection's duration,
+        # packets, sizes on the wire: hold facet 'net') is a change of the
+        # network, not of the pattern - who comes, when, to do what: the
+        # attribute is under change (its confidence capped, accepted or expired
+        # as before) while the node keeps its state. Before, it made the whole
+        # statement `evolving` (withdrawn): pack O seed 0, a daily-mean
+        # Page-Hinkley alarm on the 60-s monitor's net.dur_ms kept portal
+        # /health evolving on days 16-21, one on code's net.pkts_down days 18-21
+        # (neither had a change; AUTO.monitor.portal / DEV.code lost)
+        if kind == "num" and PN.hold_facet(key) == "net":
+            nd.meta["last_alarm"] = ts
+            return
         if nd.state in ("confirmed", "stable"):
             nd.meta.setdefault("prev_state", nd.state)
             nd.state = "evolving"
@@ -2884,7 +2917,8 @@ class PatternTreeEngine(Engine):
                 if nd.state == "evolving":
                     ne = nd.n_eff
                     ne.set_entry(PS.CH_L, min(ne.get(PS.CH_L, t), ne.get(PS.CH_M, t)), t)
-        if nd.state == "evolving" and not nd.meta.get("drift") and not ev:
+        if nd.state == "evolving" and not nd.meta.get("drift") and not [
+                a for a, st in ev.items() if not (st.get("kind") == "num" and PN.hold_facet(a) == "net")]:
             nd.state = nd.meta.pop("prev_state", None) or (dr or {}).get("prev_state") or "confirmed"
             if nd.state not in ("confirmed", "stable"):
                 nd.state = "confirmed"
@@ -3117,9 +3151,32 @@ class PatternTreeEngine(Engine):
             g = PN.fit_hold_prior([r for v in pool.values() for r in v])
             hp["prior"] = {k: (PN.fit_hold_prior(v) or g) for k, v in pool.items()}
             hp["prior"]["*"] = g
+            # (round 8) an UNTESTED statement's prior mean is the rate at which
+            # statements pass their FIRST held-out test (pool1), at the kind's
+            # fitted strength. The beta-binomial fit over whole records is
+            # dominated by the long records of statements that kept holding
+            # (one that fails is re-stated and starts a new, short record):
+            # on O-real (35 d, seed 0, full-snapshot days) untested statements
+            # stated that mean, 0.95, and held 0.80 on the evaluator's events;
+            # tested ones 0.98 / 0.95
+            p1 = hp.get("pool1") or {}
+            a1 = [x for v in p1.values() for x in v]
+            hp["prior0"] = {}
+            for k in list(hp["prior"].keys()):
+                pr_k = hp["prior"][k]
+                xs = a1 if k == "*" or len(p1.get(k) or ()) < PN.HOLD_PRIOR_MIN_NODES else p1[k]
+                if pr_k is None or len(xs) < PN.HOLD_PRIOR_MIN_NODES:
+                    hp["prior0"][k] = pr_k
+                    continue
+                m1 = (sum(xs) + 0.5) / (len(xs) + 1.0)
+                s_ = float(pr_k[0]) + float(pr_k[1])
+                hp["prior0"][k] = (m1 * s_, (1.0 - m1) * s_)
             hp["pool"] = {}
+            hp["pool1"] = {}
             hp["day"] = day
         pool, prior = hp["pool"], hp["prior"]
+        pool1 = hp.setdefault("pool1", {})
+        prior0 = hp.get("prior0") or prior
         for tr in m.kinds.values():
             for nd in tr.nodes.values():
                 cons = nd.ref.get("hold") if isinstance(nd.ref, Mapping) else None
@@ -3129,7 +3186,7 @@ class PatternTreeEngine(Engine):
                     # P14's min-over-parts fallback (pack O seed 0, day 17: oa's
                     # new GET /docs nodes stated 0.08 - a workflow edge's
                     # dependency strength - and held 1.0)
-                    pr = prior.get("*")
+                    pr = prior0.get("*")
                     if pr is not None:
                         nd.meta["hold_prior"] = (round(float(pr[0]), 4), round(float(pr[1]), 4))
                         nd.meta["hold_prior_seg"] = 0
@@ -3156,6 +3213,9 @@ class PatternTreeEngine(Engine):
                     ps, n = hr.tests(t)
                     if n > 0:
                         pool.setdefault(k, []).append((ps, n))
+                    ft = hr.first_test() if hasattr(hr, "first_test") else None
+                    if ft is not None:
+                        pool1.setdefault(k, []).append(1.0 if ft else 0.0)
                 # (round 4) once a statement has its own held-out test, its prior
                 # is kept for the rest of its confidence segment (afterwards only its
                 # own tests move it); before its first test it states its kind's
@@ -3183,7 +3243,8 @@ class PatternTreeEngine(Engine):
                 if tested and nd.meta.get("hold_prior") is not None and nd.meta.get("hold_prior_seg") == seg \
                         and abs(float(nd.meta.get("hold_prior_n", -1.0)) - n_own) <= 1e-9:
                     continue
-                pr = prior.get(k) or prior.get("*")
+                src = prior if tested else prior0
+                pr = src.get(k) or src.get("*")
                 if pr is not None:
                     nd.meta["hold_prior"] = (round(float(pr[0]), 4), round(float(pr[1]), 4))
                     nd.meta["hold_prior_seg"] = seg
@@ -3261,14 +3322,7 @@ class PatternTreeEngine(Engine):
                 for a in [a for a in nd.targets if a not in keep][:len(nd.targets) - M_T]:
                     del nd.targets[a]
             if nd.state == "candidate":
-                if nd.meta.get("rpart_other"):
-                    pass            # routes waiting for (or too rare for) a node of their own: never a pattern
-                elif nd.n_obs() >= N_CONF and nd.n_days() >= conf_dates and not self._fitter_pending(lc, kind, nid):
-                    nd.state = "confirmed"
-                    nd.meta["confirmed_at"] = t
-                    self._emit(lc, s, "pattern_confirmed", tr, nd, Severity.INFO,
-                               f"模式已确认：{ctx_text(nd.ctx, lc.hier)}（证据 {nd.n_c(t):.0f}，{nd.n_days()} 天）",
-                               {"n_c": round(nd.n_c(t), 1), "days": nd.n_days()})
+                self._confirm(lc, tr, kind, nd, s, t)
             elif nd.state == "confirmed":
                 if (t - float(nd.meta.get("confirmed_at", t)) >= STABLE_S and nd.n_days() >= STABLE_DATES
                         and t - float(nd.meta.get("last_alarm", -math.inf)) >= STABLE_S):
@@ -3316,6 +3370,48 @@ class PatternTreeEngine(Engine):
         # 6. dormant memory expiry
         for nid in [n for n, r in tr.dormant.items() if t - r.get("since", t) >= DORMANT_KEEP_S]:
             tr.dormant.pop(nid, None)
+
+    def _confirm(self, lc: _LC, tr: PT.Tree, kind: int, nd: PN.Node, s: str, t: float) -> bool:
+        """Confirm a candidate node whose evidence meets the confirmation rule
+        (>= N_CONF observations on >= CONF_DATES dates, no fitter pending)."""
+        if nd.state != "candidate" or nd.meta.get("rpart_other"):
+            return False            # routes waiting for (or too rare for) a node of their own: never a pattern
+        if nd.n_obs() < N_CONF or nd.n_days() < CONF_DATES.get(kind, 3) or self._fitter_pending(lc, kind, nd.id):
+            return False
+        nd.state = "confirmed"
+        nd.meta["confirmed_at"] = t
+        self._emit(lc, s, "pattern_confirmed", tr, nd, Severity.INFO,
+                   f"模式已确认：{ctx_text(nd.ctx, lc.hier)}（证据 {nd.n_c(t):.0f}，{nd.n_days()} 天）",
+                   {"n_c": round(nd.n_c(t), 1), "days": nd.n_days()})
+        return True
+
+    def _confirm_due(self, lc: _LC, m: PT.PTreeModel, s: str) -> None:
+        """(round 8) Confirmation as soon as the rule is met, not at the next day
+        end. A candidate whose observations reached N_CONF in this tick
+        (_learn_one notes it) is confirmed now and gets its reference statement
+        and its kind's prior at once, so the views state it within their cadence.
+        Before, the rule was checked by the daily lifecycle at the first tick
+        after midnight - after the views' last run of the day - and the
+        reference waited for SNAPSHOT_HOUR: a pattern whose 20th observation came
+        on day d was stated on day d + 1 at the earliest, and on Monday when it
+        came on a Friday (pack O: GA's 17:00 report form, eligible on Friday day
+        12 and stated on day 13 on every seed)."""
+        due = lc.aux.pop("conf_due", None)
+        if not due:
+            return
+        t = lc.now
+        for kind, nid in sorted(due):
+            tr = m.kinds.get(kind)
+            nd = tr.nodes.get(nid) if tr is not None else None
+            if nd is None or not self._confirm(lc, tr, kind, nd, s, t):
+                continue
+            self._reference(lc, tr, kind, nd, t)
+            hp_ = getattr(self, "_hp", None) or {}
+            pr = (hp_.get("prior0") or hp_.get("prior") or {}).get("*")
+            if pr is not None and isinstance(nd.ref, Mapping):
+                nd.meta["hold_prior"] = (round(float(pr[0]), 4), round(float(pr[1]), 4))
+                nd.meta["hold_prior_seg"] = 0
+                nd.meta["hold_prior_n"] = 0.0
 
     def _collapse(self, lc: _LC, tr: PT.Tree, nid: int, op: str, reason: Any) -> None:
         gone = tr.collapse(nid, lc.now, op=op, reason=reason)
@@ -3592,31 +3688,44 @@ class PatternTreeEngine(Engine):
         aux = lc.aux
         held_ips = {ip for (_, ip) in aux["held"].keys()}
         for nd in tr.nodes.values():
-            if nd.state not in ("confirmed", "stable"):
-                continue
-            if t - float(nd.meta.get("last_alarm", -math.inf)) < DAY:
-                continue
-            heavy, _ = nd.who.heavy_set(0, t)
-            if held_ips and any(ip in held_ips for ip in heavy):
-                continue
-            # the reference who also keeps every source with standing of its own
-            # (>= REF_MEMBER_EV evidence units; P03's member rule): a low-volume
-            # legitimate user outside the 95 %-mass heavy set (the finance approver,
-            # ~3 % of finance's evidence) is not a stranger to the reference anchor
-            hs = {str(x) for x in heavy[:16]}
-            standing = [str(k) for k, _c, _g, ev in nd.who.levels[0].items(t)
-                        if ev >= REF_MEMBER_EV and str(k) not in hs]
-            ref_who = [str(x) for x in heavy[:16]] + standing[:16]
-            targets = {a: _compact(sm, t) for a, sm in nd.targets.items()}
-            fit = {name: _fitted_entry(mdl, kind, nd.id) for name, mdl in fitted.items()
-                   if _fitted_entry(mdl, kind, nd.id) is not None}
-            nd.ref = {"t": t, "version": nd.version, "cver": nd.cver, "sn": _next_ref_sn(lc),
-                      "targets": targets,
-                      "who": ref_who,
-                      "when": {"wd": nd.when.density(0).astype(np.float32),
-                               "nwd": nd.when.density(1).astype(np.float32)},
-                      "fitted": fit,
-                      "hold": _hold_constraints(nd, t, targets, fit, card_of)}
+            self._reference(lc, tr, kind, nd, t, fitted, card_of, held_ips)
+
+    def _reference(self, lc: _LC, tr: PT.Tree, kind: int, nd: PN.Node, t: float,
+                   fitted: Optional[Mapping[str, Any]] = None, card_of: Optional[Callable] = None,
+                   held_ips: Optional[Set[str]] = None) -> None:
+        """One confident node's reference statement (_snapshots)."""
+        if nd.state not in ("confirmed", "stable"):
+            return
+        if t - float(nd.meta.get("last_alarm", -math.inf)) < DAY:
+            return
+        if fitted is None:
+            fitted = {name: MP.get_model(lc.store, lc.key, name) for name in FITTERS}
+        if card_of is None:
+            reg = MP.get_registry(lc.store, lc.key)
+            card_of = (lambda rec: FD.payload_card(reg, rec))
+        if held_ips is None:
+            held_ips = {ip for (_, ip) in lc.aux["held"].keys()}
+        heavy, _ = nd.who.heavy_set(0, t)
+        if held_ips and any(ip in held_ips for ip in heavy):
+            return
+        # the reference who also keeps every source with standing of its own
+        # (>= REF_MEMBER_EV evidence units; P03's member rule): a low-volume
+        # legitimate user outside the 95 %-mass heavy set (the finance approver,
+        # ~3 % of finance's evidence) is not a stranger to the reference anchor
+        hs = {str(x) for x in heavy[:16]}
+        standing = [str(k) for k, _c, _g, ev in nd.who.levels[0].items(t)
+                    if ev >= REF_MEMBER_EV and str(k) not in hs]
+        ref_who = [str(x) for x in heavy[:16]] + standing[:16]
+        targets = {a: _compact(sm, t) for a, sm in nd.targets.items()}
+        fit = {name: _fitted_entry(mdl, kind, nd.id) for name, mdl in fitted.items()
+               if _fitted_entry(mdl, kind, nd.id) is not None}
+        nd.ref = {"t": t, "version": nd.version, "cver": nd.cver, "sn": _next_ref_sn(lc),
+                  "targets": targets,
+                  "who": ref_who,
+                  "when": {"wd": nd.when.density(0).astype(np.float32),
+                           "nwd": nd.when.density(1).astype(np.float32)},
+                  "fitted": fit,
+                  "hold": _hold_constraints(nd, t, targets, fit, card_of)}
 
     # -------------------------------------------------------------- events
     def _emit(self, lc: _LC, s: str, kind: str, tr: PT.Tree, nd: PN.Node, sev: Severity, desc: str,

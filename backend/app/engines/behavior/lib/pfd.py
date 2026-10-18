@@ -561,6 +561,21 @@ def history_support(hx: Optional[Mapping[str, Any]], exclude: Optional[Mapping[s
     return top, float(days[top]), float(sum(days.values()))
 
 
+MULTI_TOP = 0.5           # a multi-user source's top value holds at most this share ...
+MULTI_K = SET_K + 1       # ... over more distinct values than a set binding may hold
+
+
+def multi_source(c: Mapping[str, Any], k: float, n: float, n_bind: float = N_BIND) -> bool:
+    """(round 8) A source with the evidence to be judged (n >= n_bind) whose
+    values are many (> SET_K distinct, or a share U > SET_U beyond the values
+    the sketch tracks) and none dominant (top share <=
+    MULTI_TOP): a gateway several users share (a NAT, a proxy), not a bound
+    source and not a counter-example of the binding of the others."""
+    ys = c.get("y") or {}
+    many = len(ys) >= MULTI_K or float(c.get("U", 0.0) or 0.0) > SET_U   # untracked values: more than a set
+    return bool(n >= n_bind and n > 0 and many and float(k) / float(n) <= MULTI_TOP)
+
+
 def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any]]] = None,
              n_bind: float = N_BIND, lb_bind: float = LB_BIND,
              exclude: Optional[Mapping[str, Any]] = None,
@@ -648,6 +663,8 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
             if c["U"] <= SET_U and len(sset) <= SET_K and acc >= SET_COVER * n - 1e-9 and len(sset) >= 2:
                 ent["set"] = sorted(sset, key=lambda v: (type(v).__name__, str(v)))
                 ent["U"] = float(c["U"])
+            elif multi_source(c, k, n, n_bind):
+                ent["multi"] = True
         table[_jx(x)] = ent
     N = sum(c["n"] for c in heavy.values())
     # set-bound sources (shared terminals) are explained by their sets: they
@@ -658,7 +675,15 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
     # counter-examples, and must not veto 综合部's bindings at a shared login node
     # (a list in the sources' order, not a set: the masses below were summed
     # in str-hash order, which differs between processes, §16.12.6)
-    judged = [x for x in heavy if heavy[x]["n"] >= n_bind or table[_jx(x)].get("bound")]
+    # (round 8) a MULTI-USER source (many values, none dominant: a NAT
+    # gateway, multi_source) is neither a binding nor a counter-example of
+    # one: it is left out of the dependency's judgement like a shared session
+    # key. O-real's branch NAT 192.168.30.1 (R2, ~10 users) alone made the
+    # 'POST /login' nodes' dependency fail (g3 0.15-0.43 > 0.05), so no
+    # binding of those nodes was credential-grade: A2 (192.168.1.21 using
+    # rose's credential) was judged against no binding on seed 1
+    judged = [x for x in heavy if (heavy[x]["n"] >= n_bind or table[_jx(x)].get("bound"))
+              and not table[_jx(x)].get("multi")]
     ents = dict(zip(heavy, table.values()))
     tot_mass = sum(heavy[x]["mass"] for x in judged)
     set_mass = sum(heavy[x]["mass"] for x in judged if ents[x].get("set"))
@@ -973,6 +998,52 @@ class ValueHistory:
 
     def nbytes(self) -> int:
         return int(100 + sum(200 + 120 * len(s["v"]) for s in self.x.values()))
+
+    def merge(self, other: "ValueHistory") -> None:
+        """(round 8) Add another history of the same pair, kept over disjoint
+        rows (a replica family's members before they joined: one source's
+        logins reached oa and oa-r2): per source and value the earliest first
+        and latest last seen, the summed clean events and the union of clean
+        normal days (the last HIST_DAYS); the recent values of the source seen
+        last are appended last. Sources new to this history join in the
+        other's LRU order, within cap_x."""
+        for x, ost in other.x.items():
+            st = self.x.get(x)
+            if st is None:
+                if len(self.x) >= self.cap_x:
+                    self.x.popitem(last=False)
+                self.x[x] = {"v": {y: [r[0], r[1], r[2], list(r[3])] for y, r in ost["v"].items()},
+                             "recent": deque(ost["recent"], maxlen=RECENT), "ver": int(ost.get("ver", 0))}
+                if ost.get("rc") is not None:
+                    self.x[x]["rc"] = deque(ost["rc"], maxlen=RECENT)
+                continue
+            self.x.move_to_end(x)
+            v = st["v"]
+            for y, r in ost["v"].items():
+                q = v.get(y)
+                if q is None:
+                    if len(v) >= self.cap_y:
+                        drop = min(v, key=lambda k: (v[k][2], v[k][1]))
+                        if (v[drop][2], v[drop][1]) >= (r[2], r[1]):
+                            continue
+                        del v[drop]
+                    v[y] = [r[0], r[1], r[2], list(r[3])]
+                    continue
+                q[0] = min(q[0], r[0])
+                q[1] = max(q[1], r[1])
+                q[2] = q[2] + r[2]
+                q[3] = sorted(set(q[3]) | set(r[3]))[-HIST_DAYS:]
+            last_self = max((r[1] for r in v.values()), default=-math.inf)
+            last_other = max((r[1] for r in ost["v"].values()), default=-math.inf)
+            for k in ("recent", "rc"):
+                a, b = st.get(k), ost.get(k)
+                if b is None:
+                    continue
+                first, second = (a or ()), b
+                if last_other < last_self:
+                    first, second = b, (a or ())
+                st[k] = deque(list(first) + list(second), maxlen=RECENT)
+            st["ver"] = int(st.get("ver", 0)) + int(ost.get("ver", 0))
 
 
 def _qualifies(r: Sequence[Any]) -> bool:

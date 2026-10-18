@@ -697,6 +697,14 @@ def hold_eps(nominal: float) -> float:
     return max(HOLD_EPS_MIN, 3.0 * math.sqrt(max(nom * (1.0 - nom), 1e-4) / HOLD_N_REF))
 
 
+WHEN_NWD = "when@nwd"               # (round 8) the non-workday windows' checks: their own key
+
+
+def when_keys(keys: Iterable[str]) -> List[str]:
+    """The time-window keys among hold keys ('when': workday, WHEN_NWD)."""
+    return [k for k in keys if k == "when" or k == WHEN_NWD]
+
+
 def hold_facet(key: str) -> str:
     """Facet of a held-out constraint key (P04 _hold_constraints keys): 'who',
     'when', 'bind' (P08 pairs), 'net' (transport measures: sizes, packets,
@@ -705,6 +713,8 @@ def hold_facet(key: str) -> str:
     k = str(key)
     if k in ("who", "when"):
         return k
+    if k == WHEN_NWD:
+        return "when"
     if k.startswith("bind:"):
         return "bind"
     a = k.split("#", 1)[0]
@@ -724,7 +734,13 @@ def batch_tol(nominal: float, n: float) -> float:
 CLUSTER_Z = 2.0                    # z of the cluster-robust error (cluster_tol)
 
 
-def cluster_tol(nominal: float, n: float, clusters: Optional[Mapping[Any, List[float]]]) -> float:
+HOLD_EARLY_N = 20.0                # (round 8) a test can be decided early on >= 20 checks of a key ...
+HOLD_EARLY_U = 10                  # ... from >= 10 independent units ...
+HOLD_EARLY_Z = 2.5                 # ... failing by a 2.5-sigma cluster-robust margin (the closing rule: 2)
+
+
+def cluster_tol(nominal: float, n: float, clusters: Optional[Mapping[Any, List[float]]],
+                z: float = 0.0) -> float:
     """Tolerance of a held-out test whose n checks come in clusters (evaluator
     round 4): the checks of one source on one day are not independent (a
     session's page views share its arrival minute, its connection its transport
@@ -750,7 +766,7 @@ def cluster_tol(nominal: float, n: float, clusters: Optional[Mapping[Any, List[f
             p = sum(h_c for _n, h_c in clusters.values()) / float(n)
             ss = sum((h_c - p * n_c) ** 2 for n_c, h_c in clusters.values())
             v = C / (C - 1.0) * ss / (float(n) ** 2)
-            tol = max(tol, CLUSTER_Z * math.sqrt(v))
+            tol = max(tol, (z or CLUSTER_Z) * math.sqrt(v))
     return tol
 
 
@@ -829,7 +845,7 @@ class HoldRecord:
     p_constraints() (diagnosis). O(constraints) floats per node."""
 
     __slots__ = ("c", "L", "b", "bt0", "bn", "blast", "T", "F", "seg", "TF", "lite", "bc", "bu", "bw0", "bwr",
-                 "ti", "fl")
+                 "ti", "fl", "early")
 
     def __init__(self, lite: bool = False) -> None:
         self.lite = bool(lite)                       # tests only: no per-constraint counts / facets
@@ -845,8 +861,8 @@ class HoldRecord:
         self.TF: Dict[str, List[float]] = {}         # facet -> [passes, tests] of its keys alone (diagnosis)
         self.bc: Dict[str, Dict[Any, List[float]]] = {}   # current batch: key -> cluster -> [n, hits]
         self.bu: Dict[Any, int] = {}                 # current batch: its independent units (clusters) -> ordinal
-        self.bw0: Optional[float] = None             # current batch: time of its first 'when' check
-        self.bwr: Optional[list] = None              # [t0, {hour: [n, hits, units]}]: 'when' checks of the last day
+        self.bw0: Optional[dict] = None              # current batch: when key -> time of its first check
+        self.bwr: Optional[dict] = None              # when key -> [t0, {hour: [n, hits, units]}]: checks of the last day
         self.ti = 0                                  # tests closed so far (round 7)
         self.fl: List[list] = []                     # recent FAILED tests: [test index, [keys that failed it]]
 
@@ -902,19 +918,28 @@ class HoldRecord:
         # test judges it (a wrong window keeps failing tests); a batch that
         # spans a day itself (a quiet node's weekly batch) is judged on its own
         # checks, as before.
-        wfail: Optional[bool] = None
-        wb = self.b.pop("when", None)
-        wbc = (getattr(self, "bc", None) or {}).pop("when", None)
-        bw0 = getattr(self, "bw0", None)
-        self.bw0 = None
-        if wb is not None and wb[0] > 0 and self.blast is not None:
+        # (round 8) per day type: the workday windows ('when') and the
+        # non-workday windows (WHEN_NWD) are two constraints, judged apart as a
+        # reader judges them (the evaluator checks when.workday and
+        # when.nonworkday). Pooled into one key, the weekend's checks were a
+        # minority of the workday ones and a wrong weekend window passed every
+        # test (O-real seed 0, top bin: portal GET / stated 0.98, held 0.72
+        # nominal 0.89 on non-workdays)
+        wfail: Dict[str, bool] = {}
+        bw0s, rolls = self._wstate()
+        for wk in when_keys(sorted(self.b)):
+            wb = self.b.pop(wk, None)
+            wbc = (getattr(self, "bc", None) or {}).pop(wk, None)
+            bw0 = bw0s.pop(wk, None)
+            if wb is None or wb[0] <= 0 or self.blast is None:
+                continue
             n, h, nom = wb
             if bw0 is None or float(self.blast) - float(bw0) >= WHEN_SPAN_S:
-                wfail = h / n < nom - cluster_tol(nom, n, wbc)
+                wfail[wk] = h / n < nom - cluster_tol(nom, n, wbc)
             else:
-                roll = getattr(self, "bwr", None)
+                roll = rolls.get(wk)
                 if roll is None:
-                    roll = self.bwr = [float(bw0), {}]
+                    roll = rolls[wk] = [float(bw0), {}]
                 hr_ = int(float(self.blast) // 3600.0)
                 v = roll[1].get(hr_)
                 if v is None:
@@ -929,80 +954,99 @@ class HoldRecord:
                     H = sum(x[1] for x in roll[1].values())
                     U = sum(x[2] for x in roll[1].values())
                     if N > 0:
-                        wfail = H / N < nom - batch_tol(nom, U)
-        if (self.b or wfail is not None) and self.bn > 0 and self.blast is not None:
+                        wfail[wk] = H / N < nom - batch_tol(nom, U)
+        self.bw0 = None
+        if (self.b or wfail) and self.bn > 0 and self.blast is not None:
             # (evaluator round 4) clustered checks: cluster_tol
             cl = getattr(self, "bc", None) or {}
             failed = [k for k, (n, h, nom) in self.b.items()
                       if n > 0 and h / n < nom - cluster_tol(nom, n, cl.get(k))]
-            if wfail:
-                failed.append("when")
-            judged = set(self.b) | ({"when"} if wfail is not None else set())
-            lam = HOLD_TEST_LAMBDA
-            T[0] *= lam
-            T[1] *= lam
-            T[1] += 1.0
-            if not failed:
-                T[0] += 1.0
-            # (round 7) which keys failed each recent failed test: a constraint
-            # the statement no longer states as it was (M45 drop) takes its
-            # failures with it (drop())
-            ti = int(getattr(self, "ti", 0) or 0)
-            if failed:
-                fl = getattr(self, "fl", None)
-                if fl is None:
-                    fl = self.fl = []
-                fl.append([ti, sorted(set(failed))])
-                if len(fl) > HOLD_FAIL_KEEP:
-                    del fl[0]
-            self.ti = ti + 1
-            F = self._F()
-            for k in list(F):
-                F[k] *= lam
-            for k in failed:
-                F[k] = F.get(k, 0.0) + 1.0
-            # the same test judged on each facet's constraints alone (who, when,
-            # request content, transport measures, bindings): which part of a
-            # statement holds - a reader who can check only some facets (the
-            # evaluator: who, when, request content, bindings) sees those
-            TF = getattr(self, "TF", None)
-            if TF is None:
-                TF = self.TF = {}
-            if getattr(self, "lite", False):
-                # (round 7) a group's (lite) record keeps one facet, '~when': a
-                # group's part that states its OWN windows does not state the
-                # node's (union) windows, so P14 composes it from the group's
-                # tests judged without 'when' (2 floats per group record)
-                fl0 = {hold_facet(k) for k in failed}
-                r = TF.get("~when")
-                if r is None:
-                    r = TF["~when"] = [0.0, 0.0]
-                r[0] = r[0] * lam + (0.0 if fl0 - {"when"} else 1.0)
-                r[1] = r[1] * lam + 1.0
-                self._reset_batch()
-                return
-            fac_fail = {hold_facet(k) for k in failed}
-            # '~net': the statement without its transport measures (what a reader
-            # who sees only who / when / request content / bindings would judge);
-            # (round 7) '~when': the statement without its time windows (P14
-            # composes a group's part that states its own windows from it)
-            fac0 = set(fac_fail)
-            if fac0 - {"net"}:
-                fac_fail.add("~net")
-            if fac0 - {"when"}:
-                fac_fail.add("~when")
-            # sorted: TF's key order must not follow str-hash set order (evaluator
-            # round 5: model.ptree hold_facets differed in key order between two
-            # PYTHONHASHSEED runs of pack O seed 0)
-            for fac in sorted({hold_facet(k) for k in judged} | {"~net", "~when"}):
-                r = TF.get(fac)
-                if r is None:
-                    r = TF[fac] = [0.0, 0.0]
-                r[0] = r[0] * lam + (0.0 if fac in fac_fail else 1.0)
-                r[1] = r[1] * lam + 1.0
+            failed += [wk for wk in sorted(wfail) if wfail[wk]]
+            judged = set(self.b) | set(wfail)
+            self._record_test(failed, judged)
         self._reset_batch()
 
+    def _record_test(self, failed: Sequence[str], judged: Iterable[str]) -> None:
+        """One held-out test's outcome into the record: the forgotten pass /
+        test counts, the failed keys of recent failed tests, the per-key
+        failures and the per-facet tests."""
+        T = self._T()
+        lam = HOLD_TEST_LAMBDA
+        T[0] *= lam
+        T[1] *= lam
+        T[1] += 1.0
+        if not failed:
+            T[0] += 1.0
+        # (round 7) which keys failed each recent failed test: a constraint
+        # the statement no longer states as it was (M45 drop) takes its
+        # failures with it (drop())
+        ti = int(getattr(self, "ti", 0) or 0)
+        if failed:
+            fl = getattr(self, "fl", None)
+            if fl is None:
+                fl = self.fl = []
+            fl.append([ti, sorted(set(failed))])
+            if len(fl) > HOLD_FAIL_KEEP:
+                del fl[0]
+        self.ti = ti + 1
+        F = self._F()
+        for k in list(F):
+            F[k] *= lam
+        for k in failed:
+            F[k] = F.get(k, 0.0) + 1.0
+        # the same test judged on each facet's constraints alone (who, when,
+        # request content, transport measures, bindings): which part of a
+        # statement holds - a reader who can check only some facets (the
+        # evaluator: who, when, request content, bindings) sees those
+        TF = getattr(self, "TF", None)
+        if TF is None:
+            TF = self.TF = {}
+        if getattr(self, "lite", False):
+            # (round 7) a group's (lite) record keeps one facet, '~when': a
+            # group's part that states its OWN windows does not state the
+            # node's (union) windows, so P14 composes it from the group's
+            # tests judged without 'when' (2 floats per group record)
+            fl0 = {hold_facet(k) for k in failed}
+            r = TF.get("~when")
+            if r is None:
+                r = TF["~when"] = [0.0, 0.0]
+            r[0] = r[0] * lam + (0.0 if fl0 - {"when"} else 1.0)
+            r[1] = r[1] * lam + 1.0
+            return
+        fac_fail = {hold_facet(k) for k in failed}
+        # '~net': the statement without its transport measures (what a reader
+        # who sees only who / when / request content / bindings would judge);
+        # (round 7) '~when': the statement without its time windows (P14
+        # composes a group's part that states its own windows from it)
+        fac0 = set(fac_fail)
+        if fac0 - {"net"}:
+            fac_fail.add("~net")
+        if fac0 - {"when"}:
+            fac_fail.add("~when")
+        # sorted: TF's key order must not follow str-hash set order (evaluator
+        # round 5: model.ptree hold_facets differed in key order between two
+        # PYTHONHASHSEED runs of pack O seed 0)
+        for fac in sorted({hold_facet(k) for k in judged} | {"~net", "~when"}):
+            r = TF.get(fac)
+            if r is None:
+                r = TF[fac] = [0.0, 0.0]
+            r[0] = r[0] * lam + (0.0 if fac in fac_fail else 1.0)
+            r[1] = r[1] * lam + 1.0
+
+    def _wstate(self) -> Tuple[Dict[str, float], Dict[str, list]]:
+        """(round 8) The 'when' keys' first-check times in the current batch and
+        their trailing-day rolls, per key (a record of round 7 held one float
+        and one roll, for 'when')."""
+        bw0 = getattr(self, "bw0", None)
+        if not isinstance(bw0, dict):
+            bw0 = self.bw0 = ({} if bw0 is None else {"when": float(bw0)})
+        bwr = getattr(self, "bwr", None)
+        if not isinstance(bwr, dict):
+            bwr = self.bwr = ({} if bwr is None else {"when": bwr})
+        return bw0, bwr
+
     def _reset_batch(self) -> None:
+        self.early = False
         self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, {}
         self.bw0 = None
 
@@ -1043,12 +1087,17 @@ class HoldRecord:
         bv = self.b.get(key)
         if bv is None:
             bv = self.b[key] = [0.0, 0.0, float(nominal)]
-            if key == "when" and getattr(self, "bw0", None) is None:
-                self.bw0 = t
+            if key == "when" or key == WHEN_NWD:
+                bw0s, _r = self._wstate()
+                if key not in bw0s:
+                    bw0s[key] = t
         bv[0] += float(w)
         if hit:
             bv[1] += float(w)
         bv[2] = float(nominal)
+        early_check = (bv[0] >= HOLD_EARLY_N and key != "when" and key != WHEN_NWD
+                       and not getattr(self, "early", False)
+                       and bv[1] / bv[0] < float(nominal) - batch_tol(float(nominal), bv[0]))
         if cluster is not None:
             bu = getattr(self, "bu", None)
             if not isinstance(bu, dict):              # (round 7) cluster -> ordinal in the batch
@@ -1071,6 +1120,23 @@ class HoldRecord:
                 cv[0] += float(w)
                 if hit:
                     cv[1] += float(w)
+        if early_check:
+            # (round 8) a test that already fails decisively counts as failed now
+            # (provisionally: tests() / p_hold read it until the batch closes and
+            # the usual rule judges it - one test per batch, as for the tests that
+            # pass), not only when its batch is full:
+            # a statement whose who no longer holds (a member readdressed) kept
+            # its passed tests - and its confidence - for the up-to-a-week its
+            # quiet batch took to fill (O-real seed 0, day 14: finance /fin/ledger
+            # stated 0.97 with its open batch's who at 0.61 of nominal 0.995; the
+            # evaluator held 0.75). Sequential: at least HOLD_EARLY_U units and a
+            # 2.5-sigma cluster-robust margin (the closing rule uses 2)
+            bu_ = getattr(self, "bu", None)
+            if not bu_ or len(bu_) >= HOLD_EARLY_U:
+                kc_ = (getattr(self, "bc", None) or {}).get(key)
+                nom_ = float(nominal)
+                if bv[1] / bv[0] < nom_ - cluster_tol(nom_, bv[0], kc_, z=HOLD_EARLY_Z):
+                    self.early = True
 
     def counts(self, t: float) -> Dict[str, Tuple[float, float, float]]:
         if self.L is None:
@@ -1080,13 +1146,32 @@ class HoldRecord:
 
     def tests(self, t: Optional[float] = None) -> Tuple[float, float]:
         """(passes, tests), forgotten per test (round 4: no time decay; `t` is
-        kept for the callers' signature)."""
+        kept for the callers' signature). (round 8) An open batch already
+        failing decisively (`early`) counts as a failed test."""
         T = self._T()
+        if getattr(self, "early", False):
+            lam = HOLD_TEST_LAMBDA
+            return float(T[0]) * lam, float(T[1]) * lam + 1.0
         return float(T[0]), float(T[1])
 
     def facet_tests(self) -> Dict[str, Tuple[float, float]]:
         """facet -> (passes, tests) of the tests judged on that facet alone."""
         return {k: (float(v[0]), float(v[1])) for k, v in (getattr(self, "TF", None) or {}).items()}
+
+    def first_test(self) -> Optional[bool]:
+        """(round 8) Whether the first held-out test of the current confidence
+        segment passed (None before it closed): a test index 0 among the
+        recent failed tests (fl) is a failed first test; a first test that
+        failed only on constraints since re-stated (drop) counts as passed, as
+        in the pass counts."""
+        if int(getattr(self, "ti", 0) or 0) < 1:
+            return False if getattr(self, "early", False) else None
+        fl = getattr(self, "fl", None) or ()
+        if any(int(e[0]) == 0 for e in fl):
+            return False
+        if len(fl) >= HOLD_FAIL_KEEP:
+            return None                     # the first test's entry may have been evicted
+        return True
 
     def failures(self) -> Dict[str, float]:
         """Constraint key -> (forgotten) number of tests it failed (diagnosis)."""
@@ -1128,6 +1213,7 @@ class HoldRecord:
         (all of it: the tests too); a re-stated constraint (M45) restarts its
         own counts and leaves the current batch's test."""
         if keys is None:
+            self.early = False
             self.c.clear()
             self.L = None
             self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, {}
@@ -1140,12 +1226,16 @@ class HoldRecord:
             return
         T = self._T()
         keys = list(keys)
+        if "when" in keys and WHEN_NWD not in keys:
+            keys.append(WHEN_NWD)                    # the windows are re-stated together
         for k in keys:
             self.c.pop(k, None)
             self.b.pop(k, None)
             (getattr(self, "bc", None) or {}).pop(k, None)
-            if k == "when":
-                self.bw0 = self.bwr = None
+            if k == "when" or k == WHEN_NWD:
+                bw0s, rolls = self._wstate()
+                bw0s.pop(k, None)
+                rolls.pop(k, None)
         # (round 7) the tests a dropped constraint FAILED were tests of a
         # statement no longer made: a test that failed on dropped constraints
         # only is a pass of what remains stated (its weight forgotten as any
@@ -1180,8 +1270,10 @@ class HoldRecord:
 
     def nbytes(self) -> int:
         bwr = getattr(self, "bwr", None)
+        if isinstance(bwr, list):
+            bwr = {"when": bwr}
         return int(64 + 80 * len(self.c) + 80 * len(getattr(self, "b", None) or ()) + 64
-                   + (64 * len(bwr[1]) if bwr else 0)
+                   + sum(64 * len(r[1]) for r in (bwr or {}).values())
                    + sum(72 + 8 * len(e[1]) for e in (getattr(self, "fl", None) or ())))
 
 

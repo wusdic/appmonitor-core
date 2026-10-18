@@ -78,8 +78,23 @@ DAYS = 4.0
 # ('redundant_exact', empty on this stream); DecayedSpaceSaving shares its
 # half-life arrays (representation only). With the representation-only parts
 # undone, the verdict state equals round 6's on this stream.
-GOLDEN = {"model.ptree": "43cbe63182264bd3d863603d25e3fef1303b2249",
-          "model.attrsel": "ccf40899e2dff07c5b4938f2f5bf91418dc88c4e"}
+# Round 8 (tree owner), re-recorded for these deliberate changes (each with its
+# own test in tests/engines/test_p04_round8.py / test_p05_round8.py): P04
+# confirms a candidate as soon as the rule is met (_confirm_due, with its
+# reference), a waiting route row's evidence unit is its burst run at its route,
+# an untested statement's prior mean is the first-test pass rate, the
+# non-workday windows are their own held-out key ('when@nwd') and a decisively
+# failing open batch counts as a failed test; P05 keeps per-attribute due
+# times (model.attrsel 'due' / 'dsig' / 'tree_fp' / 'nodes_t' / 'local_pools' /
+# 'proxy_cands' / 'due_mode' / 'evaluated'). On this stream P05 is in its full
+# regime: with the round-8 keys removed model.attrsel equals round 7's on days
+# 1-4 (ccf40899... on day 4), and so does model.ptree with P05's change alone.
+# (The due bookkeeping counts a change as a crossing of a role threshold and
+# keeps one int signature per attribute, pselect.due_signature / stats_moved:
+# 'due' / 'dsig' differ, the selection with those keys removed is unchanged
+# on days 1-4.)
+GOLDEN = {"model.ptree": "0325e551d1c3212145283e33d96185a84f748723",
+          "model.attrsel": "7403502379ac9b92580d1d91151056b8df6b29bb"}
 
 
 def _dec(v: Any) -> Any:

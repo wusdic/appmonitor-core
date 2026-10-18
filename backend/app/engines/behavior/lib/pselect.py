@@ -1870,7 +1870,8 @@ def every_run(registry_names: Iterable[str], roles: Mapping[str, str],
 def names_to_evaluate(registry_names: Sequence[str], roles: Mapping[str, str],
                       dropped_at: Mapping[str, float], t: float, run_index: int,
                       a_probe: int = A_PROBE, ustat: Optional[Mapping[str, Mapping[str, Any]]] = None,
-                      rotate: Iterable[str] = ()) -> List[str]:
+                      rotate: Iterable[str] = (), due: Optional[Mapping[str, Sequence[int]]] = None,
+                      hour: Optional[int] = None) -> List[str]:
     """Every attribute whose role feeds the trees (split, target, redundant:
     re-judged every run, with hysteresis), dropped ones due for their 7-day
     re-probe, plus a rotating crc32 slice of A_probe others - the others being
@@ -1885,7 +1886,13 @@ def names_to_evaluate(registry_names: Sequence[str], roles: Mapping[str, str],
     rotation pool fits one slice (<= A_probe attributes: pack O) every
     attribute is still evaluated every run, as before. A run judges at most
     E_MAX attributes (plus the weekly re-probes): the slice gets the budget the
-    every-run roles leave, never less than E_MIN_SLICE."""
+    every-run roles leave, never less than E_MIN_SLICE.
+
+    (round 8, PG4) `due` ({attribute: (due run-hour, back-off exponent)},
+    due_after) with `hour` (the run's hour index): an attribute judged before
+    is judged again only once its due hour came (is_due). Its role and
+    statistics are kept in between (assign_roles judges the evaluated ones).
+    Without `due` every attribute is due (the probe's wanted set, _wanted)."""
     kept = every_run(registry_names, roles, ustat)
     rot = set(rotate)
     if rot:
@@ -1895,6 +1902,10 @@ def names_to_evaluate(registry_names: Sequence[str], roles: Mapping[str, str],
         kept = [a for a in kept if a not in rot]
     reprobe = [a for a in registry_names if roles.get(a) == "dropped"
                and t - float(dropped_at.get(a, t)) >= REPROBE_S]
+    if due is not None and hour is not None:
+        kept = [a for a in kept if is_due(due, a, hour)]
+        reprobe = [a for a in reprobe if is_due(due, a, hour)]
+        registry_names = [a for a in registry_names if is_due(due, a, hour)]
     rset = set(reprobe)
     kset = set(kept)
     rest = [a for a in registry_names if a not in kset and a not in rset]
@@ -1921,6 +1932,99 @@ def names_to_evaluate(registry_names: Sequence[str], roles: Mapping[str, str],
             seen.add(a)
             out.append(a)
     return out
+
+
+# ===================================================== per-attribute due times
+# (round 8, PG4) An attribute is re-judged when its statistics may have moved
+# its role, not on every run: after an evaluation that left its role, levels
+# and every role statistic on its side of every role threshold (stats_moved), its next evaluation
+# waits twice as long (P x 2^k run-hours, k <= DUE_MAX_K; aligned so that the
+# attributes of one exponent fall due on the same runs), and any change starts
+# it again at every run. The selection of a key whose roles all hold is then
+# re-judged every 2^DUE_MAX_K hours, whatever the number of its attributes;
+# one flapping attribute keeps only itself hourly. Before, the key's cadence
+# relaxed (6 h) only after STABLE_RUNS runs without ANY role change: on PG4's
+# 340-attribute point the role flips of a few of the 300 synthetic attributes
+# kept every busy key hourly (0-2 of ~121 runs stable), so the whole selection
+# was re-judged every hour and P05 made 42 % of the CPU growth with attributes.
+DUE_MAX_K = 3                  # back-off: 1, 2, 4, 8 run-hours
+DUE_RED_KEEPER = True          # a due redundant attribute brings its keeper (the pair is re-judged together)
+# the role thresholds each statistic of due_signature is compared with
+# (assign_roles: promote / demote, invariant entry / exit, local targets,
+# closed sets, shapes, stability, the redundancy candidates' entropy floor)
+_DUE_TH: Tuple[Tuple[float, ...], ...] = (
+    (U_LO, U_HI),                                   # 0 U_t (max of U_t, U_tc)
+    (U_LO, U_HI),                                   # 1 U_s (best level)
+    (CR_LOCAL_LO, CR_LOCAL),                        # 2 CR_p
+    (INV_H, 2 * INV_H, RED_HB),                     # 3 H
+    (INV_H,),                                       # 4 H_p
+    (TARGET_COV, CLOSED_COV_MAX, INV_COV_EXIT, INV_COV),   # 5 coverage
+    (TARGET_COV,),                                  # 6 coverage where recorded
+    (SHAPE_DISTINCT,),                              # 7 distinct share
+    (SHAPE_CR,),                                    # 8 CR0
+    (TARGET_STAB,),                                 # 9 stability
+    (N_LOCAL - 0.5,),                               # 10 rows where present
+    (1.5, CLOSED_CARD + 0.5),                       # 11 level-0 cardinality (closed sets)
+)
+
+
+def is_due(due: Mapping[str, Sequence[int]], a: str, hour: int) -> bool:
+    r = due.get(a)
+    return r is None or int(r[0]) <= int(hour)
+
+
+def due_after(hour: int, k: int) -> int:
+    """The next run-hour of an attribute evaluated at `hour` with exponent k:
+    the next multiple of 2^k (every exponent's due hours nest in the lower
+    one's, so attributes become due together and runs batch them)."""
+    k = max(0, int(k))
+    return ((int(hour) >> k) + 1) << k
+
+
+_DUE_NTH = sum(len(th) for th in _DUE_TH)       # side bits of the signature
+
+
+def due_signature(st: Mapping[str, Any]) -> int:
+    """The role inputs of one evaluate() record, as one integer: a bit per
+    (statistic, role threshold) of _DUE_TH - the statistic is at or above the
+    threshold - then the level (4 bits) and the set of best split levels (a
+    bit per level). Two evaluations have the same role inputs when their
+    signatures are equal (stats_moved). One small int per attribute: kept in
+    model.attrsel for every attribute of every key (PG4's 340 attributes)."""
+    u_te = max(float(st["U_t"]), float(st.get("U_tc", st["U_t"])))
+    vals = (u_te, float(st.get("U_s_max", -math.inf)), float(st.get("CR_p", 0.0)),
+            float(st["H"]), float(st.get("H_p", st["H"])), float(st["cov"]),
+            max(float(st["cov"]), float(st.get("cov_rows", st["cov"]))),
+            float(st.get("distinct0", 0.0)), float(st.get("CR0", 0.0)),
+            float(st.get("S", 1.0)), float(int(st.get("n_p", 0))), float(int(_card0(st))))
+    code = 0
+    bit = 0
+    for v, th in zip(vals, _DUE_TH):
+        for x in th:
+            if v >= x:                    # NaN / -inf: below every threshold
+                code |= 1 << bit
+            bit += 1
+    code |= min(15, max(0, int(st.get("level", 0)))) << _DUE_NTH
+    for lv in st.get("best_levels") or ():
+        code |= 1 << (_DUE_NTH + 4 + min(31, max(0, int(lv))))
+    return code
+
+
+def stats_moved(old: Optional[int], new: int) -> bool:
+    """Whether an attribute's role inputs changed between two evaluations
+    (due_signature): a statistic crossed a role threshold (assign_roles
+    decides by the side of each threshold, with hysteresis), or its level or
+    its set of best split levels (the split candidates P04 receives) changed.
+    A move that stays on the same side of every threshold leaves the role as
+    it is and does not bring the attribute back to every run; the crossing it
+    may lead to is seen at its next due evaluation, at most 2^DUE_MAX_K
+    run-hours later. (Round 8 first measured the move against the distance
+    to the nearest threshold - a rate extrapolation. On PG4's 340-attribute
+    point that read the hour-to-hour sampling noise of the split utility as
+    a trend: U_s_max of a split attribute swings 1.0 -> 0.15 -> 0.5 bits, far
+    above U_HI = 0.05, and 1 069 of 4 159 resets came from it while no role
+    changed; evaluated names 39.7 k -> 32.2 k only.)"""
+    return not isinstance(old, int) or isinstance(old, bool) or old != new
 
 
 # ============================================================ node overrides

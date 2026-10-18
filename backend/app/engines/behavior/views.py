@@ -735,20 +735,31 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     flow, fzh, fen, f_c = PR.workflow_block(edges)
     confs = [who_c, when_c, c_c, b_c, f_c]
     conf = float(min(x for x in confs if x is not None and math.isfinite(x))) if confs else 1.0
+    nw = [x for x in (who_c, c_c, b_c, f_c) if x is not None and math.isfinite(x)]
+    conf_nw = float(min(nw)) if nw else 1.0
     if nd.state == "stale":
         conf *= PR.STALE_FACTOR
+        conf_nw *= PR.STALE_FACTOR
     # the calibrated confidence when P04 has checked the node's constraints on
     # held-out data (pnode.HoldRecord: the probability that every constraint
     # holds on new events); the min-over-parts formula above states the
     # weakest part's NOMINAL coverage and was under-confident on pack O
     # (PG2 ECE 0.36-0.43)
     conf = compose_conf(nd, t, conf, part, own_when, when_c, own_hold)
+    when_fc = None
     if drift and when_c is not None and math.isfinite(float(when_c)):
         # P04's hold rate is the windows' past record; a drifting window holds
         # only as far as the young arrivals support it: (round 6) the
         # probability that the stated windows hold given the young dates'
         # arrivals (PW.drift_hold), the posterior coverage when unknown
-        conf = float(min(conf, drift_conf(drift, when_ev, when_c)))
+        when_fc = drift_conf(drift, when_ev, when_c)
+        conf = float(min(conf, when_fc))
+    elif when_ev:
+        when_fc = own_hold if (own_when and own_hold is not None) else when_c
+    # (round 8) per-facet confidence: the time clause's own (when_fc) and the
+    # node's other constraints' (rest_conf: P04's '~when' facet record), so a
+    # moving window lowers only the 'when' facet
+    rest_c = rest_conf(nd, t, conf_nw, part)
     sys_label = c.key
     addr = ""
     root = c.ptm.kinds[kind].nodes.get(c.ptm.kinds[kind].root) if c.ptm is not None else None
@@ -777,6 +788,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         rt_zh = f"{rt_zh}（条件：{cond_zh}）"
         rt_en = f"{rt_en} (when: {cond_en})"
     state = nd.state
+    state_nd = state                     # (round 8) the state without the window drift
     if drift and state in ("confirmed", "stable"):
         state = "evolving"
     if adopted_from is not None:
@@ -788,12 +800,32 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         rt_zh = f"{rt_zh}（原 {ot}，页面已更名）"
         rt_en = f"{rt_en} (formerly {ot}, page renamed)"
         state = "confirmed" if state in ("stale", "confirmed", "stable") else state
+        state_nd = "confirmed" if state_nd in ("stale", "confirmed", "stable") else state_nd
     zh, _ = PR.sentence(sys_label, addr, when_zh, when_en, who_zh, who_en, rt_zh,
                         czh, cen, bzh, ben, fzh, fen, conf, first, last, nd.version, nd.cver, state,
                         support=sup_txt)
     _, en = PR.sentence(sys_label, addr, when_zh, when_en, who_zh, who_en, rt_en,
                         czh, cen, bzh, ben, fzh, fen, conf, first, last, nd.version, nd.cver, state,
                         support=sup_txt)
+    facet_stmt = None
+    if drift and state == "evolving" and state_nd in ("confirmed", "stable") and when_fc is not None:
+        # (round 8) the time clause is in transition, the rest is not: say so
+        # in the evolving statement, and state the node's who / content /
+        # binding / workflow clauses as their own statement at their own
+        # confidence (pack O seed 2, days 12-15: D1 moved 综合部's login
+        # window, the login statements were 'evolving' at 0.016-0.019 and
+        # their intact bindings - lower bound 0.99 - were stated nowhere)
+        nz = f"（时间窗正在变化：时间置信 {PR.fnum(when_fc)}，其余约束置信 {PR.fnum(rest_c)}）"
+        ne = f" (time window changing: time confidence {PR.fnum(when_fc)}, other constraints {PR.fnum(rest_c)})"
+        fz, _ = PR.sentence(sys_label, addr, "", "", who_zh, who_en, rt_zh, czh, cen, bzh, ben, fzh, fen,
+                            rest_c, first, last, nd.version, nd.cver, state_nd, support=sup_txt)
+        _, fe = PR.sentence(sys_label, addr, "", "", who_zh, who_en, rt_en, czh, cen, bzh, ben, fzh, fen,
+                            rest_c, first, last, nd.version, nd.cver, state_nd, support=sup_txt)
+        facet_stmt = {"text_zh": fz + "（时间窗正在变化，另见含时间窗的模式）",
+                      "text_en": fe + " (time window changing; see the pattern with its window)",
+                      "confidence": float(rest_c), "state": state_nd}
+        zh += nz
+        en += ne
     facets = ["functional", "spatial"]
     if when_ev:
         facets.append("temporal")
@@ -822,12 +854,57 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     if adopted_from is not None:
         ev["adopted_from"] = adopted_from
         pid = f"{pid}|as:{route}"
-    return {"id": pid + (f"|{subject}" if subject else ""), "pattern_id": pid, "view": view,
-            "subject": subject or c.key, "text_zh": zh, "text_en": en,
-            "support": sup, "n_obs": sup_txt, "confidence": conf,
-            "first_seen": nd.first_seen, "last_seen": nd.last_seen, "version": nd.version,
-            "cver": nd.cver, "state": state, "mass": float(nd.mass_at(t)),
-            "facets": facets, "evidence": ev}
+    fc = {"who": round(float(rest_c), 4)}
+    if when_fc is not None and math.isfinite(float(when_fc)):
+        fc["when"] = round(float(when_fc), 4)
+    for k, v in (("content", content), ("bindings", binds), ("workflow", flow)):
+        if v:
+            fc[k] = round(float(rest_c), 4)
+    ev["facet_conf"] = fc
+    out = {"id": pid + (f"|{subject}" if subject else ""), "pattern_id": pid, "view": view,
+           "subject": subject or c.key, "text_zh": zh, "text_en": en,
+           "support": sup, "n_obs": sup_txt, "confidence": conf,
+           "first_seen": nd.first_seen, "last_seen": nd.last_seen, "version": nd.version,
+           "cver": nd.cver, "state": state, "mass": float(nd.mass_at(t)),
+           "facets": facets, "evidence": ev}
+    if facet_stmt is not None:
+        fpid = f"{pid}|~when"
+        fev = {k: v for k, v in ev.items() if k != "when"}
+        fev["facet"] = "~when"
+        fev["time_clause"] = {"state": "evolving", "of": out["id"]}
+        out["facet_statement"] = dict(out, **facet_stmt, id=fpid + (f"|{subject}" if subject else ""),
+                                      pattern_id=fpid, evidence=fev,
+                                      facets=[f for f in facets if f != "temporal"])
+    return out
+
+
+def rest_conf(nd: Any, t: float, conf_nw: float, part: Optional[Sequence[Any]] = None) -> float:
+    """(round 8) Confidence of a statement's clauses other than its time
+    windows (who, content, bindings, workflow): P04's held-out record of the
+    node judged without 'when' (hold_without_when) when kept, else the
+    statement's full held-out composition without its own windows
+    (compose_conf: P04's p_hold, pooled with the part's group tests), else
+    the min over those clauses' own confidences (conf_nw)."""
+    rest = hold_without_when(nd)
+    if rest is not None:
+        return float(rest)
+    return float(compose_conf(nd, t, conf_nw, part, False, None))
+
+
+def with_facet_statements(sts: Iterable[Optional[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """(round 8) The statements followed by the facet statement each one
+    carries ('facet_statement': its clauses without the time clause, while that
+    is in transition), as statements of their own."""
+    out: List[Dict[str, Any]] = []
+    for st in sts:
+        if st is None:
+            continue
+        fs = st.pop("facet_statement", None)
+        out.append(st)
+        if fs is not None:
+            fs.pop("facet_statement", None)
+            out.append(fs)
+    return out
 
 
 BIND_MIN_CARD = FD.BIND_MIN_CARD  # distinct payload values system-wide for a binding to be stated
@@ -1502,6 +1579,7 @@ def system_view(store: Any, key: str, config: Mapping[str, Any], now: float,
                     # history, pointing at its successor
                     ost = node_statement(c, kind, nd, route)
                     if ost is not None:
+                        ost.pop("facet_statement", None)
                         nz = PR.route_text(adopt[route])
                         ost["text_zh"] += f"（页面已更名为 {nz}）"
                         ost["text_en"] += f" (page renamed to {nz})"
@@ -1515,11 +1593,13 @@ def system_view(store: Any, key: str, config: Mapping[str, Any], now: float,
             if st is None:
                 continue
             st["act_node"] = act
-            stmts.append(st)
             a = actions.setdefault(act, {"act_node": act, "route": route, "mass": 0.0, "statements": []})
             if adopted is not None:
                 a["route"] = route
-            a["statements"].append(st["id"])
+            for x in with_facet_statements([st]):
+                x["act_node"] = act
+                stmts.append(x)
+                a["statements"].append(x["id"])
             if nd.id == act:
                 a["mass"] = st["mass"]
             # the "某类人" parts of a node shared by several learned groups
@@ -1529,10 +1609,11 @@ def system_view(store: Any, key: str, config: Mapping[str, Any], now: float,
                     ps = node_statement(c, kind, nd, route, part=part, adopted_from=adopted)
                     if ps is None:
                         continue
-                    ps["act_node"] = act
-                    ps["mass"] = float(st["mass"]) * part[3]
-                    stmts.append(ps)
-                    a["statements"].append(ps["id"])
+                    for x in with_facet_statements([ps]):
+                        x["act_node"] = act
+                        x["mass"] = float(st["mass"]) * part[3]
+                        stmts.append(x)
+                        a["statements"].append(x["id"])
     stmts, folded = fold_duplicates(stmts, tree_of=c.ptm.kinds.get(EV.KIND_TXN))
     for a in actions.values():
         kept = {st["id"] for st in stmts}
@@ -1762,9 +1843,9 @@ def group_view(store: Any, g: str, config: Mapping[str, Any], now: float,
                     if mem:
                         st = node_statement(c, EV.KIND_TXN, nd, route, view="group", subject=subject,
                                             part=(g, mem, name, gm), adopted_from=adopted) or st
-                if st is not None:
-                    st["act_node"] = act
-                    node_sts.append(st)
+                for x in with_facet_statements([st]):
+                    x["act_node"] = act
+                    node_sts.append(x)
             # (round 4) one statement per behaviour, as in the system view
             prim, fold = fold_duplicates(node_sts, tree)
             stmts.extend(prim)
@@ -2111,8 +2192,7 @@ def ip_view(store: Any, s: str, ip: str, config: Mapping[str, Any], now: float) 
             xid = nd.exc.get(ip) if nd.exc else None
             if xid is not None and xid in tree.nodes and tree.nodes[xid].state in RENDERED:
                 st = node_statement(c, kind, tree.nodes[xid], route)
-                if st is not None:
-                    out["exceptions"].append(st)
+                out["exceptions"].extend(with_facet_statements([st]))
             bent = PB.lookup(c.pbind, kind, nd.id) if isinstance(c.pbind, Mapping) else None
             for pk, rec in ((bent or {}).get("pairs") or {}).items():
                 ent = (rec.get("table") or {}).get(ip)

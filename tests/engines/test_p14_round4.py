@@ -456,6 +456,10 @@ def test_a_node_whose_windows_drift_is_stated_as_evolving(monkeypatch):
     stay 'confirmed' at P04's hold rate (pack O seed 0 day 14: 综合部 home /
     login stated confirmed 0.61-0.77 while holding 0.08-0.12)."""
     sts = _drift_tree(monkeypatch, drift=True)
+    # (round 8) the node's clauses other than its time window are also stated
+    # on their own (facet '~when', test_p14_round8): the statement WITH the
+    # window is the evolving one
+    sts = [s for s in sts if s["evidence"].get("facet") != "~when"]
     assert sts and all(s["state"] == "evolving" for s in sts)
     assert all(s["confidence"] <= 0.3 + 1e-9 for s in sts)
     assert all(s["evidence"]["when"].get("drift") for s in sts)

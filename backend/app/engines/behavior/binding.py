@@ -52,10 +52,14 @@ Writes  model.pbind@(tree key, '__system__'):
         model.pbind_state@(tree key, '__system__') = private bookkeeping (probe,
         value histories, tracked sources, last bound values, rebinding marks,
         ingestion marks).
+A new family tree key (P12) starts from its members' P08 states
+(_family_state: the seed's probe and bound values, every member's value
+histories merged by source), not from nothing (round 8, O-real A2).
 Inert unless config['progressive']['enabled'].
 """
 from __future__ import annotations
 
+import copy
 import datetime as _dt
 import time
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -152,12 +156,62 @@ class BindingEngine(Engine):
     def _state(store: Any, key: str) -> Dict[str, Any]:
         st = store.get_model(key, SYSTEM_ENTITY, STATE)
         if not isinstance(st, dict):
-            st = {"probe": FD.ProbeReservoir(), "hist": {}, "last": {}, "bound": {}, "rebound": {}}
+            st = BindingEngine._family_state(store, key)
+            if st is None:
+                st = {"probe": FD.ProbeReservoir(), "hist": {}, "last": {}, "bound": {}, "rebound": {}}
             store.put_model(key, SYSTEM_ENTITY, STATE, st)
         st.setdefault("hist", {})
         st.setdefault("bound", {})
         st.setdefault("rebound", {})
         st.setdefault("track", {})
+        return st
+
+    @staticmethod
+    def _family_state(store: Any, key: str) -> Optional[Dict[str, Any]]:
+        """(round 8) The bookkeeping a new FAMILY tree key starts from: its
+        members' own P08 states, kept at their keys when they joined (P12
+        adopts the seed member's tree, registry and fitted model.pbind for the
+        family, but not this state). The base is the member state with the
+        most probe rows offered (the seed's: the family tree is its tree, so
+        its node-keyed bound values stay valid); every other member's value
+        histories are merged into it by source (lib/pfd.ValueHistory.merge)
+        and its ingestion marks kept. None when the key is not a family or no
+        member has a state.
+        Measured on O-real (R9: oa-r2 joins oa as fam:1 on day 11): the family
+        started with an empty probe and no value history, its first fit
+        re-screened the empty probe and dropped every pair, and a source that
+        logs in once a workday needed n_bind days again before a binding was
+        stated - 192.168.1.21 -> jack was not bound when A2 used rose's
+        credential from it (day 17): A2 missed on seeds 0-2, bindings 0/3."""
+        fam = MP.get_org_model(store, MP.SYSFAM)
+        mem = ((fam or {}).get("families") or {}).get(key) if isinstance(fam, Mapping) else None
+        if not mem:
+            return None
+        states = []
+        for m in sorted(str(x) for x in mem):
+            if m == key:
+                continue
+            ms = store.get_model(m, SYSTEM_ENTITY, STATE)
+            if isinstance(ms, dict) and isinstance(ms.get("probe"), FD.ProbeReservoir):
+                states.append((m, ms))
+        if not states:
+            return None
+        base_m, base = max(states, key=lambda kv: (int(kv[1]["probe"].offered), kv[0]))
+        st = copy.deepcopy(base)
+        st.setdefault("hist", {})
+        st.setdefault("last", {})
+        for m, ms in states:
+            if m == base_m:
+                continue
+            for pk in sorted(ms.get("hist") or {}):
+                h = ms["hist"][pk]
+                if pk in st["hist"]:
+                    st["hist"][pk].merge(h)
+                else:
+                    st["hist"][pk] = copy.deepcopy(h)
+            for s_, t_ in (ms.get("last") or {}).items():
+                st["last"][s_] = max(float(t_), float(st["last"].get(s_, -1e18)))
+        st["family_from"] = [m for m, _ in states]
         return st
 
     @staticmethod

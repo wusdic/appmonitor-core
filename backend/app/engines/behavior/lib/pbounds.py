@@ -79,9 +79,24 @@ def unit_of(attr: str, byte_globs: Sequence[str] = BYTE_GLOBS) -> str:
 
 
 def _inv(y: float, log: bool) -> float:
+    """Natural value of a transformed y. (Round 8) exp(log(x)) misses an
+    integer x by an ulp (exp(log(461)) = 461.00000000000006): a band or range
+    end at an integer value (a byte or packet count) excluded every row AT
+    that value from "within [a, b]" - pack O seed 3, the portal's GET /news
+    net.bytes_up band [461.00000000000006, 516] left out its 461-byte
+    requests (10.6 % of the rows) and its range [460.0000000000001, 516] its
+    460-byte ones (held-out band coverage 0.83 against a stated 0.95-0.97).
+    A back-transformed value within 1e-12 (relative) of an integer is that
+    integer."""
     if not _fin(y):
         return NAN
-    return float(math.exp(y)) if log else float(y)
+    if not log:
+        return float(y)
+    v = float(math.exp(y))
+    r = float(round(v))
+    if abs(v - r) <= 1e-12 * max(1.0, abs(v)):
+        return r
+    return v
 
 
 def _fwd(v: float, log: bool) -> float:
@@ -324,6 +339,12 @@ def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float
         ps = [pl + p * span for p in ps]
     qv = td_quantiles(td, ps)
     y05, y95, y01, y99 = qv[0], qv[1], qv[2], qv[3]
+    # (round 8) a band end interpolated between two atoms of a discrete
+    # attribute takes the atom below (above) it: snap_atom
+    lo_obs = _observed(num, False, ymin if rng is not None else NAN)
+    hi_obs = _observed(num, True, ymax if rng is not None else NAN)
+    y05, y01 = snap_atom(y05, lo_obs, down=True), snap_atom(y01, lo_obs, down=True)
+    y95, y99 = snap_atom(y95, hi_obs, down=False), snap_atom(y99, hi_obs, down=False)
     band90 = [_inv(y05, lg), _inv(y95, lg)]
     band98 = [_inv(y01, lg), _inv(y99, lg)]
     cov90 = min(1.0, closed_coverage(td, y05, y95) / span) if _fin(y05) and _fin(y95) else NAN
@@ -412,6 +433,68 @@ def clean_mass(td: Any, ymin: float, ymax: float) -> Tuple[float, float]:
     if not (_fin(pl) and _fin(ph)) or (ph - pl) * float(td.total()) < CLEAN_MIN:
         return 0.0, 1.0
     return float(max(0.0, pl)), float(min(1.0, ph))
+
+
+ATOM_MIN = 2                           # repeats of one exact value in an exceedance reservoir: an atom
+
+
+def _observed(num: Any, upper: bool, extreme: float) -> Dict[float, int]:
+    """{value: count} of exact values the attribute was observed to take
+    (transformed scale): the exceedance reservoir's sample of real rows
+    beyond the running Q(0.90) (Q(0.10)), the clean range's extreme, and the
+    ATOMS of the digest - a mean shared exactly by >= 2 centroids (centroids
+    of one repeated value; a centroid that merged several values has a mean
+    the attribute never takes and is left out)."""
+    out: Dict[float, int] = {}
+    try:
+        ex = num.exceedances(upper=upper)
+    except Exception:
+        ex = np.zeros(0)
+    for v in ex.tolist():
+        if math.isfinite(v):
+            out[float(v)] = out.get(float(v), 0) + 1
+    td = getattr(num, "td", None)
+    if td is not None and hasattr(td, "_mu") and hasattr(td, "_flush"):
+        td._flush()
+        vals, cnt = np.unique(np.asarray(td._mu, dtype=np.float64), return_counts=True)
+        for v, c in zip(vals.tolist(), cnt.tolist()):
+            if c >= ATOM_MIN and math.isfinite(v):
+                out[float(v)] = out.get(float(v), 0) + int(c)
+    if _fin(extreme):
+        out.setdefault(float(extreme), 1)
+    return out
+
+
+def snap_atom(y: float, observed: Mapping[float, int], down: bool) -> float:
+    """(round 8) A band end y (a digest quantile) moved to the atom just
+    below (down) / above it: when the observed value nearest to y on that
+    side is an ATOM (repeated exactly >= ATOM_MIN times in the exceedance
+    reservoir), y lies in the gap between two atoms and the quantile of the
+    sample is that atom, not an interpolated point the attribute never takes
+    (atoms: repeated reservoir values or the digest's pure centroids, _observed).
+    A t-digest merges atoms into centroids and interpolates between them: the
+    portal's GET /news net.bytes_up takes a handful of exact sizes (460, 461,
+    470, 505, 516 B) and its 5 % quantile read 461.0, between the 460 and 461
+    atoms, so the stated band [461, 516] (coverage 0.97) excluded every 460-byte
+    request: held-out coverage 0.79-0.86 on every day of pack O seed 3
+    (prequential probe, all route nodes). Continuous data is unchanged (its
+    nearest observed value is a singleton), and an end that IS an atom stays."""
+    if not _fin(y) or not observed:
+        return y
+    eps = 1e-9 * (1.0 + abs(float(y)))
+    if down:
+        c = [v for v in observed if v <= y + eps]
+        if not c:
+            return y
+        v = max(c)
+    else:
+        c = [v for v in observed if v >= y - eps]
+        if not c:
+            return y
+        v = min(c)
+    if abs(v - y) <= eps or observed.get(v, 0) < ATOM_MIN:
+        return y
+    return float(v)
 
 
 def _tail(num: Any, u: float, upper: bool) -> Optional[List[float]]:
