@@ -83,8 +83,7 @@ DAYS = 4.0
 # confirms a candidate as soon as the rule is met (_confirm_due, with its
 # reference), a waiting route row's evidence unit is its burst run at its route,
 # an untested statement's prior mean is the first-test pass rate, the
-# non-workday windows are their own held-out key ('when@nwd') and a decisively
-# failing open batch counts as a failed test; P05 keeps per-attribute due
+# non-workday windows are their own held-out key ('when@nwd'); P05 keeps per-attribute due
 # times (model.attrsel 'due' / 'dsig' / 'tree_fp' / 'nodes_t' / 'local_pools' /
 # 'proxy_cands' / 'due_mode' / 'evaluated'). On this stream P05 is in its full
 # regime: with the round-8 keys removed model.attrsel equals round 7's on days
@@ -93,7 +92,18 @@ DAYS = 4.0
 # keeps one int signature per attribute, pselect.due_signature / stats_moved:
 # 'due' / 'dsig' differ, the selection with those keys removed is unchanged
 # on days 1-4.)
-GOLDEN = {"model.ptree": "0325e551d1c3212145283e33d96185a84f748723",
+# Round 8, second pass (tree owner): the early provisional failure of an open
+# batch was withdrawn (HoldRecord loses its 'early' slot), a re-stated
+# constraint's failures leave the facet tests too (HoldRecord.drop), and the
+# observed-extremes records are compact (per-source: pnode.SourceExtremes
+# columns; per candidate value: pnode.ext4 float arrays), and so are the
+# held-out records' per-constraint counts (float arrays; a constraint's
+# per-cluster checks keep no ordinal map while it has seen every cluster in
+# order). With the 'early' slot skipped and these records in a
+# representation-free form, model.ptree is the same before (0325e551...) and
+# after on this stream (3476cd0a... both): representation only here.
+# model.attrsel unchanged.
+GOLDEN = {"model.ptree": "9fed17a999076fb085cb048c931cf66ef0d42cc4",
           "model.attrsel": "7403502379ac9b92580d1d91151056b8df6b29bb"}
 
 

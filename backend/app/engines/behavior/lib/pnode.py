@@ -26,7 +26,7 @@ Counts in every p-value / bound are evidence on the confidence channel.
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Dict, Hashable, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Hashable, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -734,13 +734,7 @@ def batch_tol(nominal: float, n: float) -> float:
 CLUSTER_Z = 2.0                    # z of the cluster-robust error (cluster_tol)
 
 
-HOLD_EARLY_N = 20.0                # (round 8) a test can be decided early on >= 20 checks of a key ...
-HOLD_EARLY_U = 10                  # ... from >= 10 independent units ...
-HOLD_EARLY_Z = 2.5                 # ... failing by a 2.5-sigma cluster-robust margin (the closing rule: 2)
-
-
-def cluster_tol(nominal: float, n: float, clusters: Optional[Mapping[Any, List[float]]],
-                z: float = 0.0) -> float:
+def cluster_tol(nominal: float, n: float, clusters: Optional[Mapping[Any, List[float]]]) -> float:
     """Tolerance of a held-out test whose n checks come in clusters (evaluator
     round 4): the checks of one source on one day are not independent (a
     session's page views share its arrival minute, its connection its transport
@@ -766,7 +760,7 @@ def cluster_tol(nominal: float, n: float, clusters: Optional[Mapping[Any, List[f
             p = sum(h_c for _n, h_c in clusters.values()) / float(n)
             ss = sum((h_c - p * n_c) ** 2 for n_c, h_c in clusters.values())
             v = C / (C - 1.0) * ss / (float(n) ** 2)
-            tol = max(tol, (z or CLUSTER_Z) * math.sqrt(v))
+            tol = max(tol, CLUSTER_Z * math.sqrt(v))
     return tol
 
 
@@ -795,10 +789,26 @@ class _KC:
         from array import array
         self.n = array("d")
         self.h = array("d")
-        self.pos = array("l")                       # batch ordinal -> position (-1: not seen)
+        # batch ordinal -> position (-1: not seen); (round 8) None while the
+        # constraint has seen the batch's clusters in their ordinal order, every
+        # one of them (position = ordinal: most constraints are checked on every
+        # event) - the map is built at the first gap, with the same positions
+        self.pos: Optional[Any] = None
 
     def add(self, g: int, w: float, hit: bool) -> None:
         pos = self.pos
+        if pos is None:
+            nn = len(self.n)
+            if g <= nn:
+                if g == nn:
+                    self.n.append(0.0)
+                    self.h.append(0.0)
+                self.n[g] += w
+                if hit:
+                    self.h[g] += w
+                return
+            from array import array
+            pos = self.pos = array("l", range(nn))
         while len(pos) <= g:
             pos.append(-1)
         j = pos[g]
@@ -818,6 +828,23 @@ class _KC:
 
     def __bool__(self) -> bool:
         return len(self.n) > 0
+
+
+def _failed_facets(keys: Iterable[str], lite: bool = False) -> Set[str]:
+    """The facets (HoldRecord.TF keys) a test failed when `keys` failed it:
+    each key's facet, '~net' when a key outside the transport measures failed,
+    '~when' when a key outside the time windows failed (a lite record keeps
+    '~when' only)."""
+    fac = {hold_facet(k) for k in keys}
+    out: Set[str] = set()
+    if fac - {"when"}:
+        out.add("~when")
+    if lite:
+        return out
+    out |= fac
+    if fac - {"net"}:
+        out.add("~net")
+    return out
 
 
 class HoldRecord:
@@ -845,7 +872,7 @@ class HoldRecord:
     p_constraints() (diagnosis). O(constraints) floats per node."""
 
     __slots__ = ("c", "L", "b", "bt0", "bn", "blast", "T", "F", "seg", "TF", "lite", "bc", "bu", "bw0", "bwr",
-                 "ti", "fl", "early")
+                 "ti", "fl")
 
     def __init__(self, lite: bool = False) -> None:
         self.lite = bool(lite)                       # tests only: no per-constraint counts / facets
@@ -1046,7 +1073,6 @@ class HoldRecord:
         return bw0, bwr
 
     def _reset_batch(self) -> None:
-        self.early = False
         self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, {}
         self.bw0 = None
 
@@ -1074,7 +1100,7 @@ class HoldRecord:
             f = self._f(t) * float(w)
             v = self.c.get(key)
             if v is None:
-                v = self.c[key] = [0.0, 0.0, float(nominal)]
+                v = self.c[key] = _rec3(nominal)
             v[0] += f
             if hit:
                 v[1] += f
@@ -1086,7 +1112,7 @@ class HoldRecord:
             self.blast = t
         bv = self.b.get(key)
         if bv is None:
-            bv = self.b[key] = [0.0, 0.0, float(nominal)]
+            bv = self.b[key] = _rec3(nominal)
             if key == "when" or key == WHEN_NWD:
                 bw0s, _r = self._wstate()
                 if key not in bw0s:
@@ -1095,9 +1121,6 @@ class HoldRecord:
         if hit:
             bv[1] += float(w)
         bv[2] = float(nominal)
-        early_check = (bv[0] >= HOLD_EARLY_N and key != "when" and key != WHEN_NWD
-                       and not getattr(self, "early", False)
-                       and bv[1] / bv[0] < float(nominal) - batch_tol(float(nominal), bv[0]))
         if cluster is not None:
             bu = getattr(self, "bu", None)
             if not isinstance(bu, dict):              # (round 7) cluster -> ordinal in the batch
@@ -1120,23 +1143,6 @@ class HoldRecord:
                 cv[0] += float(w)
                 if hit:
                     cv[1] += float(w)
-        if early_check:
-            # (round 8) a test that already fails decisively counts as failed now
-            # (provisionally: tests() / p_hold read it until the batch closes and
-            # the usual rule judges it - one test per batch, as for the tests that
-            # pass), not only when its batch is full:
-            # a statement whose who no longer holds (a member readdressed) kept
-            # its passed tests - and its confidence - for the up-to-a-week its
-            # quiet batch took to fill (O-real seed 0, day 14: finance /fin/ledger
-            # stated 0.97 with its open batch's who at 0.61 of nominal 0.995; the
-            # evaluator held 0.75). Sequential: at least HOLD_EARLY_U units and a
-            # 2.5-sigma cluster-robust margin (the closing rule uses 2)
-            bu_ = getattr(self, "bu", None)
-            if not bu_ or len(bu_) >= HOLD_EARLY_U:
-                kc_ = (getattr(self, "bc", None) or {}).get(key)
-                nom_ = float(nominal)
-                if bv[1] / bv[0] < nom_ - cluster_tol(nom_, bv[0], kc_, z=HOLD_EARLY_Z):
-                    self.early = True
 
     def counts(self, t: float) -> Dict[str, Tuple[float, float, float]]:
         if self.L is None:
@@ -1146,12 +1152,8 @@ class HoldRecord:
 
     def tests(self, t: Optional[float] = None) -> Tuple[float, float]:
         """(passes, tests), forgotten per test (round 4: no time decay; `t` is
-        kept for the callers' signature). (round 8) An open batch already
-        failing decisively (`early`) counts as a failed test."""
+        kept for the callers' signature)."""
         T = self._T()
-        if getattr(self, "early", False):
-            lam = HOLD_TEST_LAMBDA
-            return float(T[0]) * lam, float(T[1]) * lam + 1.0
         return float(T[0]), float(T[1])
 
     def facet_tests(self) -> Dict[str, Tuple[float, float]]:
@@ -1165,7 +1167,7 @@ class HoldRecord:
         failed only on constraints since re-stated (drop) counts as passed, as
         in the pass counts."""
         if int(getattr(self, "ti", 0) or 0) < 1:
-            return False if getattr(self, "early", False) else None
+            return None
         fl = getattr(self, "fl", None) or ()
         if any(int(e[0]) == 0 for e in fl):
             return False
@@ -1213,7 +1215,6 @@ class HoldRecord:
         (all of it: the tests too); a re-stated constraint (M45) restarts its
         own counts and leaves the current batch's test."""
         if keys is None:
-            self.early = False
             self.c.clear()
             self.L = None
             self.b, self.bt0, self.bn, self.blast, self.bc, self.bu = {}, None, 0.0, None, {}, {}
@@ -1259,13 +1260,28 @@ class HoldRecord:
             for k in [k for k in F if gone(k)]:
                 F.pop(k, None)
             keep = []
+            TF = getattr(self, "TF", None) or {}
+            lite = bool(getattr(self, "lite", False))
             for ent in fl:
                 rest = [k for k in ent[1] if not gone(k)]
+                w = HOLD_TEST_LAMBDA ** max(0, ti - 1 - int(ent[0]))
+                # (round 8) the per-facet tests too: a facet whose failure in
+                # that test came from dropped constraints only passed it. Before,
+                # only the whole-statement count was restored: the node's '~when'
+                # record kept the failed test of a re-stated who, and every part
+                # with its own windows (compose_conf: min(p_hold without 'when',
+                # own)) stated (0 + a) / (1 + a + b) = 0.30-0.45 for weeks
+                # (O-real seed 0, finance login / home parts days 17-35, held
+                # 0.92-0.96 on the evaluator's events)
+                for fac in sorted(_failed_facets(ent[1], lite) - _failed_facets(rest, lite)):
+                    r = TF.get(fac)
+                    if r is not None:
+                        r[0] = min(r[1], r[0] + w)
                 if rest:
                     ent[1] = rest
                     keep.append(ent)
                 else:
-                    T[0] = min(T[1], T[0] + HOLD_TEST_LAMBDA ** max(0, ti - 1 - int(ent[0])))
+                    T[0] = min(T[1], T[0] + w)
             self.fl = keep
 
     def nbytes(self) -> int:
@@ -1349,6 +1365,34 @@ def keep_value(v: Any) -> bool:
 SRC_EXT_K = 32                     # source keys whose extremes a leaf keeps (least seen evicted first)
 
 
+def _rec3(nominal: float) -> Any:
+    """(round 8) A constraint's [n, hits, nominal] as a flat float array (a list
+    of three boxed floats was ~190 bytes; HoldRecord.c / .b, per constraint of
+    every node's and tracked group's held-out record)."""
+    from array import array
+    return array("d", (0.0, 0.0, float(nominal)))
+
+
+def ext4(x: float, day: int) -> "array":
+    """(round 8) One observed-extremes record [lo, day of lo, hi, day of hi] as
+    a flat float array (days are whole numbers, exact as doubles): a list of
+    two floats and two ints was ~190 bytes per (source, attribute) and per
+    (candidate value, attribute) - with the 340 attributes of PG4's attribute
+    point most of the per-source and per-value extremes' memory (P04 meta
+    sext / sext24 / vext: 4.5 of 35 MB); the array is 96 bytes."""
+    from array import array
+    return array("d", (float(x), float(day), float(x), float(day)))
+
+
+def ext4_copy(e: Sequence[float]) -> "array":
+    """A copy of an extremes record (list of a checkpoint or array) as an array."""
+    from array import array
+    return array("d", (float(e[0]), float(e[1]), float(e[2]), float(e[3])))
+
+
+_EXT_EMPTY = (math.inf, 0.0, -math.inf, 0.0)   # a column without a value (SourceExtremes)
+
+
 class SourceExtremes:
     """Exact observed extremes of a LEAF's numeric targets per source key,
     with their local days, over the leaf's whole life (round 4): the
@@ -1374,14 +1418,92 @@ class SourceExtremes:
     recurring one; an extreme older than RING_DAYS is replaced by the next
     value (the range is over the ring's days, NumSummary.observed_range)."""
 
-    __slots__ = ("d", "K")
+    __slots__ = ("d", "K", "cols", "names")
+
+    # (round 8) a key's record is [last ts, count, rep address, values, order]:
+    # `values` one flat float array of [lo, day of lo, hi, day of hi] per
+    # column (lo = +inf: no value yet; values are finite), the columns shared by every key of the
+    # instance (cols: attribute -> column, names: column -> attribute) and
+    # `order` the key's columns in the order it first saw them (the order the
+    # per-key {attr: [lo, dlo, hi, dhi]} dict of rounds 4-7 iterated, so
+    # union() lists the attributes as before). A dict of four-number lists was
+    # ~170 bytes per (key, attribute) and, with PG4's 340 attributes, 4.7 of
+    # the trees' 35.6 MB (P04 sext / sext24); a column is 32 bytes.
 
     def __init__(self, K: int = SRC_EXT_K) -> None:
-        self.d: Dict[str, List[Any]] = {}            # key -> [last ts, count, rep address, {attr: [lo, dlo, hi, dhi]}]
+        self.d: Dict[str, List[Any]] = {}
         self.K = int(K)
+        self.cols: Dict[str, int] = {}
+        self.names: List[str] = []
 
     def _evict(self) -> None:
         del self.d[min(self.d, key=lambda k: (self.d[k][1], self.d[k][0]))]
+
+    def _col(self, attr: str) -> int:
+        cols = self._colmap()
+        j = cols.get(attr)
+        if j is None:
+            j = cols[attr] = len(self.names)
+            self.names.append(attr)
+        return j
+
+    def _colmap(self) -> Dict[str, int]:
+        cols = getattr(self, "cols", None)
+        if cols is None:                              # an instance of rounds 4-7 (checkpoint)
+            self.cols, self.names = {}, []
+            cols = self.cols
+            for r in list(self.d.values()):
+                self._upgrade(r)
+        return cols
+
+    def _upgrade(self, r: List[Any]) -> None:
+        """A record of rounds 4-7 ({attr: [lo, dlo, hi, dhi]}) in the column form."""
+        if len(r) >= 5:
+            return
+        from array import array
+        old = r[3]
+        vals, order = array("d"), array("l")
+        r[3] = vals
+        r.append(order)
+        for a, e in old.items():
+            self._set(r, self._col(a), float(e[0]), float(e[1]), float(e[2]), float(e[3]))
+
+    def _new(self, ts: float, rep: str) -> List[Any]:
+        from array import array
+        return [float(ts), 0, rep, array("d"), array("l")]
+
+    @staticmethod
+    def _set(r: List[Any], j: int, lo: float, dlo: float, hi: float, dhi: float) -> None:
+        """Set column j of record r (a column the key had no value of joins its order)."""
+        vals = r[3]
+        b = 4 * j
+        while len(vals) < b + 4:
+            vals.extend(_EXT_EMPTY)
+        if vals[b] == math.inf:
+            r[4].append(j)
+        vals[b], vals[b + 1], vals[b + 2], vals[b + 3] = lo, dlo, hi, dhi
+
+    def _items(self, r: List[Any]) -> Iterable[Tuple[str, List[float]]]:
+        """(attr, [lo, dlo, hi, dhi]) of a record in its key's order."""
+        if len(r) < 5:
+            self._colmap()
+            self._upgrade(r)
+        vals, names = r[3], self.names
+        for j in r[4]:
+            b = 4 * j
+            yield names[j], [vals[b], vals[b + 1], vals[b + 2], vals[b + 3]]
+
+    def _note1(self, r: List[Any], attr: str, x: float, day: int, lo_day: int) -> None:
+        j = self._col(attr)
+        vals = r[3]
+        b = 4 * j
+        if len(vals) < b + 4 or vals[b] == math.inf:
+            self._set(r, j, x, float(day), x, float(day))
+            return
+        if x < vals[b] or vals[b + 1] <= lo_day:
+            vals[b], vals[b + 1] = x, float(day)
+        if x > vals[b + 2] or vals[b + 3] <= lo_day:
+            vals[b + 2], vals[b + 3] = x, float(day)
 
     def note(self, key: str, attr: str, x: float, day: int, ts: float, rep: Optional[str] = None,
              count: bool = True) -> None:
@@ -1391,30 +1513,29 @@ class SourceExtremes:
         x = float(x)
         if not math.isfinite(x):
             return
+        self._colmap()
         r = self.d.get(key)
         if r is None:
             if len(self.d) >= self.K:
                 self._evict()
-            r = self.d[key] = [float(ts), 0, str(rep if rep is not None else key), {}]
+            r = self.d[key] = self._new(ts, str(rep if rep is not None else key))
+        elif len(r) < 5:
+            self._upgrade(r)
         if count or float(ts) > r[0]:
             r[1] += 1
         r[0] = max(r[0], float(ts))
-        e = r[3].get(attr)
         day = int(day)
-        if e is None:
-            r[3][attr] = [x, day, x, day]
-            return
-        if x < e[0] or e[1] <= day - RING_DAYS:
-            e[0], e[1] = x, day
-        if x > e[2] or e[3] <= day - RING_DAYS:
-            e[2], e[3] = x, day
+        self._note1(r, attr, x, day, day - RING_DAYS)
 
     def note_many(self, key: str, items: Sequence[Tuple[str, float]], day: int, ts: float,
                   rep: Optional[str] = None) -> None:
         """note(key, a, x, day, ts, rep) for each (a, x) of items, in order (one
         row's values: the same records, counts and extremes as the calls one
         by one, P04 _note_source_extremes)."""
+        self._colmap()
         r = self.d.get(key)
+        if r is not None and len(r) < 5:
+            self._upgrade(r)
         ts = float(ts)
         day = int(day)
         lo_day = day - RING_DAYS
@@ -1425,31 +1546,23 @@ class SourceExtremes:
             if r is None:
                 if len(self.d) >= self.K:
                     self._evict()
-                r = self.d[key] = [ts, 0, str(rep if rep is not None else key), {}]
+                r = self.d[key] = self._new(ts, str(rep if rep is not None else key))
             r[1] += 1
             if ts > r[0]:
                 r[0] = ts
-            ext = r[3]
-            e = ext.get(attr)
-            if e is None:
-                ext[attr] = [x, day, x, day]
-                continue
-            if x < e[0] or e[1] <= lo_day:
-                e[0], e[1] = x, day
-            if x > e[2] or e[3] <= lo_day:
-                e[2], e[3] = x, day
+            self._note1(r, attr, x, day, lo_day)
 
     def union(self, pred: Callable[[str], bool]) -> Dict[str, List[Any]]:
         """{attr: [lo, dlo, hi, dhi]} over the keys whose representative
         address `pred` accepts."""
         out: Dict[str, List[Any]] = {}
-        for _k, (_ts, _n, rep, ext) in self.d.items():
-            if not pred(rep):
+        for r in list(self.d.values()):
+            if not pred(r[2]):
                 continue
-            for a, e in ext.items():
+            for a, e in self._items(r):
                 cur = out.get(a)
                 if cur is None:
-                    out[a] = list(e)
+                    out[a] = e
                 else:
                     if e[0] < cur[0]:
                         cur[0], cur[1] = e[0], e[1]
@@ -1459,29 +1572,40 @@ class SourceExtremes:
 
     def subset(self, pred: Callable[[str], bool]) -> "SourceExtremes":
         out = SourceExtremes(self.K)
-        for k, (ts, n, rep, ext) in self.d.items():
-            if pred(rep):
-                out.d[k] = [ts, n, rep, {a: list(e) for a, e in ext.items()}]
+        for k, r in list(self.d.items()):
+            if pred(r[2]):
+                nr = out.d[k] = out._new(r[0], r[2])
+                nr[1] = r[1]
+                for a, e in self._items(r):
+                    out._set(nr, out._col(a), e[0], e[1], e[2], e[3])
         return out
 
     def merge(self, other: "SourceExtremes") -> "SourceExtremes":
         """Union with another leaf's records (a collapse or a sibling merge)."""
-        for k, (ts, n, rep, ext) in other.d.items():
+        self._colmap()
+        for k, ro in list(other.d.items()):
             r = self.d.get(k)
             if r is None:
-                self.d[k] = [ts, n, rep, {a: list(e) for a, e in ext.items()}]
+                r = self.d[k] = self._new(ro[0], ro[2])
+                r[1] = ro[1]
+                for a, e in other._items(ro):
+                    self._set(r, self._col(a), e[0], e[1], e[2], e[3])
                 continue
-            r[0] = max(r[0], ts)
-            r[1] += n
-            for a, e in ext.items():
-                cur = r[3].get(a)
-                if cur is None:
-                    r[3][a] = list(e)
+            if len(r) < 5:
+                self._upgrade(r)
+            r[0] = max(r[0], ro[0])
+            r[1] += ro[1]
+            vals = r[3]
+            for a, e in other._items(ro):
+                j = self._col(a)
+                b = 4 * j
+                if len(vals) < b + 4 or vals[b] == math.inf:
+                    self._set(r, j, e[0], e[1], e[2], e[3])
                 else:
-                    if e[0] < cur[0]:
-                        cur[0], cur[1] = e[0], e[1]
-                    if e[2] > cur[2]:
-                        cur[2], cur[3] = e[2], e[3]
+                    if e[0] < vals[b]:
+                        vals[b], vals[b + 1] = e[0], e[1]
+                    if e[2] > vals[b + 2]:
+                        vals[b + 2], vals[b + 3] = e[2], e[3]
         while len(self.d) > self.K:
             self._evict()
         return self
@@ -1490,7 +1614,9 @@ class SourceExtremes:
         return len(self.d)
 
     def nbytes(self) -> int:
-        return int(64 + sum(128 + 72 * len(r[3]) for r in self.d.values()))
+        # the accounting estimate of rounds 4-7, unchanged (resource decisions
+        # read it): per key 128 + 72 per attribute
+        return int(64 + sum(128 + 72 * (len(r[4]) if len(r) >= 5 else len(r[3])) for r in self.d.values()))
 
 
 # ============================================= empirical-Bayes hold prior

@@ -60,6 +60,8 @@ def test_an_accepted_edge_at_the_cut_is_held_and_a_new_one_is_not_accepted():
     e = _pairs(st, sc).get(("list", "item"))
     assert e is not None, "an accepted edge flipped out on a dip at the cut"
     assert e["dep"] < DF.DEP_MIN and e["held"] is True
+    # the bound that keeps it is published with it (P14 states held edges)
+    assert e["dep_upper"] >= DF.DEP_MIN > e["dep"]
     # the same counts on a fresh state are not accepted (acceptance unchanged)
     st2 = DF.FlowState()
     for k in range(50):
@@ -159,3 +161,35 @@ def test_a_loop_edge_is_held_while_its_loop_evidence_stays_above_half():
         st.add_edge(g, b, a, t, 1, 1, 3)
         l2 = DF.loop2_measure(st.loop2.ev((g, a, b), t), st.loop2.ev((g, b, a), t))
     assert not [x for x in DF.mine_scope(st, g, t)["edges"] if (x["a"], x["b"]) == (a, b)]
+
+
+def test_a_stale_accepted_edge_is_suspended_not_revoked():
+    """(round 8) A stale accepted edge is not published, but when the step
+    resumes it is judged by the retire rule (held at a point dependency
+    just under the cut), not re-admitted from scratch - pack O seed 1: D3's
+    rename left the approvals' list -> item edge stale for two workdays
+    before adopt_renames moved the new routes onto the old ids; it came back
+    at dep 0.798 (upper bound 0.903) and was never stated again."""
+    st = DF.FlowState()
+    t = T
+    for k in range(60):
+        _chain(st, "*", ["list", "item"], t + 600 * k)
+    for k in range(5):
+        _chain(st, "*", ["item", "list"], t + 600 * (60 + k))
+    t1 = t + 600 * 66
+    e = _pairs(st, DF.mine_scope(st, "*", t1)).get(("list", "item"))
+    assert e is not None and not e.get("held")
+    # the step pauses: stale -> not published
+    t2 = t1 + 20 * 86400.0
+    sc = DF.mine_scope(st, "*", t2)
+    assert ("list", "item") not in _pairs(st, sc) and sc["stale_edges"] >= 1
+    # it resumes with a little more back-navigation: the point dependency is
+    # now under the cut, the evidence does not contradict the accepted edge
+    for k in range(3):
+        _chain(st, "*", ["list", "item"], t2 + 600 * k)
+    for k in range(3):
+        _chain(st, "*", ["item", "list"], t2 + 600 * (3 + k))
+    t3 = t2 + 600 * 7
+    e = _pairs(st, DF.mine_scope(st, "*", t3)).get(("list", "item"))
+    assert e is not None, "a resumed accepted edge was re-judged from scratch"
+    assert e["held"] is True and e["dep"] < DF.DEP_MIN <= e["dep_upper"]

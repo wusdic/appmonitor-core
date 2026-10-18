@@ -162,47 +162,6 @@ def test_the_non_workday_windows_are_a_constraint_of_their_own():
     assert n >= 2 and ps < n, (ps, n, hr.failures(), hr.fl)
 
 
-def test_a_decisively_failing_test_is_decided_before_its_batch_fills():
-    """A quiet node's batch fills in a week. When two of its four members are
-    readdressed, its who fails on half of the checks: the open test counts
-    as failed once that is beyond a 2.5-sigma cluster-robust margin on >= 10
-    units (provisionally, until the batch closes and is judged as usual), not
-    only after the week (round 7: the statement kept its confidence
-    meanwhile; O-real finance /fin/ledger stated 0.97 with its open batch's
-    who at 0.61)."""
-    from app.engines.behavior.lib import pnode as PN
-    hr = PN.HoldRecord()
-    for d in range(6):
-        for i, ip in enumerate(("10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4")):
-            for k in range(4):
-                ts = MON + d * DAY + 9 * 3600 + i * 600 + k * 60
-                hit = not (d >= 1 and ip in ("10.0.0.3", "10.0.0.4"))     # readdressed from day 1 on
-                hr.add("who", hit, 0.99, ts, 1.0, (ip, d))
-    assert hr.ti == 0                                    # the batch is still open (a week)
-    assert hr.tests() == (0.0, 1.0), hr.tests()
-    assert hr.first_test() is False
-    assert abs(hr.p_hold(MON + 6 * DAY, (9.0, 1.0)) - 9.0 / 11.0) < 1e-9      # prior 0.9, one failed test
-    # the week closes the batch: one failed test, judged by the usual rule
-    hr.add("who", True, 0.99, MON + 8 * DAY, 1.0, ("10.0.0.1", 8))
-    assert hr.ti == 1 and hr.tests() == (0.0, 1.0) and hr.fl[0][1] == ["who"]
-
-
-def test_a_holding_statement_is_not_failed_early():
-    """The early decision needs a decisive margin: a who that holds at its
-    nominal share (one check in fifty from an unlisted source) passes."""
-    from app.engines.behavior.lib import pnode as PN
-    hr = PN.HoldRecord()
-    j = 0
-    for d in range(14):
-        for i in range(10):
-            for k in range(5):
-                j += 1
-                hr.add("who", j % 50 != 0, 0.97, MON + d * DAY + 9 * 3600 + i * 600 + k * 60, 1.0,
-                       (f"10.0.0.{i}", d))
-    ps, n = hr.tests()
-    assert hr.ti >= 2 and ps == n and not hr.fl, (ps, n, hr.fl)
-
-
 def _shift_run(attr):
     """A monitor-like action, 40 rows each workday; from day 14 its `attr`
     doubles. Returns the node's (state, evolving keys) per day end."""
@@ -238,3 +197,95 @@ def test_a_shift_of_a_transport_measure_does_not_withdraw_the_pattern():
     assert all(st in ("confirmed", "stable") for _, st, _ in net), net  # ... the pattern stays stated
     body = _shift_run("body.len")
     assert any(st == "evolving" for _, st, _ in body), body
+
+
+def test_a_restated_constraint_takes_its_failures_out_of_the_facet_tests_too():
+    """A test failed only by the who of a statement that is then re-stated
+    (M45 drop) is a pass of what remains stated - for the whole statement
+    (round 7) and for each facet record: the '~when' record (the statement
+    without its windows, what a part stating its own windows composes) kept
+    the failure, and the finance login / home parts of O-real seed 0 stated
+    (0 + a) / (1 + a + b) = 0.30 on days 17-35 and held 0.92-0.96."""
+    from app.engines.behavior.lib import pnode as PN
+    for lite in (False, True):
+        hr = PN.HoldRecord(lite=lite)
+        for d in range(7):
+            for i in range(8):
+                ts = MON + d * DAY + 9 * 3600 + i * 600
+                hr.add("who", i < 4, 0.99, ts, 1.0, (f"10.0.0.{i}", d))      # half the checks outside
+                hr.add("body.len", True, 0.9, ts, 1.0, (f"10.0.0.{i}", d))
+        hr._close()
+        ps, n = hr.tests()
+        assert ps == 0.0 and n >= 1.0, (ps, n)
+        ft = hr.facet_tests()
+        assert ft["~when"] == (0.0, n), ft
+        hr.drop(["who"])
+        assert abs(hr.tests()[0] - n) < 1e-9, hr.tests()
+        ft = hr.facet_tests()
+        assert abs(ft["~when"][0] - n) < 1e-9, (lite, ft)
+        if not lite:
+            for fac in ("who", "~net", "content"):
+                assert abs(ft[fac][0] - ft[fac][1]) < 1e-9, (fac, ft)
+
+
+def test_observed_extremes_are_compact_records():
+    """Per-source observed extremes (P04 sext / sext24, and vext per candidate
+    value) are one record per (key, attribute): a flat float array of
+    [lo, day, hi, day], not a list of boxed numbers (~190 bytes; with PG4's
+    340 attributes these records were 4.5 of the trees' 35 MB). Same values."""
+    from app.eval.pscale import deep_sizeof
+    from app.engines.behavior.lib import pnode as PN
+    sx = PN.SourceExtremes(K=64)
+    attrs = [f"meta.f{i:03d}" for i in range(20)]
+    for k in range(50):
+        for d in range(3):
+            sx.note_many(f"10.0.0.{k}", [(a, 100.0 * k + i + d) for i, a in enumerate(attrs)], 20000 + d,
+                         1.7e9 + d * 86400.0)
+    per = (deep_sizeof(sx) - deep_sizeof(PN.SourceExtremes(K=64))) / (50 * 20)
+    assert per <= 100.0, per
+    u = sx.union(lambda rep: rep in ("10.0.0.3", "10.0.0.7"))
+    lo, dlo, hi, dhi = u["meta.f002"]
+    assert (lo, int(dlo), hi, int(dhi)) == (302.0, 20000, 704.0, 20002)
+    m = sx.subset(lambda rep: rep == "10.0.0.3").merge(sx.subset(lambda rep: rep == "10.0.0.7"))
+    assert list(m.union(lambda rep: True)["meta.f002"]) == [302.0, 20000.0, 704.0, 20002.0]
+
+
+def test_held_out_records_are_compact_and_keep_their_cluster_positions():
+    """A held-out record's per-constraint counts are float arrays, and a
+    constraint's per-cluster checks keep no ordinal map while the constraint
+    has seen the batch's clusters in order (most constraints are checked on
+    every event): ~25 % less memory per tracked group record, the same
+    (n, hits) per cluster in the same order as the mapped form."""
+    import random
+    from app.eval.pscale import deep_sizeof
+    from app.engines.behavior.lib import pnode as PN
+    hr = PN.HoldRecord(lite=True)
+    keys = [f"meta.f{i:03d}" for i in range(30)]
+    for d in range(3):
+        for u in range(15):
+            for k in keys:
+                hr.add(k, True, 0.9, 1.7e9 + d * 86400 + u * 600, 1.0, (f"10.0.0.{u}", d))
+    assert deep_sizeof(hr) / len(hr.b) <= 1800.0, deep_sizeof(hr) / len(hr.b)
+
+    def ref_add(st, g, w, hit):                       # the mapped form of round 7
+        pos, n, h = st
+        while len(pos) <= g:
+            pos.append(-1)
+        if pos[g] < 0:
+            pos[g] = len(n)
+            n.append(0.0)
+            h.append(0.0)
+        n[pos[g]] += w
+        if hit:
+            h[pos[g]] += w
+    rng = random.Random(5)
+    for trial in range(200):
+        kc, st = PN._KC(), ([], [], [])
+        g_max = 0
+        for _ in range(rng.randint(1, 60)):
+            g = rng.choice([g_max, g_max, max(0, g_max - rng.randint(0, 3)), g_max + rng.randint(1, 3)])
+            g_max = max(g_max, g + 1)
+            w, hit = rng.choice([1.0, 0.5, 0.25]), rng.random() < 0.8
+            kc.add(g, w, hit)
+            ref_add(st, g, w, hit)
+        assert list(kc.values()) == list(zip(st[1], st[2])), trial

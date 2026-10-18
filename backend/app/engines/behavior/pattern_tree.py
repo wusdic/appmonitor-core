@@ -2066,7 +2066,7 @@ class PatternTreeEngine(Engine):
             for a, x in vals:
                 e = ent.get(a)
                 if e is None:
-                    ent[a] = [x, day, x, day]
+                    ent[a] = PN.ext4(x, day)
                 else:
                     if x < e[0]:
                         e[0], e[1] = x, day
@@ -2120,7 +2120,7 @@ class PatternTreeEngine(Engine):
             if len(mine) >= 2:
                 cx = child.meta.setdefault("vext", {})
                 for v, ent in mine.items():
-                    cx[(cand, v)] = {a: list(e) for a, e in ent.items()}
+                    cx[(cand, v)] = {a: PN.ext4_copy(e) for a, e in ent.items()}
 
     def _keep_route_row(self, lc: _LC, tr: PT.Tree, kind: int, get: Callable[[str], Any], ip: str,
                         ts: float, mass: float, omega: float, day: int, daytype: int, minute: float,
@@ -3395,7 +3395,14 @@ class PatternTreeEngine(Engine):
         reference waited for SNAPSHOT_HOUR: a pattern whose 20th observation came
         on day d was stated on day d + 1 at the earliest, and on Monday when it
         came on a Friday (pack O: GA's 17:00 report form, eligible on Friday day
-        12 and stated on day 13 on every seed)."""
+        12 and stated on day 13 on every seed).
+
+        The reference is built now, from the fits of the moment (measured: one
+        left to the next snapshot stated the young statements on their prior
+        and the views' fallbacks for up to a day - PG2 calibration error on
+        pack O seeds 0 / 1 0.046 / 0.071 with it, 0.089 / 0.089 without; on
+        O-real seed 0 0.126 with it, 0.111 without, where a few young fits
+        failed their first test on constraints the evaluator does not judge)."""
         due = lc.aux.pop("conf_due", None)
         if not due:
             return

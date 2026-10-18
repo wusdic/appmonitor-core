@@ -1135,6 +1135,59 @@ def refuted(hx: Optional[Mapping[str, Any]], top: Any, lb: Optional[float],
     return {"run": m, "values": sorted(set(run)), "p": float(p)}
 
 
+def unexplained_values(hx: Optional[Mapping[str, Any]], verdicts: Optional[Mapping[str, str]],
+                       established_elsewhere: Iterable[str] = ()) -> List[str]:
+    """(round 8) The PENDING values of source x (classify) that its binding
+    cannot set aside: a newcomer that no other source of the node holds (a
+    borrowed credential is P03's anomaly, not x's behaviour) and that
+    co-exists with x's other values - one of them seen again after the
+    newcomer first appeared (a rename replaces the old value, which then stops:
+    `refuted` / 'superseded' handle that). Such a value is a second user of x
+    as much as a change in progress, and x's binding must count it (see
+    unexplained_lb). Sorted."""
+    if not hx or not verdicts:
+        return []
+    v = hx.get("v") or {}
+    other = set(map(str, established_elsewhere))
+    out = []
+    for y, why in verdicts.items():
+        ys = str(y)
+        if why != "pending" or ys in other or ys not in v:
+            continue
+        first = float(v[ys][0])
+        if any(float(r[1]) > first for yy, r in v.items() if yy != ys and yy not in verdicts):
+            out.append(ys)
+    return sorted(out)
+
+
+def unexplained_lb(ent: Mapping[str, Any], extra: float) -> float:
+    """(round 8) Lower bound of x's binding x -> top counting `extra` evidence
+    units (node evidence, or days when the entry is pooled) of values the
+    binding does not explain (unexplained_values), with the entry's own
+    leave-one-out prior: Beta(a0 + k, b0 + n + extra - k) 5 % quantile."""
+    k, n = float(ent.get("k") or 0.0), float(ent.get("n") or 0.0) + max(0.0, float(extra))
+    a0, b0 = float(ent.get("a0", 0.5)), float(ent.get("b0", 0.5))
+    return float(pmdl.beta_quantile(0.05, a0 + k, b0 + max(0.0, n - k)))
+
+
+def unexplained_evidence(ps: Any, x: Any, values: Iterable[str], t: float,
+                         hx: Optional[Mapping[str, Any]] = None, pooled: bool = False) -> float:
+    """Evidence of x's unexplained values in the unit of its entry: clean
+    normal days from the value history when the entry is pooled, else the
+    node sketch's evidence (confidence channel)."""
+    vs = set(map(str, values))
+    if pooled and hx:
+        return float(sum(len(r[3]) for y, r in (hx.get("v") or {}).items() if y in vs))
+    if ps is None:
+        return 0.0
+    tab = ps.y.get(x)
+    if tab is None:
+        tab = next((ps.y[k] for k in ps.y if str(k) == str(x)), None)
+    if tab is None:
+        return 0.0
+    return float(sum(e for k, _, _, e in tab.items(t, 0) if str(_jv(k)) in vs))
+
+
 def binding_discriminates(rec: Mapping[str, Any]) -> bool:
     """A binding states something about WHO uses which value when its bound
     sources hold different values (>= 2 distinct, >= half as many as the

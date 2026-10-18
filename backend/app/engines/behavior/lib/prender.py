@@ -472,8 +472,14 @@ def workflow_block(edges: Sequence[Mapping[str, Any]]) -> Tuple[List[Dict[str, A
     zh, en, confs = [], [], []
     for e in edges:
         band = e.get("band") or [NAN, NAN]
-        ev.append({"from": e.get("from"), "to": e.get("to"), "dep": e.get("dep"), "band": list(band),
-                   "confidence": e.get("confidence")})
+        d = {"from": e.get("from"), "to": e.get("to"), "dep": e.get("dep"), "band": list(band),
+             "confidence": e.get("confidence")}
+        if e.get("held"):
+            # (round 8) kept by P10's hysteresis: the point dependency is under
+            # the acceptance cut, its 95 % upper bound is not
+            d["held"] = True
+            d["dep_upper"] = e.get("dep_upper")
+        ev.append(d)
         bz = ""
         if band and all(isinstance(x, (int, float)) and math.isfinite(x) for x in band):
             bz = f"（间隔 {_dur_zh(band[0])}–{_dur_zh(band[1])}）"

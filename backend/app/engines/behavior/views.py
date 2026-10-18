@@ -314,13 +314,21 @@ class _Ctx:
         return d
 
     def _edges(self) -> Dict[str, List[Dict[str, Any]]]:
-        """Kept workflow edges by route (from and to), scope '*'."""
+        """Kept workflow edges by route (from and to), scope '*'.
+
+        (Round 8) P10 decides which edges are kept: an edge it holds under
+        hysteresis ('held': accepted earlier, its point dependency now under
+        DEP_MIN but its 95 % upper bound not) is stated with its point
+        dependency and the flag. Re-filtering on the point value here undid
+        the hysteresis - pack O seed 1, GA.oa.approvals list -> item (held at
+        dep 0.754, upper bound 0.882 on day 9) vanished from the statements on
+        days 8-10 and 12-13 although P10 kept it."""
         out: Dict[str, List[Dict[str, Any]]] = {}
         if not isinstance(self.pflow, Mapping):
             return out
         sc = DF.lookup_scope(self.pflow, DF.STAR)
         for e in sc.get("edges") or []:
-            if float(e.get("dep", 0.0)) < DF.DEP_MIN:
+            if float(e.get("dep", 0.0)) < DF.DEP_MIN and not e.get("held"):
                 continue
             for r in {DF.split_key(str(e.get("from")))[0], DF.split_key(str(e.get("to")))[0]}:
                 out.setdefault(r, []).append(e)

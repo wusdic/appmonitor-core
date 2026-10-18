@@ -45,8 +45,9 @@ directions; the published `dep` is then max(dep, loop measure) and
 `dep_direct` keeps the classic value;
 (Round 8) acceptance has hysteresis: an edge (requirement) kept by the previous
 pass is retired only when the 95 % upper evidence bound of its dependency
-(share) is below the cut, its support fell to half the minimum, it went
-stale or the sketch evicted it (mine_scope);
+(share) is below the cut, its support fell to half the minimum or the sketch
+evicted it; a stale accepted edge is suspended (not published) and keeps its
+acceptance for when it resumes (mine_scope);
 workflows = maximal simple paths (<= 8 actions) along kept edges from start
 actions (start share >= 0.1; also any action with kept out-edges and no kept
 in-edge, so that every kept edge is in a workflow — an addition to the text);
@@ -1040,6 +1041,19 @@ def mine_scope(st: FlowState, g: str, t: float) -> Dict[str, Any]:
             sd = edge_stale(c_ab, st.edge_last.get(key), t, st.edges.ss.evidence(key, t, PS.EV_M))
         if sd:
             stale += 1
+            if was is not None:
+                # (round 8) staleness SUSPENDS an accepted edge (it is not
+                # published while the step is not happening) but does not
+                # revoke its acceptance: when it resumes it is judged by the
+                # retire rule, not re-admitted from scratch - while its
+                # evidence stays >= RETIRE_FRAC x EDGE_MIN (checked above) and
+                # the sketch tracks it. Pack O seed 1: D3 renamed the approval
+                # pages; the list -> item edge (accepted day 7, held at
+                # dep 0.75-0.78) was stale for the 2 workdays before
+                # adopt_renames moved the new routes onto the old ids, lost its
+                # acceptance, and at dep 0.798 (upper bound 0.903) was never
+                # re-admitted (GA.oa.approvals#1@1 missed on days 14-21).
+                now_e[key] = was
             continue
         c_ba = st.edges.ev((g, b, a), t)
         dep_d = dependency(c_ab, c_ba)
@@ -1066,6 +1080,7 @@ def mine_scope(st: FlowState, g: str, t: float) -> Dict[str, Any]:
              "band": band(st.hist.get(key) or []), "confidence": round(conf, 4)}
         if held:
             e["held"] = True
+            e["dep_upper"] = round(max(dep, dependency_upper(c_ab, c_ba)), 4)
         edges.append(e)
         kept.setdefault(a, []).append((b, c_ab))
         indeg[b] = indeg.get(b, 0) + 1

@@ -6,6 +6,8 @@ there was credential-grade and A2 (192.168.1.21 using rose's credential) was
 judged against no binding on seed 1. Fails on the round-7 code."""
 from __future__ import annotations
 
+import pytest
+
 from app.engines.behavior.lib import pfd as FD
 from app.engines.behavior.lib import pnode as PN
 
@@ -47,3 +49,56 @@ def test_a_source_with_a_dominant_value_or_few_values_is_still_judged():
     c = {"y": {"u0": 2.0, "u1": 2.0}, "U": 0.7}                     # most values untracked
     assert FD.multi_source(c, 2.0, 20.0)
     assert not FD.multi_source(c, 1.0, 2.0, n_bind=5.0)             # too little evidence
+
+
+
+SHARED = "192.168.1.40"
+
+
+def _hist(rows):
+    h = FD.ValueHistory()
+    for x, y, day in rows:
+        h.observe(x, y, T0 + day * DAY + 300.0, 20_000 + day, True, True)
+    return h
+
+
+def test_a_coexisting_newcomer_no_other_source_holds_is_unexplained():
+    """(round 8) Which PENDING values x's own binding must count: a shared
+    terminal's second user (rose2, first seen 3 days after jack2, and jack2
+    keeps logging in) - yes; a rename (mike -> mike.w, mike never seen
+    again: `refuted` / 'superseded' handle it) - no; a borrowed credential
+    (rose, the established value of 192.168.1.23) - no."""
+    h = _hist([(SHARED, "jack2", d) for d in range(6)] + [(SHARED, "rose2", d) for d in (3, 5)]
+              + [("10.168.7.121", "mike", d) for d in range(4)]
+              + [("10.168.7.121", "mike.w", d) for d in (4, 5)]
+              + [("192.168.1.21", "jack", d) for d in range(6)] + [("192.168.1.21", "rose", d) for d in (4, 5)])
+    pend = {"rose2": "pending"}
+    assert FD.unexplained_values(h.get(SHARED), pend, ["jack", "rose", "mike"]) == ["rose2"]
+    assert FD.unexplained_values(h.get("10.168.7.121"), {"mike.w": "pending"}, ["jack", "rose"]) == []
+    assert FD.unexplained_values(h.get("192.168.1.21"), {"rose": "pending"}, ["rose", "mike"]) == []
+    assert FD.unexplained_values(h.get(SHARED), {}, []) == []
+
+
+def test_an_unexplained_value_lowers_its_sources_claim_only():
+    """(round 8) The shared terminal's claim '-> jack2' counts rose2's
+    evidence (O-real seed 0: stated at LB 0.997 at four family login nodes
+    from day 21, held 0.0); the node's dependency is judged as before. Fails
+    on the round-7 / mine8 code (no unexplained_lb / unexplained_evidence)."""
+    ps = PN.PairSketch()
+    for d in range(8):
+        for x, y in GA:
+            ps.update(x, y, T0 + d * DAY, 1.0, 1.0)
+        ps.update(SHARED, "jack2", T0 + d * DAY + 120.0, 1.0, 1.0)
+        if d >= 3:
+            ps.update(SHARED, "rose2", T0 + d * DAY + 600.0, 1.0, 1.0)
+    t = T0 + 8 * DAY
+    rec = FD.fit_pair(ps, t, exclude={SHARED: {"rose2": "pending"}})
+    ent = rec["table"][SHARED]
+    assert ent["top"] == "jack2" and ent.get("bound") and ent["LB"] > 0.9     # the over-confident claim
+    extra = FD.unexplained_evidence(ps, SHARED, ["rose2"], t)
+    assert extra > 3.0
+    assert FD.unexplained_lb(ent, extra) < FD.LB_BIND <= ent["LB"]
+    assert FD.unexplained_lb(ent, 0.0) == pytest.approx(ent["LB"])
+    # pooled entries count the value's days from the history
+    hx = {"v": {"jack2": [T0, t, 8, list(range(8))], "rose2": [T0 + 3 * DAY, t, 5, [3, 4, 5, 6, 7]]}}
+    assert FD.unexplained_evidence(ps, SHARED, ["rose2"], t, hx, pooled=True) == 5.0

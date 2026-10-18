@@ -639,6 +639,7 @@ class BindingEngine(Engine):
         pk = pair_key(X, Y)
         hist: Optional[FD.ValueHistory] = st["hist"].get(pk)
         excl: Dict[str, Dict[str, str]] = {}
+        counter: Dict[str, List[str]] = {}
         est: Dict[str, str] = {}
         if hist is not None:
             xs = list(ps.x.keys())
@@ -660,6 +661,10 @@ class BindingEngine(Engine):
                 ex = FD.classify(hist.get(str(x)), values.get(str(x), ()), now, others, episode(str(x)))
                 if ex:
                     excl[str(x)] = ex
+                    # (round 8) pending newcomers x's binding cannot set aside
+                    cn = FD.unexplained_values(hist.get(str(x)), ex, others)
+                    if cn:
+                        counter[str(x)] = cn
             # hierarchical pooling (deviation, §6.12): each source's tree-level days
             # (every node of the pair, seeded with the probe rows from before the
             # sketch existed), the node's leave-one-out prior over its other sources
@@ -681,7 +686,26 @@ class BindingEngine(Engine):
                 if rf is not None:
                     ent["bound"] = False
                     ent["changing"] = rf
-        prev_b = (st.get("bound") or {}).get((kind, node.id, pk)) or {}
+            # (round 8) a pending newcomer that no other source holds and that
+            # co-exists with x's value (lib/pfd.unexplained_values) is left out
+            # of x's value table, but x's own claim must count it: its LB with
+            # that evidence (lib/pfd.unexplained_lb); below LB_BIND the claim is
+            # suspended. Like `refuted`, this concerns x's statement only, not
+            # the node's dependency (a first variant that also counted it in
+            # the dependency lost A2 on pack O seed 2). O-real seed 0: the
+            # shared terminal 192.168.1.40 (jack2, rose2 first seen 3 days after
+            # jack2: 'pending') was stated '-> jack2' at LB 0.997, held 0.0
+            for x, cn in sorted(counter.items()):
+                ent = rec["table"].get(x)
+                if not ent or not ent.get("bound") or "a0" not in ent:
+                    continue
+                extra = FD.unexplained_evidence(ps, x, cn, now, hist.get(str(x)), bool(ent.get("pooled")))
+                lb = FD.unexplained_lb(ent, extra)
+                ent["unexplained"] = list(cn)
+                if lb < FD.LB_BIND:
+                    ent["bound"] = False
+                    ent["LB"] = lb
+        prev_b =(st.get("bound") or {}).get((kind, node.id, pk)) or {}
         for x, ent in rec["table"].items():
             if hist is not None:
                 fl = hist.seen(x)

@@ -112,3 +112,27 @@ def test_rest_conf_reads_the_without_when_facet_record():
     assert VW.rest_conf(Nd(), 0.0, 0.5) == pytest.approx(19.0 / 22.0)
     Nd.hold = None
     assert VW.rest_conf(Nd(), 0.0, 0.5) == pytest.approx(0.3)
+
+
+def test_an_edge_p10_holds_under_hysteresis_is_rendered():
+    """(round 8) P10 keeps an accepted edge whose point dependency dipped
+    under the cut while its upper evidence bound did not ('held'); P14 must
+    state it (with the flag) rather than re-filter on the point value (pack O
+    seed 1, GA.oa.approvals list -> item held at dep 0.754 on day 9 was in
+    P10's kept set and in no statement)."""
+    from app.engines.behavior.lib import prender as PR
+    ctx = VW._Ctx.__new__(VW._Ctx)
+    lst, item, appr = "GET oa.corp /approval/list", "GET oa.corp /approval/{num}", \
+        "POST oa.corp /approval/{num}/approve"
+    ctx.pflow = {"scopes": {"*": {"edges": [
+        {"from": lst, "to": item, "dep": 0.7544, "held": True, "dep_upper": 0.8823,
+         "band": [45.5, 273.7], "confidence": 0.75},
+        {"from": item, "to": appr, "dep": 0.8057, "band": [43.8, 381.3], "confidence": 0.8},
+        {"from": appr, "to": lst, "dep": 0.654, "band": [10.0, 60.0], "confidence": 0.6}]}}}
+    edges = ctx._edges()
+    assert [e["to"] for e in edges["GET oa.corp /approval/{num}"]] == [item, appr]
+    assert all(e["to"] != lst for es in edges.values() for e in es)   # never kept: not stated
+    ev, zh, en, f_c = PR.workflow_block(edges["GET oa.corp /approval/{num}"])
+    held = [e for e in ev if e["to"] == item]
+    assert held and held[0]["held"] and held[0]["dep_upper"] == 0.8823 and held[0]["dep"] == 0.7544
+    assert "/approval/list" in zh
