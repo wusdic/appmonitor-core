@@ -157,7 +157,8 @@ def _all_str(v: Any) -> bool:
 def _distributions(ss: Any, t: float, chans: Sequence[int]) -> List[Tuple[List[Any], np.ndarray, float]]:
     """[ss.distribution(t, ch) for ch in chans] of a psketch.DecayedSpaceSaving
     in one pass over its slots (the same per-slot expression and sums)."""
-    if not all(hasattr(ss, a) for a in ("_keys", "_m", "_err", "_tot_m")):
+    if ss.__class__ is not PS.DecayedSpaceSaving and \
+            not all(hasattr(ss, a) for a in ("_keys", "_m", "_err", "_tot_m")):
         return [ss.distribution(t, ch) for ch in chans]
     keys, M, ERR, tot_m = ss._keys, ss._m, ss._err, ss._tot_m
     tots = [tot_m[c] for c in chans]
@@ -194,7 +195,7 @@ def ss_add_rows(ss: Any, keys: Sequence[Any], t: float, ws: Sequence[float], evs
     order (the growth factors 2^((t - L) / h) are computed once instead of per
     row; a rescale can only happen at the first accepted row). Falls back to
     the per-row adds for any other sketch."""
-    if not all(hasattr(ss, a) for a in _SS_ATTRS):
+    if ss.__class__ is not PS.DecayedSpaceSaving and not all(hasattr(ss, a) for a in _SS_ATTRS):
         for key, w, ev in zip(keys, ws, evs):
             ss.add(key, t, w, ev)
         return
@@ -324,7 +325,7 @@ class AttrRecord:
                  "locked", "parse_as", "policy", "pres", "approx", "card", "top", "elem", "num",
                  "mom", "entropy", "stability", "approx_share", "hier", "role_sys", "cost_us",
                  "state", "low_since", "code_hint", "code_override", "gone_at", "day_pres",
-                 "prev_day_pres", "cov_dt")
+                 "prev_day_pres", "cov_dt", "stats_dirty")
 
     def __init__(self, name: str, t: float, kind: int = KIND_TXN) -> None:
         self.name = name
@@ -361,6 +362,12 @@ class AttrRecord:
         # reference coverage per day type (0 workday / makeup, 1 weekend and other):
         # [running mean of the daily coverage over normal days, days counted]
         self.cov_dt: List[List[float]] = [[0.0, 0.0], [0.0, 0.0]]
+        # (round 8, cost) the value summaries (top, card) changed since the last
+        # update_stats: entropy and stability are functions of the stored top
+        # counts and the HLL only (the shares are ratios within one forward-
+        # decayed channel, independent of t), so an attribute nothing was added
+        # to keeps them bit for bit; not model state (a cache flag)
+        self.stats_dirty = True
 
     # ------------------------------------------------------------------ keys
     def key(self, v: Any) -> Any:
@@ -607,6 +614,7 @@ class AttrRegistry:
                 it = v if type(v) is str else str(v)
             items.add(it)
         _hll_add_items(card, items, t)
+        rec.stats_dirty = True
         # level-1 keys and set elements (mass / evidence per row, in row order)
         dropped = rec.role_sys == "dropped"
         if rec.type == "text":
@@ -755,6 +763,7 @@ class AttrRegistry:
                 rec.type = new
                 rec.version += 1
                 rec.top = PS.DecayedSpaceSaving(TOP_K_DROPPED if rec.role_sys == "dropped" else TOP_K)
+                rec.stats_dirty = True
                 if new == "set" and rec.elem is None and rec.role_sys != "dropped":
                     rec.elem = PS.DecayedSpaceSaving(TOP_K)
             if n >= LOCK_N and t - rec.first_seen >= DAY and rec.type != "unknown":
@@ -765,13 +774,22 @@ class AttrRegistry:
 
     def update_stats(self, t: float, counts: Optional[Dict[int, Any]] = None) -> None:
         """Entropy (Chao-Shen on evidence), stability 1 - JSD(p_Hs, p_Hl),
-        approx share, log flag. `counts`: see update_types."""
+        approx share, log flag. `counts`: see update_types.
+
+        (round 8, cost) Entropy and stability are recomputed only for the
+        records whose top or HLL changed since the last pass (`stats_dirty`):
+        they read stored counts only, so the skipped values are the ones the
+        pass would compute (bit for bit; tests/lib/test_pregistry_batch_
+        equivalence.py replays the recorded stream against the full pass).
+        At 340 attributes ~90 % of the sampled-rest attributes get no row in an
+        hour, and this pass was ~15 % of P02's time."""
         for rec in self.records.values():
-            if len(rec.top):                       # (tracked keys: what top.items() tested)
+            if len(rec.top) and getattr(rec, "stats_dirty", True):  # (tracked keys: what top.items() tested)
                 (keys, sh, other), (_, sh_s, o_s), (_, sh_l, o_l) = \
                     _distributions(rec.top, t, (PS.CH_M, PS.CH_S, PS.CH_L))
                 rec.entropy = entropy_from_top(sh, other, _card_count(rec, counts), len(keys))
                 rec.stability = 1.0 - pmdl.jsd(np.append(sh_s, o_s), np.append(sh_l, o_l))
+            rec.stats_dirty = False
             pm = float(rec.pres.read(t)[PS.CH_M])
             rec.approx_share = float(rec.approx.read(t)[0] / pm) if pm > 0 else 0.0
             if rec.mom is not None:
@@ -845,6 +863,7 @@ class AttrRegistry:
             return
         old = rec.role_sys
         rec.role_sys = role
+        rec.stats_dirty = True
         if role == "dropped" and old != "dropped":
             rec.top = PS.DecayedSpaceSaving(TOP_K_DROPPED)
             rec.num = None

@@ -21,7 +21,7 @@ from test_p14_views import T0
 GA = {"192.168.1.21": "jack", "192.168.1.23": "rose", "10.168.7.121": "mike.w"}
 
 
-def _tree(monkeypatch, drift: bool):
+def _tree(monkeypatch, drift: bool, content: bool = False, tested: bool = False):
     from app.engines.behavior.lib import ptree as PT
     from app.engines.behavior.lib import pnode as PN
     from app.models.schema import ORG, SYSTEM_ENTITY
@@ -43,6 +43,14 @@ def _tree(monkeypatch, drift: bool):
         nd.state = "confirmed"
     orig = PN.Node.p_hold
     monkeypatch.setattr(PN.Node, "p_hold", lambda self, _t: 0.8 if self is node else orig(self, _t))
+    if tested:
+        # P04 has judged the node on held-out events: 9 of 10 passed, all of
+        # them without the time windows
+        hr = PN.HoldRecord()
+        hr.T = [9.0, 10.0]
+        hr.TF = {"~when": [10.0, 10.0]}
+        node.meta["hold"] = hr
+        node.meta["hold_prior"] = (0.95, 0.05)
     m.t_last = t
     st = make_store()
     st.put_model("oa", SYSTEM_ENTITY, MP.PTREE, m, version=1)
@@ -62,6 +70,16 @@ def _tree(monkeypatch, drift: bool):
         "status": "fitted", "pairs": {"net.src->body.kv.username": {
             "x": "net.src", "y": "body.kv.username", "dir": "fwd",
             "fd": {"g3": 0.0, "holds": True, "n": 120.0}, "table": table}}}}}})
+    if content:
+        # a young node's content: a length band from 7 rows (nominal coverage < 0.8)
+        from app.engines.behavior.lib import pbounds as PB
+        num = PN.NumSummary(log=True)
+        for i, x in enumerate((900.0, 1010.0, 1150.0, 1240.0, 1400.0, 1610.0, 1790.0)):
+            num.update(x, T0 + i * 86400.0, 1.0, 1.0, day=739000 + i)
+        rec = PB.fit_numeric(num, t + 3600.0, PB.local_day(t + 3600.0, {"tz": "Asia/Shanghai"}),
+                             7.0, 7.0, 0.0, "B")
+        st.put_model("oa", SYSTEM_ENTITY, MP.PBOUNDS, {"version": 1, "nodes": {EV.KIND_TXN: {node.id: {
+            "status": "fitted", "attrs": {"body.len": rec}}}}}, version=1)
     v = VW.system_view(st, "oa", {"progressive": {"enabled": True}, "tz": "Asia/Shanghai"}, t + 3600.0)
     return [s for s in v["statements"] if s["evidence"]["route"] == "POST oa.corp /login"
             and s["evidence"]["node"] == node.id and "|grp:" not in s["id"]]
@@ -136,3 +154,53 @@ def test_an_edge_p10_holds_under_hysteresis_is_rendered():
     held = [e for e in ev if e["to"] == item]
     assert held and held[0]["held"] and held[0]["dep_upper"] == 0.8823 and held[0]["dep"] == 0.7544
     assert "/approval/list" in zh
+
+
+def test_an_untested_node_states_only_its_identity_facets_apart(monkeypatch):
+    """(round 8) A node P04 has not judged on held-out events yet has no record
+    of its clauses (its p_hold is its kind's prior mean): its '~when' facet
+    statement carries who / bindings / workflow at their own confidences and
+    leaves the content - nominal coverages from a handful of rows - to the
+    statement with the window. O-real seed 2, day 14: the family's young login
+    node (0 tests, n = 7) stated its content apart at the prior mean 0.95; the
+    password grammar held 0.5 of held-out events (4 of 16 failing statements)."""
+    sts = _tree(monkeypatch, drift=True, content=True, tested=False)
+    evo = [s for s in sts if s["evidence"].get("facet") != "~when"]
+    fac = [s for s in sts if s["evidence"].get("facet") == "~when"]
+    assert len(evo) == 1 and len(fac) == 1
+    e, f = evo[0], fac[0]
+    c_c = e["evidence"]["content"]["body.len"]["confidence"]
+    assert c_c < 0.8                                         # the young band's own confidence
+    # the evolving statement keeps the content; its content facet is bounded by it
+    assert e["evidence"]["content"] and e["evidence"]["facet_conf"]["content"] <= c_c + 1e-4
+    assert e["evidence"]["facet_conf"]["bindings"] == pytest.approx(0.8)
+    # the facet statement: identity facets only, confirmed, at their confidence
+    assert f["state"] == "confirmed" and f["confidence"] == pytest.approx(0.8)
+    assert not f["evidence"]["content"] and f["evidence"].get("content_untested")
+    assert "content" not in f["facets"] and "content.bindings" in f["facets"]
+    assert f["evidence"]["bindings"]["body.kv.username"]["table"] == GA
+    ls = PM.LStmt(f, "oa", {})
+    assert ls.confirmed and ls.binding_table("body.kv.username")["192.168.1.21"] == {"jack"}
+
+
+def test_a_tested_node_states_its_content_apart_at_its_record(monkeypatch):
+    sts = _tree(monkeypatch, drift=True, content=True, tested=True)
+    fac = [s for s in sts if s["evidence"].get("facet") == "~when"]
+    assert len(fac) == 1
+    f = fac[0]
+    assert f["evidence"]["content"] and "content" in f["facets"]
+    assert not f["evidence"].get("content_untested")
+    # P04's record of the node without its windows: (10 + 0.95) / (10 + 1)
+    assert f["confidence"] == pytest.approx(10.95 / 11.0)
+
+
+def test_held_out_tested():
+    from app.engines.behavior.lib import pnode as PN
+
+    class Nd:
+        hold = None
+    assert not VW.held_out_tested(Nd())
+    Nd.hold = PN.HoldRecord()
+    assert not VW.held_out_tested(Nd())
+    Nd.hold.T = [1.0, 1.0]
+    assert VW.held_out_tested(Nd())

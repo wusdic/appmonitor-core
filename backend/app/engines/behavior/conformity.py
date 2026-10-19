@@ -909,6 +909,8 @@ class _TreeCtx:
         self.key = key
         self.now = now
         self.config = config
+        rc_ = getattr(eng, "_rc", None)
+        self.rc = rc_ if isinstance(rc_, _RecCache) else _RecCache()
         self.ptm = MP.get_ptree(store, key)
         self.reg = MP.get_registry(store, key)
         self.hier = MP.hierarchies(store, key, config, self.reg)
@@ -983,7 +985,7 @@ class _TreeCtx:
         except TypeError:
             return _check(typ, rec, v, None)
         if r is None:
-            r = self.cmemo[k] = _check(typ, rec, v, None)
+            r = self.cmemo[k] = self.rc.check(typ, rec, v)
         return r
 
     def content_p(self, ni: "_NodeInfo", a: str, typ: str, rec: Any, v: Any
@@ -1013,7 +1015,7 @@ class _TreeCtx:
             if rr is False:
                 rr = _ref_record(ni.nd, mname, a)
                 if rr and typ == "num":
-                    rr = _NumFast(rr)
+                    rr = self.rc.numfast(rr)
                 ni.refc[rk] = rr
             p_ref = self.check(typ, rr, v)[0] if rr else NAN
             if a in ni.evolving:
@@ -1359,7 +1361,7 @@ class _TreeCtx:
                 if any(c[0] == a for c in nd.ctx):
                     continue
                 if typ == "num":
-                    recs.append((a, "num", _NumFast(rec)))
+                    recs.append((a, "num", self.rc.numfast(rec)))
                 else:
                     recs.append((a, str(rec.get("kind", "text")), rec))
         ni.content = recs
@@ -1807,6 +1809,81 @@ def _fmt_expected(typ: str, rec: Mapping[str, Any]) -> str:
 
 
 # ================================================================== engine
+class _RecCache:
+    """(round 8, cost) What P03 derives from a fitted content record alone,
+    kept across ticks while the record object lives: its prepared numeric
+    grid (_NumFast) and its checks of values (_check). A fitted record is a
+    fresh dict on every refit (P06 fit_node / P07, a reference snapshot's
+    copy), so the record object IS its version; an entry also keeps the
+    record itself (its id cannot be reused while the entry exists) and a
+    signature of the fields _NumFast reads, so an in-place change rebuilds it.
+
+    Measured (O-servers-20, 7 days, cProfile on P03): the per-node-and-tick
+    preparation of numeric records was 0.51 of 4.8 s - the same few hundred
+    records rebuilt every tick for a handful of events - and the checks of
+    the same (record, value) pairs again every tick 0.35 s. Outputs are
+    identical (the cached objects are the same pure functions of the record).
+
+    Bounded: two generations rotated hourly; an entry not used for an hour
+    is dropped with its record reference."""
+
+    __slots__ = ("cur", "prev", "hour", "ccur", "cprev")
+    CHECK_CAP = 1 << 15                 # (rec, value) checks kept per generation (~5 MB)
+
+    def __init__(self) -> None:
+        self.cur: Dict[int, Tuple[Any, Tuple[Any, ...], "_NumFast"]] = {}
+        self.prev: Dict[int, Tuple[Any, Tuple[Any, ...], "_NumFast"]] = {}
+        self.ccur: Dict[Tuple[Any, ...], Tuple[Any, Tuple[float, List[str]]]] = {}
+        self.cprev: Dict[Tuple[Any, ...], Tuple[Any, Tuple[float, List[str]]]] = {}
+        self.hour = None
+
+    def rotate(self, now: float) -> None:
+        h = int(now // HOUR)
+        if h != self.hour:
+            self.hour = h
+            self.prev, self.cur = self.cur, {}
+            self.cprev, self.ccur = self.ccur, {}
+
+    @staticmethod
+    def _sig(rec: Mapping[str, Any]) -> Tuple[Any, ...]:
+        g = rec.get
+        return (id(g("qgrid")), g("n_c"), id(g("band98")), id(g("range")), g("n_rng"),
+                id(g("tail_hi")), id(g("tail_lo")), g("log"))
+
+    def numfast(self, rec: Mapping[str, Any]) -> "_NumFast":
+        k = id(rec)
+        e = self.cur.get(k)
+        if e is None:
+            e = self.prev.get(k)
+            if e is not None and e[0] is rec:
+                self.cur[k] = e
+        if e is not None and e[0] is rec and e[1] == self._sig(rec):
+            return e[2]
+        nf = _NumFast(rec)
+        self.cur[k] = (rec, self._sig(rec), nf)
+        return nf
+
+    def check(self, typ: str, rec: Any, v: Any) -> Tuple[float, List[str]]:
+        """_check(typ, rec, v, None) for a record held by this cache's
+        lifetime rules (callers only read the result)."""
+        try:
+            k = (id(rec), typ, v.__class__, v)
+            e = self.ccur.get(k)
+            if e is None:
+                e = self.cprev.get(k)
+                if e is not None and e[0] is rec:
+                    self.ccur[k] = e
+        except TypeError:
+            return _check(typ, rec, v, None)
+        if e is not None and e[0] is rec:
+            return e[1]
+        r = _check(typ, rec, v, None)
+        if len(self.ccur) >= self.CHECK_CAP:
+            self.cprev, self.ccur = self.ccur, {}
+        self.ccur[k] = (rec, r)
+        return r
+
+
 class _BatchJob:
     """One batch being scored: its inputs and the pat.assign columns filled
     row by row (ConformityEngine._score_row), written by close()."""
@@ -1876,6 +1953,7 @@ class ConformityEngine(Engine):
         self.last_active_cap = int(params.get("last_active", LAST_ACTIVE))
         self.v_max = int(params.get("v_max", V_MAX))
         self.last_stats: Dict[str, Any] = {}
+        self._rc = _RecCache()
 
     # ================================================================= run
     def run(self, ctx: Context, observations: Optional[List] = None) -> int:
@@ -1889,6 +1967,10 @@ class ConformityEngine(Engine):
         st = store.get_model(ORG, ORG, STATE)
         if not isinstance(st, ConfState):
             st = ConfState(self.cells, self.last_active_cap)
+        rc_ = getattr(self, "_rc", None)
+        if not isinstance(rc_, _RecCache):           # an engine restored from an older checkpoint
+            rc_ = self._rc = _RecCache()
+        rc_.rotate(now)
         bud = MP.get_org_model(store, MP.BUDGET)
         k_int = self.k_int
         if isinstance(bud, Mapping) and bud.get("k_int"):

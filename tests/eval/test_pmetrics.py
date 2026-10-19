@@ -641,8 +641,12 @@ def test_pg2_confidence_trend_is_paired_on_a_fixed_cohort(org_run):
     assert out["median_conf"][1][1] < out["median_conf"][0][1]      # the unpaired median dipped (7 -> 10)
     assert out["conf_nondecreasing"] is True
     assert [s[:3] for s in out["conf_steps"]] == [[7, 10, 2], [10, 21, 4]]   # 13 and 14: drift days
-    pg1[21] = day([0.7, 0.8, 0.1, 0.1])                              # the old patterns lose confidence
-    assert M.pg2_convergence(pg1, pt)["conf_nondecreasing"] is False
+    pg1[21] = day([0.7, 0.8, 0.1, 0.1])                              # two of four lose confidence
+    out = M.pg2_convergence(pg1, pt)
+    assert out["conf_nondecreasing_strict"] is False
+    # (round 8) 2 losers of 4 is within the sign test's noise (p = 11/16);
+    # tests/eval/test_pmetrics_round8.py holds the decisive cases
+    assert out["conf_nondecreasing"] is True and out["conf_steps"][-1][4:6] == [2, 2]
     # the unseen-IP mass, paired the same way
     pg1 = {7: day([0.5], {"a": 0.1}), 10: day([0.5], {"a": 0.05, "b": 0.3}), 21: day([0.5], {"a": 0.04, "b": 0.2})}
     assert M.pg2_convergence(pg1, pt)["U_nonincreasing"] is True

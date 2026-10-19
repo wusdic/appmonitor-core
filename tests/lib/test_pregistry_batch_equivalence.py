@@ -157,6 +157,12 @@ class RefRegistry(RG.AttrRegistry):
 
 
 # ------------------------------------------------------------- canonical
+# AttrRecord.stats_dirty (round 8) says whether update_stats must recompute
+# entropy / stability; the reference recomputes every record every pass, so
+# the replay below is what proves the skip exact
+CACHE_SLOTS = frozenset({"stats_dirty"})
+
+
 def canon(o: Any, depth: int = 0) -> Any:
     """Exact value form: floats by their bits, arrays by dtype / shape / bytes,
     dicts in insertion order, sets sorted, objects by their slots / dict."""
@@ -183,6 +189,8 @@ def canon(o: Any, depth: int = 0) -> Any:
         st.update(vars(o))
     for cls in type(o).__mro__:
         for sl in getattr(cls, "__slots__", ()) or ():
+            if sl in CACHE_SLOTS:               # a cache flag, not model state
+                continue
             if hasattr(o, sl):
                 st[sl] = getattr(o, sl)
     return ("o", type(o).__name__, [(k, canon(v, depth + 1)) for k, v in st.items()])

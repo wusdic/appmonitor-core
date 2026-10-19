@@ -128,6 +128,9 @@ class RunResult:
     ptruth: Dict[str, Any] = field(default_factory=dict)
     psnaps: Dict[int, Dict[str, Any]] = field(default_factory=dict)
     gen_stats: Dict[str, Any] = field(default_factory=dict)
+    # (round 8) the lib-4 library the registry ran on (build.registry_signature_status):
+    # {engines: False} for registries without lib-4, else n_signatures / dir / missing
+    signatures: Dict[str, Any] = field(default_factory=dict)
     store: Optional[MetricStore] = None          # only when keep_store=True
 
     def __getstate__(self) -> Dict[str, Any]:
@@ -183,6 +186,23 @@ def default_registry_factory(pack: Any = None, config: Optional[Dict[str, Any]] 
     except TypeError:
         sig_store, composite_rules = build.load_signatures()
         return fn(sig_store, composite_rules)
+
+
+def check_signatures(registry: Registry, strict: bool) -> Dict[str, Any]:
+    """(round 8) The lib-4 library a run's registry holds. A registry with
+    lib-4 engines and an empty or incomplete library raises in strict mode
+    (every eval run) and is marked otherwise: a code snapshot without data/
+    silently ran lib-3 without signatures in round 7."""
+    from ..pipeline import build
+    st = build.registry_signature_status(registry)
+    if st.get("engines") and (st.get("missing") or not st.get("n_signatures")):
+        msg = (f"lib-4 engines registered with {st.get('n_signatures', 0)} signatures "
+               f"(missing {st.get('missing') or '-'} in {st.get('dir')})")
+        if strict:
+            raise build.SignatureLibraryMissing(msg)
+        import warnings
+        warnings.warn(msg, build.SignatureLibraryWarning, stacklevel=2)
+    return st
 
 
 def _resolve_pack(pack: Any) -> Any:
@@ -1099,6 +1119,7 @@ def run_pack(pack_name: Any, seed: int, registry_factory: Optional[Callable] = N
     store = MetricStore()
     factory = registry_factory or default_registry_factory
     registry = _call_with_supported(factory, pack=pack, config=config, seed=seed)
+    sig_status = check_signatures(registry, bool(strict))
     disabled = []
     wanted = {str(n) for n in disable_engines}
     for eng in registry.ordered():
@@ -1113,7 +1134,8 @@ def run_pack(pack_name: Any, seed: int, registry_factory: Optional[Callable] = N
     snapper = _DaySnapper(pack)
 
     result = RunResult(pack=name, seed=int(seed), strict=bool(strict), config=_jsonable(config),
-                       phases=[vars(p).copy() for p in plan], disabled_engines=disabled)
+                       phases=[vars(p).copy() for p in plan], disabled_engines=disabled,
+                       signatures=sig_status)
     scen_ticks: List[float] = []
     scen_dt = plan[-1].dt
     holdout_ts: Optional[float] = None

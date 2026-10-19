@@ -113,6 +113,11 @@ BOC_PRIOR_ODDS = BOC_PRIOR / (1.0 - BOC_PRIOR)
 BOC_PM_ALARM = float(_DET_INFO["bocpd"]["budget_per_day"]) / 24.0
 BOC_ALARM = 1.0 / (1.0 + BOC_PM_ALARM / BOC_PRIOR_ODDS)
 _LOGPI = math.log(math.pi)
+# (round 8) bounded mode: BOCPD's own inputs per tick of every active IP, kept
+# while B14 does not model the IP (not earned), so that a promotion starts the
+# run from the IP's history as full mode has it (ChangepointEngine._catch_up)
+CP_IN = "behavior.cp.in"
+CP_IN_KEEP_S = (R_MAX + 24) * 3600.0
 
 # ---- creep ----------------------------------------------------------------
 CREEP_DAYS = 14
@@ -464,10 +469,16 @@ class ChangepointEngine(Engine):
         day_lo = timebins.local_datetime(now - 1e-6, tz).date().toordinal()
         day_hi = timebins.local_datetime(now + 1e-6, tz).date().toordinal()
         n = 0
+        bounded = PA.bounded(ctx.config)
+        if bounded and getattr(self, "_ret_in", None) is not store:
+            store.ensure_retention(CP_IN, max_age_s=CP_IN_KEEP_S)
+            self._ret_in = store
         audit_pool: List[Tuple[float, str, str]] = []
         for s in store.systems():
             closed: List[Tuple[str, Dict[str, Any], int]] = []
             for e in PA.entities(store, s, now, ctx.config):
+                if bounded:
+                    self._keep_inputs(store, s, e, now, dt)
                 if not PA.is_earned(store, s, e, ctx.config):
                     continue                  # bounded mode: earned only; B18 covers classes (§10.3)
                 res = self._entity(ctx, s, e, day_lo, day_hi)
@@ -513,6 +524,7 @@ class ChangepointEngine(Engine):
         now, dt = float(ctx.now), float(ctx.window_s)
         zr_row = store.vec_at(s, e, ZR, now)
         model = store.get_model(s, e, m_cp.MODEL)
+        fresh = model is None
         if model is None:
             if zr_row is None:
                 return None                        # never scored by B04: nothing to do yet
@@ -525,6 +537,7 @@ class ChangepointEngine(Engine):
             store, s, e, learn, gate, lambda a: self._other_learn(store, s, a))
         run = model["run"]
         self._apply_control(run, gate0, gate)
+        self._catch_up(store, s, e, run, gate, now, dt, ctx.config, fresh)
         if run.get("training") and not ctx.training:
             # End of warm-up: the charts ran against a model that was being
             # learnt from those very rows (cold backoff, hyperprior buckets);
@@ -576,6 +589,110 @@ class ChangepointEngine(Engine):
         self._outputs(ctx, s, e, run, learn, bank, mc, h, h_mc, phi)
         store.put_model(s, e, m_cp.MODEL, model, ts=now)
         return model, True, closed_day
+
+    def _keep_inputs(self, store: Any, s: str, e: str, now: float, dt: float) -> None:
+        """(round 8, bounded mode) BOCPD's own inputs of this tick - the zr
+        intensity residual and B06's WH score - for an active IP, whether B14
+        models it or not: two floats per active tick, kept CP_IN_KEEP_S (the
+        longest run BOCPD distinguishes, R_MAX, plus a day). _catch_up starts
+        a promoted IP's run from them."""
+        zr = store.vec_at(s, e, ZR, now)
+        if zr is None:
+            return
+        wh = store.vec_at(s, e, WH, now)
+        x_wh = float(wh[0]) if wh is not None and len(wh) else math.nan
+        store.add_vec(s, e, CP_IN, now, [float(zr[FEATURE_INDEX["intensity"]]), x_wh],
+                      window_s=int(dt))
+
+    def _catch_up(self, store: Any, s: str, e: str, run: Dict[str, Any], gate: GateState,
+                  now: float, dt: float, config: Mapping[str, Any], fresh: bool) -> int:
+        """(round 8) Bring the run's own-input statistics up to `now` when B14
+        did not process the entity on the ticks before: a new model (bounded
+        mode: B14 runs on EARNED IPs only, and P15 promotes an IP after it has
+        been active - and scored by B03 / B04 - for days), or a model resumed
+        after the IP left the earned set.
+
+        Full mode processes every entity on every (H) tick from its first zr
+        row, so its BOCPD run covers the IP's whole history. Bounded mode used
+        to start it cold at promotion: the run's Normal-Gamma posterior was
+        fitted on the days since then only, and an hour full mode read as
+        ordinary for the IP was a changepoint for the younger run (pack A seed
+        0, oa-portal 10.30.2.23, active from 02-24, promoted 03-05 01:00: on
+        03-12 05:00 cp 0.994 against full mode's 0.206 - a bocpd accumulator
+        alarm and a MEDIUM incident full mode does not raise; PG9 gate 3 8 vs
+        7).
+
+        BOCPD's inputs (B04's zr intensity residual, B06's WH score) do not
+        depend on B14's learned state, so the ticks B14 skipped are replayed
+        exactly as full mode processed them - hour bookkeeping on every tick,
+        an idle tick rolling the hour with no data - from CP_IN (bounded mode
+        keeps them for every active IP, _keep_inputs) or else from the
+        retained zr / wh rows; the day group means for the creep test from
+        the retained zr rows (4 days). The learned state needs no replay: the
+        gated learner commits every retained clock row since its last commit
+        on its first step. The CUSUM / MCUSUM charts depend on that learned
+        state at each tick and restart at 0 (as after a release). Returns the
+        replayed ticks."""
+        seen = run.get("seen_ts")
+        run["seen_ts"] = now
+        if not fresh and (seen is None or now - float(seen) <= 1.5 * dt + 1e-6):
+            return 0
+        lo = -math.inf if fresh else float(seen) + 1e-6
+        reb = gate.applied.get("rebase_from") if isinstance(gate.applied, Mapping) else None
+        if isinstance(reb, (int, float)) and math.isfinite(float(reb)):
+            lo = max(lo, float(reb))           # the run restarted at the regime's rebase
+        hi = now - 1e-6
+        t_in, X_in = store.vec_range(s, e, CP_IN, lo, hi)
+        t_zr, X = store.vec_range(s, e, ZR, lo, hi)
+        if len(t_in):
+            src = {int(round(float(t) * 1000.0)): (float(X_in[i][0]), float(X_in[i][1]))
+                   for i, t in enumerate(np.asarray(t_in).tolist())}
+            t_first = float(t_in[0])
+        elif len(t_zr):
+            t_wh, W = store.vec_range(s, e, WH, lo, hi)
+            whs = {int(round(float(t) * 1000.0)): float(W[i][0]) if len(W[i]) else math.nan
+                   for i, t in enumerate(np.asarray(t_wh).tolist())}
+            i_int = FEATURE_INDEX["intensity"]
+            src = {}
+            for i, t in enumerate(np.asarray(t_zr).tolist()):
+                k = int(round(float(t) * 1000.0))
+                src[k] = (float(X[i][i_int]), whs.get(k, math.nan))
+            t_first = float(t_zr[0])
+        else:
+            return 0
+        rows = {int(round(float(t) * 1000.0)): X[i] for i, t in enumerate(np.asarray(t_zr).tolist())}
+        t0 = t_first if fresh else lo
+        k0 = int(math.floor((now - t0) / dt + 1e-9))
+        if k0 <= 0:
+            return 0
+        tz_ = config.get("tz") or timebins.DEFAULT_TZ
+        day = run["day"]
+        n = 0
+        for k in range(k0, 0, -1):
+            T = now - k * dt
+            dlo = timebins.local_datetime(T - 1e-6, tz_).date().toordinal()
+            dhi = timebins.local_datetime(T + 1e-6, tz_).date().toordinal()
+            closed = self._roll_day(run, dlo)
+            key = int(round(T * 1000.0))
+            x = src.get(key)
+            if x is None:
+                self._roll_hour(run, T, math.nan, math.nan)
+            else:
+                self._roll_hour(run, T, x[0], x[1])
+                z = rows.get(key)
+                if z is not None:
+                    x52 = np.asarray(z, dtype=np.float64)
+                    fin = np.isfinite(x52)
+                    cnt = _GMAT @ fin
+                    gm = np.where(cnt > 0, (_GMAT @ np.where(fin, x52, 0.0)) / np.maximum(cnt, 1.0),
+                                  np.nan)
+                    ok = np.isfinite(gm)
+                    day["sum"] = day["sum"] + np.where(ok, gm, 0.0)
+                    day["n"] = day["n"] + ok
+            if dhi != dlo and closed is None:
+                self._roll_day(run, dhi)
+            n += 1
+        return n
 
     @staticmethod
     def _other_learn(store: Any, s: str, other: str) -> Optional[Dict[str, Any]]:

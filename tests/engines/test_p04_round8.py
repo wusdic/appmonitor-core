@@ -1,6 +1,7 @@
 """P04 round 8 (docs/lib3/progressive.md §16.15.11): evidence units of waiting
 route rows, untested-statement priors, per-day-type window tests, transport
-alarms, facet records after a re-statement, compact per-key records.
+alarms, facet records after a re-statement, compact per-key records,
+held-out constraints refreshed under a frozen anchor, per-day-type slots.
 (Confirmation within the tick the rule is met was measured and withdrawn: see
 PatternTree._confirm.)"""
 from __future__ import annotations
@@ -266,3 +267,78 @@ def test_held_out_records_are_compact_and_keep_their_cluster_positions():
             kc.add(g, w, hit)
             ref_add(st, g, w, hit)
         assert list(kc.values()) == list(zip(st[1], st[2])), trial
+
+
+def _monitor(d, t0, rng):
+    """A 24-h monitor: every 15 min, every day (weekends too)."""
+    return [(t0 + k * 900.0 + 31, "portal", "192.168.9.9",
+             {"http.route": "GET portal /health", "net.bytes_down": float(rng.uniform(180, 220))})
+            for k in range(96)]
+
+
+def _stated_days(wh):
+    """The day types a reference's 'when' constraint states."""
+    if wh[0] == "win":
+        return {dt for dt, iv in wh[1].items() if iv}
+    return set(wh[3]) if len(wh) > 3 else {s // 96 for s in wh[1]}
+
+
+def test_held_out_constraints_follow_the_statement_while_alarms_keep_the_anchor():
+    """A provisional alarm every day (a 60-s monitor's ADWIN or transport
+    alarms) keeps the node's anchor - what conformity compares new rows with -
+    but not the held-out constraints: those follow the statement rendered from
+    today's fits. Round 7 kept the first reference's constraints for as long
+    as the alarms recurred (pack O seed 2: portal /health tested its first
+    weekend window, 00:00-02:15, for two weeks and stated 0.32 while the
+    rendered statement - non-workdays all day - held 1.0)."""
+    sim = Sim()
+    sim.add(daily(_monitor, 10, seed=3))
+    seen = {}
+
+    def alarm(s):
+        tr = s.tree("portal")
+        if tr is None:
+            return
+        for nd in tr.nodes.values():
+            if nd.ref is not None:
+                seen.setdefault(nd.id, nd.ref.get("t"))
+                nd.meta["last_alarm"] = s.now          # a provisional alarm, every tick
+    sim.hooks.append(alarm)
+    sim.run_until(MON + 9 * DAY + 12 * 3600)
+    tr = sim.tree("portal")
+    nd = tr.nodes[sim.top("portal")]
+    assert nd.ref is not None and nd.id in seen
+    assert nd.ref["t"] == seen[nd.id]                   # the anchor is kept ...
+    assert 1 in _stated_days(nd.ref["hold"]["when"]), nd.ref["hold"]["when"]   # ... the statement moves on
+    hr = nd.meta["hold"]
+    assert _failures(hr, "when@nwd") == 0.0, hr.failures()
+
+
+def _failures(hr, key):
+    return float((hr.failures() or {}).get(key, 0.0))
+
+
+def test_arrival_slots_are_stated_per_day_type():
+    """Without fitted windows a node states the 15-min slots holding 90 % of
+    its arrivals PER DAY TYPE, and a day type without arrivals states nothing
+    (round 7 pooled them: five workdays filled the 90 % and a 24-h monitor's
+    weekend rows fell outside the few weekend slots that made it - or outside
+    every slot of a reference built before the first weekend)."""
+    import numpy as np
+    from app.engines.behavior.lib import pnode as PN
+    from app.engines.behavior.pattern_tree import PatternTreeEngine, _hold_constraints
+    nd = PN.Node(5, 0, 1, 0, (("http.route", 0, frozenset({"GET p /health"}), False),), MON)
+    nd.when.hist[0, :] = 5.0                            # workdays: every slot, five days
+    wh = _hold_constraints(nd, MON, {}, {}, None)["when"]
+    assert _stated_days(wh) == {0}
+    nd.state = "stable"
+    nd.ref = {"t": MON, "sn": 1, "hold": {"when": wh}}
+    for i in range(60):                                 # a weekend: no stated window, no check
+        PatternTreeEngine._hold_check(None, nd, lambda a: None, ("10.0.0.1",), 1, 15.0 * (i % 96),
+                                      MON + 5 * DAY + 900 * i, 1.0, 1.0, 5)
+    assert "when@nwd" not in nd.meta["hold"].c
+    nd.when.hist[1, :] = 2.0                            # and two weekend days
+    wh = _hold_constraints(nd, MON, {}, {}, None)["when"]
+    nwd = [s for s in wh[1] if s >= 96]
+    assert len(nwd) >= int(0.9 * 96), len(nwd)
+    assert np.isclose(wh[2], 0.9)

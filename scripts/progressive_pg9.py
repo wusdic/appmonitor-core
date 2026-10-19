@@ -250,6 +250,11 @@ def main() -> None:
         for c in g["details"]["checks"]:
             print(f"  {c['name']}: {c['value']} ({c['target']}) -> {c['pass']}")
         return
+    from app.pipeline.build import signature_status
+    st = signature_status()        # round 8: the lib-3 registry needs the lib-4 library
+    if not st["ok"]:
+        raise SystemExit(f"lib-4 signature library missing ({', '.join(st['missing'])} in {st['dir']}): "
+                         "copy or link data/ into the code snapshot, or set APPMON_SIGNATURE_DIR")
     jobs = []
     if args.what == "pairs":
         for p in [x.strip() for x in args.packs.split(",") if x.strip()]:

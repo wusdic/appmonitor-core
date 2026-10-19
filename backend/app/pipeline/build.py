@@ -223,7 +223,8 @@ def build_registry(sig_store: Optional[SignatureStore] = None, composite_rules=N
         return reg
     prog = mode == "full+progressive"
     if sig_store is None or composite_rules is None:
-        s2, c2 = load_signatures()
+        # an eval run (ctx.config['strict']) refuses to run lib-4 on an empty library
+        s2, c2 = load_signatures(strict=True if (config or {}).get("strict") else None)
         sig_store = s2 if sig_store is None else sig_store
         composite_rules = c2 if composite_rules is None else composite_rules
     # raw (原始指标库): R1 full sets, then R2 action tokens and R3 client stacks
@@ -302,17 +303,70 @@ def _pcore_views() -> list:
     return [FacetsEngine(), ViewsEngine()]
 
 
-def load_signatures():
+class SignatureLibraryMissing(FileNotFoundError):
+    """The lib-4 signature library (DATA_DIR/primitives.yaml, composite.yaml)
+    is not where the code expects it."""
+
+
+class SignatureLibraryWarning(UserWarning):
+    pass
+
+
+SIGNATURE_FILES = ("primitives.yaml", "composite.yaml")
+
+
+def signature_status(directory: Optional[str] = None) -> Dict[str, Any]:
+    """Where the lib-4 library is looked for and which of its files exist."""
+    d = os.path.abspath(directory or DATA_DIR)
+    missing = [fn for fn in SIGNATURE_FILES if not os.path.exists(os.path.join(d, fn))]
+    return {"dir": d, "missing": missing, "ok": not missing}
+
+
+def load_signatures(strict: Optional[bool] = None, directory: Optional[str] = None):
+    """The lib-4 signature store and composite rules from DATA_DIR.
+
+    (round 8) A missing file is never silent. DATA_DIR is found relative to the
+    code (or APPMON_SIGNATURE_DIR), so a code snapshot without data/ used to
+    run every signature engine on an empty library: round 7's first pack A run
+    read 12 / 7 / 1 incidents instead of 18 / 7 / 2. With `strict` (the eval
+    runner's ctx.config['strict']; None reads APPMON_REQUIRE_SIGNATURES=1) it
+    raises SignatureLibraryMissing; otherwise it logs an error, warns
+    (SignatureLibraryWarning) and marks the store: `sig_store.library_missing`
+    lists the missing files (RunResult.signatures carries it into the run)."""
+    st = signature_status(directory)
+    if strict is None:
+        strict = os.environ.get("APPMON_REQUIRE_SIGNATURES", "").strip().lower() in ("1", "true", "yes")
+    if st["missing"]:
+        msg = (f"lib-4 signature library incomplete: {', '.join(st['missing'])} not found in "
+               f"{st['dir']} (a code snapshot must carry data/, or set APPMON_SIGNATURE_DIR)")
+        if strict:
+            raise SignatureLibraryMissing(msg)
+        _LOG.error(msg)
+        import warnings
+        warnings.warn(msg, SignatureLibraryWarning, stacklevel=2)
     sig_store = SignatureStore()
-    prim = os.path.join(DATA_DIR, "primitives.yaml")
+    sig_store.library_dir = st["dir"]
+    sig_store.library_missing = list(st["missing"])
+    prim = os.path.join(st["dir"], "primitives.yaml")
     if os.path.exists(prim):
         sig_store.load_file(prim)
     composite_rules = []
-    comp = os.path.join(DATA_DIR, "composite.yaml")
+    comp = os.path.join(st["dir"], "composite.yaml")
     if os.path.exists(comp):
         with open(comp, "r", encoding="utf-8") as f:
             composite_rules = yaml.safe_load(f) or []
     return sig_store, composite_rules
+
+
+def registry_signature_status(registry: Registry) -> Dict[str, Any]:
+    """Whether a registry runs lib-4 and on what library (for marking a run)."""
+    eng = next((e for e in registry.ordered() if e.name == "signature.rule_match"), None)
+    if eng is None:
+        return {"engines": False}
+    store = getattr(eng, "sig_store", None)
+    return {"engines": True, "n_signatures": len(getattr(store, "signatures", []) or []),
+            "dir": getattr(store, "library_dir", None),
+            "missing": list(getattr(store, "library_missing", []) or [])}
 
 
 class Runtime:

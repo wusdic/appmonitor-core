@@ -705,7 +705,7 @@ class BindingEngine(Engine):
                 if lb < FD.LB_BIND:
                     ent["bound"] = False
                     ent["LB"] = lb
-        prev_b =(st.get("bound") or {}).get((kind, node.id, pk)) or {}
+        prev_b = (st.get("bound") or {}).get((kind, node.id, pk)) or {}
         for x, ent in rec["table"].items():
             if hist is not None:
                 fl = hist.seen(x)

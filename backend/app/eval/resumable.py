@@ -141,6 +141,7 @@ def run_pack_resumable(pack: Any, seed: int, ckpt: str, *, segment_s: float = 18
         store = R.MetricStore()
         registry = R._call_with_supported(registry_factory or R.default_registry_factory,
                                           pack=p, config=config, seed=seed)
+        sig_status = R.check_signatures(registry, True)       # strict: lib-4 on an empty library raises
         pipeline = R.Pipeline(store, registry, window_s=int(plan[0].dt), config=config)
         gen = R._make_generator(p, seed, None)
         st = {"pack": p, "plan": plan, "config": config, "store": store, "registry": registry,
@@ -148,7 +149,7 @@ def run_pack_resumable(pack: Any, seed: int, ckpt: str, *, segment_s: float = 18
               "stale": R._StaleChecker(config), "col": R._Collector(store), "snapper": R._DaySnapper(p),
               "result": R.RunResult(pack=str(getattr(p, "name", pack)), seed=int(seed), strict=True,
                                     config=R._jsonable(config), phases=[vars(x).copy() for x in plan],
-                                    disabled_engines=[]),
+                                    disabled_engines=[], signatures=sig_status),
               "scen_ticks": [], "scen_dt": plan[-1].dt, "holdout_ts": None, "holdout_portraits": {},
               "memory": {}, "tick_i": 0, "pos": (0, 0), "wall_s": 0.0, "segments": 0,
               "tap_events": [], "tap_batch": []}

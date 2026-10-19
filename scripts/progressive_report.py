@@ -260,6 +260,20 @@ def registry_label(runs: Sequence[Mapping[str, Any]], requested: Optional[str] =
 
 
 # ------------------------------------------------------------------ worker
+LIB4_FREE_REGISTRIES = ("progressive_decision", "progressive_only")
+
+
+def _require_signatures() -> None:
+    """(round 8) Exit before any run when the lib-4 signature library is not
+    where build.DATA_DIR points (a code snapshot without data/ ran lib-3
+    without signatures in round 7, silently)."""
+    from app.pipeline.build import signature_status
+    st = signature_status()
+    if not st["ok"]:
+        raise SystemExit(f"lib-4 signature library missing ({', '.join(st['missing'])} in {st['dir']}): "
+                         "copy or link data/ into the code snapshot, or set APPMON_SIGNATURE_DIR")
+
+
 def _score(res: Any, seed: int, prev: Mapping[str, Any]) -> Dict[str, Any]:
     from app.eval.pmetrics import score_prun
     from app.eval.report import _clean
@@ -277,7 +291,8 @@ def _score(res: Any, seed: int, prev: Mapping[str, Any]) -> Dict[str, Any]:
     out = {"seed": seed, "score": sc, "example": ex, "anomalies": anomaly_table(res, sc),
            "engine_s": eng, "wall_s": res.wall_s, "registry": prev.get("registry"),
            "resource_mode": prev.get("resource_mode"),
-           "incidents": len(res.incidents), "events": len(res.events)}
+           "incidents": len(res.incidents), "events": len(res.events),
+           "signatures": dict(getattr(res, "signatures", None) or {})}
     if "job_s" in prev:
         out["job_s"] = prev["job_s"]
     return _clean(out)
@@ -505,6 +520,8 @@ def main() -> None:
     from app.eval.pscale import pg4_summary
     from app.eval.report import _clean
     seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
+    if not (args.assemble or args.rescore) and args.registry not in LIB4_FREE_REGISTRIES:
+        _require_signatures()      # round 8: never run lib-4 on a missing library
     os.makedirs(os.path.join(args.out, "runs"), exist_ok=True)
     opts = {"registry": args.registry, "bounded": args.bounded, "keep_res": args.keep_res,
             "no_series": args.no_series, "pack": args.pack, "checkpoint": args.checkpoint,

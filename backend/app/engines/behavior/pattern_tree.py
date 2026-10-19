@@ -1143,7 +1143,7 @@ class PatternTreeEngine(Engine):
                 iv = wh[1].get(dt)
                 if iv:                                  # a day type without stated windows: no check
                     hit = any(a <= minute < b for a, b in iv)
-            else:
+            elif len(wh) < 4 or dt in wh[3]:            # (round 8) a day type it states
                 slot = dt * 96 + min(95, max(0, int(minute // 15)))
                 hit = slot in wh[1]
             if hit is not None:
@@ -3299,7 +3299,6 @@ class PatternTreeEngine(Engine):
             self._merge_siblings(lc, tr, nd, t)
         self._gc_pairs(lc, tr, kind)
         # 3. lifecycle, invariants, drift, exceptions
-        conf_dates = CONF_DATES.get(kind, 3)
         for nid in list(tr.nodes.keys()):
             nd = tr.nodes.get(nid)
             if nd is None:
@@ -3672,7 +3671,19 @@ class PatternTreeEngine(Engine):
         """One confident node's reference statement (_snapshots)."""
         if nd.state not in ("confirmed", "stable"):
             return
-        if t - float(nd.meta.get("last_alarm", -math.inf)) < DAY:
+        # (round 8) an alarm of the last day keeps the ANCHOR (targets, who,
+        # arrival densities: what P03 and the drift detectors compare new
+        # rows with) as it was, but the held-out constraints follow the
+        # statement P14 renders - the fitters' current output - every day. A
+        # node whose provisional alarms recur (a 60-s monitor: an ADWIN
+        # structural alarm or a transport-measure alarm most days, neither
+        # changing its state) kept the constraints of its first reference for
+        # weeks: pack O seed 2, portal GET /health kept P09's first weekend
+        # window, 00:00-02:15 fitted at 04:00 of the first Saturday, failed
+        # every weekend test and stated 0.32 on days 11-21 while the rendered
+        # statement (non-workdays all day) held 1.0
+        frozen = t - float(nd.meta.get("last_alarm", -math.inf)) < DAY
+        if frozen and not isinstance(nd.ref, Mapping):
             return
         if fitted is None:
             fitted = {name: MP.get_model(lc.store, lc.key, name) for name in FITTERS}
@@ -3683,6 +3694,14 @@ class PatternTreeEngine(Engine):
             held_ips = {ip for (_, ip) in lc.aux["held"].keys()}
         heavy, _ = nd.who.heavy_set(0, t)
         if held_ips and any(ip in held_ips for ip in heavy):
+            return
+        if frozen:
+            targets = {a: _compact(sm, t) for a, sm in nd.targets.items()}
+            fit = {name: _fitted_entry(mdl, kind, nd.id) for name, mdl in fitted.items()
+                   if _fitted_entry(mdl, kind, nd.id) is not None}
+            hold = _hold_constraints(nd, t, targets, fit, card_of)
+            if hold != nd.ref.get("hold"):
+                nd.ref = dict(nd.ref, hold=hold, sn=_next_ref_sn(lc), hold_t=t)
             return
         # the reference who also keeps every source with standing of its own
         # (>= REF_MEMBER_EV evidence units; P03's member rule): a low-volume
@@ -4218,17 +4237,28 @@ def _hold_constraints(nd: PN.Node, t: float, targets: Mapping[str, Any],
     if wins:
         out["when"] = ("win", wins, float(min(wnom)) if wnom else 0.9)
     else:
-        h = nd.when.hist.ravel()
-        tot = float(h.sum())
-        if tot > 0:
-            order = np.argsort(-h)
-            acc, keep = 0.0, []
-            for j in order:
+        # (round 8) per day type, as P09's windows are: the slots holding
+        # HOLD_WHEN_COVER of THAT day type's arrivals, and a day type without
+        # arrivals states (and checks) nothing. Pooled, the five workdays'
+        # mass filled the 90 % and a 24-h monitor's weekend arrivals fell
+        # outside the few weekend slots that made it - or, in a reference
+        # built before the first weekend, outside every slot
+        hist = nd.when.hist
+        keep, dts = [], []
+        for dt in range(int(hist.shape[0])):
+            h = hist[dt]
+            tot = float(h.sum())
+            if tot <= 0:
+                continue
+            dts.append(dt)
+            acc = 0.0
+            for j in np.argsort(-h, kind="stable"):
                 if acc >= HOLD_WHEN_COVER * tot or h[j] <= 0:
                     break
-                keep.append(int(j))
+                keep.append(dt * 96 + int(j))
                 acc += float(h[j])
-            out["when"] = ("slots", frozenset(keep), HOLD_WHEN_COVER)
+        if keep:
+            out["when"] = ("slots", frozenset(keep), HOLD_WHEN_COVER, frozenset(dts))
     pb = fit.get(MP.PBOUNDS)
     for a, e in ((pb or {}).get("attrs") or {}).items() if isinstance(pb, Mapping) else ():
         if isinstance(e, Mapping) and e.get("band90") and a not in ("who", "when") \

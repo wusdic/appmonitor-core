@@ -105,7 +105,10 @@ DAYS = 4.0
 # model.attrsel unchanged. Re-recorded (2cf8bb21...) when confirmation within
 # the tick the rule is met was withdrawn (PatternTree._confirm): candidates
 # confirm at the daily lifecycle again; model.attrsel unchanged.
-GOLDEN = {"model.ptree": "2cf8bb21f0387f2b55bee904df5b54cfed6664ae",
+# Re-recorded (908e1e68...) when the held-out constraints of a reference
+# frozen by a recent alarm were refreshed daily and the arrival-slot fallback
+# was stated per day type (PatternTree._reference, _hold_constraints).
+GOLDEN = {"model.ptree": "908e1e68250db9f117a4b849de8005b374016560",
           "model.attrsel": "7403502379ac9b92580d1d91151056b8df6b29bb"}
 
 

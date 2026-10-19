@@ -2771,6 +2771,17 @@ in O-real; one at a time in the ablation runs) with its own truth rows:
   events the program emitted up to the scored day (`PTruth.traffic`, from the opportunities
   bookkeeping); round 2 gave every row of a route an equal share (pack O's mail: four
   departments at 25 % each, while 销售部 and 研发 send ~90 % of the records).
+  **Held-out events are prospective (round 8, lead decision).** A statement read at the end
+  of day d is judged on what a user of the profile meets next: the events its truth segment
+  emits on days d+1 … d+7 while the segment is valid (`PTruth.traffic_after`), not the
+  segment's whole period up to d (round 3–7: the lineage's last 14 days, which kept sources
+  that had stopped, e.g. before a re-addressing, and behaviour the learner had already
+  replaced). Days after a drift ends the segment belong to the next segment and are judged by
+  PG5, not by precision. Days past the run's last day are the run's last-week days of the same
+  weekday (`PTruth.proxy_day`: no truth change is scheduled after the run, so the program
+  continues as it ran), so day-21 / day-35 statements are judged on the last week. A segment
+  with no event in its window keeps its retrospective mix. `HOLDOUT_PROSPECTIVE = False`
+  reproduces round 7 for re-scoring.
   **Content truth is stated on the observed quantity, and a hard range on what the data could
   show (evaluator round 3).** A TLS row's `net.bytes_up` is the step's payload plus
   `orggen.TLS_UP_FRAMING` (300 B); the truth's band and range now include it (round 2 stated
@@ -2871,6 +2882,18 @@ day (a newly recovered pattern enters at a low confidence); the calibration erro
 debiased RMS calibration error (Kumar et al. 2019, ≥ the population ECE) over every judged
 claim of days ≥ 7 pooled (one snapshot holds ~60 statements, where the plug-in ECE of a
 perfectly calibrated set is 0.11–0.16); a claim rendered twice counts once.
+
+*Measurement (round 8, lead decision):* a paired confidence step counts as a decrease only
+when it exceeds the statistic's own sampling noise: the median paired change is negative
+**and** the one-sided exact sign test over the paired patterns rejects "a pattern is no more
+likely to lose confidence than to gain it" at α = 0.05 (`pmetrics.sign_test_less`,
+`paired_decrease`; changes within 1e-9 are ties). Reason: once stated confidence saturates
+near the held rate (0.95–0.98 in round 7) the per-pattern changes between snapshot days are a
+few thousandths either way, and the strict "median ≥ 0" failed 3 of 5 seeds on medians of
+−0.0006 to −0.0037 with patterns gaining as often as losing; the sign test is the exact test
+of the median the check reads, and it still fails a step where most unchanged patterns lose
+confidence, however little each. With n paired patterns a step can fail only when n ≥ 5
+(pack O steps pair 12–28). The strict rule is reported as `conf_nondecreasing_strict`.
 
 **PG3 — Specificity reached.** GA login who = the 3 IPs (or the group whose members are those
 3) with 3/3 bindings; finance approval who = {192.168.2.10}; portal login who ∈ {prefix, reg,

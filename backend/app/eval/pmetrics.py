@@ -674,6 +674,59 @@ class PTruth:
         cache[day] = out
         return out
 
+    PROSPECTIVE_DAYS = 7
+
+    def proxy_day(self, x: int) -> int:
+        """Day `x` of the truth program; a day after the run's last day is
+        read as the run's day with the same weekday in its last week (the
+        program has no change scheduled after the run: it continues as it
+        ran in its last week)."""
+        n = self.n_days
+        return x if x <= n else x - 7 * int(math.ceil((x - n) / 7.0))
+
+    def traffic_after(self, day: int) -> Dict[str, Dict[str, Dict[str, float]]]:
+        """(round 8, lead decision: PROSPECTIVE held-out events) {tid: {daytype:
+        {source: events}}} for the rows valid on `day`: the events the truth
+        segment emitted AFTER the snapshot, on days day+1 .. day+PROSPECTIVE_DAYS
+        while the segment is valid - what a user reading the profile at the end
+        of `day` experiences next. A statement is about current behaviour: days
+        after the segment ends (a drift) belong to another segment and are
+        judged by PG5, not here. Days after the run's last day are its
+        last-week days of the same weekday (proxy_day). A row with no event in
+        that window falls back to its retrospective mix (traffic)."""
+        cache = self.__dict__.setdefault("_traffic_after", {})
+        if day in cache:
+            return cache[day]
+        back = None
+        out: Dict[str, Dict[str, Dict[str, float]]] = {}
+        for row in self.valid_at_day(day):
+            tid = row["tid"]
+            vf, vt = int(row["valid_from_day"]), int(row["valid_to_day"])
+            per_day: Dict[int, Mapping[str, Any]] = {}
+            for iso, per in (self.opp.get(tid) or {}).items():
+                per_day[self.day_index(iso)] = per
+            per_dt: Dict[str, Dict[str, float]] = {}
+            for x in range(int(day) + 1, int(day) + self.PROSPECTIVE_DAYS + 1):
+                if x >= vt and vt <= self.n_days:  # the segment ended in the run (a drift)
+                    break
+                y = self.proxy_day(x)
+                if y < max(1, vf) or y - 1 >= len(self.workday):
+                    continue
+                per = per_day.get(y)
+                if not per:
+                    continue
+                dt = "workday" if self.workday[y - 1] else "nonworkday"
+                acc = per_dt.setdefault(dt, {})
+                for ip in sorted(per):
+                    acc[ip] = acc.get(ip, 0.0) + float(per[ip])
+            if not any(sum(v.values()) > 0 for v in per_dt.values()):
+                if back is None:
+                    back = self.traffic(day)
+                per_dt = back.get(tid) or {}
+            out[tid] = per_dt
+        cache[day] = out
+        return out
+
     def data_range(self, row: Mapping[str, Any], attr: str, upto_day: int) -> Optional[Tuple[float, float]]:
         """Smallest / largest value of `attr` the generator emitted for the row's
         lineage (every segment of the activity step) on days <= upto_day; None
@@ -1115,6 +1168,11 @@ def _pick_ip(row: Mapping[str, Any], r: np.random.Generator, restrict: Optional[
 # the scored day); False reproduces round 2 (every row, day type by window
 # length and member drawn with equal weight), for before/after re-scoring only
 HOLDOUT_TRAFFIC = True
+# (round 8, lead decision) held-out events of a claim are drawn from the
+# traffic the truth program emits AFTER the snapshot (PTruth.traffic_after);
+# False reproduces round 7's retrospective mix (the 14 days up to the snapshot),
+# for before/after re-scoring only
+HOLDOUT_PROSPECTIVE = True
 _QGRID: Dict[int, np.ndarray] = {}
 
 
@@ -1319,12 +1377,15 @@ def judgeable_context(s: LStmt) -> bool:
 def holdout_check(s: LStmt, rows_valid: Sequence[Mapping[str, Any]], pt: PTruth,
                   r: np.random.Generator, n: int = 400, day: Optional[int] = None) -> Dict[str, Any]:
     """Every constraint of a statement against held-out events of its context
-    (in the context's traffic mix up to `day` when HOLDOUT_TRAFFIC)."""
+    (when HOLDOUT_TRAFFIC, in the context's traffic mix after `day`,
+    HOLDOUT_PROSPECTIVE, or up to it)."""
     rows = [row for row in rows_valid if _route_of(row) == (s.method, s.route)
             and _sys_match(s.system, row, pt, s.members)]
     ctx_who = any(str(c[0]).startswith("net.src") for c in s.context if isinstance(c, (list, tuple)) and c)
     restrict = s.who if (ctx_who or s.is_exc) and (s.who.ipset() or s.who.prefixes) else None
-    traffic = pt.traffic(day) if (HOLDOUT_TRAFFIC and day is not None and pt.opp) else None
+    traffic = None
+    if HOLDOUT_TRAFFIC and day is not None and pt.opp:
+        traffic = pt.traffic_after(day) if HOLDOUT_PROSPECTIVE else pt.traffic(day)
     evs = [e for e in holdout_events(rows, r, n, restrict, traffic) if _in_time_context(s, e)]
     conf = s.confidence if math.isfinite(s.confidence) else 0.9
     res: List[Tuple[str, float, float, bool]] = []
@@ -1606,7 +1667,16 @@ def pg2_convergence(pg1: Mapping[int, Mapping[str, Any]], pt: PTruth,
     sdays = [d for d in tdays if not (drift_days[0] <= d <= drift_days[1])]
     conf_steps = _paired_steps(pg1, sdays, "stmt_conf", unchanged)
     u_steps = _paired_steps(pg1, sdays, "who_U", None)
-    conf_ok = all(x[3] >= -1e-9 for x in conf_steps) if conf_steps else None
+    # (round 8, lead decision) a paired decrease counts only when it exceeds the
+    # statistic's own sampling noise: the step fails when the median paired
+    # change is negative AND the one-sided exact sign test rejects "no more
+    # patterns lose than gain" at PG2_ALPHA (_paired_steps' p). Near the held
+    # rate (stated 0.95-0.98 in round 7) the per-pattern changes are a few
+    # thousandths either way and a strict median >= 0 was decided by noise
+    # (3 of 5 seeds failed on medians of -0.0006 to -0.0037). The strict rule is
+    # kept as conf_nondecreasing_strict.
+    conf_ok = all(not paired_decrease(x) for x in conf_steps) if conf_steps else None
+    conf_ok_strict = all(x[3] >= -1e-9 for x in conf_steps) if conf_steps else None
     u_ok = all(x[3] <= 1e-9 for x in u_steps) if u_steps else None
     eces = [pg1[d].get("ece") for d in days if pg1[d].get("ece") is not None]
     # calibration over every judged claim of days >= CALIB_FROM pooled (one
@@ -1625,16 +1695,44 @@ def pg2_convergence(pg1: Mapping[int, Mapping[str, Any]], pt: PTruth,
             "days_to_80": ttr, "depth_nondecreasing": depth_ok,
             "depth_steps": depth_steps, "depth_mean_nondecreasing": depth_mean_ok,
             "median_conf": med_conf, "conf_steps": conf_steps, "conf_nondecreasing": conf_ok,
+            "conf_nondecreasing_strict": conf_ok_strict, "pg2_alpha": PG2_ALPHA,
             "median_U": med_u, "U_steps": u_steps, "U_nonincreasing": u_ok,
             "calibration": cal, "calibration_by_kind": cal_kind,
             "ece": cal["ce"] if pool else (eces[-1] if eces else None),
             "ece_last_day": eces[-1] if eces else None}
 
 
+PG2_ALPHA = 0.05      # one-sided level of the paired sign test (round 8, lead decision)
+_TIE = 1e-9
+
+
+def sign_test_less(diffs: Sequence[float], tie: float = _TIE) -> Tuple[int, int, float]:
+    """(n_neg, n_pos, p): the exact one-sided sign test of H0 "a pattern is no
+    more likely to lose than to gain" (median change >= 0) against "more lose";
+    |d| <= tie are ties and dropped. p = P(Bin(n_neg + n_pos, 1/2) >= n_neg)."""
+    n_neg = sum(1 for d in diffs if d < -tie)
+    n_pos = sum(1 for d in diffs if d > tie)
+    n = n_neg + n_pos
+    if n == 0:
+        return n_neg, n_pos, 1.0
+    p = sum(math.comb(n, k) for k in range(n_neg, n + 1)) / float(2 ** n)
+    return n_neg, n_pos, float(min(1.0, p))
+
+
+def paired_decrease(step: Sequence[Any], alpha: float = PG2_ALPHA) -> bool:
+    """A paired step [a, b, n, median, n_neg, n_pos, p] is a decrease beyond
+    sampling noise: median < 0 and the sign test's p < alpha (steps scored
+    before round 8 carry no p and keep the strict median rule)."""
+    if step[3] >= -_TIE:
+        return False
+    return len(step) < 7 or step[6] < alpha
+
+
 def _paired_steps(pg1: Mapping[int, Mapping[str, Any]], days: Sequence[int], key: str,
                   cohort: Optional[Set[str]]) -> List[List[Any]]:
-    """[day a, day b, n paired, median of (v_b - v_a)] over the patterns with a
-    value on both days (restricted to `cohort` when given)."""
+    """[day a, day b, n paired, median of (v_b - v_a), n lost, n gained, sign-test p]
+    over the patterns with a value on both days (restricted to `cohort` when
+    given); p is sign_test_less's (round 8)."""
     out = []
     for a, b in zip(days, days[1:]):
         va = {k: v for k, v in (pg1[a].get(key) or {}).items() if v is not None
@@ -1643,7 +1741,9 @@ def _paired_steps(pg1: Mapping[int, Mapping[str, Any]], days: Sequence[int], key
               and (cohort is None or k in cohort)}
         com = sorted(set(va) & set(vb))
         if com:
-            out.append([a, b, len(com), float(np.median([vb[k] - va[k] for k in com]))])
+            dif = [float(vb[k]) - float(va[k]) for k in com]
+            n_neg, n_pos, p = sign_test_less(dif)
+            out.append([a, b, len(com), float(np.median(dif)), n_neg, n_pos, p])
     return out
 
 
@@ -2810,8 +2910,8 @@ def score_prun(run: Any, precision_n: int = 300) -> Dict[str, Any]:
     out = {
         "pack": getattr(run, "pack", ""), "seed": seed, "variant": pt.raw.get("variant", ""),
         "aborted": getattr(run, "aborted", None), "n_snapshots": len(snaps),
-        "pg1": {str(d): {k: v for k, v in pg1[d].items() if k not in ("stmt_conf", "who_U")}
-                for d in pg1},
+        # stmt_conf / who_U kept (round 8): PG2's paired checks re-score from the JSON
+        "pg1": {str(d): dict(pg1[d]) for d in pg1},
         "pg1_day14": ({k: v for k, v in pg1[d14].items() if k not in ("per_pattern", "stmt_conf", "who_U",
                                                                          "calib")}
                       if d14 is not None else None),

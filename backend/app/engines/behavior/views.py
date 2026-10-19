@@ -745,9 +745,12 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     conf = float(min(x for x in confs if x is not None and math.isfinite(x))) if confs else 1.0
     nw = [x for x in (who_c, c_c, b_c, f_c) if x is not None and math.isfinite(x)]
     conf_nw = float(min(nw)) if nw else 1.0
+    nid = [x for x in (who_c, b_c, f_c) if x is not None and math.isfinite(x)]
+    conf_id = float(min(nid)) if nid else 1.0
     if nd.state == "stale":
         conf *= PR.STALE_FACTOR
         conf_nw *= PR.STALE_FACTOR
+        conf_id *= PR.STALE_FACTOR
     # the calibrated confidence when P04 has checked the node's constraints on
     # held-out data (pnode.HoldRecord: the probability that every constraint
     # holds on new events); the min-over-parts formula above states the
@@ -768,6 +771,13 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     # node's other constraints' (rest_conf: P04's '~when' facet record), so a
     # moving window lowers only the 'when' facet
     rest_c = rest_conf(nd, t, conf_nw, part)
+    # (round 8) a node P04 has not yet tested on held-out events has no record
+    # of its clauses: its who / binding / workflow facets then keep their own
+    # confidences (who coverage, P08's lower bounds, P10's dependency) bounded
+    # by the kind's prior, and its content - nominal coverages from a handful
+    # of rows - is not stated apart from its windows (held_out_tested)
+    tested = held_out_tested(nd)
+    id_c = rest_c if tested else rest_conf(nd, t, conf_id, part)
     sys_label = c.key
     addr = ""
     root = c.ptm.kinds[kind].nodes.get(c.ptm.kinds[kind].root) if c.ptm is not None else None
@@ -825,13 +835,18 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         # their intact bindings - lower bound 0.99 - were stated nowhere)
         nz = f"（时间窗正在变化：时间置信 {PR.fnum(when_fc)}，其余约束置信 {PR.fnum(rest_c)}）"
         ne = f" (time window changing: time confidence {PR.fnum(when_fc)}, other constraints {PR.fnum(rest_c)})"
-        fz, _ = PR.sentence(sys_label, addr, "", "", who_zh, who_en, rt_zh, czh, cen, bzh, ben, fzh, fen,
-                            rest_c, first, last, nd.version, nd.cver, state_nd, support=sup_txt)
-        _, fe = PR.sentence(sys_label, addr, "", "", who_zh, who_en, rt_en, czh, cen, bzh, ben, fzh, fen,
-                            rest_c, first, last, nd.version, nd.cver, state_nd, support=sup_txt)
-        facet_stmt = {"text_zh": fz + "（时间窗正在变化，另见含时间窗的模式）",
-                      "text_en": fe + " (time window changing; see the pattern with its window)",
-                      "confidence": float(rest_c), "state": state_nd}
+        # untested node: the facet statement carries the identity facets
+        # (who, bindings, workflow) only, at their own confidence (id_c)
+        f_czh, f_cen, f_c_ = (czh, cen, rest_c) if tested else ("", "", id_c)
+        fz, _ = PR.sentence(sys_label, addr, "", "", who_zh, who_en, rt_zh, f_czh, f_cen, bzh, ben, fzh, fen,
+                            f_c_, first, last, nd.version, nd.cver, state_nd, support=sup_txt)
+        _, fe = PR.sentence(sys_label, addr, "", "", who_zh, who_en, rt_en, f_czh, f_cen, bzh, ben, fzh, fen,
+                            f_c_, first, last, nd.version, nd.cver, state_nd, support=sup_txt)
+        tz = "" if tested else "；内容约束尚未经留出数据检验，未单独陈述"
+        te = "" if tested else "; content constraints not yet checked on held-out data, not stated apart"
+        facet_stmt = {"text_zh": fz + f"（时间窗正在变化，另见含时间窗的模式{tz}）",
+                      "text_en": fe + f" (time window changing; see the pattern with its window{te})",
+                      "confidence": float(f_c_), "state": state_nd, "_content": bool(tested)}
         zh += nz
         en += ne
     facets = ["functional", "spatial"]
@@ -862,12 +877,12 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     if adopted_from is not None:
         ev["adopted_from"] = adopted_from
         pid = f"{pid}|as:{route}"
-    fc = {"who": round(float(rest_c), 4)}
+    fc = {"who": round(float(id_c), 4)}
     if when_fc is not None and math.isfinite(float(when_fc)):
         fc["when"] = round(float(when_fc), 4)
-    for k, v in (("content", content), ("bindings", binds), ("workflow", flow)):
+    for k, v, x in (("content", content, rest_c), ("bindings", binds, id_c), ("workflow", flow, id_c)):
         if v:
-            fc[k] = round(float(rest_c), 4)
+            fc[k] = round(float(x), 4)
     ev["facet_conf"] = fc
     out = {"id": pid + (f"|{subject}" if subject else ""), "pattern_id": pid, "view": view,
            "subject": subject or c.key, "text_zh": zh, "text_en": en,
@@ -877,12 +892,18 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
            "facets": facets, "evidence": ev}
     if facet_stmt is not None:
         fpid = f"{pid}|~when"
+        with_content = bool(facet_stmt.pop("_content", True))
         fev = {k: v for k, v in ev.items() if k != "when"}
         fev["facet"] = "~when"
         fev["time_clause"] = {"state": "evolving", "of": out["id"]}
+        drop = {"temporal"}
+        if not with_content:
+            fev["content"] = {}
+            fev["content_untested"] = True
+            drop.add("content")
         out["facet_statement"] = dict(out, **facet_stmt, id=fpid + (f"|{subject}" if subject else ""),
                                       pattern_id=fpid, evidence=fev,
-                                      facets=[f for f in facets if f != "temporal"])
+                                      facets=[f for f in facets if f not in drop])
     return out
 
 
@@ -892,11 +913,39 @@ def rest_conf(nd: Any, t: float, conf_nw: float, part: Optional[Sequence[Any]] =
     node judged without 'when' (hold_without_when) when kept, else the
     statement's full held-out composition without its own windows
     (compose_conf: P04's p_hold, pooled with the part's group tests), else
-    the min over those clauses' own confidences (conf_nw)."""
+    the min over those clauses' own confidences (conf_nw).
+    A node P04 has not tested on held-out data yet has no record of its own:
+    its p_hold is the mean of its kind's prior, which says how statements of
+    that kind usually hold, not that these clauses hold; the clauses' own
+    confidences (conf_nw) then bound it - min(prior mean, conf_nw)."""
     rest = hold_without_when(nd)
     if rest is not None:
         return float(rest)
-    return float(compose_conf(nd, t, conf_nw, part, False, None))
+    ph = float(compose_conf(nd, t, conf_nw, part, False, None))
+    if not held_out_tested(nd):
+        return float(min(ph, float(conf_nw)))
+    return ph
+
+
+def held_out_tested(nd: Any) -> bool:
+    """(round 8) Whether P04 has judged the node's statement on held-out
+    events at least once (pnode.HoldRecord tests > 0). Until then a '~when'
+    facet statement carries the identity facets only (who, bindings,
+    workflow, at their own confidences): its point is that the clauses other
+    than the moving window keep THEIR OWN record, and an untested node's
+    content has none. O-real seed 2, day 14: the family's young login node
+    (fam:1 node 18, 0 tests; n = 7 rows) had its content stated in facet
+    statements at the prior mean 0.95 while the nominal coverages were
+    0.41-0.77 and the password grammar held 0.5 of held-out events - 4 of the
+    day's 16 failing statements; its bindings (P08 lower bound 0.96-0.99)
+    were the GA login bindings counted on that day."""
+    hr = getattr(nd, "hold", None)
+    if hr is None or not callable(getattr(hr, "tests", None)):
+        return False
+    try:
+        return float(hr.tests()[1]) > 0.0
+    except Exception:
+        return False
 
 
 def with_facet_statements(sts: Iterable[Optional[Dict[str, Any]]]) -> List[Dict[str, Any]]:
