@@ -2892,8 +2892,8 @@ near the held rate (0.95–0.98 in round 7) the per-pattern changes between snap
 few thousandths either way, and the strict "median ≥ 0" failed 3 of 5 seeds on medians of
 −0.0006 to −0.0037 with patterns gaining as often as losing; the sign test is the exact test
 of the median the check reads, and it still fails a step where most unchanged patterns lose
-confidence, however little each. With n paired patterns a step can fail only when n ≥ 5
-(pack O steps pair 12–28). The strict rule is reported as `conf_nondecreasing_strict`.
+confidence, however little each. A step can fail only when at least 5 of its paired patterns changed (untied)
+(round 7's pack O steps pair 10–28 patterns). The strict rule is reported as `conf_nondecreasing_strict`.
 
 **PG3 — Specificity reached.** GA login who = the 3 IPs (or the group whose members are those
 3) with 3/3 bindings; finance approval who = {192.168.2.10}; portal login who ∈ {prefix, reg,
@@ -6707,6 +6707,154 @@ oa-r2), `tests/eval/test_pmetrics_round7.py`.
 - *[B-library, bounded-mode memory]* bounded mode does not change the first day's memory (5 000
   IPs: both modes 8.5 GB at ~1.5 days): unearned IPs' per-entity rings are released only after
   their 1-day retention. At 1 000 IPs over 84 h it holds 4.3 against 5.8 GB.
+
+### 16.16 Round 8: the harness owner's report (evaluation harness, input cost, signatures; 2026-10-19)
+
+Owner of `eval/{pmetrics,pscale,resumable,runner}.py`, `pipeline/build.py`, the report and PG9
+scripts, P00–P02's input path, `lib/pregistry` and lib-4 (`engines/signature`). Two lead
+decisions (user-approved) changed how PG2 and every held-out check are measured; the other two
+items are a guard and a cost fix. Regression tests: `tests/eval/test_pmetrics_round8.py`,
+`tests/eval/test_signature_library_round8.py`, `tests/lib/test_pregistry_round8.py`.
+
+**1. PG2 "confidence of unchanged patterns non-decreasing": a decrease must exceed sampling
+noise** (lead decision; rule and reason in §12 PG2 and eval.md). A step fails only when the
+median paired change is negative and the exact one-sided sign test rejects at α = 0.05; each
+step now carries `[a, b, n, median, n lost, n gained, p]`; the strict rule is kept as
+`conf_nondecreasing_strict`.
+
+**2. Held-out events are prospective** (lead decision; §11.5 and eval.md): a statement read at
+the end of day d is judged on its truth segment's events of days d+1 … d+7 while the segment is
+valid (`PTruth.traffic_after`), no longer on the segment's mix up to d.
+
+**3. Re-scoring round 7.** `code7a` (round 7's evaluated code, with data/) was re-run from the
+published seeds (`round8_harness/scripts/drv7.py`, resumable; re-scored with `rescore.py`); each re-run reproduced its published JSON exactly
+(recall, precision, calibration, steps) before the two rules were applied to its pickle.
+Files: `reports/progressive/round8_harness/rescore_r7.json`.
+
+| run | recall@14 | precision@14 (all) pub → prosp | CE pub → prosp | stated / held pub → prosp | PG2 conf: strict → sign test | steps (median; lost/gained, p) |
+|---|---|---|---|---|---|---|
+| O_0 | 0.947 | 0.925 (0.847) → 0.943 (0.864) | 0.072 → 0.059 | 0.940 / 0.943 → 0.938 | ✓ → ✓ | 5→7 +0.0720 (3/7, p=0.95); 7→10 +0.1658 (3/10, p=0.99); 10→21 +0.0284 (3/25, p=1.00) |
+| O_1 | 0.895 | 0.982 (0.903) → 1.000 (0.919) | 0.066 → 0.069 | 0.934 / 0.945 → 0.946 | ✗ → ✓ | 5→7 -0.0037 (7/5, p=0.39); 7→10 +0.0774 (2/10, p=1.00); 10→21 +0.0247 (7/21, p=1.00) |
+| O_2 | 0.868 | 0.938 (0.884) → 0.938 (0.884) | 0.052 → 0.050 | 0.959 / 0.953 → 0.950 | ✓ → ✓ | 5→7 +0.1532 (4/9, p=0.95); 7→10 +0.0500 (3/10, p=0.99); 10→21 +0.0164 (4/22, p=1.00) |
+| O_3 | 0.842 | 0.960 (0.860) → 0.980 (0.877) | 0.075 → 0.072 | 0.940 / 0.943 → 0.944 | ✗ → ✓ | 5→7 +0.1818 (4/7, p=0.89); 7→10 +0.0000 (1/5, p=0.98); 10→21 -0.0006 (13/13, p=0.58) |
+| O_4 | 0.816 | 0.980 (0.891) → 0.980 (0.891) | 0.055 → 0.056 | 0.937 / 0.922 → 0.923 | ✗ → ✓ | 5→7 +0.0704 (1/8, p=1.00); 7→10 +0.1191 (3/9, p=0.98); 10→21 -0.0036 (17/9, p=0.08) |
+| O-real_0 | 0.631 | 0.914 (0.843) → 0.926 (0.854) | 0.105 → 0.109 | 0.937 / 0.934 → 0.924 | ✗ → ✓ | 3→5 -0.0892 (1/0, p=0.50); 5→7 +0.0580 (4/16, p=1.00); 7→10 +0.2553 (3/25, p=1.00); 10→21 +0.0247 (3/37, p=1.00) |
+| O-real_1 | 0.677 | 0.882 (0.846) → 0.871 (0.835) | 0.089 → 0.094 | 0.926 / 0.943 → 0.936 | ✗ → ✓ | 3→5 -0.0178 (2/1, p=0.50); 5→7 +0.0381 (7/11, p=0.88); 7→10 +0.2119 (3/21, p=1.00); 10→21 +0.0664 (3/35, p=1.00) |
+| O-real_2 | 0.635 | 0.930 (0.895) → 0.930 (0.895) | 0.115 → 0.116 | 0.942 / 0.931 → 0.923 | ✓ → ✓ | 5→7 +0.0000 (6/7, p=0.71); 7→10 +0.2789 (0/23, p=1.00); 10→21 +0.0247 (6/30, p=1.00) |
+
+Per pack (medians over the seeds; `published` = round 7's scorer, `retro` = the PG2 rule only, `prosp` = both decisions):
+
+- O published: n=5 CE median 0.066 mean 0.064 prec14 median 0.960 all 0.884 hold 0.943 conf 0.940 PG2 conf ok 2/5
+- O retro: n=5 CE median 0.066 mean 0.064 prec14 median 0.960 all 0.884 hold 0.943 conf 0.940 PG2 conf ok 5/5
+- O prosp: n=5 CE median 0.059 mean 0.061 prec14 median 0.980 all 0.884 hold 0.944 conf 0.940 PG2 conf ok 5/5
+- O-real published: n=3 CE median 0.105 mean 0.103 prec14 median 0.914 all 0.846 hold 0.934 conf 0.937 PG2 conf ok 1/3
+- O-real retro: n=3 CE median 0.105 mean 0.103 prec14 median 0.914 all 0.846 hold 0.934 conf 0.937 PG2 conf ok 3/3
+- O-real prosp: n=3 CE median 0.109 mean 0.106 prec14 median 0.926 all 0.854 hold 0.924 conf 0.937 PG2 conf ok 3/3
+
+Reading:
+- *PG2 confidence*: pack O 2/5 → 5/5 seeds, O-real 1/3 → 3/3. The round-7 failures were medians of −0.0006 to −0.0037 (seed 1 days 5 → 7: 7 patterns lost, 5 gained, p = 0.39; seed 3 days 10 → 21: 13 / 13, p = 0.58; seed 4 days 10 → 21: 17 / 9, p = 0.08, the closest to a real decrease) and O-real's days 3 → 5 step, which pairs 1–3 patterns. Seed 4's step is the one to watch: 17 of 26 unchanged patterns lost confidence (by a median of 0.004); the test does not call that a decrease at 0.05, but a second such seed would.
+- *Prospective held-out events on O-real* lower the held rate by 0.007–0.010 and raise the calibration error by 0.001–0.005 (the learner states 0.93; users meet 0.92–0.94). The difference is concentrated on snapshot days 18–21, whose next seven days are R8's holiday week (days 22–28, on-call traffic only): claims about workday logins (`when.workday`), the oa login body length (`body.len.band90`) and mail's who fail on the holiday events (seed 0: 40 claims held → not held, 13 the other way, of 2 561). After the holiday the retrospective window still contains it and the prospective one does not (days 33–34 improve). A variant that skips truth-calendar holidays in the prospective window and extends it to seven normal days (`round8_harness/scripts/rescore_hol.py`, not adopted) gives O-real CE 0.106 / 0.092 / 0.114 and held 0.930 / 0.944 / 0.928 for seeds 0 / 1 / 2 (prospective 0.109 / 0.094 / 0.116 and 0.924 / 0.936 / 0.923; retrospective 0.105 / 0.089 / 0.115 and 0.934 / 0.943 / 0.931): most of the prospective penalty on O-real is the holiday week. Whether a profile statement about normal days should be judged on a declared holiday is the lead's call; the implemented rule follows the decision as written (what a user meets next).
+- *On pack O* 7–19 of 779–942 judged claims per seed change verdict (held → not held 3–11, the other way 2–8) (seed 0: days 7, 8, 10, 14, 16, 20; a claim's next week and its last two weeks differ in which members and day types emit); precision @14 (median) 0.960 → 0.980 and the calibration error (median) 0.066 → 0.059, per seed −0.013 to +0.003 — within one seed's spread except seed 0.
+
+**4. The signature library cannot go missing silently** (eval.md "Signature library guard").
+`build.load_signatures(strict, directory)` raises `SignatureLibraryMissing` in strict mode
+(an eval run, or `APPMON_REQUIRE_SIGNATURES=1`) and otherwise logs an error, warns and marks the
+store; `runner.check_signatures` runs before every pack and records `RunResult.signatures`;
+`progressive_report.py` and `progressive_pg9.py` exit before running a lib-4 registry on a
+missing library.
+
+**5. P02 cost** (thread CPU per input record, days 3–4 of a 4-day O-scale-500 run, 40 / 340
+attributes, `reports/progressive/round8_harness/scripts/p02prof.py`; round 7's code (`wt0`) and the final code (`wt2`) run one after
+the other with one other CPU-bound process on the machine; P04, which none of the changes
+touches, moved by −5 % / +1 % between the paired runs):
+
+| P02 µs / record | 40 attributes | 340 attributes | growth | calls per batch |
+|---|---|---|---|---|
+| round 7 code | 462 | 961 | ×2.08 | 36.8 → 71.5 |
+| final code | 396 | 869 | ×2.19 | 36.8 → 71.5 |
+| final, normalised by P04 | 415 (−10 %) | 860 (−11 %) | ×2.07 | |
+
+(An earlier measurement under four CPU-bound processes gave 377 → 316 and 888 → 776 after the
+same normalisation; the stats-dirty step alone was −4 % / −7 %.)
+
+- *Hourly statistics only where something changed* (`AttrRecord.stats_dirty`): entropy and
+  stability read the stored top counts and the HLL only (the shares are ratios within one
+  forward-decayed channel), so an attribute nothing was added to since the last pass keeps
+  them bit for bit. Exact: the round-5 replay of the recorded pack O stream against the per-row
+  reference and a skip-vs-full test.
+- *Continuous numeric values*: a finite Python float is classified from four precomputed
+  type-evidence rows instead of the bounded value memo, and its HLL item is hashed without
+  the hash memos. pack O-scale's `meta.f###` noise attributes carry a new value on almost every
+  row: the memo never hit and was cleared every 16 k values, flushing the entries of every
+  other attribute. Exact (per-row reference on a float-heavy stream: continuous, integral,
+  epoch-second, ±0.0, ±inf, nan, mixed int / str values, fractional evidence, role changes).
+  `observe` of one numeric attribute: 16 rows 515 → 366 µs, 48 rows 995 → 664 µs.
+- *What sets the slope*: P02's calls per batch go 36.8 → 71.5 from 40 to 340 attributes
+  because P05 keeps ~27 → ~45 attributes (split 32, invariant 14 at 340), each observed in
+  full; the rest is sampled by row with at most REST_MIN updates per event. The exact cuts
+  lower both points by about 10 % and leave the growth factor (×2.1) to P05's kept count and to the
+  per-row cost of unique numeric values (top-32 evictions, hashing, t-digest). The non-exact
+  options (P05 keeping fewer split candidates at 340; rest columns sampled by column instead of
+  by row, kept attributes untouched — round 7 only measured both together with kept-beyond-A_ev
+  sampling) need a pack O check and are open issue OI-H2 (16.16.1).
+
+**6. Per-tick loops over every known entity** (bounded mode, 5 active + 20 → 400 idle IPs,
+median ms per tick; full mode for reference grows 147 → 2 016 ms in the per-IP engines):
+B21 `cross_system` +2.98, D2 `derived.session` +2.74, B17 `entity_link` +1.08, B27 `incident`
++1.07, B23 `feedback` +0.61, lib-4 `rule_match` +0.27 (`MetricStore.entities_active`, itself an
+O(known entities) scan). The harness-owned engines (P00, P01, lib-4) have no per-known-entity
+loop of their own; the others' patches are in 16.16.1.
+
+#### 16.16.1 Open issues (harness → owners)
+
+```
+OI-H1 [core store + B-library owners] per-tick loops over every known entity (bounded mode).
+Measured: test_bounded_mode setup, 5 active + 20 -> 400 idle known IPs, median ms per tick
+(working tree 2026-10-19 00:15; reports/progressive/round8_harness/idle_bounded.txt, idle_full.txt). Full mode grows
+147 -> 2016 ms/tick in the per-IP engines (portrait +693, budget +243, rhythm +219, ...), which is
+what bounded mode exists for; in bounded mode the remaining growth is:
+  B21 behavior.cross_system   0.94 -> 3.92 (+2.98)  run(): `for s in systems: for e in PA.entities(...)`;
+        PA.entities = active | earned | tick_entities: check what `earned` holds for idle IPs
+        (it should be E_t, not every IP ever earned) - profile needed by the owner.
+  D2  derived.session         0.82 -> 3.56 (+2.74)  run(): `for entity in store.entities(system)`
+        -> _entity() does _points_after(store, s, e, CLOCK, ...) + store.raw_tail(..., "act.stream", 1)
+        for every known entity every tick. Patch: iterate
+        `sorted(set(store.entities_active(system, now - dt)) | set(k[1] for k in self._state if k[0] == system and self._state[k].open))`
+        (an entity with no new clock point and no open session/state to close writes nothing);
+        keep the _sweep for state expiry. Exact if _entity() returns 0 without writes for an entity
+        with no clock point after st.clock_ts and no act.stream head after st.stream_ts (check the
+        session-close-on-timeout path: it must stay reachable through the open-state set).
+  B17 behavior.entity_link    0.78 -> 1.86 (+1.08)  _system(): `active = {e: _active(store, s, e, now) for e in store.entities(s)}`
+        (one store.vec_at per known entity per tick). Patch: compute `active` lazily (dict subclass
+        with __missing__ calling _active) or over PA.entities(store, s, now, config) | the entities
+        named in model["links"]; entities absent from the dict read False.
+  B27 behavior.incident       0.15 -> 1.22 (+1.07)  _system(): `for k in store.entities(s) + class pseudo-entities:
+        store.latest_derived(s, k, ALARM)` per tick. Patch: keys = entities with an ALARM written at
+        `now` (B26 writes them: have B26 publish the tick's alarm set, or iterate
+        store.entities_active(s, now) | open-incident entities).
+  B23 behavior.feedback       0.09 -> 0.70 (+0.61)  _update_alpha/_update_queue walk the label queue /
+        governor rows each tick; gate by the queue's version (only rebuild when labels or the
+        governor's queue changed).
+  core MetricStore.entities_active(system, since) is itself an O(known entities) scan (sorted
+        comprehension over _entities[system] with a _last_seen lookup each). Patch: keep
+        `self._by_seen[system]: OrderedDict[entity, last_seen]`, `move_to_end(e)` wherever
+        _last_seen[(system, e)] is raised (it only increases); entities_active walks reversed()
+        until last_seen < since and returns sorted(...) - same result, O(active). rule_match
+        (+0.27 ms at 400 idle IPs) and every bounded engine calling entities_active benefit.
+  Harness-owned engines: P00 / P01 / lib-4 (rule_match, correlation) have no per-known-entity
+  loop of their own (P01 iterates batch systems; rule_match the tick's entities, round 7).
+
+OI-H2 [tree owner: P05 / pselect] P02's remaining slope is P05's kept count.
+P02 observes every attribute P05 keeps (split / target / invariant) in full and samples the rest
+by row (q = max(REST_MIN, A_EV - n_kept) / n_rest per row). O-scale-500 days 3-4, per batch:
+40 attributes 36.8 calls (kept ~27), 340 attributes 71.5 calls (kept ~45: split 32, invariant 14).
+Exact P02 work per call was cut this round (see progressive.md 16.16 / harness); the number of
+calls per batch is set by P05. Two options, neither exact, both need a pack O check:
+  (a) P05: fewer kept attributes at 340 (split candidates beyond the tree's actual use);
+  (b) P02: rest columns sampled by column (q_c per column and batch, mass 1 / q_c), kept
+      attributes untouched - round 7 measured column sampling of rest AND kept-beyond-A_ev
+      together (FIN.finance.login#0 binding lost on days 11-21); rest-only was not measured.
+```
 
 ## Appendix A. Review changes (adversarial review, 2026-09-29)
 

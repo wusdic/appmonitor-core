@@ -1,0 +1,35 @@
+{
+ "n_meta": 0,
+ "days": 4,
+ "events": 36234,
+ "cpu_s": {
+  "raw.event": 3.0516025729999825,
+  "derived.event_context": 2.1122716859999144,
+  "behavior.attr_registry": 16.72937407500011,
+  "behavior.attr_select": 19.08064267099985,
+  "behavior.pattern_tree": 51.94186845199998
+ },
+ "wall_s": 243.4005377292633,
+ "us_per_event": {
+  "raw.event": 84.21931260694328,
+  "derived.event_context": 58.29529408842288,
+  "behavior.attr_registry": 461.70376097036234,
+  "behavior.attr_select": 526.5949845724969,
+  "behavior.pattern_tree": 1433.5118521830318
+ },
+ "p02": {
+  "batches": 967,
+  "cols": 35946,
+  "role:split": 11922,
+  "role:invariant": 14066,
+  "role:redundant": 4199,
+  "role:dropped": 3974,
+  "calls": 35595,
+  "rows": 678082,
+  "role:target": 116,
+  "role:shape": 1669
+ },
+ "calls_per_batch": 36.80972078593589,
+ "rows_per_call": 19.04992274195814,
+ "exceptions": 0
+}

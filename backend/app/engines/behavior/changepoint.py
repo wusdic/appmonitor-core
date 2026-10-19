@@ -376,6 +376,32 @@ def bocpd_step(st: Mapping[str, np.ndarray], x: np.ndarray) -> Dict[str, np.ndar
             "n": np.array([bocpd_steps(st) + 1.0])}
 
 
+def bocpd_clip(st: Mapping[str, np.ndarray], x: np.ndarray, c: float = seq.PSI_CLIP) -> np.ndarray:
+    """Bounded influence of one hourly input (round 8): x clipped to
+    mu +- c * sd of the MAP run (sd^2 = beta / alpha bounded to [0.25, 16],
+    the range bocpd_step's empirical-Bayes prior uses), NaN kept.
+
+    The clip used to be +-c absolute, which bounds both tails only for an
+    input centred at 0 with unit scale. B06's WH score is not: it sits below
+    0 for an IP whose density is wider than its rows (pack A seed 0, oa-portal
+    10.30.2.23: hourly WH sums mean -2.7, 62 % of hours at the -3 clip in full
+    mode; -4.4 and 81 % in bounded mode, whose B06 model of the IP is the
+    week-old one rebuilt at promotion). Pinned at the lower clip the channel
+    had almost no variance, and one ordinary hour inside [-3, 3] read as a
+    changepoint: cp 0.994 on 03-12 05:00 in bounded mode (a bocpd alarm and a
+    MEDIUM incident; PG9 gate 3 8 vs 7), from a WH hour of +2.5 that full
+    mode's run, with more spread, read at 0.2. Around the run's own level the
+    clip bounds each hour's influence in the units of that run in both
+    directions, whatever the input's offset; for a centred unit-scale input
+    (a fresh run: mu 0, beta / alpha 1) it is the old +-c."""
+    x = np.asarray(x, dtype=np.float64)
+    j = int(np.argmax(st["p"]))
+    mu = np.asarray(st["mu"][:, j], dtype=np.float64)
+    sd = np.sqrt(np.clip(st["be"][:, j] / st["al"][:, j], 0.25, 16.0))
+    out = np.clip(x, mu - c * sd, mu + c * sd)
+    return np.where(np.isfinite(x), out, x)
+
+
 def bocpd_prob(st: Mapping[str, np.ndarray], window_h: int = BOC_WINDOW_H) -> float:
     """P(run length <= window_h hours)."""
     return float(np.sum(st["p"][st["r"] <= window_h]))
@@ -844,8 +870,10 @@ class ChangepointEngine(Engine):
         # Normal-Gamma model reads one heavy-tailed hour as a changepoint
         # (t3 inputs: 0.23 alarms per day at cp 0.8, 0.035 at the Ville
         # level; clipped at +-3: 0.015 / 0), and a real shift is a run of
-        # hours, which the clip does not hide
-        x = np.clip(x, -seq.PSI_CLIP, seq.PSI_CLIP)
+        # hours, which the clip does not hide. Round 8: the clip is taken
+        # around the current run's level and scale (bocpd_clip), not at
+        # +-3 absolute
+        x = bocpd_clip(run["bocpd"], x)
         st = bocpd_step(run["bocpd"], x)
         run["bocpd"] = st
         # the first BOC_WINDOW_H steps after a (re)start carry no evidence:

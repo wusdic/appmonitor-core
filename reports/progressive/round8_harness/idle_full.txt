@@ -1,0 +1,16 @@
+total 147.3 2016.2
+behavior.portrait                           48.45   741.41  +692.96
+behavior.budget                             12.62   255.36  +242.74
+behavior.rhythm                             11.87   231.23  +219.36
+behavior.baseline                            9.56   111.62  +102.06
+behavior.fusion                              5.12   102.59   +97.48
+behavior.calibration                         6.34    97.31   +90.98
+behavior.feature_vector                      5.91    96.80   +90.89
+behavior.changepoint                         6.15    84.60   +78.45
+behavior.governor                            2.87    58.38   +55.50
+behavior.sequence                            4.50    43.77   +39.27
+behavior.novelty                             3.63    39.75   +36.12
+behavior.identity_model                      2.02    30.67   +28.65
+behavior.risk                                1.17    19.55   +18.38
+behavior.multivariate                        1.61    19.79   +18.18
+derived.session                              1.34    15.27   +13.94

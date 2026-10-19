@@ -425,6 +425,59 @@ def group_outsider(nd: Any, g: str, ip: str, t: float,
     return ev_g - ev_ip < MEMBER_EV
 
 
+ABSORB_SCOPES = ("pattern", "entity")      # an fp / benign_known verdict wider than one target
+WHO_AXIS = "privilege"                     # the axis P03's who findings carry
+
+
+def label_absorbed(store: Any, now: float) -> Dict[str, Dict[str, Tuple[float, float]]]:
+    """§6.9.2 (iii), round 8 (OC7-6): sources an operator has absorbed into a
+    system's who sets, {system: {address: (t_from, t_until)}}.
+
+    A who-closed node learns a foreign source damped until it qualifies, and
+    persistence alone never qualifies it (A9). The spec's third way in - "an
+    operator labels it (B23 fp with scope pattern, or expected_change)" - was
+    not implemented: a source whose only findings were who findings and which
+    the operator resolved as benign was still damped (0.1 per row) and flagged
+    on every visit, and reached standing (MEMBER_EV evidence units) only at
+    the damped rate (round 7: a health-check host, 29 LOW findings on O-real
+    seed 1, > 40 days). Read from the label store, oldest first:
+      * verdict expected_change on the entity (any scope), or fp / benign_known
+        with scope entity, or with scope pattern on an incident that carried
+        a who finding (axis 'privilege') - absorbed from the label's ts;
+      * a later tp verdict on the entity revokes it;
+      * ttl_s bounds it (t_until = ts + ttl_s; forever when None).
+    Class / pseudo entities ('class:...') and labels after `now` are ignored."""
+    try:
+        labels = list(store.labels())
+    except Exception:                                   # a store without labels
+        return {}
+    out: Dict[str, Dict[str, Tuple[float, float]]] = {}
+    if not labels:
+        return out
+    labels.sort(key=lambda lb: (float(lb.ts or 0.0), str(lb.id)))
+    for lb in labels:
+        s_, e_ = str(lb.system or ""), str(lb.entity or "")
+        ts_ = float(lb.ts or 0.0)
+        if not s_ or not e_ or e_.startswith("class:") or ts_ > now:
+            continue
+        v = str(lb.verdict)
+        ok = v == "expected_change" or (v in ("fp", "benign_known") and lb.scope == "entity")
+        if not ok and v in ("fp", "benign_known") and lb.scope in ABSORB_SCOPES:
+            inc = None
+            if lb.target_type == "incident" and lb.target_id:
+                try:
+                    inc = store.get_incident(lb.target_id)
+                except Exception:
+                    inc = None
+            ok = inc is not None and WHO_AXIS in (getattr(inc, "axes", None) or ())
+        if ok:
+            end = ts_ + float(lb.ttl_s) if lb.ttl_s is not None else math.inf
+            out.setdefault(s_, {})[e_] = (ts_, end)
+        elif v == "tp":
+            (out.get(s_) or {}).pop(e_, None)
+    return out
+
+
 def _labels(g: str, groups: Optional[Mapping[str, Any]]) -> List[str]:
     """A group's label and its lineage (P11 rec 'lineage': the ids of the groups
     it merged / re-formed from): node summaries carry the label of learning
@@ -1980,6 +2033,7 @@ class ConformityEngine(Engine):
         stats: Dict[str, Any] = {}
         rc = _run_consts(ctx.config, now)
         tz = rc["tz"]
+        absorbed = label_absorbed(store, now)
         systems = sorted(set(store.batch_systems(EV.EVT_BATCH)) | set(store.batch_systems(EV.EVT_WIN)))
         # (round 7) the members of an engine family (P12: one tree key, one P10
         # model, e.g. O-real's oa / oa-r2 replica pair behind a load balancer)
@@ -2029,6 +2083,7 @@ class ConformityEngine(Engine):
                 if key not in kctx:
                     kctx[key] = _TreeCtx(self, store, s, key, ctx.config, now, rc)
                     kctx[key].st = st
+                    kctx[key].absorbed = absorbed
                 tc = kctx[key] if kctx[key].s == s else kctx[key].for_member(s)
                 agg: Dict[str, Dict[str, Any]] = {}
                 cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]] = []
@@ -2468,7 +2523,14 @@ class ConformityEngine(Engine):
             if not _nan(p_content):
                 details["content"] = worst
             # ---- who
+            ab_ = (getattr(tc, "absorbed", None) or {}).get(s)
+            ab_ = ab_.get(str(ip)) if ab_ else None
+            absorbed_ = ab_ is not None and ab_[0] <= ts <= ab_[1]
+
             def _is_member(ni_: Any, keys_: Sequence[Any]) -> bool:
+                if absorbed_:
+                    # §6.9.2 (iii): the operator absorbed the source (label_absorbed)
+                    return True
                 item_ = keys_[ni_.who_l]
                 if item_ in ni_.who_heavy:
                     return True

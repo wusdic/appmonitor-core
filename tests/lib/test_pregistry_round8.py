@@ -50,3 +50,72 @@ def test_skipped_statistics_equal_a_full_recomputation():
             rec.stats_dirty = True
         reg.update_stats(t)                           # every record recomputed
         assert {n: (x.entropy, x.stability) for n, x in reg.records.items()} == snap
+
+
+def _mixed_stream(seed: int):
+    """Continuous floats (new value on almost every row), integral floats,
+    epoch-second floats of a *_ts attribute, -0.0, inf / nan, ints, numeric
+    strings and categorical strings, with unit and fractional evidence."""
+    r = np.random.default_rng(seed)
+    out = []
+    t = 1.7e9
+    for step in range(220):
+        t += float(r.choice([60.0, 900.0, 3600.0]))
+        n = int(r.integers(1, 40))
+        cont = r.uniform(0.0, 1000.0, n).tolist()
+        integ = [float(x) for x in r.integers(0, 40, n)]
+        ts = (t - r.uniform(0, 600, n)).tolist()
+        odd = [float(x) for x in r.choice([-0.0, 0.0, 1.5, np.inf, -np.inf, np.nan, 2.0], n)]
+        mixed = [x if i % 3 else str(int(x)) for i, x in enumerate(r.integers(0, 9, n).tolist())]
+        cat = [f"v{int(x)}" for x in r.integers(0, 6, n)]
+        w = (r.random(n) * 3.0 + 0.1)
+        ev = None if step % 4 else np.minimum(1.0, r.random(n) * 1.5)
+        for nm, vals in (("meta.f001", cont), ("meta.f002", integ), ("ctx.req_ts", ts),
+                         ("meta.f003", odd), ("meta.f004", mixed), ("meta.f005", cat)):
+            out.append(("observe", (nm, vals, t, w, ev, r.random(n) < 0.05, 1, None)))
+        if step % 4 == 3:
+            out.append(("update_types", (t,)))
+            out.append(("update_stats", (t,)))
+        if step == 120:
+            out.append(("set_role", ("meta.f001", "dropped")))
+        if step == 160:
+            out.append(("set_role", ("meta.f001", "split")))
+    return out
+
+
+def test_float_rows_are_bit_identical_to_the_per_row_reference():
+    """(round 8, cost) Finite Python floats are classified without the value
+    memo and their HLL items hashed without the hash memos; the registry must
+    equal round 4's per-row observe float for float (the recorded pack O
+    stream of test_pregistry_batch_equivalence has few continuous values)."""
+    import importlib.util, os
+    p = os.path.join(os.path.dirname(__file__), "test_pregistry_batch_equivalence.py")
+    spec = importlib.util.spec_from_file_location("_pr_eq", p)
+    EQ = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(EQ)
+    for seed in (0, 1):
+        a, b = RG.AttrRegistry("oa"), EQ.RefRegistry("oa")
+        for meth, args in _mixed_stream(seed):
+            getattr(a, meth)(*args)
+            getattr(b, meth)(*args)
+        assert list(a.records) == list(b.records)
+        for nm in b.records:
+            assert EQ.canon(a.records[nm]) == EQ.canon(b.records[nm]), (seed, nm)
+        assert {r.type for r in a.records.values()} >= {"numeric", "time", "categorical"}
+
+
+def test_unmemoised_hash_equals_psketch_h64():
+    from app.engines.behavior.lib import psketch as PS
+    for s in ("1.5", "-0.0", "inf", "nan", "123456.789", "测试", "\udc80x"):
+        assert RG._h64_nomemo(s) == PS._h64(s)
+
+
+def test_float_values_do_not_enter_the_bounded_memos():
+    RG._CLS_MEMO[0].clear()
+    RG._H64.clear()
+    reg = RG.AttrRegistry("oa")
+    r = np.random.default_rng(5)
+    reg.observe("meta.f001", r.uniform(0, 1000, 500).tolist(), 1000.0, 1.0)
+    assert len(RG._CLS_MEMO[0]) == 0 and len(RG._H64) == 0
+    reg.observe("meta.f002", ["a", "b", 3], 1000.0, 1.0)
+    assert len(RG._CLS_MEMO[0]) == 3 and len(RG._H64) == 3

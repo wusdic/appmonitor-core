@@ -1082,7 +1082,13 @@ def _edges(stmts: Sequence[LStmt]) -> List[Tuple[str, Tuple[str, str], Tuple[str
         for e in s.workflow:
             a, b = norm_route(e.get("from")), norm_route(e.get("to"))
             band = e.get("band") or [math.nan, math.nan]
-            out.append((s.system, a, b, _f(e.get("dep")), (_f(band[0]), _f(band[1])), s.members))
+            dep = _f(e.get("dep"))
+            if e.get("held") and math.isfinite(_f(e.get("dep_upper"))):
+                # (evaluator round 8) P10 holds an accepted edge under hysteresis until the
+                # 95 % upper bound of its dependency falls below the acceptance level; the
+                # statement still states it, judged at that bound
+                dep = max(dep, _f(e.get("dep_upper"))) if math.isfinite(dep) else _f(e.get("dep_upper"))
+            out.append((s.system, a, b, dep, (_f(band[0]), _f(band[1])), s.members))
     return out
 
 
@@ -1442,7 +1448,19 @@ def holdout_check(s: LStmt, rows_valid: Sequence[Mapping[str, Any]], pt: PTruth,
         for x, ys in table.items():
             sub = [e for e in evs if e["ip"] == x and e.get(attr) is not None]
             if sub:
-                add(f"{attr}.bind.{x}", _f(lbs.get(x), conf), [str(e[attr]) in ys for e in sub])
+                acc_memo: Dict[str, Set[str]] = {}
+
+                def _ok(e: Mapping[str, Any]) -> bool:
+                    if str(e[attr]) in ys:
+                        return True
+                    tid = str(e.get("tid"))
+                    if day is None or tid not in pt.by_tid:
+                        return False
+                    if tid not in acc_memo:
+                        acc_memo[tid] = accepted_values(pt, pt.by_tid[tid], attr, x, day)
+                    return bool(set(map(str, ys)) & acc_memo[tid]) and str(e[attr]) in acc_memo[tid]
+
+                add(f"{attr}.bind.{x}", _f(lbs.get(x), conf), [_ok(e) for e in sub])
     holds = [h for _, _, h, _ in res]
     return {"supported": True, "ok": all(ok for *_, ok in res), "constraints": res,
             "min_hold": float(min(holds)) if holds else 1.0,
@@ -1811,26 +1829,9 @@ def login_bindings(snap: Mapping[str, Any], pt: PTruth, ipc: Mapping[str, List[s
         if row is None:
             continue
         accept: Dict[Tuple[str, str], Set[str]] = {}
-        for attr, table in row["bindings"].items():
-            for x, y in table.items():
-                acc = set(y) if isinstance(y, list) else {str(y)}
-                since = int(row["valid_from_day"])
-                for prev in reversed([r for r in segs if int(r["valid_from_day"]) < int(row["valid_from_day"])]):
-                    y0 = ((prev.get("bindings") or {}).get(attr) or {}).get(x)
-                    y0s = set(y0) if isinstance(y0, list) else ({str(y0)} if y0 is not None else set())
-                    if y0s == acc:
-                        since = int(prev["valid_from_day"])
-                        continue
-                    n_new, d_new = 0, 0
-                    for iso, per in (pt.opp.get(row["tid"]) or {}).items():
-                        di = pt.day_index(iso)
-                        if since <= di <= day and per.get(x):
-                            n_new += int(per[x])
-                            d_new += 1
-                    if n_new < REBIND_N or d_new < REBIND_DATES:
-                        acc = acc | y0s
-                    break
-                accept[(attr, x)] = acc
+        for attr, table in sorted(row["bindings"].items()):
+            for x in sorted(table):
+                accept[(attr, x)] = accepted_values(pt, row, attr, x, day)
         n = len(accept)
         best = 0
         for s in stmts:
@@ -1849,6 +1850,41 @@ def login_bindings(snap: Mapping[str, Any], pt: PTruth, ipc: Mapping[str, List[s
 
 REBIND_N = 5           # events of a source under a new value before it is learnable (P08 H1)
 REBIND_DATES = 2
+
+
+def accepted_values(pt: PTruth, row: Mapping[str, Any], attr: str, x: str, day: int) -> Set[str]:
+    """The values of binding `attr` for source `x` a learner may state on `day`
+    for truth segment `row`: the segment's own value(s), plus the previous
+    segment's value while x has used the new value fewer than REBIND_N times
+    or on fewer than REBIND_DATES dates since the change (up to `day`).
+
+    Shared by PG1's login-binding check and the held-out binding check
+    (evaluator round 8: holdout_check judged '.121 -> mike' against the
+    post-rename value although .121 had not logged in since D2)."""
+    table = (row.get("bindings") or {}).get(attr) or {}
+    y = table.get(x)
+    acc = set(map(str, y)) if isinstance(y, list) else ({str(y)} if y is not None else set())
+    segs = sorted((r for r in pt.rows if r.get("activity") == row.get("activity")
+                   and r.get("step") == row.get("step") and r.get("bindings")
+                   and int(r["valid_from_day"]) < int(row["valid_from_day"])),
+                  key=lambda r: int(r["valid_from_day"]))
+    since = int(row["valid_from_day"])
+    for prev in reversed(segs):
+        y0 = ((prev.get("bindings") or {}).get(attr) or {}).get(x)
+        y0s = set(map(str, y0)) if isinstance(y0, list) else ({str(y0)} if y0 is not None else set())
+        if y0s == acc:
+            since = int(prev["valid_from_day"])
+            continue
+        n_new, d_new = 0, 0
+        for iso, per in (pt.opp.get(row["tid"]) or {}).items():
+            di = pt.day_index(iso)
+            if since <= di <= day and per.get(x):
+                n_new += int(per[x])
+                d_new += 1
+        if n_new < REBIND_N or d_new < REBIND_DATES:
+            acc = acc | y0s
+        break
+    return acc
 
 
 # --------------------------------------------------------------------------- #

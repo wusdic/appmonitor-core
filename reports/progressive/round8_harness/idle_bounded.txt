@@ -1,0 +1,16 @@
+total 39.7 50.5
+behavior.cross_system                        0.94     3.92    +2.98
+derived.session                              0.82     3.56    +2.74
+behavior.entity_link                         0.78     1.86    +1.08
+behavior.incident                            0.15     1.22    +1.07
+behavior.feedback                            0.09     0.70    +0.61
+behavior.likelihood                          7.06     7.43    +0.37
+signature.rule_match                         0.92     1.19    +0.27
+behavior.feature_vector                      1.51     1.72    +0.20
+derived.aggregation                          3.26     3.45    +0.18
+behavior.resource_governor                   0.42     0.59    +0.16
+behavior.common_mode                         0.77     0.91    +0.14
+derived.ratio                                0.38     0.52    +0.14
+derived.periodicity                          1.26     1.40    +0.14
+derived.trend                                1.84     1.95    +0.11
+behavior.novelty                             1.79     1.90    +0.11

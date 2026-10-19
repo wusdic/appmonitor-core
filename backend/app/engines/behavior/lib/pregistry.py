@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+from hashlib import blake2b as _blake2b
 import math
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -185,6 +186,26 @@ _CLS_MAX = 1 << 14            # memoised value classifications (bounded, ~2 MB)
 _CLS_STR = 256
 
 
+def _float_te(is_int: bool, is_time: bool) -> Tuple[Tuple[float, ...], Tuple[int, ...]]:
+    te = [0.0] * len(_TE)
+    te[0] = te[1] = 1.0
+    if is_int:
+        te[2] = 1.0
+    if is_time:
+        te[7] = 1.0
+    return tuple(te), tuple(i for i, a in enumerate(te) if a != 0.0)
+
+
+# (round 8, cost) _classify of a finite Python float, by (is_integer, time range):
+# the four possible type-evidence rows. A continuous numeric attribute (pack
+# O-scale's meta.f### noise, bytes, durations) has a new value on almost every
+# row, so the memo never hit and was cleared every 16 k values for every
+# attribute; the float rows are now classified without it (same tuples)
+_FLOAT_TE = {(a, b): _float_te(a, b) for a in (False, True) for b in (False, True)}
+_FLT = float
+_isfinite = math.isfinite
+
+
 _SS_ATTRS = ("_lm", "_idx", "_keys", "_m", "_err", "_e", "_tot_m", "_tot_e", "_evict_e", "_mh", "_eh",
              "primary", "k", "_rescale_to")
 
@@ -287,10 +308,17 @@ _H64: Dict[str, int] = {}
 _H64_MAX = 1 << 15            # memoised item hashes (items <= _CLS_STR characters; ~4 MB at most)
 
 
-def _hll_add_items(card: Any, items: Iterable[str], t: float) -> None:
+def _h64_nomemo(s: str) -> int:
+    """psketch._h64(s) without its memo (tests/lib/test_pregistry_round8.py)."""
+    return int.from_bytes(_blake2b(s.encode("utf-8", "surrogatepass"), digest_size=8).digest(), "big")
+
+
+def _hll_add_items(card: Any, items: Iterable[str], t: float, memo: bool = True) -> None:
     """`card.add(item, t)` for every item (psketch.EpochHLL): one epoch
     rotation at t, then each item's register max; the blake2b hash of an item
-    is memoised (bounded) across calls."""
+    is memoised (bounded) across calls. memo=False (round 8): the items are
+    hashed without entering the memos (str of float values, which almost never
+    recur: they flushed the bounded memos of every other attribute)."""
     if not items:
         return
     cur = getattr(card, "cur", None)
@@ -307,8 +335,11 @@ def _hll_add_items(card: Any, items: Iterable[str], t: float) -> None:
     for it in items:
         x = cache.get(it)
         if x is None:
-            x = PS._h64(it)
-            if len(it) <= _CLS_STR:
+            if not memo:
+                x = _h64_nomemo(it)
+            else:
+                x = PS._h64(it)
+            if memo and len(it) <= _CLS_STR:
                 if len(cache) >= _H64_MAX:
                     cache.clear()
                 cache[it] = x
@@ -559,7 +590,12 @@ class AttrRegistry:
         if len(memo) >= _CLS_MAX:
             memo.clear()
         classes = []
+        fte = _FLOAT_TE
         for v in vals:
+            if v.__class__ is _FLT and _isfinite(v):
+                vec, nz = fte[(v.is_integer(), is_time_name and 1e9 <= v <= 4e9)]
+                classes.append((v, vec, nz))
+                continue
             try:
                 # (not for a float zero: 0.0 == -0.0, and the row's own value is
                 # kept; not for long strings)
@@ -576,11 +612,13 @@ class AttrRegistry:
             classes.append(c)
         te = [0.0] * len(_TE)
         if all(e == 1.0 for e in ev):
+            # (grouped by the evidence row: every field is an integer count, so
+            # the sums are exact in any grouping and order)
             cnt: Dict[int, List[Any]] = {}
             for c in classes:
-                hit = cnt.get(id(c))
+                hit = cnt.get(id(c[1]))
                 if hit is None:
-                    cnt[id(c)] = [c, 1]
+                    cnt[id(c[1])] = [c, 1]
                 else:
                     hit[1] += 1
             for c, k_ in cnt.values():
@@ -599,8 +637,12 @@ class AttrRegistry:
         # so each distinct item is hashed and folded in once (same registers)
         card = rec.card
         items = set()
+        fitems = set()                 # str of float values: hashed without the memo
         jm: Dict[Any, str] = {}
         for v in vals[:4096]:
+            if v.__class__ is _FLT:
+                fitems.add(str(v))
+                continue
             if isinstance(v, (frozenset, set, list, tuple)):
                 try:
                     it = jm.get(v)
@@ -614,6 +656,7 @@ class AttrRegistry:
                 it = v if type(v) is str else str(v)
             items.add(it)
         _hll_add_items(card, items, t)
+        _hll_add_items(card, fitems, t, memo=False)
         rec.stats_dirty = True
         # level-1 keys and set elements (mass / evidence per row, in row order)
         dropped = rec.role_sys == "dropped"
