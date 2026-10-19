@@ -1589,8 +1589,8 @@ definition, O-real on 3 seeds, diagnosis and open issues; §16.15.13 is the harn
 `engines.md` ("As built, round 7"); Chinese narrative: design doc §3.0 (status per requirement sentence), §3.3 (the
 changes in place, numbered T7-* (tree), V7-n (temporal / workflow / content / views, = that owner's CHANGE n), C7-n
 (conformity, = that owner's FIX n; C7-COST1 – 3), H7-* (harness / bounded mode / input cost)), §3.5 (PG9, packs A / E),
-§3.6 (O-real), §3.7 (cost), §3.8.0 – §3.8.0c (round 7, with the example verbatim in both views on pack O day 21 and O-real
-day 35; round 6 kept as §3.8.0d, round 5 as §3.8.0e, round 4 as §3.8.0f, round 3 as §3.8.0g, round 2 as §3.8.0h), §3.10.2
+§3.6 (O-real), §3.7 (cost), §3.8.0 – §3.8.0c at the time (round 7, with the example verbatim in both views on pack O day 21 and O-real
+day 35; since round 8: §3.8.0d, with the example condensed into §3.8.0d-1; the older rounds moved one letter on), §3.10.2
 (packs A / E), §3.11, §3.12.1. Four owners worked concurrently with strict file ownership on top of commit 52e813f (tree:
 P04, P05, `pnode`, `pselect`, `psketch`; temporal / workflow / content / views: P08, P09, P14, `pwindows`, `pfd`,
 `prender`; conformity: P03, `pscore`; harness: `eval/{pmetrics,pscale,resumable,runner}.py`, `pipeline/build.py`, the
@@ -1685,3 +1685,103 @@ the family login node (A2), A5 on seed 1 (`REQ_LB`), a health-check host's stand
 promotion in bounded mode; per-tick loops over every known entity in D2 session, B21, B17, B27, B23; unearned IPs' memory on
 day 1. P10 acceptance without hysteresis (seed 1's 0.806 edge). Evaluation drivers should warn when `data/signatures` is
 missing. B–D packs and A / E seeds ≥ 1 not re-run; round 7's A / E run JSONs not committed; no real-log pilot.
+
+## 20. Progressive profile core, round 8 (2026-10-19)
+
+Full record: `progressive.md` §16.16 (the owners' changes, the evaluator's EV8-1 – EV8-3, results on the final code
+`code8b` = commit 0ed2de6 in `backend/` and `scripts/` with `data/` linked, determinism, cost, PG4, PG9, O-real on 3 seeds,
+diagnosis and open issues; §16.16.13 – §16.16.14 are the harness owner's own report and open issues); as-built rows:
+`engines.md` ("As built, round 8"); Chinese narrative: design doc §3.0 (status per requirement sentence), §3.3 (the
+changes in place, numbered T8-n (tree, = that owner's step Sn), V8-n (temporal / workflow / content / views, = that owner's
+CHANGE n), C8-1 – C8-4 (conformity: B14-1, B14-2, OC7-6, COST-1), H8-1 – H8-4 (harness)), §3.4, §3.5 (PG9, packs A / E),
+§3.6 (O-real), §3.7 (cost), §3.8.0 – §3.8.0c (round 8, with the example verbatim in both views on pack O days 11 / 14 / 21
+and O-real day 35; round 7 kept as §3.8.0d with the example condensed into §3.8.0d-1, round 6 as §3.8.0e, round 5 as
+§3.8.0f, round 4 as §3.8.0g, round 3 as §3.8.0h, round 2 as §3.8.0i), §3.9.8 (B14), §3.10.2 (packs A / E), §3.11, §3.12.1.
+Four owners worked concurrently with strict file ownership on top of commit 8046b0e (tree: P04, P05, `pnode`, `pselect`;
+temporal / workflow / content / views: P06, P08, P10, P14, `pbounds`, `pdfg`, `pfd`, `prender`; conformity: P03, B14;
+harness: the evaluation harness, `pipeline/build.py`, P00 – P02's input path, `lib/pregistry`, lib-4); the lead
+checkpointed their work through commits cb59717 – 0ed2de6, and the evaluator measured `code8b`.
+
+### 20.1 What changed in the integrated system
+
+- **Lead decisions on scoring (H8-1, H8-2).** PG2's "confidence of unchanged patterns non-decreasing" fails a step only
+  when the median paired change is negative and an exact one-sided sign test rejects at α = 0.05 (`pmetrics.sign_test_less`,
+  `paired_decrease`, `PG2_ALPHA`; the strict rule kept as `conf_nondecreasing_strict`). Held-out claims are judged on the
+  events their truth segment emits on days d+1 … d+7 while it stays valid (`PTruth.traffic_after`, `proxy_day`;
+  `HOLDOUT_PROSPECTIVE = False` reproduces round 7). Round 7 re-run from its seeds (every JSON reproduced exactly) and
+  re-scored: PG2 confidence 2/5 → 5/5 (O), 1/3 → 3/3 (O-real); CE median 0.066 → 0.059 (O), 0.105 → 0.109 (O-real)
+  (`reports/progressive/round8_harness/rescore_r7.json`). Skipping truth-calendar holidays in the window was measured and not
+  adopted.
+- **P05 (T8-2, T8-8, T8-9, T8-11, T8-14, T8-15).** Per-attribute due times with exponential back-off, reset only by a
+  crossing of a role threshold or a level / best-level change; hourly runs with nothing due skipped; probe rows follow the
+  due slices; node overrides and proxies refitted on input changes or every 6 h — only when the attribute pool does not fit
+  one run (pack O is identical to round 7 on the recorded stream).
+- **P04 / `pnode` (T8-5, T8-6, T8-7, T8-13, T8-16, T8-18 – T8-20, T8-22).** A waiting route row counts in its route's burst
+  units (GA.oa.report#1 on day 12); untested statements start at the first-test pass rate; workday and non-workday windows
+  tested separately; transport alarms do not withdraw the pattern; a restated constraint's failures leave the facet
+  records too; extremes and held-out records compacted; an alarm keeps the reference's anchor while the held-out
+  constraints are refreshed daily (seed 2 CE 0.088 → 0.050).
+- **P06 / P08 / P10 / P14 (V8-1 – V8-10).** P10 hysteresis (95 % upper bound of the dependency for retirement; loop edges;
+  stale edges suspended; held edges rendered); a new family key starts from its members' P08 states; NAT / proxy sources
+  with many values cannot veto the dependency; a newcomer value seen at no other source lowers only its own source's bound;
+  P14 per-facet confidence with a `~when` facet statement while windows drift, identity facets only for untested nodes;
+  P06 band ends snapped to observed values and an exact integer back-transform.
+- **P03 / B14 (C8-1 – C8-4).** B14 models created at promotion replay the retained rows; BOCPD's input clipped around the
+  MAP run's level and scale; an operator's benign verdict absorbs a source into the system's who sets (§6.9.2 (iii));
+  a cross-tick record cache (exact). The tick-mode golden fingerprint changed in the `bocpd` column only and was
+  re-recorded.
+- **Harness (H8-3, H8-4).** A missing signature library raises in strict (eval) runs and is recorded per run; P02's exact
+  cuts (`stats_dirty`, the float fast path): −10 % per record.
+- **Evaluator (EV8-1 – EV8-3).** One rebind-acceptance rule for the held-out binding check and PG1's login bindings; held
+  edges counted at their upper bound; the proposed P00 per-row packet-count patch measured and withdrawn (5 false MEDIUM
+  incidents on seed 0).
+- **Tried and reverted:** confirm-as-soon-as-the-evidence-is-met (T8-4), an early-failure rule (T8-10), the reference
+  deferred to the snapshot (T8-21), the due regime on every system (T8-2's first version changed pack O: seed 0 recall @ 21
+  0.923 → 0.821), the distance-to-threshold reset rule, V8-9's first version, a GPD tail constraint in P06, B06's 14-day zi
+  retention.
+
+### 20.2 Results (all measured; `reports/progressive/`)
+
+- Pack O, seeds 0–4, 21 days (after vs round 7 re-scored with the round-8 scorer): PG1 recall @ 14 0.868 [0.789–0.947]
+  (same median; mean of seeds 0–2 0.903 → 0.912); headline precision @ 14 0.955 [0.915–0.981] (0.980; all claims 0.883 vs
+  0.884); @ 21 0.881 / 0.985 vs 0.881 / 0.971; pooled debiased calibration error 0.059 [0.049–0.076] (same; seed 2 0.049);
+  median stated confidence day 7 → 21 0.87 → 0.97; FAR ≥ MEDIUM 0.0005 (same), ≥ LOW 0.0013; anomalies 50 / 50; D1 3/5,
+  D2 – D4 5/5, D5 4/5; **GA + FIN 6 bindings at day 14 5/5 (4/5)**; PG2 paired confidence (sign test) 4/5 (seed 4: 23 lost /
+  4 gained, p = 0.0002); checklist 47 / 50. Gates passing: PG3, PG6, PG7.
+- PG4 (`reports/progressive/scale_r8/`, 7-day points, thread CPU; the host was 1.46× more loaded than in round 7): memory
+  slopes vs IPs 0.016, systems 0.251, attributes 0.194 (pass); CPU / event slopes vs IPs −0.066, **attributes 0.206**
+  (0.260; P05's growth 2.82× → 1.82×; the tree owner's official run of the same code 0.182); scoring / learning p95 1 159 /
+  3 293 µs (round 7 724 / 1 980 µs on a lighter host). P-core per pack O run 1.14× round 7 at equal load; peak RSS 1.50 →
+  1.65 GB.
+- PG9 (`reports/progressive/pg9_r8/pg9.json`): fails on one check only — pack A bounded 8 incidents ≥ MEDIUM against 7;
+  B14 no longer alarms (cp 0.994 → 0.25 for 10.30.2.23), the extra MEDIUM is the same incident re-opened by the B-library
+  `intensity` family; lib-3 CPU p95 bounded / full 0.81 (A) and 0.81 (E); the 1 000-IP / 84 h point 0.43 (≤ 0.5). Packs
+  A / E full mode as in round 7 (A 18 / 7 / 2, 12/12; E 6 / 1 / 0, class ARI 0.797 vs 0.755, not traced).
+- Determinism: pack O seed 0 under `PYTHONHASHSEED` 0 and 1 — 0 of 19 350 score differences, 0 differences in the full
+  result pickle.
+- O-real seeds 0–2 (35 days): **A2 detected on every seed** (missed on every seed in round 7); anomalies 10 / 9 / 10;
+  bindings @ 14 3 / 0 / 3 of 6 (0 / 0 / 0); recall @ 35 0.63 / 0.72 / 0.61 (0.62 / 0.70 / 0.59); calibration error 0.116 /
+  0.082 / 0.098 (0.109 / 0.094 / 0.116); FAR ≥ MEDIUM 0.0007 / 0.0012 / 0.0010; checklist day 35 5 / 6 / 7 (7 / 6 / 7: seed 0's
+  family login node splits by /24 on day 18, bisected to T8-5). O-red seed 0: recall @ 14 0.730 (0.649), calibration error
+  0.162 (0.244), anomalies 10/10, **D2 fails** (P05 drops the username on a no-login Saturday, P08 loses the node's
+  bindings). O60 seed 0: day-8 agreement 0.047 (inside 0.05).
+- Tests: final suite on `code8b` 3 397 passed, 4 skipped, 1 failed — `test_b13_budget_edges::test_perf_forty_entities_generous_bound`
+  83 ms against 80 ms beside a scale point (77.9 / 78.7 ms alone; B13 unchanged since round 7; bound not loosened).
+- The report was assembled by the evaluator (`scripts/progressive_report.py --assemble --seeds 0,1,2,3,4 --variants
+  O-red,O60,O-real --scale reports/progressive/scale_r8 --pg9 reports/progressive/pg9_r8/pg9.json`); round 7's report and
+  runs are in `reports/progressive/round7/`, round 7 re-scored in `reports/progressive/round8_harness/`.
+
+### 20.3 Open (ordered by impact; details in design doc §3.11 and `progressive.md` §16.16.11 – §16.16.12, §16.16.14)
+
+PG1 recall @ 14 0.868: every remaining day-14 miss on seeds 0–2 belongs to P06 / P07 / P09 / P14 (DEV's 60-value username
+set and the FIN approval opinion field, OI8-b; one department across sibling nodes and configured departments as parts,
+OI8-a / OI8-g; windows and bands from ~16–20 arrivals too narrow, OI8-f / OI8-h). PG2: untested nodes state a pooled prior
+that drifts with other nodes' tests (seed 4, O-real seed 2, O-red fail the sign test; tree owner or lead decision);
+calibration 0.059 (seed 0's four day-7 claims at 0.00–0.055, OI8-j; O-red 0.162 under-confident). O-red D2: P08 must keep
+the candidates and history of a stated binding, P05 must not demote on a day with no rows. O-real: checklist 7 → 5 (T8-5),
+A5 on seed 1 (requirement never accepted), A2's source stays damped (trust per (source, credential) pair proposed). PG4:
+CPU slope at the limit; P02's slope follows P05's kept count (OI-H2); per-event p95 10× the budgets. PG5: D1 sample size;
+D5 from P00's record-mean packet counts (the fix needs P03's sequence path explained first). PG9: the `intensity` family's
+re-open in bounded mode (OC8-1). Per-tick loops over every known entity in D2 session, B21, B17, B27, B23 and
+`MetricStore.entities_active` (OI-H1). Timing test B13 borderline on a loaded host. B–D packs and A / E seeds ≥ 1 not
+re-run; round 8's A / E run JSONs not committed; no real-log pilot.
