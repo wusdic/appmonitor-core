@@ -1415,16 +1415,27 @@ def window_hold(rec: Optional[Mapping[str, Any]]) -> Optional[float]:
     if not (0.0 < c <= 1.0) or m <= 0.0:
         return None
     cv = rec.get("cv")
+    c_in = float(rec.get("coverage_in", c))
+    if not (0.0 < c_in <= 1.0):
+        c_in = c
     if cv and float(cv[1]) > 0:
         s_ = float(cv[0]) / float(cv[1])
     else:
-        s_ = float(rec.get("coverage_in", c))
+        s_ = c_in
     s_ = min(max(s_, 0.0), 1.0)
     from scipy.special import betainc
     from . import pnode as PN
     x = max(0.0, c - PN.hold_eps(c))
-    a = s_ * m + FWD_PRIOR * c
-    b = (1.0 - s_) * m + FWD_PRIOR * (1.0 - c)
+    # (round 9) the prior is centred on the IN-SAMPLE coverage, as in
+    # _apply_cv: the stated coverage c is already the cross-validated share's
+    # posterior mean (h + FWD_PRIOR c_in) / (m + FWD_PRIOR) when that is
+    # smaller, so a prior centred on c counted the cross-validated evidence
+    # twice. Pack O seed 0, day 7: the 销售部 mail part (cv share 0 of a few
+    # dates, stated coverage lowered accordingly) got window_hold 0.0 -
+    # P(theta >= c - eps) under a posterior centred far below c - and its
+    # statement 0.0, and held (OI8-j). Unchanged when cv did not lower c.
+    a = s_ * m + FWD_PRIOR * c_in
+    b = (1.0 - s_) * m + FWD_PRIOR * (1.0 - c_in)
     if x <= 0.0:
         return 1.0
     return float(1.0 - betainc(a, max(b, 1e-9), x))

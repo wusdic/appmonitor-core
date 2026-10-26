@@ -1716,17 +1716,60 @@ def _card0(st: Mapping[str, Any]) -> int:
         return 10 ** 9
 
 
+def bound_payloads(pbind: Any) -> List[str]:
+    """(round 9) The payload attributes of the bindings P08 states
+    (model.pbind: a pair of some node with at least one bound source),
+    the source side excluded. Sorted."""
+    out = set()
+    if not isinstance(pbind, Mapping):
+        return []
+    for nodes in (pbind.get("nodes") or {}).values():
+        for ent in (nodes or {}).values() if isinstance(nodes, Mapping) else ():
+            for rec in ((ent or {}).get("pairs") or {}).values():
+                if not isinstance(rec, Mapping):
+                    continue
+                y = rec.get("y")
+                tab = rec.get("table") or {}
+                if y is None or y in WHO_ATTRS or str(y).startswith("net.src"):
+                    continue
+                if any(isinstance(e, Mapping) and e.get("bound") for e in tab.values()):
+                    out.add(str(y))
+    return sorted(out)
+
+
 def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any],
                  redundant: Mapping[str, str], ip_info: Mapping[int, float], t: float,
-                 kinds_of: Callable[[str], Iterable[int]]) -> Dict[str, Any]:
+                 kinds_of: Callable[[str], Iterable[int]],
+                 seen: Optional[Mapping[str, float]] = None,
+                 bound: Iterable[str] = (), key_seen: Optional[float] = None) -> Dict[str, Any]:
     """Roles with hysteresis (§6.4). prev = the previous model.attrsel (or {}).
-    Returns {roles, levels, targets_sys, split_cands, redundant, who_mode, low}."""
+    Returns {roles, levels, targets_sys, split_cands, redundant, who_mode, low}.
+
+    (round 9) `seen`: the time each attribute was last present on a learned
+    event (registry last_seen); `key_seen`: the latest learned event of the
+    key. An attribute not seen since its previous evaluation while the key's
+    other traffic went on keeps its role: its statistics moved only because
+    rows without it arrived (a weekend without logins) and the probe's other
+    strata grew - no evidence about the attribute itself. (A key with no new
+    row at all is judged as before: holding every role then kept the chance
+    roles of calendar attributes through the nights, and pack O's mail split
+    by region instead of /16.) Measured on O-red (due
+    regime): body.kv.username's split utility fell from 0.09 to 0.008 bits on
+    Saturday as 87 rows of weekend traffic entered the probe and none with a
+    login, and three hourly runs dropped it; P08's stated login bindings then
+    lost their payload (PG5 D2). `bound`: the payloads of the bindings P08
+    states (bound_payloads) keep at least the target role - a stated binding
+    is a constraint the system checks on that attribute."""
     roles: Dict[str, str] = dict(prev.get("roles") or {})
     low: Dict[str, int] = dict(prev.get("low") or {})
     levels: Dict[str, List[int]] = dict(prev.get("levels") or {})
     dropped_at: Dict[str, float] = dict(prev.get("dropped_at") or {})
     ustat: Dict[str, Dict[str, Any]] = {a: dict(v) for a, v in (prev.get("ustat") or {}).items()}
+    bound_s = set(bound)
     for a, st in stats.items():
+        prev_u = ustat.get(a)
+        prev_seen = (prev_u or {}).get("seen")
+        prev_kseen = (prev_u or {}).get("kseen")
         ustat[a] = {"U_t": max(float(st["U_t"]), float(st.get("U_tc", st["U_t"]))),
                     "CR_p": float(st.get("CR_p", 0.0)), "n_p": int(st.get("n_p", 0)),
                     "H_p": float(st.get("H_p", st["H"])),
@@ -1734,6 +1777,14 @@ def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any]
                     "cov": max(float(st["cov"]), float(st.get("cov_rows", st["cov"]))),
                     "H": float(st["H"]), "level": int(st["level"]), "CR": float(st["CR"])}
         old = roles.get(a, "probe")
+        sv = None if seen is None else seen.get(a)
+        if sv is not None:
+            ustat[a]["seen"] = float(sv)
+        if key_seen is not None:
+            ustat[a]["kseen"] = float(key_seen)
+        stale = (sv is not None and prev_seen is not None and float(sv) <= float(prev_seen)
+                 and key_seen is not None and prev_kseen is not None and float(key_seen) > float(prev_kseen)
+                 and old != "probe")
         H, cov = st["H"], st["cov"]
         U_t, U_s = max(st["U_t"], st.get("U_tc", st["U_t"])), st["U_s_max"]
         best_lv = list(st["best_levels"])
@@ -1788,6 +1839,15 @@ def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any]
                 new = "shape"
             else:
                 new = "dropped"
+        if a in bound_s and new not in ("split", "target", "invariant"):
+            new = "target"
+        if stale:
+            # no row with the attribute since its last run: role, hysteresis and
+            # the statistics the system lists are ranked by stay as they were
+            roles[a] = old
+            if prev_u is not None:
+                ustat[a] = dict(prev_u, kseen=float(key_seen))
+            continue
         # hysteresis: a kept role demotes only after DEMOTE_RUNS consecutive low runs
         # (the kept role's own test already uses the low threshold u_lo, so a
         # role changes here only when its utility fell below u_lo, or on an upgrade)
@@ -2128,6 +2188,57 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
                 full[pres] = cc
                 h_sys[a], _ = w_plugin(full[rec], w[rec])
         return h_sys[a]
+    # (round 9) an attribute (system target or node-local) takes a node's slot
+    # only when the node predicts it: on the rows that recorded it, "the row
+    # routes through this node" carries information about its presence or,
+    # where present, about its value at the coarsest level with >= 3 values
+    # (penalised gain > 0 on the rows counted equally). Ranked by entropy x
+    # coverage alone, independent noise present on every row filled the slots
+    # (O-red: five to seven of the login node's nine targets were `meta.z*`,
+    # the same lottery at every node, whose split / target roles came from
+    # chance gains on the weighted probe, and the username lost its slot); an
+    # action's field (present only there, or distributed differently there)
+    # keeps it. A node holding every row (a root) is not compared
+    lg_rows: Dict[str, Any] = {}
+
+    def local_gain(a: str, ii: np.ndarray) -> float:
+        r = lg_rows.get(a)
+        if r is None:
+            ca, ua, rec_a, pres_a = cods[a]
+            rr = np.flatnonzero(rec_a)
+            pres = pres_a[rr].astype(np.int64)
+            rp = np.flatnonzero(pres_a)
+            lut = luts[a]
+            vc, vk = None, 0
+            sub = lut.codes[rp]
+            for lv in range(lut.L - 2, lut.start - 1, -1):          # coarsest first
+                if not sub.size:
+                    break
+                cc, k = _first_occurrence_codes(lut._lut(lv)[sub])
+                if k >= 3:
+                    vc, vk = np.asarray(cc, dtype=np.int64), int(k)
+                    break
+                if k == 2 and vc is None:
+                    vc, vk = np.asarray(cc, dtype=np.int64), 2
+            r = lg_rows[a] = (rr, pres, rp, vc, vk)
+        rr, pres, rp, vc, vk = r
+        best = -math.inf
+        ind = np.isin(rr, ii).astype(np.int64)
+        if not ind.any():
+            return 0.0
+        if ind.all():
+            return 1.0                      # the node holds every row: nothing to compare with
+        # a two-sample comparison of the node's rows with the others': rows count
+        # equally (the probe's mass weights would make a rare action's node, a
+        # small stratum, too light to differ from anything)
+        if 0 < int(pres.sum()) < pres.size:
+            best = penalised_gain(pres, 2, ind, 2, np.ones(rr.size), int(rr.size))
+        if vc is not None and vk >= 2 and rp.size >= 2:
+            ip = np.isin(rp, ii).astype(np.int64)
+            if 0 < int(ip.sum()) < ip.size:
+                best = max(best, penalised_gain(vc, vk, ip, 2, np.ones(rp.size), int(rp.size)))
+        return best if math.isfinite(best) else 0.0
+
     for nid, idx in by_node.items():
         if len(idx) < n_min:
             continue
@@ -2162,6 +2273,8 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
                         consts.append((hs * cov, a))
                 continue
             if a not in sys_set and cov < local_cov:
+                continue
+            if local_gain(a, ii) <= 0.0:
                 continue
             scored.append((h * cov, a))
         scored.sort(key=lambda x: (x[1] in prox, -x[0], x[1]))

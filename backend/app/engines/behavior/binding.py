@@ -240,8 +240,9 @@ class BindingEngine(Engine):
             names += [a for a, r in (roles or {}).items() if r in ("split", "target")]
         elif reg is not None:
             names = reg.names()
+        bound = BindingEngine._bound_payloads(store, key)
         out = set()
-        for a in names:
+        for a in list(names) + sorted(bound):
             rec = reg.get(a) if reg is not None else None
             if rec is None:
                 continue
@@ -254,9 +255,33 @@ class BindingEngine(Engine):
             out.add(a)
         if len(out) > Y_MAX and reg is not None:
             # bounded screening width: the Y_MAX best-covered candidates
-            # (P05's target list, when present, is already bounded)
+            # (P05's target list, when present, is already bounded); the
+            # payloads of stated bindings always stay (<= PAIR_NODES pairs)
             cov = {a: float(reg.coverage(a)) for a in out}
-            out = set(sorted(out, key=lambda a: (-cov[a], a))[:Y_MAX])
+            out = set(sorted(out, key=lambda a: (a not in bound, -cov[a], a))[:Y_MAX]) | (out & bound)
+        return out
+
+    @staticmethod
+    def _bound_payloads(store: Any, key: str) -> set:
+        """(round 9) The payload attributes of the pairs that hold bound
+        entries at some node (st['bound']). A stated binding is P08's own
+        finding: it stays a candidate whatever role P05 gives the payload at
+        the moment. Measured on O-red seed 0 (94 attributes, P05's due
+        regime): body.kv.username became 'dropped' on a Saturday without
+        logins, the pair left the screen, P04 dropped the GA login node's pair
+        sketch, the value history was deleted and the five bindings were
+        never refitted (days 15-21), so D2's dora -> dora.k was never stated."""
+        st = store.get_model(key, SYSTEM_ENTITY, STATE) if store is not None else None
+        out = set()
+        if not isinstance(st, Mapping):
+            return out
+        for (_k, _n, pk), bm in (st.get("bound") or {}).items():
+            if not bm:
+                continue
+            for side in str(pk).split("->", 1):
+                a, _l = FD.parse_x(side)
+                if a != "net.src" and a not in X_ATTRS:
+                    out.add(a)
         return out
 
     @staticmethod
@@ -444,13 +469,29 @@ class BindingEngine(Engine):
             specs = FD.screen(rows, w, xc, sorted(self._y_candidates(store, key, reg)),
                               lambda a, l, v: hier.gen(a, l, v), absent=None, strata=strata,
                               card=lambda a: _card(reg, a))
-            model["screen"] = [{k: v for k, v in d.items()} for d in specs]
+            new_specs = [{k: v for k, v in d.items()} for d in specs]
+            # (round 9) a pair holding bound entries stays screened through a
+            # temporary screen-out (its payload's P05 role flapped, a weekend
+            # left the probe's stratum thin): its spec is carried over, so its
+            # node sketches, value history and stated bindings persist
+            have = {pair_key(d["x"], d["y"]) for d in new_specs}
+            bpk = {pk for (_k, _n, pk), bm in (st.get("bound") or {}).items() if bm}
+            for d in (model.get("screen") or []):
+                pk = pair_key(d["x"], d["y"])
+                if pk in bpk and pk not in have:
+                    new_specs.append(dict(d, carried=True))
+                    have.add(pk)
+            model["screen"] = new_specs
             st["screened_at"] = probe.offered
             st["screened_t"] = now
             self._seed_histories(ctx, key, st, model["screen"], hier)
         specs = model["screen"]
         by_kind: Dict[int, Dict[int, List[List[str]]]] = {}
         budget = PAIR_NODES
+        bound_nodes: Dict[Tuple[int, str], List[int]] = {}
+        for (k_, n_, pk_), bm in sorted((st.get("bound") or {}).items()):
+            if bm:
+                bound_nodes.setdefault((int(k_), str(pk_)), []).append(int(n_))
         for kind, tree in ptm.kinds.items():
             if kind != EV.KIND_TXN:
                 continue
@@ -460,7 +501,18 @@ class BindingEngine(Engine):
                 if not nodes:
                     nodes = [tree.nodes[tree.root]]
                 nodes.sort(key=lambda nd: -nd.mass_at(now))
-                for nd in nodes[:P_NODES]:
+                sel = nodes[:P_NODES]
+                # (round 9) a node holding bound entries of the pair keeps its
+                # sketch although the payload left its targets (P05's node
+                # override is bounded and rotates; O-red's GA login node held
+                # nine attributes, five of them meta.z* noise, no username)
+                ids = {nd.id for nd in sel}
+                for nid in bound_nodes.get((int(kind), pair_key(d["x"], d["y"])), ()):
+                    nd = tree.nodes.get(nid)
+                    if nd is not None and nid not in ids and not nd.is_exc:
+                        sel.append(nd)
+                        ids.add(nid)
+                for nd in sel:
                     if budget <= 0:
                         break
                     by_kind.setdefault(kind, {}).setdefault(nd.id, []).append([d["x"], d["y"]])
@@ -532,10 +584,11 @@ class BindingEngine(Engine):
                     track.setdefault(pair_key(X, Y), set()).update(str(x) for x in ps.x.keys())
         st["track"] = track
         screened = {pair_key(d["x"], d["y"]) for d in specs}
+        bound_pk = {pk for (_k, _n, pk), bm in bound_map.items() if bm}
         for pk in list(st["hist"]):
             keep = track.get(pk)
             if not keep:
-                if pk not in screened:
+                if pk not in screened and pk not in bound_pk:
                     del st["hist"][pk]          # a seeded history waits for its sketches while screened
                 continue
             h = st["hist"][pk]

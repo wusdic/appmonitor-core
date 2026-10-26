@@ -3178,16 +3178,22 @@ class PatternTreeEngine(Engine):
                     # P14's min-over-parts fallback (pack O seed 0, day 17: oa's
                     # new GET /docs nodes stated 0.08 - a workflow edge's
                     # dependency strength - and held 1.0)
+                    # (round 9) fixed at issuance, as an untested statement's prior
+                    # below: kept while the node states no constraint of its own
+                    if nd.meta.get("hold_prior") is not None and nd.meta.get("hold_prior_iss") is not None:
+                        continue
                     pr = prior0.get("*")
                     if pr is not None:
                         nd.meta["hold_prior"] = (round(float(pr[0]), 4), round(float(pr[1]), 4))
                         nd.meta["hold_prior_seg"] = 0
                         nd.meta["hold_prior_n"] = 0.0
+                        nd.meta["hold_prior_iss"] = (0, "*")
                     continue
                 if not cons or nd.state not in PN.CONFIDENT_STATES:
                     nd.meta.pop("hold_prior", None)
                     nd.meta.pop("hold_prior_seg", None)
                     nd.meta.pop("hold_prior_n", None)
+                    nd.meta.pop("hold_prior_iss", None)
                     continue
                 k = PN.hold_kind(len(cons))
                 hr = nd.meta.get("hold")
@@ -3235,16 +3241,38 @@ class PatternTreeEngine(Engine):
                 if tested and nd.meta.get("hold_prior") is not None and nd.meta.get("hold_prior_seg") == seg \
                         and abs(float(nd.meta.get("hold_prior_n", -1.0)) - n_own) <= 1e-9:
                     continue
+                # (round 9) an UNTESTED statement keeps the prior it was issued with
+                # until its own first test (or a new confidence segment: a re-stated
+                # pattern is a new statement). Taken from the daily refit, every
+                # untested statement moved with the other statements' tests:
+                # pack O seed 4, AUTO.monitor.oa#0 / FIN.finance.bookkeeping#0 /
+                # #2 / AUTO.monitor.portal#0 all stated the pool's 0.9688 on day 10
+                # and 0.9664 on day 21 with no evidence of their own - shared
+                # shifts PG2's sign test reads as losses (23 lost / 4 gained,
+                # p = 0.0002). The issuance prior is the measured first-test pass
+                # rate of statements like it on the day it was stated; a node
+                # confirmed before its reference (stated at the pooled '*' rate)
+                # takes its kind's rate once, when its constraints are first
+                # stated
+                iss = nd.meta.get("hold_prior_iss")
+                if not tested and nd.meta.get("hold_prior") is not None and iss is not None \
+                        and int(iss[0]) == seg and iss[1] != "*":
+                    continue
                 src = prior if tested else prior0
                 pr = src.get(k) or src.get("*")
                 if pr is not None:
                     nd.meta["hold_prior"] = (round(float(pr[0]), 4), round(float(pr[1]), 4))
                     nd.meta["hold_prior_seg"] = seg
                     nd.meta["hold_prior_n"] = n_own
+                    if tested:
+                        nd.meta.pop("hold_prior_iss", None)
+                    else:
+                        nd.meta["hold_prior_iss"] = (seg, int(k))
                 else:
                     nd.meta.pop("hold_prior", None)
                     nd.meta.pop("hold_prior_seg", None)
                     nd.meta.pop("hold_prior_n", None)
+                    nd.meta.pop("hold_prior_iss", None)
 
     def _normal_days_fn(self, lc: _LC, systems: Iterable[str]) -> Callable[[int, int], int]:
         cal: Dict[int, Any] = {}
@@ -3831,6 +3859,7 @@ def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str,
     keep = set(valid)
     chosen = None
     unbeaten = True
+    deferred = False
     if s_mode == "margin":
         # ranked by SELECTIVE gain (rule (G)'s statistic: what each candidate saves on
         # the behaviour it predicts) and compared on the common events per target: the
@@ -3847,6 +3876,25 @@ def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str,
         if chosen is None:
             chosen, unbeaten = valid[0], False
         keep = {chosen}
+        # (round 9) ... nor by a tracked candidate that has not passed (V) yet
+        # but has evidence for it (log2 e > 0) and saves >= tau0 bits more on the
+        # events where both were tracked: the data prefer that split, and its
+        # e-process is still on its way. Taking the valid one now keeps the
+        # dominated split for good (EFDT revision needs REV_MIN_EV units, which
+        # a small node never has). Measured on O-real seed 0 (fam:1, the login
+        # node of learned groups G18 + G19): the /24 level (10.168.7 / 192.168.1
+        # / 192.168.2, each mixing 综合部 and 财务部 members) passed (V) on day 18
+        # on the usernames it predicts - an identity, finer partitions predict it
+        # better - while the group level saved 38.9 bits more (body sizes,
+        # durations: what the departments do) at log2 e 4.2; the group split came
+        # on day 29 only when the /24 candidate happened to be replaced, and the
+        # 综合部 login statement depended on that churn. The rival only defers
+        # the split (it never splits without passing (V) itself), so the
+        # false-split bound is unchanged
+        if unbeaten and any(o not in set(valid) and ss.W[o, chosen] > 0 and ss.log2_e(o) > 0.0
+                            and ss.selective_margin(o, chosen) >= float(tau0) for o in act):
+            unbeaten = False
+            deferred = True
     masked = [i for i in act if i not in keep]
     saved = ss.G[masked].copy()
     ss.G[masked] = -1e300
@@ -3856,6 +3904,8 @@ def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str,
         ss.G[masked] = saved
     if chosen is not None:
         dec.pass_s = unbeaten
+        if deferred:
+            dec.pass_v = False
     return dec
 
 

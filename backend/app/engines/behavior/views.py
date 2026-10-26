@@ -60,6 +60,8 @@ import re
 import time
 from typing import Callable, Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
+import numpy as np
+
 from ...core.engine import Context, Engine
 from ...models.schema import ORG, SYSTEM_ENTITY
 from .lib import m_ptree as MP
@@ -396,7 +398,8 @@ def hold_without_when(nd: Any) -> Optional[float]:
 
 
 def compose_conf(nd: Any, t: float, conf: float, part: Optional[Sequence[Any]], own_when: bool,
-                 when_c: Optional[float], own_hold: Optional[float] = None) -> float:
+                 when_c: Optional[float], own_hold: Optional[float] = None,
+                 base: Optional[float] = None) -> float:
     """A statement's confidence from P04's held-out record (round 7: one
     helper for the node, its groups' parts and the parts with their own
     windows; `conf` = the min-over-parts fallback when P04 has no record).
@@ -420,11 +423,16 @@ def compose_conf(nd: Any, t: float, conf: float, part: Optional[Sequence[Any]], 
     the full p_hold as before. (Round 7) The part's own windows enter as the
     probability that they hold at their stated coverage (part_when 'hold',
     pwindows.window_hold) when known - the same "holds" as P04's record -
-    not as their coverage x day stability (`when_c`)."""
+    not as their coverage x day stability (`when_c`).
+    (Round 9) `base`: the pooled rate P04 issues a confirmed statement that
+    has neither a test nor its kind's prior yet (base_hold) - used in place
+    of the nominal fallback `conf` (OI8-j)."""
     ph = getattr(nd, "p_hold", None)
     ph = ph(t) if callable(ph) else None
     if ph is None or not math.isfinite(float(ph)):
-        return float(conf)
+        if base is None or not math.isfinite(float(base)):
+            return float(conf)
+        ph = float(base)
     if part is not None:
         ph = part_hold(nd, list(part[4]) if len(part) > 4 else [part[0]], float(ph))
     if not own_when:
@@ -435,6 +443,64 @@ def compose_conf(nd: Any, t: float, conf: float, part: Optional[Sequence[Any]], 
         own = when_c if (when_c is not None and math.isfinite(float(when_c))) else 1.0
     rest = hold_without_when(nd)
     return float(min(float(rest if rest is not None else ph), float(own)))
+
+
+def base_hold(c: Any) -> Optional[float]:
+    """(round 9, OI8-j) The pooled hold rate of statements without a record
+    of their own: the mean of the '*' priors P04 issued to the tree's
+    confirmed, not yet referenced nodes (pnode meta hold_prior with
+    hold_prior_iss (0, '*')), else of every untested node's issued prior,
+    else (no prior issued yet) the first-test pass rate of the tree's
+    stated nodes, (passes + 0.5) / (n + 1); None without any.
+    Why: P04 gives a node its prior at its daily step, so a node confirmed
+    during the day has neither a test nor a prior until the next one, and
+    compose_conf fell back to the minimum of the clauses' NOMINAL values -
+    lower bounds from a handful of rows, not probabilities of holding. Pack
+    O seed 0, day 7 (views rendered 22:15 / 23:45, before P04's midnight
+    step): three oa approval nodes confirmed that day stated 0.0547 (the
+    95 % lower bound of rate.ip_h's band coverage from ~1 IP-hour) and the
+    销售部 mail part 0.0 (its one-date window); all four held - most of the
+    seed's calibration error (OI8-j). Their next render, after the step,
+    stated the pooled rate."""
+    if getattr(c, "_base_hold", False) is not False:
+        return c._base_hold
+    star, other = [], []
+    first: List[float] = []
+    ptm = getattr(c, "ptm", None)
+    stated = getattr(c, "_stated", None)
+    for kind in sorted((ptm.kinds if ptm is not None else {}).keys()):
+        tree = ptm.kinds[kind]
+        for nid in sorted(tree.nodes):
+            nd = tree.nodes[nid]
+            meta = getattr(nd, "meta", None) or {}
+            pr, iss = meta.get("hold_prior"), meta.get("hold_prior_iss")
+            hr = getattr(nd, "hold", None)
+            if hr is not None and (nid in stated if stated is not None else nid != getattr(tree, "root", None)):
+                ft = hr.first_test() if callable(getattr(hr, "first_test", None)) else None
+                if ft is not None:
+                    first.append(1.0 if ft else 0.0)
+            if pr is None or hr is not None:
+                continue
+            if iss is not None and str(iss[1]) == "*":
+                star.append(pr)
+            else:
+                other.append(pr)
+    use = star or other
+    out = None
+    if use:
+        out = float(np.mean([float(a) / (float(a) + float(b)) for a, b in use]))
+    elif first:
+        # before P04 issued any prior (its first daily fit): the rate at which
+        # the tree's STATED nodes passed their first held-out test, P04's
+        # issuance rate for an untested statement (pattern_tree._hold_priors
+        # prior0: (passes + 0.5) / (n + 1); a tree's root over several
+        # actions is no statement and fails most tests)
+        out = float((sum(first) + 0.5) / (len(first) + 1.0))
+    try:
+        c._base_hold = out
+    except AttributeError:                          # pragma: no cover
+        pass
+    return out
 
 
 def drift_conf(drift: Any, when_ev: Optional[Mapping[str, Any]], when_c: Optional[float]) -> float:
@@ -653,6 +719,8 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         who_ev = {"level": "grp", "items": [f"grp:{x}" for x in gids], "members": sorted(mem), "group": g,
                   "name": gname, "share": round(float(share), 4), "closed": False,
                   "U": who_ev.get("U"), "confidence": who_c, "part_of": pid}
+        if str(g).startswith("cfg:"):
+            who_ev["dept"] = gname           # (round 9) a configured department's part
     elif restrict is not None:
         items = [x for x in who_ev.get("items") or [] if str(x) in restrict]
         if who_ev.get("level") == "ip":
@@ -756,7 +824,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     # holds on new events); the min-over-parts formula above states the
     # weakest part's NOMINAL coverage and was under-confident on pack O
     # (PG2 ECE 0.36-0.43)
-    conf = compose_conf(nd, t, conf, part, own_when, when_c, own_hold)
+    conf = compose_conf(nd, t, conf, part, own_when, when_c, own_hold, base_hold(c))
     when_fc = None
     if drift and when_c is not None and math.isfinite(float(when_c)):
         # P04's hold rate is the windows' past record; a drifting window holds
@@ -862,7 +930,11 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     if adopted_from is not None:
         ctx_ev = [[a, l, sorted(route if v == adopted_from else v for v in vals), neg] if a in ROUTE_ATTRS
                   else [a, l, vals, neg] for a, l, vals, neg in ctx_ev]
-    if part is not None:
+    if part is not None and str(part[0]).startswith("cfg:"):
+        # (round 9) a configured department's part: its listed addresses
+        ctx_ev.append(["net.src", 0, sorted(str(x) for x in part[1]), False])
+        pid = f"{pid}|grp:{part[0]}"
+    elif part is not None:
         ctx_ev.append(["net.src", 3, [f"grp:{x}" for x in (part[4] if len(part) > 4 else [part[0]])], False])
         pid = f"{pid}|grp:{part[0]}"
     ev: Dict[str, Any] = {
@@ -1336,11 +1408,26 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0, route: Optional
                                   "name": str(dept) if dept else str(gr.get("name") or g)})
         u["gids"].append(g)
         u["share"] += share
+    # (round 9, OI8-g) the configured departments the learned groups do not
+    # carry: a department whose members P11 put in groups shared with other
+    # departments (O-real fam:1: 'G18' = 综合部's 192.168.1.21 + 财务部's
+    # .2.12 / .2.51) is stated as its own part, who = its listed addresses
+    # seen at the node (_config_dept_units); skipped when a learned unit
+    # already states exactly those members
+    cfg_units = _config_dept_units(c, nd, t, seen, lv0, route, use_sig, sig_ctx)
+    for uk, cu in cfg_units.items():
+        units.setdefault(uk, cu)
     if len(units) < 2:
         return []
     out = []
     for uk, u in sorted(units.items(), key=lambda kv: -kv[1]["share"]):
         if u["share"] < PART_SHARE + impure:
+            continue
+        if u.get("cfg"):
+            if not any(set(o[1]) == set(u["members"]) for o in out):
+                out.append((uk, list(u["members"]), u["name"], u["share"], ()))
+            if len(out) >= PART_MAX:
+                break
             continue
         mem: List[str] = []
         for g in u["gids"]:
@@ -1383,7 +1470,59 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0, route: Optional
             out.append((u["gids"][0], sorted(set(mem), key=PR._ip_sort), name, u["share"]))
         if len(out) >= PART_MAX:
             break
+    if any(o[0].startswith("cfg:") for o in out):
+        # a configured department's part that repeats a learned unit's members
+        # (the learned unit is the finer, named statement of the same people)
+        learned = [set(o[1]) for o in out if not o[0].startswith("cfg:")]
+        out = [o for o in out if not o[0].startswith("cfg:") or set(o[1]) not in learned]
     return out if len(out) >= 2 else []
+
+
+def _config_dept_units(c: Any, nd: Any, t: float, seen: Set[str], lv0: Any, route: Optional[str],
+                       use_sig: bool, sig_ctx: bool) -> Dict[str, Dict[str, Any]]:
+    """(round 9, OI8-g) Units of group_parts for configured departments
+    (who_group_names with listed addresses) whose members at the node are
+    spread over learned groups that mix them with other departments' members
+    or carry no department: {'cfg:<name>': {'members', 'share', 'name',
+    'cfg': True}}. Members: the department's addresses seen at the node (its
+    IP-level summary) or whose own signature holds the action as a recurring
+    use within this system (as group_parts' department members); share: their
+    mass in the IP-level summary. A department all of whose members at the
+    node sit in learned groups of that department alone is already a unit of
+    group_parts and gets none here."""
+    cfg = _configured_ips(getattr(c, "config", None) or {})
+    if not cfg:
+        return {}
+    tot = float(lv0.total(t)) if lv0 is not None else 0.0
+    mass = {}
+    if tot > 0:
+        rdr = getattr(c, "readdr", None) or {}
+        for ip, cnt, *_ in lv0.items(t):
+            k = rdr.get(str(ip), str(ip))
+            mass[k] = mass.get(k, 0.0) + float(cnt) / tot
+    sigs = getattr(c, "sigs", None)
+    out: Dict[str, Dict[str, Any]] = {}
+    for name in sorted(cfg):
+        mem = []
+        for i, m in enumerate(dict.fromkeys(cfg[name])):
+            # bounded like group_parts: <= MEMBERS_CHECKED signatures read per department
+            if m in seen or (use_sig and i < CF.MEMBERS_CHECKED and (not sig_ctx or _ctx_admits(nd, m, c.ip2g))
+                             and CF.signature_share(sigs, c.key, m, t, route, within_key=True)
+                             >= CF.SIG_STANDING):
+                mem.append(m)
+        if not mem:
+            continue
+        gids = {c.ip2g.get(m) for m in mem}
+        clean = None not in gids and all(
+            str((c.groups.get(g) or {}).get("dept") or "") == name
+            or all(str(x) in set(cfg[name]) for x in (c.groups.get(g) or {}).get("members") or [] if "/" not in str(x))
+            for g in gids)
+        if clean:
+            continue                     # the learned units already state this department
+        share = float(sum(mass.get(m, 0.0) for m in mem))
+        out[f"cfg:{name}"] = {"members": sorted(set(mem), key=PR._ip_sort), "share": share, "name": name,
+                              "gids": [], "cfg": True}
+    return out
 
 
 def _walk(tree: Any, t: float, rd: Optional[Mapping[int, Mapping[str, float]]] = None):
@@ -1583,6 +1722,372 @@ def fold_duplicates(stmts: Sequence[Dict[str, Any]], tree_of: Any = None
     return primary, folded
 
 
+# ------------------------------------------------- department statements
+# context attributes a department statement reads through: source splits (the
+# members are its who) and time-of-day / day-type splits (the windows carry them)
+DEPT_TRANSPARENT = WHO_SPLIT_ATTRS + ("ctx.tod_min", "ctx.when", "ctx.daytype", "ctx.dayclass", "ctx.dow")
+DEPT_STATES = ("confirmed", "stable", "evolving")
+_STATE_RANK = {"evolving": 0, "confirmed": 1, "stable": 2}
+
+
+def _ctx_rest(ev: Mapping[str, Any]) -> Tuple[Any, ...]:
+    out = []
+    for c in ev.get("context") or []:
+        if not isinstance(c, (list, tuple)) or len(c) < 4 or str(c[0]).startswith(DEPT_TRANSPARENT):
+            continue
+        out.append((str(c[0]), str(c[1]), tuple(sorted(str(v) for v in c[2] or ())), bool(c[3])))
+    return tuple(out)
+
+
+def _stmt_members(ev: Mapping[str, Any]) -> List[str]:
+    w = ev.get("who") or {}
+    if w.get("level") not in ("ip", "grp") or w.get("any"):
+        return []
+    mem = [str(x) for x in (w.get("members") or w.get("items") or [])]
+    if not mem or any("/" in m or m.startswith(("grp:", "reg:", "*")) for m in mem):
+        return []
+    return [m[7:] if m.startswith("shared:") else m for m in mem]
+
+
+def _union_iv(ivs: Iterable[Sequence[float]]) -> List[List[float]]:
+    out: List[List[float]] = []
+    for a, b in sorted((float(x[0]), float(x[1])) for x in ivs):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def merge_when(whens: Sequence[Optional[Mapping[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """The time clause that holds for every part: per day type the union of
+    the parts' windows (a part's arrivals are inside its own windows), at
+    the smallest stated coverage; None when a part states no windows (its
+    time is unconstrained, so the department's is too)."""
+    if not whens or any(not w or not (w.get("workday") or w.get("nonworkday")) for w in whens):
+        return None
+    out: Dict[str, Any] = {}
+    for dt in ("workday", "nonworkday"):
+        ivs = [iv for w in whens for iv in (w.get(dt) or [])]
+        out[dt] = _union_iv(ivs)
+    covs = [float(w.get("coverage")) for w in whens if w.get("coverage") is not None
+            and math.isfinite(float(w.get("coverage")))]
+    cfs = [float(w.get("confidence")) for w in whens if w.get("confidence") is not None
+           and math.isfinite(float(w.get("confidence")))]
+    out["coverage"] = min(covs) if covs else None
+    out["confidence"] = min(cfs) if cfs else None
+    return out
+
+
+def _hull(vals: Sequence[Optional[Sequence[Any]]]) -> Optional[List[float]]:
+    if not vals or any(not v or len(v) < 2 for v in vals):
+        return None
+    return [float(min(float(v[0]) for v in vals)), float(max(float(v[1]) for v in vals))]
+
+
+def merge_content(contents: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """The content constraints that hold for every part: an attribute every
+    part constrains, with the weakest form that each part's constraint
+    implies - numeric band / range: their hull at the smallest coverage (a
+    part's values lie in its own band); closed value set: the union; grammar:
+    the one grammar, else the alternation of the parts'; required keys: the
+    keys every part requires. Attributes some part leaves unconstrained are
+    not stated."""
+    if not contents:
+        return {}
+    keys = set(contents[0])
+    for c in contents[1:]:
+        keys &= set(c)
+    out: Dict[str, Dict[str, Any]] = {}
+    for a in sorted(keys):
+        recs = [c[a] for c in contents]
+        m: Dict[str, Any] = {}
+        if all(r.get("band90") for r in recs):
+            m["band90"] = _hull([r.get("band90") for r in recs])
+            m["band90_raw"] = _hull([r.get("band90_raw") or r.get("band90") for r in recs])
+            cv = [float(r["coverage"]) for r in recs if r.get("coverage") is not None
+                  and math.isfinite(float(r["coverage"]))]
+            m["coverage"] = min(cv) if cv else None
+            if all(r.get("range") for r in recs):
+                m["range"] = _hull([r.get("range") for r in recs])
+                m["range_raw"] = _hull([r.get("range_raw") or r.get("range") for r in recs])
+                cov = [float(r["cover"]) for r in recs if r.get("cover") is not None
+                       and math.isfinite(float(r["cover"]))]
+                m["cover"] = max(cov) if cov else None
+                m["hard"] = all(bool(r.get("hard")) for r in recs)
+                m["n_rng"] = float(sum(float(r.get("n_rng") or 0.0) for r in recs))
+        if all(r.get("closed") is not None for r in recs):
+            m["closed"] = sorted({str(v) for r in recs for v in r.get("closed") or ()})
+            us = [float(r["U"]) for r in recs if r.get("U") is not None and math.isfinite(float(r["U"]))]
+            m["U"] = max(us) if us else None
+        if all(r.get("grammar") for r in recs):
+            gs = sorted({str(r["grammar"]) for r in recs})
+            m["grammar"] = gs[0] if len(gs) == 1 else "(?:" + "|".join(gs) + ")"
+            cg = [float(r["c_g"]) for r in recs if r.get("c_g") is not None and math.isfinite(float(r["c_g"]))]
+            us = [float(r["U_s"]) for r in recs if r.get("U_s") is not None and math.isfinite(float(r["U_s"]))]
+            m["c_g"] = min(cg) if len(cg) == len(recs) else None
+            m["U_s"] = max(us) if len(us) == len(recs) else None
+        if all(r.get("required") is not None for r in recs):
+            req = set(map(str, recs[0].get("required") or ()))
+            for r in recs[1:]:
+                req &= set(map(str, r.get("required") or ()))
+            if req:
+                m["required"] = sorted(req)
+        if m:
+            out[a] = m
+    return out
+
+
+def merge_bindings(binds: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Every part's bindings (about its own members): the union of the
+    forward tables (a source bound to two different values by two parts is
+    left out) and of the reverse ones."""
+    out: Dict[str, Dict[str, Any]] = {}
+    clash: Dict[str, Set[str]] = {}
+    for b in binds:
+        for y, rec in sorted((b or {}).items()):
+            if not isinstance(rec, Mapping):
+                continue
+            o = out.setdefault(str(y), {"x": rec.get("x")})
+            for x, v in sorted((rec.get("table") or {}).items()):
+                t = o.setdefault("table", {})
+                if x in t and t[x] != v:
+                    clash.setdefault(str(y), set()).add(str(x))
+                t[x] = v
+                if (rec.get("LB") or {}).get(x) is not None:
+                    o.setdefault("LB", {})[x] = (rec.get("LB") or {})[x]
+            for v, xs in sorted((rec.get("reverse") or {}).items()):
+                r = o.setdefault("reverse", {})
+                r[v] = sorted(set(r.get(v) or []) | {str(z) for z in (xs or [])})
+    for y, xs in clash.items():
+        for x in xs:
+            out[y]["table"].pop(x, None)
+            (out[y].get("LB") or {}).pop(x, None)
+    return {y: o for y, o in out.items() if o.get("table") or o.get("reverse")}
+
+
+def _content_phrases(content: Mapping[str, Mapping[str, Any]], unit_of: Callable[[str], str],
+                     labels: Any) -> Tuple[List[str], List[str]]:
+    zh: List[str] = []
+    en: List[str] = []
+    for a, m in sorted(content.items()):
+        nz, ne = PR.attr_label(a, "zh", labels), PR.attr_label(a, "en", labels)
+        if m.get("band90"):
+            u = unit_of(a)
+            z = f"{nz} 90 % 在 {PB._text(m['band90'][0], m['band90'][1], u)}"
+            e = f"90 % of {ne} within {PB._text(m['band90'][0], m['band90'][1], u)}"
+            if m.get("range"):
+                rt = PB._text(m["range"][0], m["range"][1], u)
+                z += f"，{'全部在' if m.get('hard') else '观测范围'} {rt}"
+                e += f", {'all within' if m.get('hard') else 'observed range'} {rt}"
+            zh.append(z)
+            en.append(e)
+        if m.get("grammar"):
+            zh.append(f"{nz} 取值 `{m['grammar']}`")
+            en.append(f"{ne} matching `{m['grammar']}`")
+        if m.get("closed") is not None:
+            shown = list(m["closed"]) if len(m["closed"]) <= 8 else list(m["closed"])[:8] + ["…"]
+            zh.append(f"{nz} 取值集合封闭 {{{PR.join_en(shown)}}}")
+            en.append(f"{ne} in the closed set {{{PR.join_en(shown)}}}")
+        if m.get("required"):
+            zh.append(f"{nz}必含 {PR.join_zh(f'{k}=' for k in m['required'])}")
+            en.append(f"{ne} always carry {PR.join_en(f'{k}=' for k in m['required'])}")
+    return zh, en
+
+
+def _binding_phrases(binds: Mapping[str, Mapping[str, Any]], labels: Any) -> Tuple[str, str]:
+    zh, en = [], []
+    for y, b in sorted(binds.items()):
+        t = b.get("table") or {}
+        if t:
+            nz, ne = PR.attr_label(y, "zh", labels), PR.attr_label(y, "en", labels)
+            zh.append("、".join(f"{x} → {nz}{v if not isinstance(v, list) else '{' + PR.join_en(v) + '}'}"
+                               for x, v in sorted(t.items(), key=lambda kv: PR._ip_sort(kv[0]))))
+            en.append(", ".join(f"{x} → {ne}{v if not isinstance(v, list) else '{' + PR.join_en(v) + '}'}"
+                                for x, v in sorted(t.items(), key=lambda kv: PR._ip_sort(kv[0]))))
+    return (f"绑定：{'；'.join(zh)}" if zh else ""), (f"bindings: {'; '.join(en)}" if en else "")
+
+
+class _PooledWhen:
+    """(round 9) The minute-reservoir arrivals of several nodes, read as one
+    node's `when` by pwindows.part_when (department statements)."""
+
+    class _Res:
+        def __init__(self, items: List[Any]) -> None:
+            self._items = items
+
+        def __len__(self) -> int:
+            return len(self._items)
+
+        def items(self) -> List[Any]:
+            return list(self._items)
+
+    def __init__(self, items: List[Any]) -> None:
+        self.res = _PooledWhen._Res(items)
+
+
+def department_statements(stmts: Sequence[Mapping[str, Any]], dept_of: Callable[[Sequence[str]], Optional[str]],
+                          key: str, unit_of: Optional[Callable[[Mapping[str, Any], str], str]] = None,
+                          labels: Any = None, addr: str = "", tz: float = 0.0,
+                          flow_of: Optional[Callable[[str], Tuple[List[Dict[str, Any]], str, str]]] = None,
+                          when_of: Optional[Callable[[Sequence[Mapping[str, Any]], Sequence[str]], Any]] = None
+                          ) -> List[Dict[str, Any]]:
+    """(round 9, OI8-a / OI8-g) One statement per configured department and
+    action when the department's members are stated in several pieces: nodes
+    the lattice split by source (a /16, a client stack) or by time of day,
+    or the parts of P11 groups that each hold some of its members. The
+    pieces are the action's statements (same action node and route, the same
+    context once source and time conditions are set aside) whose stated
+    members all belong to ONE configured department (_dept_of: the members'
+    learned groups' `dept`, else the department's listed addresses); a
+    statement mixing departments is never a piece, so departments are not
+    blurred. Pieces are taken largest first and must be disjoint; nothing is
+    stated unless >= 2 pieces add up to more members than any single
+    statement of the department already lists (no duplicate of a statement
+    that already names them all).
+    The statement: who = the union of the pieces' members; when = per day
+    type the union of their windows at the smallest stated coverage
+    (merge_when); content = the constraints that hold for every piece
+    (merge_content) - or, with `when_of`, the windows fitted on the members'
+    arrivals at the pieces' lowest common node (its minute reservoir holds
+    them all: more arrivals than any piece, P09's own fit, as a group part's);
+    bindings = the union of the pieces' (they are about
+    their own members); workflow = the action's; confidence = the minimum of
+    the pieces' (each is its group part's held-out hold, or its node's);
+    context = the shared context plus the members (net.src, ip level), so
+    it is judged on the members' events.
+    Pack O seeds 1-4 (round 8, day 14): GA.mail#0 missed on who - 综合部's
+    mail split across the 192.168/16 and 10.168/16 nodes (.21 / .23 and
+    .121); FIN.mail#0 - 财务部's parts split by time of day. O-real seed 0,
+    day 35: ~20 of the 30 misses fail on who only."""
+    unit_of = unit_of or (lambda st, a: "")
+    groups: Dict[Tuple[Any, ...], List[Tuple[Mapping[str, Any], List[str]]]] = {}
+    for st in stmts:
+        ev = st.get("evidence") or {}
+        pid = str(st.get("pattern_id") or "")
+        if str(st.get("state") or "") not in DEPT_STATES or "|~when" in pid or "@dept:" in pid:
+            continue
+        if ev.get("renamed_to") or ev.get("is_exc") or ev.get("negative") or ev.get("facet"):
+            continue
+        mem = _stmt_members(ev)
+        if not mem:
+            continue
+        d = dept_of(mem)
+        if not d:
+            continue
+        k = (str(st.get("act_node")), str(ev.get("route")), int(ev.get("kind") or 0), _ctx_rest(ev), str(d))
+        groups.setdefault(k, []).append((st, sorted(set(mem), key=PR._ip_sort)))
+    out: List[Dict[str, Any]] = []
+    for k in sorted(groups):
+        cand = groups[k]
+        if len(cand) < 2:
+            continue
+        act, route, kind, rest, dname = k
+        order = sorted(cand, key=lambda sm: (-len(sm[1]), -int((sm[0].get("evidence") or {}).get("depth") or 0),
+                                             str(sm[0].get("id"))))
+        picked: List[Tuple[Mapping[str, Any], List[str]]] = []
+        have: Set[str] = set()
+        for st, mem in order:
+            if have & set(mem):
+                continue
+            picked.append((st, mem))
+            have |= set(mem)
+        if len(picked) < 2 or len(have) <= max(len(m) for _, m in cand):
+            continue
+        sts = [st for st, _ in picked]
+        evs = [st.get("evidence") or {} for st in sts]
+        members = sorted(have, key=PR._ip_sort)
+        when = merge_when([ev.get("when") for ev in evs])
+        refit = when_of(sts, members) if when_of is not None else None
+        w_hold = None
+        if refit is not None:
+            when, wz_, we_, w_hold = refit
+        content = merge_content([ev.get("content") or {} for ev in evs])
+        binds = merge_bindings([ev.get("bindings") or {} for ev in evs])
+        flow, fzh, fen = (list(evs[0].get("workflow") or []), "", "")
+        if flow_of is not None:
+            flow, fzh, fen = flow_of(route)
+        fcs: Dict[str, float] = {}
+        for ev in evs:
+            for f, v in (ev.get("facet_conf") or {}).items():
+                fcs[f] = min(float(v), fcs.get(f, 1.0))
+        states = [str(st.get("state")) for st in sts]
+        if refit is None:
+            conf = float(min(float(st.get("confidence") or 0.0) for st in sts))
+        else:
+            # the department states its own (refitted) windows, not the
+            # pieces': a piece contributes its other clauses' confidence
+            # (facet_conf without 'when'), and a piece 'evolving' only because
+            # ITS windows drift (evidence when.drift) is confirmed for them
+            def rest_c(st: Mapping[str, Any]) -> float:
+                fc = {k: v for k, v in ((st.get("evidence") or {}).get("facet_conf") or {}).items()
+                      if k != "when"}
+                return float(min(fc.values())) if fc else float(st.get("confidence") or 0.0)
+            conf = float(min(rest_c(st) for st in sts))
+            states = ["confirmed" if (x == "evolving" and ((st.get("evidence") or {}).get("when") or {}).get("drift"))
+                      else x for x, st in zip(states, sts)]
+            fcs["when"] = float(w_hold) if (w_hold is not None and math.isfinite(float(w_hold))) else 1.0
+            conf = float(min(conf, fcs["when"]))
+        state = min(states, key=lambda x: _STATE_RANK.get(x, 0))
+        if state == "stable" and any(x != "stable" for x in states):
+            state = "confirmed"
+        ctx_ev = [[a, (int(l) if str(l).lstrip("-").isdigit() else l), list(v), neg] for a, l, v, neg in rest]
+        ctx_ev.append(["net.src", 0, list(members), False])
+        lz, le = PR.join_zh(members), PR.join_en(members)
+        if len(members) > PR.MEMBERS_LISTED:
+            lz, le = f"{len(members)} 个 IP", f"{len(members)} IPs"
+        who_zh, who_en = f"{dname}（{lz}）", f"{dname} ({le})"
+        who_ev = {"level": "ip", "items": list(members), "members": list(members), "dept": dname,
+                  "name": dname, "closed": False, "parts": [str(st.get("id")) for st in sts]}
+        when_zh = when_en = ""
+        if refit is not None:
+            when_zh, when_en = wz_, we_
+        elif when:
+            wz, we = [], []
+            for dt, short in (("workday", "wd"), ("nonworkday", "nwd")):
+                if when.get(dt):
+                    rec = {"windows": when[dt], "coverage": when.get("coverage") or 0.0}
+                    wz.append(PW.render_zh(short, rec))
+                    we.append(PW.render_en(short, rec))
+            when_zh, when_en = "；".join(wz), "; ".join(we)
+        czh, cen = _content_phrases(content, lambda a: unit_of(sts[0], a), labels)
+        bzh, ben = _binding_phrases(binds, labels)
+        rt = PR.route_text(route)
+        sup = float(sum(float(st.get("support") or 0.0) for st in sts))
+        nob = float(sum(float(st.get("n_obs") or st.get("support") or 0.0) for st in sts))
+        fs = [float(st.get("first_seen")) for st in sts if st.get("first_seen") is not None]
+        ls = [float(st.get("last_seen")) for st in sts if st.get("last_seen") is not None]
+        ver = max(int(st.get("version") or 0) for st in sts)
+        cver = max(int(st.get("cver") or 0) for st in sts)
+        d0 = PR.local_date(min(fs), tz) if fs else ""
+        d1 = PR.local_date(max(ls), tz) if ls else ""
+        zh, _ = PR.sentence(key, addr, when_zh, when_en, who_zh, who_en, rt, czh, cen, bzh, ben,
+                            fzh, fen, conf, d0, d1, ver, cver, state, support=nob)
+        _, en = PR.sentence(key, addr, when_zh, when_en, who_zh, who_en, rt, czh, cen, bzh, ben,
+                            fzh, fen, conf, d0, d1, ver, cver, state, support=nob)
+        n_parts = len(sts)
+        zh += f"（由 {n_parts} 个部分合成）"
+        en += f" (composed of {n_parts} parts)"
+        pid = f"p:{key}:{kind}:{act}@dept:{dname}|{route}"
+        ev: Dict[str, Any] = {
+            "route": route, "system": key, "kind": kind, "node": int(act) if str(act).lstrip("-").isdigit() else act,
+            "context": ctx_ev, "depth": max(int(e.get("depth") or 0) for e in evs), "is_exc": False,
+            "who": who_ev, "content": content, "bindings": binds, "workflow": flow,
+            "department": {"name": dname, "parts": [str(st.get("id")) for st in sts]},
+            "facet_conf": {f: round(v, 4) for f, v in sorted(fcs.items())}}
+        if when:
+            ev["when"] = when
+        facets = ["functional", "spatial"] + (["temporal"] if when else []) + (["content"] if content else []) \
+            + (["content.bindings"] if binds else []) + (["sequential"] if flow else [])
+        out.append({"id": pid, "pattern_id": pid, "view": "system", "subject": key, "text_zh": zh,
+                    "text_en": en, "support": sup, "n_obs": nob, "confidence": conf,
+                    "first_seen": min(fs) if fs else None, "last_seen": max(ls) if ls else None,
+                    "version": ver, "cver": cver, "state": state,
+                    "mass": float(sum(float(st.get("mass") or 0.0) for st in sts)),
+                    "facets": facets, "evidence": ev, "act_node": sts[0].get("act_node")})
+    return out
+
+
 def order_statements(stmts: Sequence[Dict[str, Any]], actions: Mapping[Any, Mapping[str, Any]]
                      ) -> List[Dict[str, Any]]:
     """Statements by importance (round 4): actions by how many sources perform
@@ -1627,6 +2132,7 @@ def system_view(store: Any, key: str, config: Mapping[str, Any], now: float,
         rd = c.route_dist(kind)
         walked = [(nd, route, act) for nd, route, act in _walk(tree, now, rd)
                   if route is not None and nd.state in RENDERED]
+        c._stated = {nd.id for nd, _r, _a in walked}       # (round 9) base_hold's statements
         adopt = renamed_routes(c.pflow, {r for nd, r, a in walked if nd.state != "stale"})
         for nd, route, act in walked:
             adopted = None
@@ -1671,6 +2177,54 @@ def system_view(store: Any, key: str, config: Mapping[str, Any], now: float,
                         x["mass"] = float(st["mass"]) * part[3]
                         stmts.append(x)
                         a["statements"].append(x["id"])
+    # (round 9) one statement per configured department stated in pieces
+    root_t = c.ptm.kinds.get(EV.KIND_TXN)
+    addr_t = _address(root_t.nodes[root_t.root], now) if root_t is not None else ""
+
+    def _unit(st: Mapping[str, Any], a: str) -> str:
+        ev = st.get("evidence") or {}
+        ent = PB.lookup(c.pb, int(ev.get("kind") or 0), int(ev.get("node") or 0)) or {}
+        return str(((ent.get("attrs") or {}).get(a) or {}).get("unit") or "")
+
+    def _flow(r: str) -> Tuple[List[Dict[str, Any]], str, str]:
+        fl, fz, fe, _ = PR.workflow_block(c.edges.get(DF.split_key(r)[0], []))
+        return fl, fz, fe
+    def _when(pieces: Sequence[Mapping[str, Any]], members: Sequence[str]) -> Any:
+        # the members' windows fitted on the arrivals the pieces' own nodes
+        # keep (each piece's node holds its members' arrivals; an ancestor's
+        # bounded reservoir is mostly other departments')
+        kind = int((pieces[0].get("evidence") or {}).get("kind") or 0)
+        tree = c.ptm.kinds.get(kind)
+        if tree is None:
+            return None
+        mem_at: Dict[int, Set[str]] = {}
+        for st in pieces:
+            ev = st.get("evidence") or {}
+            mem_at.setdefault(int(ev.get("node")), set()).update(_stmt_members(ev))
+        items: List[Any] = []
+        for nid in sorted(mem_at):
+            nd = tree.nodes.get(nid)
+            res = getattr(getattr(nd, "when", None), "res", None) if nd is not None else None
+            if res is not None and len(res):
+                # each piece's own members' arrivals at its own node (no arrival twice)
+                items.extend(x for x in res.items() if len(x[0]) > 2 and str(x[0][2]) in mem_at[nid])
+        if not items:
+            return None
+        pw = PW.part_when(_PooledWhen(items), members, c.tz, drop=c.ledger(kind))
+        if pw is None or pw.get("drift"):
+            return None
+        by = pw.pop("by_daytype", None)
+        hold = pw.pop("hold", None)
+        wev, wz, we, wc = PR.when_block({"status": "fitted", "when": pw, "by_daytype": by})
+        if wev is None:
+            return None
+        return wev, wz, we, (hold if hold is not None else wc)
+    for dst in department_statements(stmts, lambda ips: _dept_of(c, ips), key, unit_of=_unit,
+                                     labels=c.labels, addr=addr_t, tz=c.tz, flow_of=_flow, when_of=_when):
+        stmts.append(dst)
+        a = actions.get(dst["act_node"])
+        if a is not None:
+            a["statements"].append(dst["id"])
     stmts, folded = fold_duplicates(stmts, tree_of=c.ptm.kinds.get(EV.KIND_TXN))
     for a in actions.values():
         kept = {st["id"] for st in stmts}
