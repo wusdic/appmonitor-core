@@ -972,9 +972,10 @@ class BudgetEngine(Engine):
         super().__init__(**params)
         self.fit_max_per_tick = int(fit_max_per_tick)
         self._rows_cur: Optional[_Rows] = None
+        self._implicit_cur: List[float] = []
         self._learner = G.GatedLearner(
             name=LEARNER, init=new_state, update=_update, fetch=self._fetch,
-            dump=_dump, load=_load, merge=_merge)
+            dump=_dump, load=_load, merge=_merge, extra_ts=self._extra_ts)
         self._ret_store: Optional[weakref.ref] = None
         self._dtype_cache: Dict[Tuple[int, Any], int] = {}
         self._pcache: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
@@ -1059,6 +1060,8 @@ class BudgetEngine(Engine):
         if live["tick_ts"] == now:                       # re-run of this tick: same row
             x = live["tick_x"].copy()
         else:
+            if PA.bounded(ctx.config):
+                self._idle_catchup(store, s, e, live, rows, tick)
             self._roll_day(live, tick["today"])
             x = self._quantities(store, s, e, np.asarray(nat, dtype=np.float64), live, tick)
             fin = np.where(np.isnan(x), 0.0, x)
@@ -1076,6 +1079,59 @@ class BudgetEngine(Engine):
         rec.B = self._horizons(live, tick["a"])
         rec.ok = True
         return rec
+
+    def _idle_catchup(self, store: Any, s: str, e: str, live: Dict[str, Any], rows: "_Rows",
+                      tick: Dict[str, Any]) -> int:
+        """(round 9, bounded mode) Replay the ticks this IP spent outside the
+        active / earned sets as the rows full mode learns for them.
+
+        Full mode processes every known IP on every tick: an idle tick is a
+        row of zeros (B01's idle feature.nat: no bytes, no requests, no
+        active slot, no destination), committed with the governor's idle-tick
+        trust, so an idle weekend is 37 zero-valued hourly bins of weight 1.
+        Bounded mode skips an unearned IP once it has been idle for the
+        linger window (B01 writes no row: "an unearned idle IP's row is
+        implicit"), and B13's committed ring kept those hours EMPTY (not
+        covered), which changes every threshold fitted over them: pack A
+        seed 0, oa-portal 10.30.2.23 idle 03-01 20:00 - 03-03 08:00 left the
+        active set; on 03-13 its 8-h / day budget thresholds differed from
+        full mode's (bytes_down.8h 8.9e8 vs 5.9e8), budget_vol read p 6.9e-5
+        where full mode read 4.2e-5 and alarmed LOW at 04:00, and the
+        incident full mode re-opened LOW was re-opened at MEDIUM by risk
+        six hours later (PG9 gate 3, 8 vs 7 MEDIUM).
+
+        The skipped ticks (gating.idle_ticks: since the last row, at most
+        8 d - the row buffer and behavior.trust's retention) are appended as
+        zero rows and marked implicit: the gated learner takes them as
+        candidates (GatedLearner.extra_ts) once B28 has back-filled their
+        trust (governor.backfill_idle), so they are committed exactly like
+        full mode's idle rows. A skipped tick with a B01 row (B13 skipped it
+        for another reason, e.g. no feature.nat) or a failed B01 is not
+        idle and is not replayed. Returns the rows replayed."""
+        now, dt = tick["now"], tick["dt"]
+        gap = G.idle_ticks(live.get("tick_ts"), now, dt, G.JOURNAL_MAX_AGE_S)
+        if not gap:
+            return 0
+        imp = list(live.get("implicit") or ())
+        zero = np.zeros(NQ, dtype=np.float64)
+        frac = dt / 3600.0
+        n = 0
+        for T in gap:
+            if T <= rows.last_ts() or store.vec_at(s, e, ACTIVE, T) is not None \
+                    or store.engine_failed(B01_ENGINE, T):
+                continue
+            t_mid = T - 0.5 * dt
+            a = int(math.floor((t_mid + _utc_offset(t_mid, tick["tz"])) / 3600.0))
+            rows.append(T, a, frac, zero.astype(np.float32))
+            self._live_add(live, a, zero)
+            imp.append(T)
+            n += 1
+        live["implicit"] = imp
+        return n
+
+    def _extra_ts(self, store: Any, s: str, e: str, since: float) -> List[float]:
+        """GatedLearner.extra_ts: the current entity's implicit idle rows."""
+        return [t for t in self._implicit_cur if t > since]
 
     @staticmethod
     def _stale(store: Any, s: str, e: str, name: str, now: float) -> bool:
@@ -1687,6 +1743,8 @@ class BudgetEngine(Engine):
                   repr(gate.applied.get("release")), repr(gate.applied.get("rebase_from")))
         lv = gate.link_version
         self._rows_cur = rows
+        imp = model["live"].get("implicit")
+        self._implicit_cur = list(imp) if imp else []
         try:
             # commits are batched (>= COMMIT_BATCH due rows, or the oldest
             # waiting an hour): learning later than D is allowed, and the
@@ -1701,6 +1759,11 @@ class BudgetEngine(Engine):
                                                     lambda a: self._other_state(store, s, a))
         finally:
             self._rows_cur = None
+            self._implicit_cur = []
+        if imp:
+            # an implicit row is a candidate until the gate has passed it
+            model["live"]["implicit"] = [t for t in imp if t > gate.last_ts
+                                         and t > now - ROW_KEEP_S]
         after = (gate.version, repr(gate.applied.get("rollback_to")),
                  repr(gate.applied.get("release")), repr(gate.applied.get("rebase_from")))
         if after != before or gate.link_version != lv:

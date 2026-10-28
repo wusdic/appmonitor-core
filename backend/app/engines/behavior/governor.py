@@ -597,6 +597,8 @@ class GovernorEngine(Engine):
         first = not isinstance(model, dict)
         if first:
             model = new_model(now)
+        if not is_class(e) and PA.bounded(ctx.config):
+            self.backfill_idle(store, s, e, model, now, dt, first)
         prev_state = model["regime"]
         ob = self._observe(store, sc, e, now, dt, degraded)
         tev = None if ctx.training else self._trust_evidence(ob)
@@ -629,6 +631,41 @@ class GovernorEngine(Engine):
         self._write_profile(store, s, e, model, now, changed)
         model["n"] = int(model.get("n", 0)) + 1
         store.put_model(s, e, MG.MODEL, model, version=int(model.get("version", 0)), ts=now)
+
+    @staticmethod
+    def backfill_idle(store: Any, s: str, e: str, model: Mapping[str, Any], now: float,
+                      dt: float, first: bool = False) -> int:
+        """(round 9, bounded mode) behavior.trust / trust_prov / quarantine for
+        the ticks this IP spent outside the active / earned sets.
+
+        Full mode runs the governor on every known IP on every tick; for an
+        idle IP in a trusted regime with no incident it writes trust =
+        trust_prov = 1 (an unscored tick is not suspicious: evidence factor
+        1, no alarm, no finding) and quarantine 0. Bounded mode skips an IP
+        whose last activity, incident and regime event are older than the
+        sets' windows, so those ticks had no governor verdict, and a learner
+        that replays them (B13's implicit idle rows) would read the missing
+        trust as 0. The verdict of a skipped tick is the key's state when it
+        was last processed - nothing that could change it (an observation,
+        an incident, a regime event) happened while it was outside the sets:
+        trust = trust_prov = 1 and quarantine 0 when that state was trusted
+        and unquarantined, else trust 0 and the last quarantine. Ticks on the
+        gating.idle_ticks grid, at most 8 d (behavior.trust's retention),
+        written before this tick's own values (ascending). Returns the ticks
+        written."""
+        gap = gating.idle_ticks(store.last_write_ts(s, e, MG.TRUST), now, dt,
+                                gating.JOURNAL_MAX_AGE_S)
+        if not gap:
+            return 0
+        q = 0 if first else int(model.get("last_q", 0) or 0)
+        ok = (model.get("regime") in MG.TRUSTED_STATES) and not q
+        w = 1.0 if ok else 0.0
+        win = int(dt)
+        for T in gap:
+            store.add_vec(s, e, MG.TRUST, T, [w], window_s=win)
+            store.add_vec(s, e, MG.TRUST_PROV, T, [w], window_s=win)
+            store.add_vec(s, e, MG.QUARANTINE, T, [float(q)], window_s=win)
+        return len(gap)
 
     # ------------------------------------------------------------ inputs
     def _ln_arl(self, dt: float) -> np.ndarray:

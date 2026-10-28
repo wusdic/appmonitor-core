@@ -146,6 +146,26 @@ def commit_frontier(now: float, dt_s: float, d_min_s: float = D_MIN_S) -> float:
     return float(now) - commit_delay_ticks(dt_s, d_min_s) * float(dt_s)
 
 
+def idle_ticks(last_ts: Optional[float], now: float, dt_s: float,
+               max_age_s: float = 8 * 86400.0) -> List[float]:
+    """(round 9, bounded mode) The ticks an entity skipped: now - k dt for
+    k >= 1, newer than last_ts (the last tick an engine processed it) by more
+    than half a tick, and not older than max_age_s (8 d: B13's row buffer and
+    behavior.trust's retention), ascending. Empty when last_ts is None or the
+    entity was processed on the previous tick. B13 replays them as implicit
+    idle rows and B28 back-fills their trust on the same grid, so the
+    learner's trust lookups (exact ts) find them."""
+    if last_ts is None:
+        return []
+    dt = float(dt_s)
+    lt = float(last_ts)
+    if not (math.isfinite(lt) and math.isfinite(dt) and dt > 0.0):
+        return []
+    n = int(math.floor((float(now) - lt) / dt - 0.5 + 1e-9))
+    n = min(n, int(math.floor(float(max_age_s) / dt + 1e-9)))
+    return [float(now) - k * dt for k in range(n, 0, -1)]
+
+
 class CommitRow(NamedTuple):
     """One committed or held row. An immutable NamedTuple (not a slots
     dataclass as in the stub; same fields and constructor): rows are shared
@@ -385,7 +405,8 @@ def _lookup_min(store: "MetricStore", s: str, e: str, name: str, ts: List[float]
 def commit_candidates(store: "MetricStore", s: str, e: str, learner: str, last_ts: float,
                       now: float, dt_s: float, *, d_min_s: float = D_MIN_S,
                       clock: str = DEFAULT_CLOCK, training: bool = False,
-                      window_s: Optional[float] = None
+                      window_s: Optional[float] = None,
+                      extra_ts: Sequence[float] = ()
                       ) -> List[Tuple[float, float, float]]:
     """Rows eligible at `now`: [(ts, w_eff, w_prov)] ascending, for every clock
     ts in (last_ts, commit_frontier(now)].
@@ -399,16 +420,37 @@ def commit_candidates(store: "MetricStore", s: str, e: str, learner: str, last_t
     spec v2.1: with `window_s` (a grain learner: clock feature.meta.<g>,
     window_s = G) w_eff / w_prov are the MINIMUM trust / trust_prov over
     (ts - window_s, ts]; None keeps v2.
+
+    (round 9) `extra_ts`: rows of the learner's own that the clock series
+    lacks - bounded mode's IMPLICIT idle rows (idle_ticks: the ticks an IP
+    spent outside the active / earned sets, which no engine processed; B13
+    replays them as the zero rows full mode learns). Such a row is decided
+    only once the governor has covered its tick (B28 back-fills the ticks it
+    skipped when it next processes the key, governor.backfill_idle): the
+    candidate list stops at the first implicit row newer than the latest
+    behavior.trust of the key, so the row waits a tick instead of being
+    committed at the missing-trust weight 0, and gate.last_ts never passes
+    it. With no extra_ts (every learner but B13; every full-mode run) the
+    result is unchanged.
     """
     frontier = commit_frontier(now, dt_s, d_min_s)
     lo = _dec_f(last_ts)
     if lo >= frontier:
         return []
     t, _ = store.vec_since(s, e, clock, lo)
-    if not len(t):
-        return []
     hi = frontier + _TS_EPS
-    ts = [x for x in np.asarray(t, dtype=np.float64).tolist() if lo < x <= hi]
+    ts = [x for x in np.asarray(t, dtype=np.float64).tolist() if lo < x <= hi] if len(t) else []
+    if extra_ts:
+        ex = sorted({float(x) for x in extra_ts if lo < float(x) <= hi})
+        if ex:
+            lw = store.last_write_ts(s, e, TRUST)
+            ts = sorted(set(ts) | set(ex))
+            if lw is not None:
+                exs = set(ex)
+                for i, x in enumerate(ts):
+                    if x in exs and x > float(lw) + _TS_EPS:
+                        ts = ts[:i]                     # undecided: wait for the governor
+                        break
     if not ts:
         return []
     default = 1.0 if training else 0.0
@@ -621,6 +663,10 @@ class GatedLearner(Generic[S]):
     # (period_weight / release_weight) instead of the row's behavior.trust,
     # whose evidence factor is a function of the row's own score
     null_ring: bool = False
+    # (round 9) bounded mode: (store, s, e, since) -> the learner's implicit
+    # row ts newer than `since` that the clock series lacks (commit_candidates
+    # extra_ts); None = clock rows only
+    extra_ts: Optional[Callable[["MetricStore", str, str, float], Sequence[float]]] = None
 
     # ------------------------------------------------------------------ step
     def step(self, store: "MetricStore", s: str, e: str, state: S, gate: GateState,
@@ -648,7 +694,9 @@ class GatedLearner(Generic[S]):
         g = gate._copy(now=float(now))
         rows = commit_candidates(store, s, e, self.name, g.last_ts, now, dt_s,
                                  d_min_s=self.d_min_s, clock=self.clock, training=training,
-                                 window_s=self.window_s)
+                                 window_s=self.window_s,
+                                 extra_ts=(self.extra_ts(store, s, e, g.last_ts)
+                                           if self.extra_ts is not None else ()))
         if rows:
             q = False if g.frozen else is_quarantined(store, s, e, now, dt_s)
             for ts, w_eff, w_prov in rows:
