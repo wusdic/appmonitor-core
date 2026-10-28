@@ -11,13 +11,13 @@ pairs of a live incident in model.governor['cred_pairs'] for 7 d after its last
 live tick, and P03 learns the pair's rows damped (conformity._distrusted)
 while the address's other rows keep full weight.
 
-Within the window the trust factor is round 8's (a HIGH finding keeps the
-source at 0): trust is per source and tick, read by every learner, and a
-borrowed session's later rows do not carry the credential. A first version
-credited the source during the window; on pack O seed 2 that released
-192.168.1.21's held A2-hour rows at trust 1 and the borrowed session's
-approvals displaced GA.oa.approvals#2 from the oa tree (recall@21 .881 ->
-.857) - test_a / test_b fail on that version.
+Within the window the trust factor is round 8's (a HIGH finding is evidence
+about the source and keeps it at 0): someone at the address used another
+person's credential. A first version credited the source during the window;
+on pack O seed 2 that released 192.168.1.21's held A2-hour rows at trust 1,
+P04 confirmed the renamed approval routes' nodes on day 20 and
+GA.oa.approvals#2 lost its statement on days 20-21 (recall@21 .881 -> .857)
+- test_a / test_b fail on that version.
 """
 from __future__ import annotations
 

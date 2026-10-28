@@ -1461,17 +1461,21 @@ class GovernorEngine(Engine):
         address's legitimate owner learns at full weight with their own
         credential and the borrowed one stays out of the profile.
         WITHIN the window the finding still counts towards the factor exactly
-        as any finding (a HIGH one keeps trust 0): trust is per source and
-        tick, read by every learner (P04's tree, B13, the who-sets), and the
-        rows a source sends while its credential incident is live cannot be
-        split by credential there - a session's later rows (approvals,
-        documents) do not carry the login's credential. Pack O seed 2:
-        crediting the source during A2's HIGH incidents released
-        192.168.1.21's held rows of the A2 hours (09:15-11:00, days 17-21) at
-        trust 1 and the borrowed session's approvals displaced
-        GA.oa.approvals#2 from the oa tree on days 20-21 (recall@21 .881 ->
-        .857); the window's rows are released at trust 0 instead (never
-        learned), as in round 8.
+        as any finding (round 3: a HIGH one is evidence about the SOURCE and
+        keeps trust 0, a single MEDIUM one on one pattern keeps it): a live
+        HIGH credential incident means someone at the address used another
+        person's credential, so nothing the address sends while it is live -
+        under its own credential or not - is evidence of its owner's normal
+        behaviour; the window's held rows are released at trust 0 (never
+        learned), as in round 8. A first round-9 version credited the source
+        during the window (factor 1 for credential findings at any severity);
+        on pack O seed 2 that released 192.168.1.21's held rows of the A2
+        hours (09:15-11:00, days 17-21) at trust 1, P04 confirmed the renamed
+        approval routes' nodes (oa 26 /flow/list, 28 /flow/{num}/approve) on
+        day 20 and GA.oa.approvals#2 lost its statement on days 20-21
+        (recall@21 .881 -> .857; the views' hand-over from the stale node 9's
+        alias to the freshly confirmed node 28, which has no when / content
+        statement yet - reported to the tree owner).
 
         Returns (factor, the pairs named by its findings 'tree_key|attr=value',
         sorted). Cached per incident and evidence length."""
