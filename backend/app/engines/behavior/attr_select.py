@@ -524,6 +524,9 @@ class AttributeSelectionEngine(Engine):
                  "redundant": out["redundant"], "node_overrides": overrides,
                  "redundant_exact": sorted(red_x),
                  "who_mode": out["who_mode"], "who_proxies": proxies, "ip_info": ip_info,
+                 # (round 9) the payloads of the bindings P08 states: P04's source
+                 # splits are not paid by them (pattern_tree._mask_bound_targets)
+                 "who_bound": list(bound),
                  "low": out["low"], "dropped_at": out["dropped_at"], "ustat": out["ustat"],
                  "runs": run_idx + 1, "due": due, "dsig": dsig, "tree_fp": tree_fp, "nodes_t": nodes_t,
                  "local_pools": local_pools, "proxy_cands": list(pcands), "due_mode": due_mode,

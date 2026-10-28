@@ -1,6 +1,7 @@
 """P04 round 9 (docs/lib3/progressive.md §16.16.11-§16.16.12): untested
-statements keep the prior they were issued with; the who split of a small
-learned-group node (S5 regression on O-real); see also test_p05_round9."""
+statements keep the prior they were issued with; a source split is not paid
+by the payload of a stated binding (S5 regression on O-real); see also
+test_p05_round9."""
 from __future__ import annotations
 
 from ptree_sim import DAY, MON
@@ -109,65 +110,48 @@ def test_a_restated_statement_is_issued_anew():
     assert nd.p_hold(MON + 3 * DAY) < p0
 
 
-class _SS:
-    """A stub of pevalue.SplitStats with the statistics _check_valid_first reads:
-    candidate 0 = the /24 level (valid on an identity it predicts), 1 = the
-    learned-group level (larger selective saving, e-process still growing)."""
-
-    def __init__(self, l2e, sg, margin10, W=27.0, n=(60.0, 27.0)):
-        import numpy as np
-        self.C_ever = 7
-        self.n = np.asarray(n, dtype=float)
-        self.C = 2
-        self.ordinal = [0, 1]
-        self._l2e, self._sg = list(l2e), list(sg)
-        self.W = np.full((2, 2), W)
-        self._m = {(1, 0): margin10, (0, 1): -margin10}
-        self.G = np.asarray(sg, dtype=float)
-
-    def roll(self, day):
-        pass
-
-    def active(self):
-        return [0, 1]
-
-    def log2_e(self, i):
-        return self._l2e[i]
-
-    def selective_gain(self, i):
-        return self._sg[i]
-
-    def selective_margin(self, c, o):
-        return self._m[(c, o)]
-
-    def check(self, tau0, s_mode):
-        from app.engines.behavior.lib import pevalue as PE
-        c1 = int(max(self.active(), key=lambda i: self.G[i]))
-        dec = PE.SplitDecision(c1, None)
-        dec.log2_e = self._l2e[c1]
-        dec.threshold = tau0 + 2.807
-        dec.pass_v = dec.log2_e >= dec.threshold
-        dec.pass_g = dec.pass_s = dec.pass_d = dec.pass_m = True
-        return dec
+def _feed(ss, n_events=600, seed=0):
+    """Three sources whose username is a function of the source (a binding)
+    and whose body size is the same lottery for all: the who candidate
+    predicts the username, not what the sources do."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    kb = 8
+    leaf = np.ones((2, kb))
+    for e in range(n_events):
+        src = ["ip1", "ip2", "ip3"][int(rng.integers(0, 3))]
+        b = np.array([{"ip1": 0, "ip2": 1, "ip3": 2}[src], int(rng.integers(0, kb))])
+        p = leaf / leaf.sum(axis=1, keepdims=True)
+        ss.update([src, f"c{int(rng.integers(0, 16))}"][:ss.C], b, p, 1.0, day=e // 40)
+        leaf[np.arange(2), b] += 1
 
 
-def test_a_valid_split_waits_for_a_rival_that_saves_more_on_the_same_events():
-    """A candidate that has passed (V) is not taken while a tracked rival with
-    growing evidence saves >= tau0 bits more on their common events: on O-real
-    seed 0 the login node of 综合部 + 财务部 (learned groups G18 + G19) took the
-    /24 split on day 18 (log2 e 13.3, earned on the usernames, an identity)
-    while the group level saved 38.9 bits more (log2 e 4.2), and kept it: the
-    综合部 login statement was lost. The rival only defers the split."""
-    from app.engines.behavior.pattern_tree import _check_valid_first
-    # /24 valid (13.3 >= 12.8), group level not yet, beats it by 38.9 bits
-    dec = _check_valid_first(_SS([13.3, 4.2], [19.7, 58.6], 38.9), 10.0, "margin", 18)
-    assert not dec.accept
-    # the rival passes (V) in turn: it is the split taken
-    dec = _check_valid_first(_SS([14.0, 13.0], [19.7, 58.6], 38.9), 10.0, "margin", 29)
-    assert dec.accept and dec.best == 1
-    # a rival without evidence (log2 e <= 0) or within tau0 bits does not hold the split
-    assert _check_valid_first(_SS([13.3, -2.0], [19.7, 58.6], 38.9), 10.0, "margin", 18).accept
-    assert _check_valid_first(_SS([13.3, 4.2], [19.7, 25.0], 6.0), 10.0, "margin", 18).accept
-    # a rival that has counted as much evidence as the valid candidate and still
-    # has not passed (V) is the weaker one: the split is taken (bounded wait)
-    assert _check_valid_first(_SS([13.3, 4.2], [19.7, 58.6], 38.9, n=(60.0, 60.0)), 10.0, "margin", 40).accept
+def test_a_source_split_is_not_paid_by_a_stated_binding():
+    """O-real seed 0 (round 8): the family login node of 综合部 + 财务部 split by
+    /24 on day 18, each /24 mixing the departments' members, paid by the
+    usernames - a value fixed by the source, which any partition of the
+    sources predicts; the 综合部 login statement was lost. Once P08 states the
+    binding (P05's who_bound), a source candidate no longer counts the
+    payload: here nothing else separates the sources, so no split."""
+    import math
+    from app.engines.behavior.lib import pevalue as PE
+    from app.engines.behavior.pattern_tree import _mask_bound_targets
+    targets = ["body.kv.username", "body.len"]
+    ss = PE.SplitStats(2, k_b=8, C=2)
+    ss.set_candidate(0, ("net.src", 1), card_hint=256)
+    ss.set_candidate(1, ("body.kv.captcha", 0), card_hint=16)
+    _feed(ss)
+    thr = PE.TAU0 + math.log2(ss.C_ever)
+    assert ss.log2_e(0) > thr                       # paid by the usernames
+    before1 = ss.log2_e(1)
+    _mask_bound_targets(ss, targets, ["body.kv.username"])
+    assert ss.log2_e(0) < thr
+    assert not ss.tmask[0, 0] and ss.tmask[0, 1]
+    assert ss.log2_e(1) == before1                  # a non-source candidate keeps its targets
+    assert ss.tmask[1].all()
+    # nothing stated: nothing masked
+    ss2 = PE.SplitStats(2, k_b=8, C=1)
+    ss2.set_candidate(0, ("net.src", 1), card_hint=256)
+    _feed(ss2)
+    _mask_bound_targets(ss2, targets, [])
+    assert ss2.tmask.all() and ss2.log2_e(0) > thr

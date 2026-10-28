@@ -1901,6 +1901,8 @@ class PatternTreeEngine(Engine):
             if cv.get(a, v) != v and i < ss.C and ss.keys[i] is not None:
                 ss.set_candidate(i, (a, l), self._card(lc, a, l), self._tmask(coder0, a, sel))
             cv[a] = v
+        if coder0 is not None:
+            _mask_bound_targets(ss, coder0.targets, sel.get("who_bound") or ())
         dec = _check_valid_first(ss, lc.tau0, lc.s_mode, _local_day(ts, lc.off))
         aux = lc.aux
         aux["stats"]["checks"] += 1
@@ -3828,6 +3830,40 @@ def _rate_rows(obj: Any) -> List[Tuple[int, int, float]]:
     return out
 
 
+def _mask_bound_targets(ss: PE.SplitStats, targets: Sequence[str], bound: Iterable[str]) -> None:
+    """(round 9) A source split (net.src / net.peer_src at any level) is not
+    paid by the payload of a binding P08 states (P05's model.attrsel
+    who_bound: 'each of these IPs submits its own username'): a value fixed
+    by the source is predicted by ANY partition of the sources, the finer the
+    better, as the who target and the source proxies are (_tmask), and a
+    binding is one functional dependency at the node, not a reason to split
+    it (§6.7, as _binding_like for exceptions). The payload stays a target:
+    its bands, grammar and bindings are fitted; only the split candidates on
+    the source stop counting it. Masked when P08 states the binding (its
+    e-process wealth so far no longer counts either: the average of the
+    remaining targets' e-processes is still an e-process).
+
+    Measured on O-real seed 0 (round 8, S5): the family login node of the
+    learned groups G18 + G19 (综合部 .121 / .23 with 财务部 .2.11 / .2.12)
+    split by /24 on day 18 - 10.168.7 / 192.168.1 / 192.168.2, each mixing
+    the departments' members with nothing they do in common - paid by the
+    usernames, while the group level, which separates what the departments
+    do (window, body sizes), was still short of (V); the 综合部 login
+    statement was lost. Round 7 split by group on day 29 only because the /24
+    candidate happened to be replaced before it passed (V); S5 brought the
+    node's evidence earlier and the /24 candidate passed first."""
+    bs = set(bound)
+    if not bs:
+        return
+    keep = np.asarray([t not in bs for t in targets], dtype=bool)
+    if keep.all() or keep.size != ss.tmask.shape[1]:
+        return
+    for i in range(ss.C):
+        k = ss.keys[i]
+        if k is not None and k[0] in SEL.WHO_ATTRS:
+            ss.tmask[i] &= keep
+
+
 def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str,
                        day: Optional[int] = None) -> PE.SplitDecision:
     """Rules (V), (G), (S), (D), (M) of §6.5.5, with two deviations measured on
@@ -3859,7 +3895,6 @@ def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str,
     keep = set(valid)
     chosen = None
     unbeaten = True
-    deferred = False
     if s_mode == "margin":
         # ranked by SELECTIVE gain (rule (G)'s statistic: what each candidate saves on
         # the behaviour it predicts) and compared on the common events per target: the
@@ -3876,31 +3911,6 @@ def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str,
         if chosen is None:
             chosen, unbeaten = valid[0], False
         keep = {chosen}
-        # (round 9) ... nor by a tracked candidate that has not passed (V) yet
-        # but has evidence for it (log2 e > 0) and saves >= tau0 bits more on the
-        # events where both were tracked: the data prefer that split, and its
-        # e-process is still on its way. Taking the valid one now keeps the
-        # dominated split for good (EFDT revision needs REV_MIN_EV units, which
-        # a small node never has). Measured on O-real seed 0 (fam:1, the login
-        # node of learned groups G18 + G19): the /24 level (10.168.7 / 192.168.1
-        # / 192.168.2, each mixing 综合部 and 财务部 members) passed (V) on day 18
-        # on the usernames it predicts - an identity, finer partitions predict it
-        # better - while the group level saved 38.9 bits more (body sizes,
-        # durations: what the departments do) at log2 e 4.2; the group split came
-        # on day 29 only when the /24 candidate happened to be replaced, and the
-        # 综合部 login statement depended on that churn. The rival only defers
-        # the split (it never splits without passing (V) itself), so the
-        # false-split bound is unchanged. Only a YOUNGER rival defers it (less
-        # evidence counted than the valid candidate: tracked since later - the
-        # learned groups exist from day 10 on, the /24 level from the node's
-        # birth): once the rival has counted as much evidence and still has not
-        # passed (V), its e-process is the weaker one and the valid split is
-        # taken, so a split waits at most the rival's age difference
-        if unbeaten and any(o not in set(valid) and ss.W[o, chosen] > 0 and ss.log2_e(o) > 0.0
-                            and float(ss.n[o]) < float(ss.n[chosen])
-                            and ss.selective_margin(o, chosen) >= float(tau0) for o in act):
-            unbeaten = False
-            deferred = True
     masked = [i for i in act if i not in keep]
     saved = ss.G[masked].copy()
     ss.G[masked] = -1e300
@@ -3910,8 +3920,6 @@ def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str,
         ss.G[masked] = saved
     if chosen is not None:
         dec.pass_s = unbeaten
-        if deferred:
-            dec.pass_v = False
     return dec
 
 
