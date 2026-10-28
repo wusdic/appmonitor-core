@@ -115,9 +115,13 @@ def test_bound_payloads_are_candidates_beyond_the_screening_width(monkeypatch):
     store = MetricStore()
     assert "body.kv.username" not in BindingEngine._y_candidates(store, "oa", Reg())
     store.put_model("oa", SYSTEM_ENTITY, STATE,
-                    {"bound": {(0, 3, PK): {"10.0.0.1": "amy"}, (0, 4, "net.src->body.kv.x"): {}}})
+                    {"bound": {(0, 3, PK): {"10.0.0.1": "amy"}, (0, 4, "net.src->body.kv.x"): {},
+                               (0, 5, "net.src->body.fmt"): {"10.0.0.1": "form"}},
+                     "bound_stated": [(0, 3, PK), (0, 4, "net.src->body.kv.x")]})
     out = BindingEngine._y_candidates(store, "oa", Reg())
     assert "body.kv.username" in out and "body.kv.x" not in out
+    # a bound pair the views do not state (a constant of the action) is not kept
+    assert "body.fmt" not in out
     assert len(out) == B.Y_MAX
 
 
@@ -146,3 +150,43 @@ def test_a_bound_pair_is_carried_through_a_screen_out():
     assert PK in store.get_model("oa", SYSTEM_ENTITY, STATE)["hist"]
     tab = pm["nodes"][0][nid]["pairs"][PK]["table"]
     assert tab["192.168.1.21"].get("bound") and tab["192.168.1.21"]["top"] == "jack"
+
+
+def test_only_stated_bindings_persist():
+    """Pack O seed 2 (round-9 development run): carrying every pair with bound
+    entries kept 'net.src@3 -> body.fmt' (every source bound to the action's
+    one body format - no binding the views state) screened for good; P08's
+    extra zero-gain pairs made P12 switch it off for finance on day 9 and
+    FIN.finance.login#0's bindings were lost on days 11-21. Only bindings the
+    views state (FD.binding_stated) persist through a screen-out."""
+    from app.engines.behavior.lib import pfd as FD
+    store = MetricStore()
+    orc = OracleLearner(store, "oa", T0, ["POST /login"], config=CFG)
+    eng = BindingEngine()
+
+    def day(d):
+        T = T0 + d * DAY + 12 * 3600
+        bb = EV.BatchBuilder("oa")
+        for i, (ip, u) in enumerate(_world(d)):
+            lang = "zh" if ip.startswith(("192.168.1.", "10.168.")) else "en"   # a department's constant
+            bb.add(T - 3600 + i * 7.0, ip, {"http.route": "POST /login", "body.kv.username": u,
+                                             "body.kv.lang": lang}, 1.0)
+        b = bb.build(T - 43200, T)
+        store.add_batch("oa", EV.EVT_BATCH, T, b)
+        orc.learn(b)
+        eng.safe_run(_ctx(store, T + 3600))
+        _gc_like_p04(store, orc)
+    for d in range(10):
+        day(d)
+    st = store.get_model("oa", SYSTEM_ENTITY, STATE)
+    stated = {pk for _k, _n, pk in st["bound_stated"]}
+    bound_all = {pk for (_k, _n, pk), bm in st["bound"].items() if bm}
+    assert PK in stated
+    assert "net.src->body.kv.lang" in bound_all and "net.src->body.kv.lang" not in stated, bound_all
+    st["probe"] = FD.ProbeReservoir()
+    st["screened_t"] = -1e18
+    now = T0 + 10 * DAY
+    eng.fit_tree(_ctx(store, now), "oa", MP.get_ptree(store, "oa"), now)
+    pm = MP.get_model(store, "oa", MP.PBIND)
+    carried = {f"{d['x']}->{d['y']}" for d in pm["screen"] if d.get("carried")}
+    assert PK in carried and "net.src->body.kv.lang" not in carried

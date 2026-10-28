@@ -270,19 +270,31 @@ class BindingEngine(Engine):
         regime): body.kv.username became 'dropped' on a Saturday without
         logins, the pair left the screen, P04 dropped the GA login node's pair
         sketch, the value history was deleted and the five bindings were
-        never refitted (days 15-21), so D2's dora -> dora.k was never stated."""
+        never refitted (days 15-21), so D2's dora -> dora.k was never stated.
+        Only bindings the views STATE persist (st['bound_stated'],
+        FD.binding_stated: an identifier-like payload or sources bound to
+        different values): a constant of the action 'bound' at every source
+        (body.fmt = form) is no finding of P08's, and carrying it kept extra
+        zero-gain pairs that made P12 switch P08 off for finance on day 9
+        (pack O seed 2, development run: FIN.finance.login#0's bindings lost on
+        days 11-21)."""
         st = store.get_model(key, SYSTEM_ENTITY, STATE) if store is not None else None
         out = set()
         if not isinstance(st, Mapping):
             return out
-        for (_k, _n, pk), bm in (st.get("bound") or {}).items():
-            if not bm:
-                continue
+        for _k, _n, pk in BindingEngine._stated_keys(st):
             for side in str(pk).split("->", 1):
                 a, _l = FD.parse_x(side)
                 if a != "net.src" and a not in X_ATTRS:
                     out.add(a)
         return out
+
+    @staticmethod
+    def _stated_keys(st: Mapping[str, Any]) -> List[Tuple[int, int, str]]:
+        """(round 9) The (kind, node, pair) keys holding bound entries whose
+        binding the views state (recorded by fit_tree)."""
+        bound = st.get("bound") or {}
+        return [tuple(k) for k in (st.get("bound_stated") or ()) if bound.get(tuple(k))]
 
     @staticmethod
     def _who_levels(store: Any, key: str) -> Tuple[int, ...]:
@@ -475,7 +487,7 @@ class BindingEngine(Engine):
             # left the probe's stratum thin): its spec is carried over, so its
             # node sketches, value history and stated bindings persist
             have = {pair_key(d["x"], d["y"]) for d in new_specs}
-            bpk = {pk for (_k, _n, pk), bm in (st.get("bound") or {}).items() if bm}
+            bpk = {pk for _k, _n, pk in self._stated_keys(st)}
             for d in (model.get("screen") or []):
                 pk = pair_key(d["x"], d["y"])
                 if pk in bpk and pk not in have:
@@ -489,9 +501,8 @@ class BindingEngine(Engine):
         by_kind: Dict[int, Dict[int, List[List[str]]]] = {}
         budget = PAIR_NODES
         bound_nodes: Dict[Tuple[int, str], List[int]] = {}
-        for (k_, n_, pk_), bm in sorted((st.get("bound") or {}).items()):
-            if bm:
-                bound_nodes.setdefault((int(k_), str(pk_)), []).append(int(n_))
+        for k_, n_, pk_ in sorted(self._stated_keys(st)):
+            bound_nodes.setdefault((int(k_), str(pk_)), []).append(int(n_))
         for kind, tree in ptm.kinds.items():
             if kind != EV.KIND_TXN:
                 continue
@@ -574,6 +585,14 @@ class BindingEngine(Engine):
                     if bm:
                         bound_map[(kind, nid, pk)] = bm
         st["bound"] = bound_map
+        # (round 9) the bound pairs whose binding the views state: these persist
+        # through P05's role churn and re-screens (_bound_payloads)
+        stated: List[Tuple[int, int, str]] = []
+        for (k_, n_, pk_) in sorted(bound_map):
+            rec_ = (((model["nodes"].get(k_) or {}).get(n_) or {}).get("pairs") or {}).get(pk_)
+            if rec_ and FD.binding_stated(rec_, FD.payload_card(reg, rec_)):
+                stated.append((int(k_), int(n_), str(pk_)))
+        st["bound_stated"] = stated
         # the sources whose value history is kept: those some node's pair
         # sketch tracks (<= PAIR_NODES x 64), so the history is bounded by the
         # sketches and never by the number of IPs seen
@@ -584,7 +603,7 @@ class BindingEngine(Engine):
                     track.setdefault(pair_key(X, Y), set()).update(str(x) for x in ps.x.keys())
         st["track"] = track
         screened = {pair_key(d["x"], d["y"]) for d in specs}
-        bound_pk = {pk for (_k, _n, pk), bm in bound_map.items() if bm}
+        bound_pk = {pk for _k, _n, pk in stated}
         for pk in list(st["hist"]):
             keep = track.get(pk)
             if not keep:
