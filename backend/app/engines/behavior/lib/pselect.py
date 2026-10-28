@@ -2188,17 +2188,23 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
                 full[pres] = cc
                 h_sys[a], _ = w_plugin(full[rec], w[rec])
         return h_sys[a]
-    # (round 9) an attribute (system target or node-local) takes a node's slot
-    # only when the node predicts it: on the rows that recorded it, "the row
-    # routes through this node" carries information about its presence or,
-    # where present, about its value at the coarsest level with >= 3 values
-    # (penalised gain > 0 on the rows counted equally). Ranked by entropy x
-    # coverage alone, independent noise present on every row filled the slots
-    # (O-red: five to seven of the login node's nine targets were `meta.z*`,
-    # the same lottery at every node, whose split / target roles came from
-    # chance gains on the weighted probe, and the username lost its slot); an
-    # action's field (present only there, or distributed differently there)
-    # keeps it. A node holding every row (a root) is not compared
+    # (round 9) the attributes a node PREDICTS take its slots first: on the
+    # rows that recorded the attribute, "the row routes through this node"
+    # carries information about its presence or, where present, about its
+    # value at the coarsest level with >= 3 values (penalised gain > 0 on the
+    # rows counted equally). Ranked by entropy x coverage alone, independent
+    # noise present on every row filled the slots (O-red: five to seven of the
+    # login node's nine targets were `meta.z*`, the same lottery at every
+    # node, whose split / target roles came from chance gains on the weighted
+    # probe, and the username lost its slot). A node-local candidate the node
+    # does not predict gets no slot; a system target it does not predict
+    # still fills a slot left free, after the predicted ones: its band is a
+    # constraint of the node's events too, and the node's reference keeps it
+    # up to date (excluded outright, pack O seed 0's mail node of the
+    # 192.168 /24s - the same upload sizes as every mail node - stated the
+    # upload band of its day-5 reference for the rest of the run, from 26
+    # decayed observations, and failed GA.mail#0 / FIN.mail#0's content from
+    # day 12 on). A node holding every row (a root) is not compared
     lg_rows: Dict[str, Any] = {}
 
     def local_gain(a: str, ii: np.ndarray) -> float:
@@ -2274,11 +2280,12 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
                 continue
             if a not in sys_set and cov < local_cov:
                 continue
-            if local_gain(a, ii) <= 0.0:
+            pred = local_gain(a, ii) > 0.0
+            if not pred and a not in sys_set:
                 continue
-            scored.append((h * cov, a))
-        scored.sort(key=lambda x: (x[1] in prox, -x[0], x[1]))
-        keep = [a for _, a in scored[:m_t]]
+            scored.append((h * cov, a, pred))
+        scored.sort(key=lambda x: (x[1] in prox, not x[2], -x[0], x[1]))
+        keep = [a for _, a, _p in scored[:m_t]]
         # (round 3) up to N_CONST structural constants on top of the m_t informative
         # targets. Before, a constant was skipped as 'a node invariant P04 detects',
         # but P04 detects invariants of the targets it tracks only: the OA / portal

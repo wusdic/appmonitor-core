@@ -64,13 +64,15 @@ def test_the_payload_of_a_stated_binding_keeps_the_target_role():
 
 def test_independent_noise_does_not_take_a_node_target_slot():
     """O-red: P05 lists the independent `meta.z*` attributes among the node-
-    local candidates (their roles came from chance gains), and ranked by
-    entropy x coverage they took five to seven of the login node's nine
-    target slots (from the system list too: their roles came from chance
-    gains). An attribute needs the node to predict it - its
-    presence or its values differ on the node's rows from the others' - so
-    the login form's username keeps its slot and an attribute that is the
-    same lottery at every node does not get one."""
+    local candidates and in the system target list (their roles came from
+    chance gains), and ranked by entropy x coverage they took five to seven of
+    the login node's nine target slots; the username lost its slot. The
+    attributes a node predicts - their presence or their values differ on the
+    node's rows from the others' - rank first: the login form's username
+    keeps its slot, a node-local candidate that is the same lottery at every
+    node gets none, and a system target the node does not predict fills only
+    a slot left free (pack O's mail: every node has the same upload sizes,
+    and the band is still a constraint of each node's events)."""
     from app.engines.behavior.lib import phier as PH
     from app.engines.behavior.lib import ptree as PT
     probe = SEL.StratifiedProbe(512)
@@ -78,17 +80,24 @@ def test_independent_noise_does_not_take_a_node_target_slot():
     for i in range(400):
         login = i % 8 == 0
         row = {"http.route": "POST h /login" if login else "GET h /docs",
-               "net.bytes_up": float(rng.integers(400, 2000)),
-               "meta.z01": float(rng.uniform(0, 1000)), "meta.z02": f"z{int(rng.integers(0, 8))}"}
+               "net.bytes_up": f"b{int(rng.integers(0, 6))}",
+               "meta.z01": f"v{int(rng.integers(0, 10))}", "meta.z02": f"z{int(rng.integers(0, 8))}"}
         if login:
             row["body.kv.username"] = f"u{int(rng.integers(0, 12))}"
         probe.offer("all", row, 1.0, float(i), float(rng.random()))
     tr = PT.Tree(0, 0.0)
     tr.split(tr.root, "http.route", 0, [["POST h /login"]], 0.0)
     login_nid = tr.nodes[tr.root].split.children[0]
-    hier = PH.Hierarchies(registry={"meta.z01": {"type": "numeric"}, "net.bytes_up": {"type": "numeric"}})
-    for tsys, pool in ((["net.bytes_up"], ["meta.z01", "meta.z02", "body.kv.username"]),
-                       (["meta.z01", "meta.z02", "net.bytes_up"], ["body.kv.username"])):
-        got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, tsys, n_min=8, local_pool=pool)
-        assert "body.kv.username" in got[login_nid]
-        assert "meta.z01" not in got[login_nid] and "meta.z02" not in got[login_nid], got[login_nid]
+    hier = PH.Hierarchies(registry={"meta.z01": {"type": "categorical"}, "net.bytes_up": {"type": "categorical"}})
+    # noise as node-local candidates: no slot at all
+    got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["net.bytes_up"], n_min=8,
+                                      local_pool=["meta.z01", "meta.z02", "body.kv.username"])
+    assert "body.kv.username" in got[login_nid]
+    assert "meta.z01" not in got[login_nid] and "meta.z02" not in got[login_nid], got[login_nid]
+    assert "net.bytes_up" in got[login_nid]          # a free slot: the system target keeps it
+    # noise in the system list: the username ranks first and keeps its slot
+    # when the slots are scarce
+    for m_t in (1, 2):
+        got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["meta.z01", "meta.z02", "net.bytes_up"],
+                                          m_t=m_t, n_min=8, local_pool=["body.kv.username"])
+        assert got[login_nid][0] == "body.kv.username", got[login_nid]
