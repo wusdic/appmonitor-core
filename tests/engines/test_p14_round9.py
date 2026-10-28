@@ -314,6 +314,7 @@ def test_a_piece_drifting_only_in_its_own_windows_does_not_hold_back_the_refit_d
     b = _st(8, ["10.168.7.121"], [[808, 834]], (3000.0, 70000.0), 0.83, [SIB_B], state="evolving")
     b["evidence"]["when"]["drift"] = {"workday": {"k": 0, "n": 3}}
     b["evidence"]["facet_conf"] = {"who": 0.97, "when": 0.83}
+    b["evidence"]["conf_rest"] = 0.97              # its statement without its own windows
     refit = ({"workday": [[564, 571], [811, 844]], "nonworkday": [], "coverage": 0.8, "confidence": 0.8},
              "工作日 09:24–09:31、13:31–14:04", "", 0.9)
     d = VW.department_statements([a, b], dept_of, "mail", when_of=lambda p, m: refit)[0]
@@ -324,3 +325,25 @@ def test_a_piece_drifting_only_in_its_own_windows_does_not_hold_back_the_refit_d
     # a piece evolving for another reason (no window drift) keeps the department evolving
     b2 = dict(b, evidence=dict(b["evidence"], when={"workday": [[808, 834]], "coverage": 0.8}))
     assert VW.department_statements([a, b2], dept_of, "mail", when_of=lambda p, m: refit)[0]["state"] == "evolving"
+
+
+def test_a_pieces_nominal_content_facet_does_not_set_the_department_confidence():
+    """Pack O seed 1, days 15-21 (round-9 development run): 10.168.7.121's
+    mail piece had no held-out test of its own; its statement stated 0.96 (its
+    kind's prior) while its content facet carried the nominal lower bound of
+    its 12 rows (0.05-0.53). The refitted department statement took the facet
+    and stated 0.05-0.53 - and held on every day. A piece contributes its
+    statement's confidence without its own windows (evidence conf_rest)."""
+    a = _st(7, ["192.168.1.21", "192.168.1.23"], [[810, 845]], (2000.0, 60000.0), 0.97, [SIB_A])
+    a["evidence"]["conf_rest"] = 0.97
+    b = _st(8, ["10.168.7.121"], [[0, 942]], (3000.0, 70000.0), 0.96, [SIB_B])
+    b["evidence"]["facet_conf"] = {"who": 0.96, "when": 0.5, "content": 0.0544}
+    b["evidence"]["conf_rest"] = 0.96
+    refit = ({"workday": [[564, 571], [811, 844]], "nonworkday": [], "coverage": 0.8, "confidence": 0.8},
+             "工作日 09:24–09:31、13:31–14:04", "", 0.98)
+    d = VW.department_statements([a, b], dept_of, "mail", when_of=lambda p, m: refit)[0]
+    assert abs(d["confidence"] - 0.96) < 1e-12
+    # without conf_rest (an older piece): the piece's statement confidence
+    b["evidence"].pop("conf_rest")
+    d = VW.department_statements([a, b], dept_of, "mail", when_of=lambda p, m: refit)[0]
+    assert abs(d["confidence"] - 0.96) < 1e-12

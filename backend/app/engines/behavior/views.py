@@ -824,6 +824,10 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
     # holds on new events); the min-over-parts formula above states the
     # weakest part's NOMINAL coverage and was under-confident on pack O
     # (PG2 ECE 0.36-0.43)
+    # (round 9) the statement's confidence without its own time windows, on
+    # the same (held-out) scale: what a department statement that states
+    # refitted windows takes from this piece (department_statements)
+    conf_rest = compose_conf(nd, t, conf, part, True, None, 1.0, base_hold(c))
     conf = compose_conf(nd, t, conf, part, own_when, when_c, own_hold, base_hold(c))
     when_fc = None
     if drift and when_c is not None and math.isfinite(float(when_c)):
@@ -956,6 +960,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         if v:
             fc[k] = round(float(x), 4)
     ev["facet_conf"] = fc
+    ev["conf_rest"] = round(float(conf_rest), 4)
     out = {"id": pid + (f"|{subject}" if subject else ""), "pattern_id": pid, "view": view,
            "subject": subject or c.key, "text_zh": zh, "text_en": en,
            "support": sup, "n_obs": sup_txt, "confidence": conf,
@@ -2016,13 +2021,20 @@ def department_statements(stmts: Sequence[Mapping[str, Any]], dept_of: Callable[
             conf = float(min(float(st.get("confidence") or 0.0) for st in sts))
         else:
             # the department states its own (refitted) windows, not the
-            # pieces': a piece contributes its other clauses' confidence
-            # (facet_conf without 'when'), and a piece 'evolving' only because
-            # ITS windows drift (evidence when.drift) is confirmed for them
+            # pieces': a piece contributes its statement's confidence without
+            # its own windows (evidence conf_rest: P04's held-out composition,
+            # the scale of the pieces' own statements), and a piece 'evolving'
+            # only because ITS windows drift (evidence when.drift) is confirmed
+            # for them. Not the facet confidences: an untested piece's content
+            # facet is the nominal lower bound of a handful of rows (pack O
+            # seed 1, days 15-21: 10.168.7.121's mail piece, 12 rows, content
+            # facet 0.05-0.53 while its statement stated 0.96; the department
+            # statement stated 0.05-0.53 and held on every day)
             def rest_c(st: Mapping[str, Any]) -> float:
-                fc = {k: v for k, v in ((st.get("evidence") or {}).get("facet_conf") or {}).items()
-                      if k != "when"}
-                return float(min(fc.values())) if fc else float(st.get("confidence") or 0.0)
+                cr = (st.get("evidence") or {}).get("conf_rest")
+                if cr is not None and math.isfinite(float(cr)):
+                    return float(cr)
+                return float(st.get("confidence") or 0.0)
             conf = float(min(rest_c(st) for st in sts))
             states = ["confirmed" if (x == "evolving" and ((st.get("evidence") or {}).get("when") or {}).get("drift"))
                       else x for x, st in zip(states, sts)]
