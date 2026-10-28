@@ -115,9 +115,9 @@ class Fx:
         batch = b.build(t1 - dt, t1)
         self.st.add_batch(system, EV.EVT_BATCH, t1, batch)
         self.now = t1
-        x = time.perf_counter()
+        x = time.process_time()            # CPU, not wall: other processes' load (round 9)
         self.eng.safe_run(ctx(self.st, t1, window_s=dt, config=CFG), None)
-        self.t_eng += time.perf_counter() - x
+        self.t_eng += time.process_time() - x
         return batch, self.st.batch_at(system, EV.PAT_ASSIGN, t1)
 
     def violations(self, ip: Optional[str] = None) -> List[Any]:
@@ -503,11 +503,18 @@ def test_bounded_in_ips_and_attributes():
     assert b2 < 4 * b1
     # past the caps the cost per event is flat in the number of IPs (an event of
     # a never-seen IP costs more than a known one's: it is a who finding; 4 000
-    # and 40 000 IPs are both almost all never-seen within 4 500 events)
-    _, us4 = _scale_run(4000, **caps)
-    _, us5 = _scale_run(40000, **caps)
+    # and 40 000 IPs are both almost all never-seen within 4 500 events).
+    # (round 9) The compared runs are interleaved and each configuration keeps
+    # its fastest of two runs (process CPU): a load burst on the host during one
+    # run no longer decides the comparison (progressive.md 16.16.12 item 22).
+    us = {"4k": [], "40k": [], "500": [us1], "500x": []}
+    for _ in range(2):
+        us["4k"].append(_scale_run(4000, **caps)[1])
+        us["40k"].append(_scale_run(40000, **caps)[1])
+        us["500x"].append(_scale_run(500, extra=300, **caps)[1])
+        us["500"].append(_scale_run(500, **caps)[1])
+    us4, us5, us1, us3 = (min(us[k]) for k in ("4k", "40k", "500", "500x"))
     assert us5 < 1.5 * us4 + 30e-6
-    b3, us3 = _scale_run(500, extra=300, **caps)
     assert us3 < 1.5 * us1 + 30e-6                                  # unchecked attributes cost nothing
 
 
