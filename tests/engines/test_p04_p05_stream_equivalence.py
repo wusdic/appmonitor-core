@@ -108,8 +108,15 @@ DAYS = 4.0
 # Re-recorded (908e1e68...) when the held-out constraints of a reference
 # frozen by a recent alarm were refreshed daily and the arrival-slot fallback
 # was stated per day type (PatternTree._reference, _hold_constraints).
-GOLDEN = {"model.ptree": "908e1e68250db9f117a4b849de8005b374016560",
-          "model.attrsel": "7403502379ac9b92580d1d91151056b8df6b29bb"}
+# Re-recorded in round 9 (610a3373... / 3a44efbe...), deliberately, by the tree
+# owner: an untested statement keeps the prior it was issued with
+# (_hold_priors); a source split is not paid by the payload of a stated
+# binding (_mask_bound_targets); a day without an attribute does not count
+# towards demoting its role, a stated binding's payload keeps the target role
+# and model.attrsel carries who_bound (pselect.assign_roles); an action's field
+# is not displaced from a node's target slots (pselect.node_targets_from_probe).
+GOLDEN = {"model.ptree": "610a3373398b29e515e3a03a3a81bcd8a972a24c",
+          "model.attrsel": "3a44efbeb911d8a26c566328a00a8afa8febec91"}
 
 
 def _dec(v: Any) -> Any:
