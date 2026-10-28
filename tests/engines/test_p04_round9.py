@@ -114,9 +114,10 @@ class _SS:
     candidate 0 = the /24 level (valid on an identity it predicts), 1 = the
     learned-group level (larger selective saving, e-process still growing)."""
 
-    def __init__(self, l2e, sg, margin10, W=27.0):
+    def __init__(self, l2e, sg, margin10, W=27.0, n=(60.0, 27.0)):
         import numpy as np
         self.C_ever = 7
+        self.n = np.asarray(n, dtype=float)
         self.C = 2
         self.ordinal = [0, 1]
         self._l2e, self._sg = list(l2e), list(sg)
@@ -167,3 +168,6 @@ def test_a_valid_split_waits_for_a_rival_that_saves_more_on_the_same_events():
     # a rival without evidence (log2 e <= 0) or within tau0 bits does not hold the split
     assert _check_valid_first(_SS([13.3, -2.0], [19.7, 58.6], 38.9), 10.0, "margin", 18).accept
     assert _check_valid_first(_SS([13.3, 4.2], [19.7, 25.0], 6.0), 10.0, "margin", 18).accept
+    # a rival that has counted as much evidence as the valid candidate and still
+    # has not passed (V) is the weaker one: the split is taken (bounded wait)
+    assert _check_valid_first(_SS([13.3, 4.2], [19.7, 58.6], 38.9, n=(60.0, 60.0)), 10.0, "margin", 40).accept

@@ -3890,8 +3890,14 @@ def _check_valid_first(ss: PE.SplitStats, tau0: float, s_mode: str,
         # on day 29 only when the /24 candidate happened to be replaced, and the
         # 综合部 login statement depended on that churn. The rival only defers
         # the split (it never splits without passing (V) itself), so the
-        # false-split bound is unchanged
+        # false-split bound is unchanged. Only a YOUNGER rival defers it (less
+        # evidence counted than the valid candidate: tracked since later - the
+        # learned groups exist from day 10 on, the /24 level from the node's
+        # birth): once the rival has counted as much evidence and still has not
+        # passed (V), its e-process is the weaker one and the valid split is
+        # taken, so a split waits at most the rival's age difference
         if unbeaten and any(o not in set(valid) and ss.W[o, chosen] > 0 and ss.log2_e(o) > 0.0
+                            and float(ss.n[o]) < float(ss.n[chosen])
                             and ss.selective_margin(o, chosen) >= float(tau0) for o in act):
             unbeaten = False
             deferred = True
