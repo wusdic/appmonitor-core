@@ -1940,8 +1940,9 @@ class _RecCache:
 def _cred_extra(typ: str, details: Mapping[str, Any]) -> Dict[str, Any]:
     """(round 9) {'cred': {'attr', 'value'}} for a content finding decided by a
     binding record (the credential and its value), else {}: B28 reads the pair
-    (governor.credential_pair) to distrust the (source, credential) pair
-    instead of the source."""
+    (governor.credential_pair) and keeps the (source, credential) pair
+    distrusted for 7 d beyond the incident's window (within it the finding
+    counts towards the source's trust like any finding)."""
     if typ != "content":
         return {}
     wd = details.get("content")
@@ -2190,8 +2191,8 @@ class ConformityEngine(Engine):
     def _distrusted(self, job: "_BatchJob", ip: str) -> Tuple[Tuple[str, str], ...]:
         """(round 9) The (attr, value) credential pairs B28 distrusts for this
         source on this tree (model.governor['cred_pairs'], governor
-        credential_pair): a credential of a live - or, for 7 d, a past -
-        credential-scoped incident of the source. Their rows are learned
+        credential_pair): a credential named by a live - or, for 7 d after
+        its last live tick, a past - incident of the source. Their rows are learned
         damped like a row flagged cross_binding, while the source's other
         rows keep its trust: the per-(source, credential) form of B28's trust
         (an address whose owner lent or borrowed a credential keeps learning
