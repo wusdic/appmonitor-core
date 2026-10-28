@@ -70,15 +70,15 @@ def test_the_payload_of_a_stated_binding_keeps_the_target_role():
 
 def test_independent_noise_does_not_take_the_slot_of_a_node_field():
     """O-red: P05 lists the independent `meta.z*` attributes among the node-
-    local candidates and in the system target list (their roles came from
-    chance gains), and ranked by entropy x coverage they took five to seven of
-    the login node's nine target slots; the username lost its slot. An
-    attribute no node predicts - its presence and its values are the same on
-    every node's rows as on the others' - is the same lottery everywhere: it
-    fills only a slot the others leave free (it is not excluded: pack O's
-    mail has the same upload sizes at every node, and the band is still a
-    constraint of each node's events), so the login form's username keeps
-    its slot when slots are scarce."""
+    local candidates and in the system target list (their split roles came
+    from chance gains), and ranked by entropy x coverage they took five to
+    seven of the GA login node's nine target slots; the username lost its
+    slot, P08 never refitted the node's bindings and D2's rename was never
+    stated. An action's field - an attribute whose presence the node
+    predicts - is not displaced by an attribute that is not one: it replaces
+    the lowest-ranked of those, and the list otherwise keeps its ranking and
+    order (a re-ordered list makes P04 retarget the node; an attribute that is
+    the same lottery at every node still fills a free slot)."""
     from app.engines.behavior.lib import phier as PH
     from app.engines.behavior.lib import ptree as PT
     probe = SEL.StratifiedProbe(512)
