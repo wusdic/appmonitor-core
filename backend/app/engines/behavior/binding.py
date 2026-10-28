@@ -593,6 +593,9 @@ class BindingEngine(Engine):
             if rec_ and FD.binding_stated(rec_, FD.payload_card(reg, rec_)):
                 stated.append((int(k_), int(n_), str(pk_)))
         st["bound_stated"] = stated
+        # published for P05 (pselect.bound_payloads: the payloads of stated bindings
+        # keep their target role) - the same "stated" rule as the views'
+        model["bound_stated"] = [[k_, n_, pk_] for k_, n_, pk_ in stated]
         # the sources whose value history is kept: those some node's pair
         # sketch tracks (<= PAIR_NODES x 64), so the history is bounded by the
         # sketches and never by the number of IPs seen
