@@ -347,3 +347,31 @@ def test_a_pieces_nominal_content_facet_does_not_set_the_department_confidence()
     b["evidence"].pop("conf_rest")
     d = VW.department_statements([a, b], dept_of, "mail", when_of=lambda p, m: refit)[0]
     assert abs(d["confidence"] - 0.96) < 1e-12
+
+
+# ------------------------------------------------------------------ dissolved group
+def test_a_dissolved_groups_id_is_not_the_who_its_observed_sources_are():
+    """O-real seed 0, days 32-35: the 综合部 approval nodes saw 192.168.1.21
+    only (U 0.065, above U_CLOSED, so no closed address list) and their group
+    level held 'grp:G36' - a group P11 had dissolved. The statements read
+    'grp:G36' with no members and GA.oa.approvals#0-#2@1 failed who. A
+    dissolved group's id names nobody: the addresses seen at the node are
+    stated, not yet closed; a group that still exists is stated as before."""
+    from app.engines.behavior.lib import pnode as PN
+    from app.engines.behavior.lib import prender as PR
+    DAY = 86400.0
+    t = 1_757_000_000.0
+    w = PN.WhoSummary()
+    for d in range(10):
+        w.update(["192.168.1.21", None, None, "grp:G36", None], "192.168.1.21", t + d * DAY, 1.0, 1.0)
+    w.update(["192.168.1.99", None, None, "grp:G36", None], "192.168.1.99", t + 3 * DAY, 0.3, 0.3)
+    now = t + 10 * DAY
+    assert w.levels[0].unseen(now) > PR.U_CLOSED          # no closed address list
+    groups = {"G18": {"name": "G18", "members": ["192.168.1.21", "192.168.2.12"]}}
+    ev, zh, en, _c = PR.who_block(w, now, 10, {"192.168.1.21": "G18"}, groups)
+    assert ev["level"] == "ip" and ev["members"] == ["192.168.1.21"] and not ev["closed"]
+    assert "目前观测到" in zh
+    # the group still exists: its members, as before
+    groups["G36"] = {"name": "综合部", "members": ["192.168.1.21"]}
+    ev, zh, en, _c = PR.who_block(w, now, 10, {"192.168.1.21": "G36"}, groups)
+    assert ev["level"] == "grp" and ev["items"] == ["grp:G36"] and ev["members"] == ["192.168.1.21"]

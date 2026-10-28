@@ -175,7 +175,19 @@ def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
     heavy, cov = who.heavy_set(0, t)
     closed0 = bool(U0 <= U_CLOSED and n_days >= CLOSED_DAYS)
     regions_cfg = set(regions_cfg)
-    if mode != "none" and len(heavy) <= IP_LIST_MAX and cov >= IP_COVER - 1e-9 and U0 <= U_CLOSED:
+    lv3 = who.levels[3] if len(who.levels) > 3 else None
+    # (round 9) the node's sources are one learned group P11 has since
+    # dissolved (its id is no longer in `groups`): that id names nobody, so the
+    # who is the addresses seen at the node, listed even before their set
+    # closes ('so far ...'). O-real seed 0, days 32-35: 综合部's approval nodes
+    # (192.168.1.21 alone, U 0.065 > U_CLOSED) stated 'grp:G36' with no
+    # members - G36 had dissolved - and GA.oa.approvals#0-#2@1 failed who
+    gone = False
+    if mode != "none" and lv3 is not None and lv3.total(t) > 0:
+        hg_, cg_ = who.heavy_set(3, t, GROUP_COVER)
+        gone = (len(hg_) == 1 and str(hg_[0]).startswith("grp:") and str(hg_[0]) != "grp:∅"
+                and cg_ >= GROUP_COVER - 1e-9 and str(hg_[0])[4:] not in groups)
+    if mode != "none" and len(heavy) <= IP_LIST_MAX and cov >= IP_COVER - 1e-9 and (U0 <= U_CLOSED or gone):
         ips = sorted({str((readdr or {}).get(str(x), x)) for x in heavy}, key=_ip_sort)
         plain = [x[7:] if x.startswith("shared:") else x for x in ips]
         gs = {ip2g.get(x) for x in plain}
@@ -195,9 +207,8 @@ def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
         ev = {"level": "ip", "items": ips, "members": plain, "U": Us, "closed": closed0,
               "confidence": 1.0 - Us if closed0 else 0.0, "distinct": distinct}
         return ev, zh, en, (1.0 - Us) if closed0 else 1.0
-    # one group covering >= 90 %
-    lv3 = who.levels[3] if len(who.levels) > 3 else None
-    if mode != "none" and lv3 is not None and lv3.total(t) > 0:
+    # one group covering >= 90 % (a group that still exists)
+    if mode != "none" and lv3 is not None and lv3.total(t) > 0 and not gone:
         hg, cg = who.heavy_set(3, t, GROUP_COVER)
         if len(hg) == 1 and str(hg[0]).startswith("grp:") and cg >= GROUP_COVER - 1e-9 and \
                 str(hg[0]) != "grp:∅":
