@@ -1,9 +1,9 @@
 """P05 round 9 (docs/lib3/progressive.md §16.16.11 item 6, §16.16.12 item 5):
-a role holds while no new row carries the attribute (a weekend without
-logins is no evidence against the login's fields); the payload of a binding
-P08 states keeps the target role; an attribute takes a node's target slot
-only when the node predicts it (O-red: independent `meta.z*` filled the
-login node's target list)."""
+a day on which an attribute never occurs does not count towards demoting its
+role (a weekend without logins is no evidence against the login's fields);
+the payload of a binding P08 states keeps the target role; an attribute no
+node predicts takes only the target slots the others leave (O-red:
+independent `meta.z*` filled the login node's target list)."""
 from __future__ import annotations
 
 import numpy as np
@@ -19,34 +19,40 @@ def _st(**kw):
     return st
 
 
-def _roles(prev, stats, seen, bound=(), key_seen=None):
-    out = SEL.assign_roles(stats, prev, {}, {}, 0.0, lambda a: (0,), seen=seen, bound=bound,
-                           key_seen=key_seen)
+def _roles(prev, stats, present, bound=()):
+    out = SEL.assign_roles(stats, prev, {}, {}, 0.0, lambda a: (0,), present=present, bound=bound)
     return out, dict(out, roles=out["roles"], low=out["low"], ustat=out["ustat"])
 
 
-def test_a_role_holds_while_no_row_carries_the_attribute():
+def test_a_day_without_the_attribute_does_not_demote_its_role():
     """O-red, Saturday: no login since Friday evening, 87 rows of weekend
     traffic entered the probe and body.kv.username's split utility fell from
     0.09 to 0.008 bits; three hourly runs dropped it and P08's login bindings
-    lost their payload (PG5 D2). Without a new row carrying the attribute its
-    role, hysteresis and listed statistics hold; once rows carry it again a
-    low utility demotes it as before."""
+    lost their payload (PG5 D2). On a day the attribute never occurs (registry
+    day_pres = 0 on the key's latest day of traffic) a low run is no evidence
+    against its role: the hysteresis counter holds. On a day it occurs, a low
+    utility demotes it after DEMOTE_RUNS runs as before."""
     a = "body.kv.username"
-    out, prev = _roles({"roles": {a: "split"}}, {a: _st()}, {a: 100.0}, key_seen=100.0)
+    out, prev = _roles({"roles": {a: "split"}}, {a: _st()}, {a: True})
     assert out["roles"][a] == "split"
-    for h in range(5):                                   # the weekend: other traffic, no login
-        out, prev = _roles(prev, {a: _st(U_s_max=0.008, best_levels=[])}, {a: 100.0}, key_seen=200.0 + h)
-        assert out["roles"][a] == "split" and out["low"].get(a, 0) == 0
-        assert abs(out["ustat"][a]["U_s"] - 0.09) < 1e-12
-    for t in (300.0, 400.0, 500.0):                      # new rows, still low: demoted after DEMOTE_RUNS
-        out, prev = _roles(prev, {a: _st(U_s_max=0.008, best_levels=[])}, {a: t}, key_seen=t)
+    out, prev = _roles(prev, {a: _st(U_s_max=0.008, best_levels=[])}, {a: True})   # Friday night
+    assert out["roles"][a] == "split" and out["low"][a] == 1
+    for _ in range(3 * SEL.DEMOTE_RUNS):                 # the weekend: other traffic, no login
+        out, prev = _roles(prev, {a: _st(U_s_max=0.008, best_levels=[])}, {a: False})
+        assert out["roles"][a] == "split" and out["low"][a] == 1
+    # the listed statistics are the current ones (only the role holds)
+    assert abs(out["ustat"][a]["U_s"] - 0.008) < 1e-12
+    for _ in range(SEL.DEMOTE_RUNS - 1):                 # logins again, still low: demoted
+        out, prev = _roles(prev, {a: _st(U_s_max=0.008, best_levels=[])}, {a: True})
     assert out["roles"][a] == "dropped"
-    # a key with no new row at all (a night without traffic) is judged as before
-    out, prev = _roles({"roles": {a: "split"}}, {a: _st()}, {a: 100.0}, key_seen=100.0)
-    for _ in range(3):
-        out, prev = _roles(prev, {a: _st(U_s_max=0.008, best_levels=[])}, {a: 100.0}, key_seen=100.0)
+    # without the presence map (callers before round 9) runs count as before
+    out, prev = _roles({"roles": {a: "split"}}, {a: _st()}, None)
+    for _ in range(SEL.DEMOTE_RUNS):
+        out, prev = _roles(prev, {a: _st(U_s_max=0.008, best_levels=[])}, None)
     assert out["roles"][a] == "dropped"
+    # a promotion is not held back on such a day
+    out, prev = _roles({"roles": {a: "dropped"}}, {a: _st()}, {a: False})
+    assert out["roles"][a] == "split"
 
 
 def test_the_payload_of_a_stated_binding_keeps_the_target_role():
@@ -58,7 +64,7 @@ def test_the_payload_of_a_stated_binding_keeps_the_target_role():
     assert SEL.bound_payloads(pbind) == [a]
     prev = {"roles": {a: "split"}, "low": {a: SEL.DEMOTE_RUNS - 1}}
     out = SEL.assign_roles({a: _st(U_s_max=0.008, best_levels=[])}, prev, {}, {}, 0.0, lambda x: (0,),
-                           seen={a: 500.0}, bound=SEL.bound_payloads(pbind))
+                           present={a: True}, bound=SEL.bound_payloads(pbind))
     assert out["roles"][a] == "target"
 
 

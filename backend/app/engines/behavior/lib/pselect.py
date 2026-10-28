@@ -1740,26 +1740,24 @@ def bound_payloads(pbind: Any) -> List[str]:
 def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any],
                  redundant: Mapping[str, str], ip_info: Mapping[int, float], t: float,
                  kinds_of: Callable[[str], Iterable[int]],
-                 seen: Optional[Mapping[str, float]] = None,
-                 bound: Iterable[str] = (), key_seen: Optional[float] = None) -> Dict[str, Any]:
+                 present: Optional[Mapping[str, bool]] = None,
+                 bound: Iterable[str] = ()) -> Dict[str, Any]:
     """Roles with hysteresis (§6.4). prev = the previous model.attrsel (or {}).
     Returns {roles, levels, targets_sys, split_cands, redundant, who_mode, low}.
 
-    (round 9) `seen`: the time each attribute was last present on a learned
-    event (registry last_seen); `key_seen`: the latest learned event of the
-    key. An attribute not seen since its previous evaluation while the key's
-    other traffic went on keeps its role: its statistics moved only because
-    rows without it arrived (a weekend without logins) and the probe's other
-    strata grew - no evidence about the attribute itself. (A key with no new
-    row at all is judged as before: holding every role then kept the chance
-    roles of calendar attributes through the nights, and pack O's mail split
-    by region instead of /16.) Measured on O-red (due
-    regime): body.kv.username's split utility fell from 0.09 to 0.008 bits on
-    Saturday as 87 rows of weekend traffic entered the probe and none with a
-    login, and three hourly runs dropped it; P08's stated login bindings then
-    lost their payload (PG5 D2). `bound`: the payloads of the bindings P08
-    states (bound_payloads) keep at least the target role - a stated binding
-    is a constraint the system checks on that attribute."""
+    (round 9) `present`: whether each attribute was present on the key's
+    latest day of traffic (registry day_pres > 0). A day on which the
+    attribute never occurs is no evidence against its role: a run of such a
+    day does not count towards a demotion (the hysteresis counter holds, the
+    role stays). Measured on O-red (P05's due regime): on Saturday no login
+    came, 87 rows of weekend traffic entered the probe and body.kv.username's
+    split utility fell from 0.09 to 0.008 bits; three hourly runs dropped it,
+    P08's stated login bindings lost their payload and the GA login node's
+    rename (D2) was never stated. A day the attribute occurs on is judged as
+    before (statistics, promotions and the listed utilities are unchanged).
+    `bound`: the payloads of the bindings P08 states (bound_payloads) keep at
+    least the target role - a stated binding is a constraint the system
+    checks on that attribute."""
     roles: Dict[str, str] = dict(prev.get("roles") or {})
     low: Dict[str, int] = dict(prev.get("low") or {})
     levels: Dict[str, List[int]] = dict(prev.get("levels") or {})
@@ -1767,9 +1765,6 @@ def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any]
     ustat: Dict[str, Dict[str, Any]] = {a: dict(v) for a, v in (prev.get("ustat") or {}).items()}
     bound_s = set(bound)
     for a, st in stats.items():
-        prev_u = ustat.get(a)
-        prev_seen = (prev_u or {}).get("seen")
-        prev_kseen = (prev_u or {}).get("kseen")
         ustat[a] = {"U_t": max(float(st["U_t"]), float(st.get("U_tc", st["U_t"]))),
                     "CR_p": float(st.get("CR_p", 0.0)), "n_p": int(st.get("n_p", 0)),
                     "H_p": float(st.get("H_p", st["H"])),
@@ -1777,14 +1772,6 @@ def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any]
                     "cov": max(float(st["cov"]), float(st.get("cov_rows", st["cov"]))),
                     "H": float(st["H"]), "level": int(st["level"]), "CR": float(st["CR"])}
         old = roles.get(a, "probe")
-        sv = None if seen is None else seen.get(a)
-        if sv is not None:
-            ustat[a]["seen"] = float(sv)
-        if key_seen is not None:
-            ustat[a]["kseen"] = float(key_seen)
-        stale = (sv is not None and prev_seen is not None and float(sv) <= float(prev_seen)
-                 and key_seen is not None and prev_kseen is not None and float(key_seen) > float(prev_kseen)
-                 and old != "probe")
         H, cov = st["H"], st["cov"]
         U_t, U_s = max(st["U_t"], st.get("U_tc", st["U_t"])), st["U_s_max"]
         best_lv = list(st["best_levels"])
@@ -1841,20 +1828,15 @@ def assign_roles(stats: Mapping[str, Mapping[str, Any]], prev: Mapping[str, Any]
                 new = "dropped"
         if a in bound_s and new not in ("split", "target", "invariant"):
             new = "target"
-        if stale:
-            # no row with the attribute since its last run: role, hysteresis and
-            # the statistics the system lists are ranked by stay as they were
-            roles[a] = old
-            if prev_u is not None:
-                ustat[a] = dict(prev_u, kseen=float(key_seen))
-            continue
         # hysteresis: a kept role demotes only after DEMOTE_RUNS consecutive low runs
         # (the kept role's own test already uses the low threshold u_lo, so a
         # role changes here only when its utility fell below u_lo, or on an upgrade)
         demotion = ((old in ("split", "target") and new in ("dropped", "shape", "redundant"))
                     or (old == "split" and new == "target")
                     or (old == "redundant" and new != "invariant" and a not in redundant))
-        if demotion:
+        if demotion and present is not None and not present.get(a, True):
+            new = old                       # a day without the attribute: no evidence
+        elif demotion:
             low[a] = low.get(a, 0) + 1
             if low[a] < DEMOTE_RUNS:
                 new = old

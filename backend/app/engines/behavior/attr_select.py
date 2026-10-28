@@ -414,15 +414,14 @@ class AttributeSelectionEngine(Engine):
                 red[b] = k_
                 if b in prev_x:
                     red_x.add(b)
-        # (round 9) each attribute's last presence and the key's latest row (no
-        # new row with the attribute while the key's other traffic went on: its
-        # role holds) and the payloads of the bindings P08 states (kept as targets)
-        seen = {a: float(reg.records[a].last_seen) for a in stats if a in reg.records}
-        key_seen = max((float(r.last_seen) for r in reg.records.values()), default=None)
+        # (round 9) whether each attribute occurred on the key's latest day of
+        # traffic (a day without it does not count towards demoting its role)
+        # and the payloads of the bindings P08 states (kept as targets)
+        present = {a: float(reg.records[a].day_pres) > 0.0 for a in stats if a in reg.records}
         bound = SEL.bound_payloads(MP.get_model(store, key, MP.PBIND))
         out = SEL.assign_roles(stats, prev, red, ipinfo or {}, now,
                                lambda a: reg.records[a].kinds if a in reg.records else (),
-                               seen=seen, bound=bound, key_seen=key_seen)
+                               present=present, bound=bound)
         changes = []
         for a, role in out["roles"].items():
             if roles_prev.get(a, "probe") != role:
