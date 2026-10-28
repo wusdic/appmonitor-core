@@ -1412,19 +1412,15 @@ class GovernorEngine(Engine):
             prov = 0.0
         trust = prov
         live = [i for i in sc.incidents.get(e, []) if i.status in LIVE]
+        scopes = [self._incident_scope(store, i) for i in live]
+        pairs = sorted({pr for _, prs in scopes for pr in prs})
+        if pairs and now is not None:
+            _note_pairs(model, pairs, float(now))
         if model["regime"] not in MG.TRUSTED_STATES or ob.acc_max >= ACC_TRUST_LEVEL:
             trust = 0.0
         elif live:
             # (round 3) the incident's evidence and scope, not its existence
-            fac = 1.0
-            pairs: Set[str] = set()
-            for i in live:
-                f_i, pr = self._incident_scope(store, i)
-                fac = min(fac, f_i)
-                pairs.update(pr)
-            trust = prov * fac
-            if pairs and now is not None:
-                _note_pairs(model, pairs, float(now))
+            trust = prov * min(f for f, _ in scopes)
         return prov, trust
 
     def _incident_trust(self, store: Any, inc: Incident) -> float:
@@ -1453,24 +1449,32 @@ class GovernorEngine(Engine):
         evidence) is evidence about the SOURCE and keeps trust 0. The ticks of
         the findings themselves keep trust_prov = 0 (finding >= MEDIUM).
 
-        (round 9) CREDENTIAL-SCOPED evidence: a P03 finding on the credential
-        axis flagged cross_binding / foreign_source / concurrent_use (a value
-        bound to another source, used where its own sources are closed, or in
-        use elsewhere right now) is evidence about the (source, credential)
-        PAIR, not about the source: the address's legitimate owner keeps
-        using it with their own credential. Such findings count at any
-        severity (two of them make the incident HIGH) and do not count as a
-        pattern; the pair is distrusted instead - returned here, published
-        by _trust in model.governor['cred_pairs'], and P03 learns the pair's
-        rows damped (conformity: distrusted credential). Pack O-real seed 0:
-        A2 (192.168.1.21 logging in as rose, days 17-21) kept trust 0 for the
-        whole address while its incidents were live; its approvals and
-        documents, which no finding concerned, went unlearned and the address
-        dropped out of the 综合部 approval who-sets on days 28-35 (16.16.12
-        item 15).
+        (round 9) CREDENTIAL-SCOPED evidence, beyond the incident's window: a
+        P03 finding on the credential axis flagged cross_binding /
+        foreign_source / concurrent_use (a value bound to another source, used
+        where its own sources are closed, or in use elsewhere right now) also
+        names a (source, credential) PAIR. The pairs of a live incident are
+        returned here, published by _trust in model.governor['cred_pairs'] and
+        held CRED_PAIR_HOLD_S after the incident's last live tick; P03 learns
+        the pair's rows damped (conformity._distrusted) while the address's
+        other rows keep the address's trust - so once the incident is over the
+        address's legitimate owner learns at full weight with their own
+        credential and the borrowed one stays out of the profile.
+        WITHIN the window the finding still counts towards the factor exactly
+        as any finding (a HIGH one keeps trust 0): trust is per source and
+        tick, read by every learner (P04's tree, B13, the who-sets), and the
+        rows a source sends while its credential incident is live cannot be
+        split by credential there - a session's later rows (approvals,
+        documents) do not carry the login's credential. Pack O seed 2:
+        crediting the source during A2's HIGH incidents released
+        192.168.1.21's held rows of the A2 hours (09:15-11:00, days 17-21) at
+        trust 1 and the borrowed session's approvals displaced
+        GA.oa.approvals#2 from the oa tree on days 20-21 (recall@21 .881 ->
+        .857); the window's rows are released at trust 0 instead (never
+        learned), as in round 8.
 
-        Returns (factor, distrusted pairs 'tree_key|attr=value'). Cached per
-        incident and evidence length."""
+        Returns (factor, the pairs named by its findings 'tree_key|attr=value',
+        sorted). Cached per incident and evidence length."""
         if store is None:
             return 0.0, ()
         cache = self.__dict__.setdefault("_inc_scope", {})
@@ -1480,47 +1484,45 @@ class GovernorEngine(Engine):
         if hit is not None and hit[0] == key:
             return hit[1], hit[2]
         out = 1.0
-        if set(inc.kinds or ()) - {"pattern_violation", "alarm"}:
+        if str(getattr(inc.severity, "value", inc.severity)).lower() in ("high", "critical") \
+                or set(inc.kinds or ()) - {"pattern_violation", "alarm"}:
             out = 0.0
-        high_inc = str(getattr(inc.severity, "value", inc.severity)).lower() in ("high", "critical")
         patterns: Set[Tuple[str, Any]] = set()
         pairs: Set[str] = set()
-        n_find = n_high = 0
+        n_find = 0
         for it in evs:
-            if out == 0.0:
-                break
             if not isinstance(it, Mapping):
                 continue
             src = it.get("source")
             if src == "b27":
                 continue                                   # incident state transitions
-            high = str(it.get("severity") or "").lower() in ("high", "critical")
-            if src == "alarm":
-                fams = set(it.get("families") or ())
-                if high or not fams or fams - {"conformity"}:
-                    out = 0.0
-            elif src == "event" and it.get("kind") == "pattern_violation":
+            if src == "event" and it.get("kind") == "pattern_violation":
                 ev = store.get_event(str(it.get("event_id"))) if it.get("event_id") else None
                 ex = (ev.extra or {}) if ev is not None else {}
                 pair = credential_pair(ex)
                 if pair is not None:
                     pairs.add(pair)
-                elif high or ex.get("node") is None:
+            else:
+                ex = None
+            if out == 0.0:
+                continue                                   # only the pairs are still collected
+            if str(it.get("severity") or "").lower() in ("high", "critical"):
+                out = 0.0
+            elif src == "alarm":
+                fams = set(it.get("families") or ())
+                if not fams or fams - {"conformity"}:
+                    out = 0.0
+            elif ex is not None:
+                if ex.get("node") is None:
                     out = 0.0
                 else:
                     patterns.add((str(ex.get("tree_key")), ex.get("node")))
                     n_find += 1
-                n_high += int(high and pair is None)
             else:
                 out = 0.0
-        if out > 0.0:
-            if pairs:
-                # credential-scoped (plus at most one pattern's ordinary findings)
-                if len(patterns) > 1 or (high_inc and n_high):
-                    out = 0.0
-            elif high_inc or n_find == 0 or len(patterns) > 1:
-                out = 0.0
-        pr = tuple(sorted(pairs)) if out > 0.0 else ()
+        if out > 0.0 and (n_find == 0 or len(patterns) > 1):
+            out = 0.0
+        pr = tuple(sorted(pairs))
         if len(cache) > 4096:
             cache.clear()
         cache[inc.id] = (key, out, pr)

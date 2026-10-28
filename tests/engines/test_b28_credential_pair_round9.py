@@ -1,17 +1,23 @@
-"""Round 9 (governor trust rule owner): a borrowed-credential incident lowers
-the trust of the (source, credential) PAIR, not of the source.
+"""Round 9 (governor trust rule owner): a borrowed-credential incident
+distrusts the (source, credential) PAIR beyond the incident's window; within
+the window it counts like any finding.
 
 O-real seed 0 (progressive.md 16.16.9 / 16.16.12 item 15): A2 is 192.168.1.21
-logging in to oa as rose on days 17-21. P03's cross_binding findings (MEDIUM,
-HIGH from the second) made B28 hold the address's trust at 0 while its
-incidents were live, so its approvals, documents and own logins as jack -
-which no finding concerned - went unlearned, and the address dropped out of
-the 综合部 approval who-sets on days 28-35.
+logging in to oa as rose on days 17-21. Round 8 lowered trust per source only;
+once the incidents were over the address learned rose's logins at full weight.
 
-Now P03's credential finding names the pair (extra 'cred'), B28 keeps the
-source's trust (governor._incident_scope) and publishes the pair in
-model.governor['cred_pairs'], and P03 learns the pair's later rows damped
-(conformity._distrusted) while the address's other rows keep full weight.
+Now P03's credential finding names the pair (extra 'cred'), B28 publishes the
+pairs of a live incident in model.governor['cred_pairs'] for 7 d after its last
+live tick, and P03 learns the pair's rows damped (conformity._distrusted)
+while the address's other rows keep full weight.
+
+Within the window the trust factor is round 8's (a HIGH finding keeps the
+source at 0): trust is per source and tick, read by every learner, and a
+borrowed session's later rows do not carry the credential. A first version
+credited the source during the window; on pack O seed 2 that released
+192.168.1.21's held A2-hour rows at trust 1 and the borrowed session's
+approvals displaced GA.oa.approvals#2 from the oa tree (recall@21 .881 ->
+.857) - test_a / test_b fail on that version.
 """
 from __future__ import annotations
 
@@ -66,51 +72,72 @@ def _run(sim: Sim, n: int) -> List[float]:
     return sim.run(n, lambda st, t: sim.normal(E, t))
 
 
-def test_a_borrowed_credential_incident_keeps_the_sources_trust():
+def _resolve(sim: Sim, iid: str) -> None:
+    inc = sim.store.get_incident(iid)
+    inc.status = "resolved"
+    inc.last_seen = sim.t
+    sim.store.put_incident(inc)
+
+
+def test_a_a_high_credential_incident_withholds_its_window_and_distrusts_the_pair_after():
     sim = Sim(seed=3)
     _run(sim, 8)
-    _incident(sim, [_cred_finding(sim, Severity.MEDIUM), _cred_finding(sim, Severity.HIGH)])
+    iid = _incident(sim, [_cred_finding(sim, Severity.MEDIUM), _cred_finding(sim, Severity.HIGH)])
     ts = _run(sim, 6)
-    tr = [ring(sim.store, E, MG.TRUST, t) for t in ts]
-    prov = [ring(sim.store, E, MG.TRUST_PROV, t) for t in ts]
-    assert all(t == p for t, p in zip(tr, prov)) and max(tr) > 0.5      # the source learns
-    assert all(ring(sim.store, E, MG.QUARANTINE, t) == 1.0 for t in ts)  # still held while live
+    # the window: the source's rows are held and released at trust 0 (round 8)
+    assert all(ring(sim.store, E, MG.TRUST, t) == 0.0 for t in ts)
+    assert all(ring(sim.store, E, MG.QUARANTINE, t) == 1.0 for t in ts)
     pairs = sim.store.get_model(S, E, MG.MODEL)["cred_pairs"]
     assert set(pairs) == {PAIR} and pairs[PAIR] >= ts[-1] + GV.CRED_PAIR_HOLD_S - 1.0
+    # beyond it: the source learns again, the pair stays distrusted for 7 d
+    _resolve(sim, iid)
+    ts2 = _run(sim, 4)
+    assert max(ring(sim.store, E, MG.TRUST, t) for t in ts2) > 0.5
+    assert all(ring(sim.store, E, MG.QUARANTINE, t) == 0.0 for t in ts2)
+    pairs2 = sim.store.get_model(S, E, MG.MODEL)["cred_pairs"]
+    assert pairs2 == pairs                                   # not extended once it is over
 
 
-def test_b_foreign_source_and_concurrent_use_are_pair_findings_too():
-    for fl in (("foreign_source",), ("concurrent_use", "foreign_source")):
+def test_b_every_pair_flag_is_published_and_the_factor_is_round_8s():
+    for fl in (("cross_binding",), ("foreign_source",), ("concurrent_use", "foreign_source")):
+        # HIGH: evidence about the source while live
         sim = Sim(seed=4)
         _run(sim, 8)
         _incident(sim, [_cred_finding(sim, Severity.HIGH, flags=fl)])
         ts = _run(sim, 4)
+        assert all(ring(sim.store, E, MG.TRUST, t) == 0.0 for t in ts), fl
+        assert set(sim.store.get_model(S, E, MG.MODEL)["cred_pairs"]) == {PAIR}, fl
+        # one MEDIUM finding on one pattern: pattern-scoped (round 3), the source keeps learning
+        sim = Sim(seed=4)
+        _run(sim, 8)
+        _incident(sim, [_cred_finding(sim, Severity.MEDIUM, flags=fl)])
+        ts = _run(sim, 4)
         assert max(ring(sim.store, E, MG.TRUST, t) for t in ts) > 0.5, fl
+        assert set(sim.store.get_model(S, E, MG.MODEL)["cred_pairs"]) == {PAIR}, fl
 
 
 def test_c_evidence_about_the_source_still_keeps_trust_zero():
     alarm = {"source": "alarm", "path": "cusum", "severity": "low", "families": ["volume"],
              "axes": ["volume"]}
-    cases = {
-        # round 8 behaviour: a HIGH credential finding that does not name its pair
-        "no pair": lambda sim: _incident(sim, [_cred_finding(sim, Severity.HIGH, cred=False)]),
-        "pair + entity alarm": lambda sim: _incident(sim, [_cred_finding(sim, Severity.HIGH)],
-                                                     [dict(alarm, ts=sim.t)]),
-        "pair + other HIGH finding": lambda sim: _incident(
-            sim, [_cred_finding(sim, Severity.HIGH), _plain_finding(sim, 23, Severity.HIGH)]),
-        "pair + findings on two patterns": lambda sim: _incident(
-            sim, [_cred_finding(sim, Severity.MEDIUM), _plain_finding(sim, 17, Severity.MEDIUM),
-                  _plain_finding(sim, 23, Severity.MEDIUM)]),
-        "a flag that is not about a pair": lambda sim: _incident(
-            sim, [_cred_finding(sim, Severity.HIGH, flags=("unbound_value",))]),
+    cases = {   # name: (make, pairs published)
+        "no pair": (lambda sim: _incident(sim, [_cred_finding(sim, Severity.HIGH, cred=False)]), False),
+        "pair + entity alarm": (lambda sim: _incident(sim, [_cred_finding(sim, Severity.MEDIUM)],
+                                                      [dict(alarm, ts=sim.t)]), True),
+        "pair + other HIGH finding": (lambda sim: _incident(
+            sim, [_cred_finding(sim, Severity.MEDIUM), _plain_finding(sim, 23, Severity.HIGH)]), True),
+        "pair + findings on two patterns": (lambda sim: _incident(
+            sim, [_cred_finding(sim, Severity.MEDIUM), _plain_finding(sim, 23, Severity.MEDIUM)]), True),
+        "a flag that is not about a pair": (lambda sim: _incident(
+            sim, [_cred_finding(sim, Severity.HIGH, flags=("unbound_value",))]), False),
     }
-    for name, make in cases.items():
+    for name, (make, published) in cases.items():
         sim = Sim(seed=5)
         _run(sim, 8)
         make(sim)
         ts = _run(sim, 4)
         assert all(ring(sim.store, E, MG.TRUST, t) == 0.0 for t in ts), name
-        assert not (sim.store.get_model(S, E, MG.MODEL) or {}).get("cred_pairs"), name
+        got = (sim.store.get_model(S, E, MG.MODEL) or {}).get("cred_pairs") or {}
+        assert set(got) == ({PAIR} if published else set()), name
 
 
 def test_d_credential_pair_helper():
