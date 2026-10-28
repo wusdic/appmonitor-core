@@ -52,10 +52,6 @@ histogram, charset-class counts)
         or an evicting sketch never closes. P03 scores a non-member at p = U,
         far above its 1e-3 finding level, so an early closure states the set
         (with its U) without raising findings.
-      * closure (round 9) also when Chao1's estimate of the values not yet
-        seen, f1^2 / (2 f2) (f1 (f1 - 1) / 2 without doubletons), plus the
-        evictions is <= 1/2: U < e_min / N can never hold while one member is
-        a singleton (finance's opinions 17 / 2 / 1 by day 14, OI8-b).
     A class token A (mixed alphanumeric run > 8, lib/phier) becomes the class union
     the charset counts actually saw (e.g. [a-z0-9]), [A-Za-z0-9] when unknown
     (shape-only policy).
@@ -557,30 +553,7 @@ def _closed(vs: Any, t: float, closed_n: float, closed_u: float,
         e_min = min(float(vs.evidence(k, t)) for k, _ in its)
         p_min = e_min / max(float(vs.total_evidence(t)), 1e-12)
         out["p_min"] = float(p_min)
-        closed = U < p_min
-        if not closed:
-            # (round 9, OI8-b) or the expected number of values not yet seen
-            # is at most one half: Chao1's estimate of the unseen richness,
-            # f1^2 / (2 f2) (f1 / f2 the members seen about once / twice, the
-            # evidence thresholds of Good-Turing's N1; f1 (f1 - 1) / 2 when no
-            # member was seen twice), plus the evictions (each a value the
-            # sketch lost). The test U < p_min alone never closes a set with
-            # ONE singleton member (U >= 1.5 / (N + 1) > 1 / N): pack O,
-            # finance's approval opinions (同意 / 退回 / 同意，请尽快办理 at
-            # 0.8 / 0.1 / 0.1, ~20 arrivals by day 14; evidence 16.9 / 1.8 /
-            # 1.2 on seed 1) stayed open on 4 of 5 seeds, and the 60 研发
-            # usernames (each user on 40 % of the days) kept a singleton or
-            # two to day 21. A growing set (a new singleton every day: f1 grows,
-            # f2 does not) or an evicting sketch still never closes; the stated
-            # U stays Good-Turing's.
-            evs = [float(vs.evidence(k, t)) for k, _ in its]
-            f1 = sum(1 for e in evs if e < PS.N1_EVIDENCE)
-            f2 = sum(1 for e in evs if PS.N1_EVIDENCE <= e < PS.N1_EVIDENCE + 1.0)
-            ev_e = float(seg["E"]) if seg is not None else float(vs.eviction_evidence(t))
-            chao = (f1 * f1 / (2.0 * f2) if f2 > 0 else f1 * (f1 - 1) / 2.0) + ev_e
-            out["unseen_values"] = float(chao)
-            closed = chao <= 0.5
-        if closed:
+        if U < p_min:
             out["closed"] = sorted((_jv(k) for k, _ in its), key=_vkey)
     return out
 
