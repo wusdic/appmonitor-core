@@ -146,7 +146,7 @@ from __future__ import annotations
 import math
 import weakref
 from collections.abc import Mapping
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -608,7 +608,7 @@ class GovernorEngine(Engine):
         else:
             self._labels(store, sc, e, model, ob, now, dt, frontier)
             self._machine(store, sc, e, model, ob, now, dt, frontier)
-            prov, trust = self._trust(model, ob, dt, sc, e, store)
+            prov, trust = self._trust(model, ob, dt, sc, e, store, now)
         if sc.retracted.get(e):
             self._link_retractions(store, s, e, model, sc.retracted[e], now)
         q = self._quarantine(model, sc, e)
@@ -1404,7 +1404,7 @@ class GovernorEngine(Engine):
 
     # ------------------------------------------------------------ trust
     def _trust(self, model: Dict[str, Any], ob: _Obs, dt: float, sc: _Sys,
-               e: str, store: Any = None) -> Tuple[float, float]:
+               e: str, store: Any = None, now: Optional[float] = None) -> Tuple[float, float]:
         if ob.degraded:
             return _NAN, _NAN
         prov = evidence_factor(ob.q_inst, ob.q_all, dt, getattr(ob, "e_inst", None))
@@ -1416,10 +1416,21 @@ class GovernorEngine(Engine):
             trust = 0.0
         elif live:
             # (round 3) the incident's evidence and scope, not its existence
-            trust = prov * min(self._incident_trust(store, i) for i in live)
+            fac = 1.0
+            pairs: Set[str] = set()
+            for i in live:
+                f_i, pr = self._incident_scope(store, i)
+                fac = min(fac, f_i)
+                pairs.update(pr)
+            trust = prov * fac
+            if pairs and now is not None:
+                _note_pairs(model, pairs, float(now))
         return prov, trust
 
     def _incident_trust(self, store: Any, inc: Incident) -> float:
+        return self._incident_scope(store, inc)[0]
+
+    def _incident_scope(self, store: Any, inc: Incident) -> Tuple[float, Tuple[str, ...]]:
         """Trust factor of a source while one of its incidents is live
         (round 3, groups_views owner).
 
@@ -1441,21 +1452,40 @@ class GovernorEngine(Engine):
         entity-level detectors, lib-4 matches, risk, an incident without
         evidence) is evidence about the SOURCE and keeps trust 0. The ticks of
         the findings themselves keep trust_prov = 0 (finding >= MEDIUM).
-        Cached per incident and evidence length."""
+
+        (round 9) CREDENTIAL-SCOPED evidence: a P03 finding on the credential
+        axis flagged cross_binding / foreign_source / concurrent_use (a value
+        bound to another source, used where its own sources are closed, or in
+        use elsewhere right now) is evidence about the (source, credential)
+        PAIR, not about the source: the address's legitimate owner keeps
+        using it with their own credential. Such findings count at any
+        severity (two of them make the incident HIGH) and do not count as a
+        pattern; the pair is distrusted instead - returned here, published
+        by _trust in model.governor['cred_pairs'], and P03 learns the pair's
+        rows damped (conformity: distrusted credential). Pack O-real seed 0:
+        A2 (192.168.1.21 logging in as rose, days 17-21) kept trust 0 for the
+        whole address while its incidents were live; its approvals and
+        documents, which no finding concerned, went unlearned and the address
+        dropped out of the 综合部 approval who-sets on days 28-35 (16.16.12
+        item 15).
+
+        Returns (factor, distrusted pairs 'tree_key|attr=value'). Cached per
+        incident and evidence length."""
         if store is None:
-            return 0.0
+            return 0.0, ()
         cache = self.__dict__.setdefault("_inc_scope", {})
         evs = list(inc.evidence or [])
         key = (inc.id, len(evs), str(inc.severity))
         hit = cache.get(inc.id)
         if hit is not None and hit[0] == key:
-            return hit[1]
+            return hit[1], hit[2]
         out = 1.0
-        if str(getattr(inc.severity, "value", inc.severity)).lower() in ("high", "critical") \
-                or set(inc.kinds or ()) - {"pattern_violation", "alarm"}:
+        if set(inc.kinds or ()) - {"pattern_violation", "alarm"}:
             out = 0.0
+        high_inc = str(getattr(inc.severity, "value", inc.severity)).lower() in ("high", "critical")
         patterns: Set[Tuple[str, Any]] = set()
-        n_find = 0
+        pairs: Set[str] = set()
+        n_find = n_high = 0
         for it in evs:
             if out == 0.0:
                 break
@@ -1464,28 +1494,37 @@ class GovernorEngine(Engine):
             src = it.get("source")
             if src == "b27":
                 continue                                   # incident state transitions
-            if str(it.get("severity") or "").lower() in ("high", "critical"):
-                out = 0.0
-            elif src == "alarm":
+            high = str(it.get("severity") or "").lower() in ("high", "critical")
+            if src == "alarm":
                 fams = set(it.get("families") or ())
-                if not fams or fams - {"conformity"}:
+                if high or not fams or fams - {"conformity"}:
                     out = 0.0
             elif src == "event" and it.get("kind") == "pattern_violation":
                 ev = store.get_event(str(it.get("event_id"))) if it.get("event_id") else None
                 ex = (ev.extra or {}) if ev is not None else {}
-                if ex.get("node") is None:
+                pair = credential_pair(ex)
+                if pair is not None:
+                    pairs.add(pair)
+                elif high or ex.get("node") is None:
                     out = 0.0
                 else:
                     patterns.add((str(ex.get("tree_key")), ex.get("node")))
                     n_find += 1
+                n_high += int(high and pair is None)
             else:
                 out = 0.0
-        if out > 0.0 and (n_find == 0 or len(patterns) > 1):
-            out = 0.0
+        if out > 0.0:
+            if pairs:
+                # credential-scoped (plus at most one pattern's ordinary findings)
+                if len(patterns) > 1 or (high_inc and n_high):
+                    out = 0.0
+            elif high_inc or n_find == 0 or len(patterns) > 1:
+                out = 0.0
+        pr = tuple(sorted(pairs)) if out > 0.0 else ()
         if len(cache) > 4096:
             cache.clear()
-        cache[inc.id] = (key, out)
-        return out
+        cache[inc.id] = (key, out, pr)
+        return out, pr
 
     def _trust_evidence(self, ob: _Obs) -> float:
         """behavior.trust_evidence (m_governor.evidence_weight), live ticks
@@ -1633,6 +1672,41 @@ class GovernorEngine(Engine):
 
 
 # ================================================================== helpers
+CRED_FLAGS = frozenset({"cross_binding", "foreign_source", "concurrent_use"})
+CRED_PAIRS = "cred_pairs"
+CRED_PAIR_HOLD_S = 7 * 86400.0       # a pair stays distrusted 7 d after its last live incident
+CRED_PAIRS_MAX = 16
+
+
+def credential_pair(extra: Mapping[str, Any]) -> Optional[str]:
+    """'tree_key|attr=value' for a P03 finding about a (source, credential)
+    pair - the credential axis with a cross_binding / foreign_source /
+    concurrent_use flag and the credential's value (P03 extra 'cred') -
+    else None."""
+    if not isinstance(extra, Mapping):
+        return None
+    cred = extra.get("cred")
+    if not isinstance(cred, Mapping) or cred.get("attr") is None or cred.get("value") is None:
+        return None
+    if not CRED_FLAGS & set(extra.get("flags") or ()):
+        return None
+    return f"{extra.get('tree_key')}|{cred['attr']}={cred['value']}"
+
+
+def _note_pairs(model: Dict[str, Any], pairs: Iterable[str], now: float) -> None:
+    """model.governor['cred_pairs'] = {pair: until}: the (source, credential)
+    pairs of the key's live credential-scoped incidents, held CRED_PAIR_HOLD_S
+    after the last tick an incident was live (conformity.distrusted_pairs)."""
+    cp = model.get(CRED_PAIRS)
+    cp = dict(cp) if isinstance(cp, Mapping) else {}
+    for k in sorted(pairs):
+        cp[str(k)] = float(now) + CRED_PAIR_HOLD_S
+    cp = {k: v for k, v in cp.items() if _f(v) >= now}
+    if len(cp) > CRED_PAIRS_MAX:
+        cp = dict(sorted(cp.items(), key=lambda kv: (-kv[1], kv[0]))[:CRED_PAIRS_MAX])
+    model[CRED_PAIRS] = cp
+
+
 def new_model(now: float) -> Dict[str, Any]:
     return {"fmt": 1, "regime": MG.NORMAL, "since": now, "onset": None, "type": None,
             "logodds": None, "p_legit": None, "evidence": {}, "history": [], "episodes": [],

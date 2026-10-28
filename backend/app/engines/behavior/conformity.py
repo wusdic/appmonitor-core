@@ -1937,6 +1937,19 @@ class _RecCache:
         return r
 
 
+def _cred_extra(typ: str, details: Mapping[str, Any]) -> Dict[str, Any]:
+    """(round 9) {'cred': {'attr', 'value'}} for a content finding decided by a
+    binding record (the credential and its value), else {}: B28 reads the pair
+    (governor.credential_pair) to distrust the (source, credential) pair
+    instead of the source."""
+    if typ != "content":
+        return {}
+    wd = details.get("content")
+    if not wd or len(wd) < 4 or wd[3] != "bind" or wd[2] is None or wd[2] is EV.ABSENT:
+        return {}
+    return {"cred": {"attr": str(wd[1]), "value": str(FD._jv(wd[2]))}}
+
+
 class _BatchJob:
     """One batch being scored: its inputs and the pat.assign columns filled
     row by row (ConformityEngine._score_row), written by close()."""
@@ -1948,6 +1961,7 @@ class _BatchJob:
                  agg: Dict[str, Dict[str, Any]], cands: List[Tuple[int, float, Callable[[], BehaviorEvent]]],
                  overlay: Dict[Tuple[str, str], List[Any]]) -> None:
         self.st, self.tc, self.s, self.ts_b, self.b = st, tc, s, ts_b, b
+        self.store = store
         self.agg, self.cands, self.overlay = agg, cands, overlay
         self.kind = getattr(b, "kind", EV.KIND_TXN)
         self.tree = tc.ptm.kinds.get(self.kind) if tc.ptm is not None else None
@@ -2173,6 +2187,37 @@ class ConformityEngine(Engine):
                     n += self._score_batch(st, tc, store, s, ts_b, b, series, agg, cands)
         return n
 
+    def _distrusted(self, job: "_BatchJob", ip: str) -> Tuple[Tuple[str, str], ...]:
+        """(round 9) The (attr, value) credential pairs B28 distrusts for this
+        source on this tree (model.governor['cred_pairs'], governor
+        credential_pair): a credential of a live - or, for 7 d, a past -
+        credential-scoped incident of the source. Their rows are learned
+        damped like a row flagged cross_binding, while the source's other
+        rows keep its trust: the per-(source, credential) form of B28's trust
+        (an address whose owner lent or borrowed a credential keeps learning
+        with its own). Cached per (system, IP) and tick."""
+        cache = job.__dict__.setdefault("_dp", {})
+        hit = cache.get(ip)
+        if hit is not None:
+            return hit
+        out: Tuple[Tuple[str, str], ...] = ()
+        gm = job.store.get_model(job.s, ip, "model.governor")
+        cp = gm.get("cred_pairs") if isinstance(gm, Mapping) else None
+        if isinstance(cp, Mapping) and cp:
+            pre = f"{job.tc.key}|"
+            lst = []
+            for k in sorted(cp):
+                until = cp[k]
+                if not (isinstance(until, (int, float)) and until >= job.tc.now):
+                    continue
+                k = str(k)
+                if k.startswith(pre) and "=" in k:
+                    a, v = k[len(pre):].split("=", 1)
+                    lst.append((a, v))
+            out = tuple(lst)
+        cache[ip] = out
+        return out
+
     def _score_row(self, job: "_BatchJob", i: int) -> None:
         b, cb = job.b, job.cb
         ip = b.ip_of(i)
@@ -2191,6 +2236,10 @@ class ConformityEngine(Engine):
         job.st.last_active.put((job.s, ip), ts)
         if r is None:
             return
+        if "damp" in r["num"] and r["num"]["damp"] > DAMP:
+            pairs = self._distrusted(job, ip)
+            if pairs and any(str(FD._jv(get(a))) == v for a, v in pairs):
+                r["num"]["damp"] = DAMP
         for c, v in r["num"].items():
             job.out_f[c][i] = v
         job.act_col[i] = r.get("act")
@@ -2464,7 +2513,9 @@ class ConformityEngine(Engine):
                     ps.append(p)
                     bind_fl.update(fl)
                     if p < worst[0]:
-                        worst = (p, str(Y_ if rec.get("dir") != "rev" else X_), None, "bind", rec)
+                        # (round 9) the credential value rides along: a finding about a
+                        # (source, credential) pair names the pair (B28 distrusts it)
+                        worst = (p, str(Y_ if rec.get("dir") != "rev" else X_), y, "bind", rec)
             # per-IP intensity (upper tail, guaranteed count, heavy only)
             if hs is not None and txn:
                 ck = (ip, kind, conf_nd.id)
@@ -2923,7 +2974,8 @@ class ConformityEngine(Engine):
                            "flags": fl_all, "observed": observed, "expected": expected,
                            "p": p, "p_day": pd, "U": U_who, "sensitivity": sigma, "n_c": n_c,
                            "route": route_key, "node": conf_nd.id, "tree_key": tc.key,
-                           "event_ts": ts, "high_candidate": sev == Severity.HIGH})
+                           "event_ts": ts, "high_candidate": sev == Severity.HIGH,
+                           **_cred_extra(typ, details)})
             cands.append((SEV_RANK[sev], float(p), build))
 
     # ------------------------------------------------------------ describe
