@@ -52,6 +52,10 @@ histogram, charset-class counts)
         or an evicting sketch never closes. P03 scores a non-member at p = U,
         far above its 1e-3 finding level, so an early closure states the set
         (with its U) without raising findings.
+      * closure (round 9) also when Chao1's estimate of the values not yet
+        seen, f1^2 / (2 f2) (f1 (f1 - 1) / 2 without doubletons), plus the
+        evictions is <= 1/2: U < e_min / N can never hold while one member is
+        a singleton (finance's opinions 17 / 2 / 1 by day 14, OI8-b).
     A class token A (mixed alphanumeric run > 8, lib/phier) becomes the class union
     the charset counts actually saw (e.g. [a-z0-9]), [A-Za-z0-9] when unknown
     (shape-only policy).
