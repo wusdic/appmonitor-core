@@ -2098,7 +2098,8 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
                             targets_sys: Sequence[str], gone: Iterable[str] = (), m_t: int = M_T,
                             n_min: int = 32, local_pool: Sequence[str] = (),
                             local_cov: float = LOCAL_TARGET_COV,
-                            proxies: Iterable[str] = ()) -> Dict[int, List[str]]:
+                            proxies: Iterable[str] = (),
+                            split_pool: Iterable[str] = ()) -> Dict[int, List[str]]:
     """{nid: [a...]}: the probe rows are routed through the tree (the same
     routing P03 / P04 use); at every node holding >= n_min probe rows the system
     targets are re-ranked by node-local H(a) x cov(a) on those rows (mass-
@@ -2170,39 +2171,76 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
                 full[pres] = cc
                 h_sys[a], _ = w_plugin(full[rec], w[rec])
         return h_sys[a]
-    # (round 9) an ACTION'S FIELD - an attribute whose presence the node
-    # predicts: on the rows that recorded it, "the row routes through this
-    # node" carries information about whether it is present (penalised gain
-    # > 0, rows counted equally: the probe's mass weights would make a rare
-    # action's node too light to differ from anything) - is not displaced
-    # from the node's slots by an attribute that is not one. Ranked by
-    # entropy x coverage alone, independent noise present on every row took
-    # the slots first (O-red: five to seven of the GA login node's nine
-    # targets were `meta.z*`, whose split roles came from chance gains, and
-    # the username lost its slot; P08 assigns a binding pair only to nodes
-    # whose targets hold the payload, so the node's bindings were never
-    # refitted and D2's rename was never stated). A field outside the top
-    # m_t replaces the lowest-ranked kept attribute that is not a field; the
-    # list otherwise stays as ranked, in its order (re-ranked wholesale - by
-    # "the node predicts its presence or its values" - every node's list
-    # changed order or members, P04 retargeted, and pack O seed 0 gained
-    # three crm intensity alarms and lost two mail content bands). A node
-    # holding every row (a root) has no field
+    # (round 9) two corrections of the entropy x coverage ranking, both by
+    # what the node predicts (on the rows that recorded the attribute, "the
+    # row routes through this node" carries information - penalised gain > 0,
+    # rows counted equally: the probe's mass weights would make a rare
+    # action's node too light to differ from anything):
+    #  * an ACTION'S FIELD - an attribute whose PRESENCE the node predicts - is
+    #    not displaced from the node's slots by an attribute that is not one;
+    #  * a node-local candidate that P05 lists for its SPLIT role
+    #    (`split_pool`: not a system target) and that the node predicts
+    #    neither by presence nor by value (at the coarsest level with >= 3
+    #    values) is a split candidate, not content of this node: it does not
+    #    displace a system target or another candidate.
+    # Ranked by entropy x coverage alone, independent noise present on every
+    # row took the slots first (O-red: the `meta.z*`, whose split roles came
+    # from chance gains, held five to seven of the GA login node's nine
+    # targets - the username lost its slot, P08 never refitted the node's
+    # bindings and D2's rename was never stated - and seven of the portal
+    # news nodes' eight, so their upload size was not tracked and a 460-byte
+    # request against a stale 461-516 B band opened MEDIUM incidents). A
+    # displaced attribute takes the place of the lowest-ranked kept one of
+    # the other class; the list otherwise stays as ranked, in its order
+    # (re-ranked wholesale, every node's list changed order or members, P04
+    # retargeted, and pack O seed 0 gained three crm intensity alarms and
+    # lost two mail content bands). A node holding every row (a root) is
+    # not compared
+    spl = set(split_pool)
     lg_rows: Dict[str, Any] = {}
 
-    def is_field(a: str, ii: np.ndarray) -> bool:
+    def gains(a: str, ii: np.ndarray) -> Tuple[bool, bool]:
+        """(the node predicts a's presence, ... a's presence or value)"""
         r = lg_rows.get(a)
         if r is None:
             ca, ua, rec_a, pres_a = cods[a]
             rr = np.flatnonzero(rec_a)
-            r = lg_rows[a] = (rr, pres_a[rr].astype(np.int64))
-        rr, pres = r
-        if not 0 < int(pres.sum()) < pres.size:
-            return False                    # present on every recorded row (or none)
+            pres = pres_a[rr].astype(np.int64)
+            rp = np.flatnonzero(pres_a)
+            lut = luts[a]
+            vc, vk = None, 0
+            sub = lut.codes[rp]
+            for lv in range(lut.L - 2, lut.start - 1, -1):          # coarsest first
+                if not sub.size:
+                    break
+                cc, k = _first_occurrence_codes(lut._lut(lv)[sub])
+                if k >= 3:
+                    vc, vk = np.asarray(cc, dtype=np.int64), int(k)
+                    break
+                if k == 2 and vc is None:
+                    vc, vk = np.asarray(cc, dtype=np.int64), 2
+            r = lg_rows[a] = (rr, pres, rp, vc, vk)
+        rr, pres, rp, vc, vk = r
         ind = np.isin(rr, ii).astype(np.int64)
         if not ind.any() or ind.all():
-            return False                    # the node holds every row: nothing to compare with
-        return penalised_gain(pres, 2, ind, 2, np.ones(rr.size), int(rr.size)) > 0.0
+            return False, False             # the node holds every row: nothing to compare with
+        pg = False
+        if 0 < int(pres.sum()) < pres.size:
+            pg = penalised_gain(pres, 2, ind, 2, np.ones(rr.size), int(rr.size)) > 0.0
+        if pg:
+            return True, True
+        if vc is not None and vk >= 2 and rp.size >= 2:
+            ip = np.isin(rp, ii).astype(np.int64)
+            if 0 < int(ip.sum()) < ip.size:
+                return False, penalised_gain(vc, vk, ip, 2, np.ones(rp.size), int(rp.size)) > 0.0
+        return False, False
+
+    def promote(keep: List[str], rest: List[str], up: Callable[[str], bool], down: Callable[[str], bool]) -> None:
+        cand = [a for a in rest if up(a)]
+        if cand:
+            low = [a for a in reversed(keep) if down(a)]
+            for f, o in zip(cand, low):
+                keep[keep.index(o)] = f
 
     for nid, idx in by_node.items():
         if len(idx) < n_min:
@@ -2245,12 +2283,16 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
         rest = [a for _, a in scored[m_t:]]
         if rest:
             order = {a: j for j, (_, a) in enumerate(scored)}
-            fields = [a for a in rest if is_field(a, ii)]
-            if fields:
-                others = [a for a in reversed(keep) if not is_field(a, ii)]
-                for f, o in zip(fields, others):
-                    keep[keep.index(o)] = f
-                keep.sort(key=lambda a: order[a])
+
+            def field(a: str) -> bool:
+                return gains(a, ii)[0]
+
+            def chance(a: str) -> bool:      # a split candidate the node does not predict
+                return a in spl and a not in sys_set and not gains(a, ii)[1]
+            promote(keep, rest, field, lambda a: not field(a))
+            rest = [a for _, a in scored if a not in keep]
+            promote(keep, rest, lambda a: not chance(a), chance)
+            keep.sort(key=lambda a: order[a])
         # (round 3) up to N_CONST structural constants on top of the m_t informative
         # targets. Before, a constant was skipped as 'a node invariant P04 detects',
         # but P04 detects invariants of the targets it tracks only: the OA / portal

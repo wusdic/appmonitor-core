@@ -496,7 +496,8 @@ class AttributeSelectionEngine(Engine):
                     # opinion fields were fitted from day ~17 (measured on pack O)
                     overrides[kind] = SEL.node_targets_from_probe(
                         tree, prk, now, hier, tsys, gone, n_min=12, local_pool=local_pools.get(int(kind), []),
-                        proxies=proxies)
+                        proxies=proxies,
+                        split_pool=[a for a in local_pools.get(int(kind), []) if out["roles"].get(a) == "split"])
         # daily: categorical value groups (registry level 1)
         if now - self.last_vg.get(key, -math.inf) >= 86400.0 and pr0 is not None and len(pr0):
             self.last_vg[key] = now

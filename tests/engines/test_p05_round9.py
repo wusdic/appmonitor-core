@@ -112,3 +112,39 @@ def test_independent_noise_does_not_take_the_slot_of_a_node_field():
     got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["meta.z01", "meta.z02", "net.bytes_up"],
                                       m_t=2, n_min=8, local_pool=["body.kv.username"])
     assert got[login_nid] == ["meta.z01", "body.kv.username"], got[login_nid]
+
+
+def test_a_chance_split_candidate_does_not_displace_a_system_target():
+    """O-red: the portal news nodes' target lists were seven `meta.z*` (split
+    roles from chance gains) and no upload size; a 460-byte request was then
+    judged against a stale 461-516 B band and opened MEDIUM incidents. A
+    node-local candidate listed for its split role that the node predicts
+    neither by presence nor by value does not displace a system target."""
+    from app.engines.behavior.lib import phier as PH
+    from app.engines.behavior.lib import ptree as PT
+    probe = SEL.StratifiedProbe(512)
+    rng = np.random.default_rng(1)
+    for i in range(400):
+        login = i % 8 == 0
+        row = {"http.route": "POST h /login" if login else "GET h /docs",
+               "net.bytes_up": f"b{int(rng.integers(0, 6))}",
+               "meta.z01": f"v{int(rng.integers(0, 16))}", "meta.z02": f"z{int(rng.integers(0, 12))}"}
+        if login:
+            row["body.kv.username"] = f"u{int(rng.integers(0, 5))}"
+        probe.offer("all", row, 1.0, float(i), float(rng.random()))
+    tr = PT.Tree(0, 0.0)
+    tr.split(tr.root, "http.route", 0, [["POST h /login"]], 0.0)
+    sp = tr.nodes[tr.root].split
+    docs = [c for c in sp.all_children() if c not in sp.children][0]
+    hier = PH.Hierarchies(registry={"meta.z01": {"type": "categorical"}, "meta.z02": {"type": "categorical"},
+                                    "net.bytes_up": {"type": "categorical"}})
+    pool = ["meta.z01", "meta.z02"]
+    plain = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["net.bytes_up"], m_t=1, n_min=8,
+                                        local_pool=pool)
+    assert plain[docs] == ["meta.z01"], plain[docs]           # as a shape / target candidate: kept
+    got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["net.bytes_up"], m_t=1, n_min=8,
+                                      local_pool=pool, split_pool=pool)
+    assert got.get(docs, ["net.bytes_up"]) == ["net.bytes_up"], got
+    got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["net.bytes_up"], m_t=2, n_min=8,
+                                      local_pool=pool, split_pool=pool)
+    assert got[docs] == ["meta.z01", "net.bytes_up"], got[docs]   # a free slot: kept, in rank order
