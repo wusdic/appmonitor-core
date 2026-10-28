@@ -1723,10 +1723,19 @@ def bound_payloads(pbind: Any) -> List[str]:
     out = set()
     if not isinstance(pbind, Mapping):
         return []
-    for nodes in (pbind.get("nodes") or {}).values():
-        for ent in (nodes or {}).values() if isinstance(nodes, Mapping) else ():
-            for rec in ((ent or {}).get("pairs") or {}).values():
+    # (round 9, evaluator) P08 publishes the pairs whose binding the views
+    # STATE (model.pbind['bound_stated'], FD.binding_stated); only those count.
+    # A pair with a bound entry that the views never state (an action constant
+    # such as body.fmt = form, identical for every bound source) must not hold
+    # its payload's target role for good. Models before round 9: any bound pair.
+    st = pbind.get("bound_stated")
+    stated = None if st is None else {(str(k), str(n), str(pk)) for k, n, pk in st}
+    for kind, nodes in sorted((pbind.get("nodes") or {}).items(), key=lambda kv: str(kv[0])):
+        for nid, ent in (sorted(nodes.items(), key=lambda kv: str(kv[0])) if isinstance(nodes, Mapping) else ()):
+            for pk, rec in sorted(((ent or {}).get("pairs") or {}).items()):
                 if not isinstance(rec, Mapping):
+                    continue
+                if stated is not None and (str(kind), str(nid), str(pk)) not in stated:
                     continue
                 y = rec.get("y")
                 tab = rec.get("table") or {}

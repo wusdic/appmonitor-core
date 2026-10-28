@@ -113,3 +113,22 @@ def test_independent_noise_does_not_take_the_slot_of_a_node_field():
                                       m_t=2, n_min=8, local_pool=["body.kv.username"])
     assert got[login_nid] == ["meta.z01", "body.kv.username"], got[login_nid]
 
+
+
+def test_only_the_bindings_p08_states_keep_their_payloads_target_role():
+    """(round 9, evaluator; views owner's proposal) P08 publishes the bound
+    pairs the views state (model.pbind['bound_stated'], FD.binding_stated).
+    A pair that has a bound entry but is never stated - an action constant
+    such as body.fmt = form, the same value for every bound source - must not
+    keep its payload's target role for good (a zero-gain `net.src -> body.fmt`
+    pair kept P08 on until P12 switched it off for finance, pack O seed 2).
+    Without the list (models before round 9) every bound pair counts."""
+    a = "body.kv.username"
+    pbind = {"nodes": {0: {14: {"status": "fitted", "pairs": {
+        "net.src->body.kv.username": {"x": "net.src", "y": a, "table": {"10.77.2.14": {"top": "chen", "bound": True}}},
+        "net.src@3->body.fmt": {"x": "net.src@3", "y": "body.fmt", "table": {"10.77.2": {"top": "form", "bound": True}}}}}}}}
+    assert SEL.bound_payloads(pbind) == ["body.fmt", a]
+    pbind["bound_stated"] = [[0, 14, "net.src->body.kv.username"]]
+    assert SEL.bound_payloads(pbind) == [a]
+    pbind["bound_stated"] = []
+    assert SEL.bound_payloads(pbind) == []
