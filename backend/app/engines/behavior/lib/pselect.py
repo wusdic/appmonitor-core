@@ -2188,23 +2188,26 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
                 full[pres] = cc
                 h_sys[a], _ = w_plugin(full[rec], w[rec])
         return h_sys[a]
-    # (round 9) the attributes a node PREDICTS take its slots first: on the
-    # rows that recorded the attribute, "the row routes through this node"
-    # carries information about its presence or, where present, about its
-    # value at the coarsest level with >= 3 values (penalised gain > 0 on the
-    # rows counted equally). Ranked by entropy x coverage alone, independent
+    # (round 9) an attribute that no node of the tree predicts - on the rows
+    # that recorded it, "the row routes through this node" carries no
+    # information about its presence nor, where present, about its value at
+    # the coarsest level with >= 3 values (penalised gain <= 0 on the rows
+    # counted equally) at any node holding >= n_min probe rows - is the same
+    # lottery everywhere in the system: it takes only the slots the other
+    # attributes leave free. Ranked by entropy x coverage alone, independent
     # noise present on every row took the slots first (O-red: five to seven
-    # of the login node's nine targets were `meta.z*`, the same lottery at
-    # every node, whose split / target roles came from chance gains on the
-    # weighted probe, and the username lost its slot). An attribute the node
-    # does not predict still fills a slot left free, after the predicted
-    # ones: its band is a constraint of the node's events too (a system's
-    # sizes, the same at every node of it), and only P05's role says whether
-    # it is noise. Excluded outright, pack O seed 0's mail node of the 192.168
-    # /24s - the same upload sizes as every mail node - stopped tracking its
-    # sizes and stated the upload band of its day-5 reference for the rest of
-    # the run, from 26 decayed observations, failing GA.mail#0 / FIN.mail#0's
-    # content from day 12 on. A node holding every row (a root) is not compared
+    # of the login node's nine targets were `meta.z*`, whose split / target
+    # roles came from chance gains on the weighted probe, and the username
+    # lost its slot). It is not excluded: a band of an attribute no node
+    # predicts is still a constraint of each node's events (pack O's mail:
+    # every node has the same upload sizes; excluded, the 192.168 /24 node
+    # stopped tracking its sizes and stated its day-5 reference's band from
+    # 26 decayed observations, failing GA.mail#0 / FIN.mail#0 from day 12),
+    # and only P05's role says what is noise. Nor are the predicted ones
+    # moved ahead of the others: the kept list keeps its entropy x coverage
+    # order (re-ranked by "predicted here" every node's list changed order,
+    # P04 retargeted and re-learned, and pack O seed 0 gained three crm
+    # intensity alarms). A node holding every row (a root) is not compared
     lg_rows: Dict[str, Any] = {}
 
     def local_gain(a: str, ii: np.ndarray) -> float:
@@ -2233,7 +2236,7 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
         if not ind.any():
             return 0.0
         if ind.all():
-            return 1.0                      # the node holds every row: nothing to compare with
+            return 0.0                      # the node holds every row: nothing to compare with
         # a two-sample comparison of the node's rows with the others': rows count
         # equally (the probe's mass weights would make a rare action's node, a
         # small stratum, too light to differ from anything)
@@ -2245,6 +2248,8 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
                 best = max(best, penalised_gain(vc, vk, ip, 2, np.ones(rp.size), int(rp.size)))
         return best if math.isfinite(best) else 0.0
 
+    per_node: List[Tuple[int, List[Tuple[float, str]], List[Tuple[float, str]]]] = []
+    pred_any: set = set()
     for nid, idx in by_node.items():
         if len(idx) < n_min:
             continue
@@ -2280,9 +2285,18 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
                 continue
             if a not in sys_set and cov < local_cov:
                 continue
-            scored.append((h * cov, a, local_gain(a, ii) > 0.0))
-        scored.sort(key=lambda x: (x[1] in prox, not x[2], -x[0], x[1]))
-        keep = [a for _, a, _p in scored[:m_t]]
+            scored.append((h * cov, a))
+            if a not in pred_any and local_gain(a, ii) > 0.0:
+                pred_any.add(a)
+        per_node.append((nid, scored, consts))
+    for nid, scored, consts in per_node:
+        scored.sort(key=lambda x: (x[1] in prox, -x[0], x[1]))
+        order = {a: j for j, (_, a) in enumerate(scored)}
+        # noise (predicted at no node) takes only the slots the others leave;
+        # the kept targets stay in their entropy x coverage order
+        keep = [a for _, a in scored if a in pred_any][:m_t]
+        keep += [a for _, a in scored if a not in pred_any][:max(0, m_t - len(keep))]
+        keep.sort(key=lambda a: order[a])
         # (round 3) up to N_CONST structural constants on top of the m_t informative
         # targets. Before, a constant was skipped as 'a node invariant P04 detects',
         # but P04 detects invariants of the targets it tracks only: the OA / portal

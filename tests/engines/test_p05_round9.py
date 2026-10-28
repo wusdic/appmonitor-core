@@ -66,13 +66,13 @@ def test_independent_noise_does_not_take_the_slot_of_a_node_field():
     """O-red: P05 lists the independent `meta.z*` attributes among the node-
     local candidates and in the system target list (their roles came from
     chance gains), and ranked by entropy x coverage they took five to seven of
-    the login node's nine target slots; the username lost its slot. The
-    attributes a node predicts - their presence or their values differ on the
-    node's rows from the others' - rank first: the login form's username
-    ranks first and keeps its slot when slots are scarce; an attribute that
-    is the same lottery at every node fills only a slot left free (pack O's
-    mail: every node has the same upload sizes, and the band is still a
-    constraint of each node's events)."""
+    the login node's nine target slots; the username lost its slot. An
+    attribute no node predicts - its presence and its values are the same on
+    every node's rows as on the others' - is the same lottery everywhere: it
+    fills only a slot the others leave free (it is not excluded: pack O's
+    mail has the same upload sizes at every node, and the band is still a
+    constraint of each node's events), so the login form's username keeps
+    its slot when slots are scarce."""
     from app.engines.behavior.lib import phier as PH
     from app.engines.behavior.lib import ptree as PT
     probe = SEL.StratifiedProbe(512)
@@ -89,18 +89,20 @@ def test_independent_noise_does_not_take_the_slot_of_a_node_field():
     tr.split(tr.root, "http.route", 0, [["POST h /login"]], 0.0)
     login_nid = tr.nodes[tr.root].split.children[0]
     hier = PH.Hierarchies(registry={"meta.z01": {"type": "categorical"}, "net.bytes_up": {"type": "categorical"}})
-    # noise as node-local candidates: after the username; a free slot is
-    # still filled (only P05's role says what is noise)
-    for m_t in (1, 2):
-        got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["net.bytes_up"], m_t=m_t, n_min=8,
-                                          local_pool=["meta.z01", "meta.z02", "body.kv.username"])
-        assert got[login_nid][0] == "body.kv.username", got[login_nid]
+    # noise as node-local candidates: the username keeps the scarce slot; a
+    # free slot is still filled (only P05's role says what is noise)
+    got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["net.bytes_up"], m_t=1, n_min=8,
+                                      local_pool=["meta.z01", "meta.z02", "body.kv.username"])
+    assert got[login_nid] == ["body.kv.username"], got[login_nid]
     got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["net.bytes_up"], n_min=8,
                                       local_pool=["meta.z01", "meta.z02", "body.kv.username"])
     assert "net.bytes_up" in got[login_nid]          # a free slot: the size band stays tracked
-    # noise in the system list: the username ranks first and keeps its slot
-    # when the slots are scarce
-    for m_t in (1, 2):
-        got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["meta.z01", "meta.z02", "net.bytes_up"],
-                                          m_t=m_t, n_min=8, local_pool=["body.kv.username"])
-        assert got[login_nid][0] == "body.kv.username", got[login_nid]
+    # noise in the system list: the username keeps its slot when the slots
+    # are scarce; the kept list keeps its entropy x coverage order (a
+    # re-ordered list makes P04 retarget the node)
+    got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["meta.z01", "meta.z02", "net.bytes_up"],
+                                      m_t=1, n_min=8, local_pool=["body.kv.username"])
+    assert got[login_nid] == ["body.kv.username"], got[login_nid]
+    got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["meta.z01", "meta.z02", "net.bytes_up"],
+                                      m_t=2, n_min=8, local_pool=["body.kv.username"])
+    assert got[login_nid] == ["meta.z01", "body.kv.username"], got[login_nid]
