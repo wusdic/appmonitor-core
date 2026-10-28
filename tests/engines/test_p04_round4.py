@@ -143,8 +143,8 @@ def test_statement_prior_is_kept_for_its_confidence_segment():
     """Once a statement has its own held-out tests it keeps the empirical-Bayes
     prior it had for the rest of its confidence segment: a later refit of the
     pooled prior (other statements failing their tests around a drift day)
-    does not move it. A statement without a test states its kind's current
-    base rate, and a structural restart of its record (HoldRecord.drop()) takes
+    does not move it. A statement without a test states the base rate of its
+    kind on the day it was issued (round 9), and a structural restart of its record (HoldRecord.drop()) takes
     the kind's current prior."""
     from app.engines.behavior.lib import ptree as PT
     from app.engines.behavior.pattern_tree import PatternTreeEngine
@@ -171,10 +171,12 @@ def test_statement_prior_is_kept_for_its_confidence_segment():
     fresh.ref = {"hold": {"who": (0, frozenset({"1.1.1.1"}), 0.95)}}
     tr.nodes[fresh.id] = fresh
     eng._hold_priors(m, 3, MON + 2 * DAY)
+    pf3 = fresh.meta["hold_prior"]                 # issued with the kind's base rate of day 3
     eng._hold_priors(m, 4, MON + 3 * DAY)          # refit on the failing pool
     assert nodes[0].meta["hold_prior"] == p0       # untouched statement keeps its prior
-    pf = fresh.meta["hold_prior"]
-    assert pf[0] / sum(pf) < p0[0] / sum(p0)       # untested: the kind's current base rate
+    # (round 9) untested: it keeps the prior it was issued with (its confidence
+    # moves on its own evidence only; test_p04_round9)
+    assert fresh.meta["hold_prior"] == pf3
     nodes[0].meta["hold"].drop()                   # a new confidence segment
     eng._hold_priors(m, 5, MON + 4 * DAY)
     p1 = nodes[0].meta["hold_prior"]

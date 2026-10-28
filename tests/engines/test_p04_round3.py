@@ -409,7 +409,11 @@ def test_action_attributes_rank_before_source_properties_at_a_node():
     assert {"net.ttl", "net.win", "client.stack"} <= set(prox), prox
     m_t = 3
     plain = SEL.node_targets_from_probe(tr, pr, sim.now, hier, tsys, m_t=m_t, n_min=12)
-    assert "body.len" not in plain[cid], plain[cid]          # entropy alone: client noise wins
+    # (round 9) without the proxy list the comment form's fields - present only
+    # at this node - keep their slots too (pselect: an action's field is not
+    # displaced by an attribute that is not one); by entropy alone the client
+    # noise had taken them
+    assert "body.len" in plain[cid] and "body.kv.text" in plain[cid], plain[cid]
     ov = SEL.node_targets_from_probe(tr, pr, sim.now, hier, tsys, m_t=m_t, n_min=12, proxies=prox)[cid]
     assert "body.len" in ov and "body.kv.text" in ov, ov
     assert all(ov.index(p) > ov.index("body.len") for p in prox if p in ov), ov
