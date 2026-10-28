@@ -3262,6 +3262,30 @@ class PatternTreeEngine(Engine):
                     continue
                 src = prior if tested else prior0
                 pr = src.get(k) or src.get("*")
+                old_pr = nd.meta.get("hold_prior")
+                if pr is not None and tested and old_pr is not None and nd.meta.get("hold_prior_seg") == seg \
+                        and nd.meta.get("hold_prior_iss") is None:
+                    # (round 9) at its own test a statement takes its kind's current
+                    # prior (once tested: its first test takes the tested prior
+                    # family in place of the issuance prior) only in the direction
+                    # of that test's outcome: after a
+                    # passed test the refit cannot lower its confidence, after a
+                    # failed one it cannot raise it. Taken whatever its direction,
+                    # the pool's slow decline moved every statement down at its
+                    # next passed test: pack O seed 4, days 10 -> 21, statements
+                    # that passed every test of theirs (SALES.oa.login#1 0.9881 ->
+                    # 0.9857, PUB.portal.visit#1 / #2, DEV.mail#0, ...) read as
+                    # losses in PG2's sign test (19 lost / 8 gained, p = 0.026
+                    # with untested statements already fixed at issuance)
+                    ps_, n_ = hr.tests()
+                    a0, b0 = float(old_pr[0]), float(old_pr[1])
+                    a1, b1 = float(pr[0]), float(pr[1])
+                    p_old = (ps_ + a0) / (n_ + a0 + b0)
+                    p_new = (ps_ + a1) / (n_ + a1 + b1)
+                    ti = int(getattr(hr, "ti", 0) or 0)
+                    failed = ti > 0 and any(int(e[0]) == ti - 1 for e in (getattr(hr, "fl", None) or ()))
+                    if (p_new < p_old and not failed) or (p_new > p_old and failed):
+                        pr = old_pr
                 if pr is not None:
                     nd.meta["hold_prior"] = (round(float(pr[0]), 4), round(float(pr[1]), 4))
                     nd.meta["hold_prior_seg"] = seg

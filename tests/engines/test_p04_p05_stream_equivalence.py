@@ -110,7 +110,8 @@ DAYS = 4.0
 # was stated per day type (PatternTree._reference, _hold_constraints).
 # Re-recorded in round 9 (610a3373... / 3a44efbe...), deliberately, by the tree
 # owner: an untested statement keeps the prior it was issued with
-# (_hold_priors); a source split is not paid by the payload of a stated
+# and a tested one adopts the pool's prior only in its own test's direction
+# (_hold_priors; not exercised by this stream); a source split is not paid by the payload of a stated
 # binding (_mask_bound_targets); a day without an attribute does not count
 # towards demoting its role, a stated binding's payload keeps the target role
 # and model.attrsel carries who_bound (pselect.assign_roles); an action's field

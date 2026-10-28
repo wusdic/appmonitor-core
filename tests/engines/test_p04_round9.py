@@ -155,3 +155,42 @@ def test_a_source_split_is_not_paid_by_a_stated_binding():
     _feed(ss2)
     _mask_bound_targets(ss2, targets, [])
     assert ss2.tmask.all() and ss2.log2_e(0) > thr
+
+
+def test_a_tested_statement_takes_the_pools_prior_only_in_its_own_tests_direction():
+    """Pack O seed 4, days 10 -> 21: statements that passed every test of
+    their own lost confidence at their next passed test because the pool's
+    prior had declined meanwhile (19 lost / 8 gained, PG2 sign test p =
+    0.026). After a passed test the refit cannot lower a statement's
+    confidence; after a failed one it cannot raise it; the round-4 rule (the
+    first days' pessimistic prior is left behind as the statement keeps
+    passing) still holds."""
+    eng = PatternTreeEngine()
+    m = PT.PTreeModel("oa")
+    tr = m.tree(0, MON)
+    _pool(tr, 2)
+    cons = {"who": (0, frozenset({"1.1.1.1"}), 0.95)}
+    nd = PN.Node(99, tr.root, 1, 0, _route(99), MON)
+    nd.state = "confirmed"
+    nd.ref = {"hold": dict(cons)}
+    hr = nd.meta["hold"] = PN.HoldRecord()
+    hr.T, hr.ti, hr.fl = [3.0, 3.0], 3, []
+    tr.nodes[nd.id] = nd
+    eng._hold_priors(m, 1, MON)
+    eng._hold_priors(m, 2, MON + DAY)
+    p0 = nd.p_hold(MON + DAY)
+    for nid in list(tr.nodes):                     # the pool's prior declines
+        if nid >= 100:
+            del tr.nodes[nid]
+    _pool(tr, 12, base=200)
+    eng._hold_priors(m, 3, MON + 2 * DAY)
+    hr.T, hr.ti = [4.0, 4.0], 4                    # its own 4th test: passed
+    eng._hold_priors(m, 4, MON + 3 * DAY)
+    p1 = nd.p_hold(MON + 3 * DAY)
+    assert p1 >= p0, (p0, p1)
+    hr.T, hr.ti, hr.fl = [4.0, 5.0], 5, [[4, ["who"]]]   # its 5th test: failed
+    eng._hold_priors(m, 5, MON + 4 * DAY)
+    p2 = nd.p_hold(MON + 4 * DAY)
+    assert p2 < p1
+    a, b = nd.meta["hold_prior"]
+    assert a / (a + b) < 0.5                       # the failure takes the lower current prior
