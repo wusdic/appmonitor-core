@@ -435,6 +435,17 @@ def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float
                if (not lg or x > 0) else 0.0)
     rec["disp90"] = round_band(band90[0], band90[1], cdf_nat, unit,
                                n=n_eff if _fin(n_eff) else math.inf)
+    # (round 10) the stated coverage bounds the band the statement DISPLAYS:
+    # the rounded band keeps an in-sample coverage in COVER_RANGE (+- tol),
+    # which may be below the fitted band's, and P14 stated min(lower bound of
+    # the fitted band, in-sample coverage of the rounded one) - a point value
+    # of the rounded band, not a bound. O-red seed 0 (round 9): finance's
+    # voucher body band fitted 2.2-6.5 KB, displayed 2-6 KB, stated 0.73,
+    # held 0.63; the approval body band 1.0-1.5 KB displayed 1-1.4 KB, stated
+    # 0.66, held 0.54
+    dc = rec["disp90"].get("coverage", NAN)
+    if _fin(dc) and _fin(cov90) and dc < cov90:
+        rec["coverage"] = coverage_lb(float(dc), n_eff)
     if rng is not None:
         rec["disp_range"] = round_range(rng[0], rng[1], unit)
     rec["confidence"] = confidence(rec)

@@ -116,3 +116,23 @@ def test_the_observed_range_still_takes_precedence():
     assert CF._floor_ref(rec) == ([455.0, 516.0], 50.0)
     assert CF._floor_ref(dict(rec, range=None)) == ([461.0, 516.0], 300.0)
     assert CF._floor_ref(dict(rec, range=None, n_c=float("nan"))) == (None, None)
+
+
+def test_stated_band_coverage_bounds_the_displayed_band():
+    """(item 2, OI8-f / OI8-h) The statement shows the ROUNDED band (disp90),
+    whose in-sample coverage round_band keeps in COVER_RANGE +- tol - possibly
+    below the fitted band's 0.90; the stated coverage is the 95 % lower bound
+    of the DISPLAYED band's coverage. Before, P14 stated min(bound of the
+    fitted band, in-sample share of the rounded one): O-red seed 0, finance's
+    voucher body 2.2-6.5 KB displayed 2-6 KB stated 0.73, held 0.63."""
+    lower = 0
+    for rep in range(20):
+        r = np.random.default_rng(rep)
+        num = PN.NumSummary(log=True)
+        for i, x in enumerate(r.uniform(2048, 8192, 22)):
+            num.update(float(round(x)), T0 + i * 600, 1.0, 1.0, day=DAY0 + i // 10)
+        rec = PB.fit_numeric(num, T0 + 22 * 600, DAY0 + 2, n_c=22.0, n_eff=22.0, unit="B")
+        dc = rec["disp90"]["coverage"]
+        assert rec["coverage"] <= PB.coverage_lb(min(dc, rec["coverage_emp"]), 22.0) + 1e-12, (rep, rec["coverage"], dc)
+        lower += rec["coverage"] < PB.coverage_lb(rec["coverage_emp"], 22.0) - 1e-9
+    assert lower >= 3                                   # rounding narrowed the band in some samples
