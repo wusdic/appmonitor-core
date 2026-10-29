@@ -218,13 +218,27 @@ def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
             name = str(gr.get("name") or g)
             U3 = float(lv3.unseen(t))
             closed = bool(U3 <= U_CLOSED and n_days >= CLOSED_DAYS)
-            if mem and len(mem) <= MEMBERS_LISTED:
+            # (round 10) the node's own heavy sources outside the group's P11
+            # membership are part of the who: a group's member list alone
+            # would leave out addresses the node observes (a member P11 has not
+            # regrouped yet - O-real R3's readdressed clerk - or a source of
+            # standing of its own); they are stated beside the group
+            ms = set(mem)
+            extra = [str(x) for x in heavy if "/" not in str(x)
+                     and (str(x)[7:] if str(x).startswith("shared:") else str(x)) not in ms] if mem else []
+            extra = sorted({str((readdr or {}).get(x, x)) for x in extra} - ms, key=_ip_sort)
+            if mem and len(mem) + len(extra) <= MEMBERS_LISTED:
                 zh, en = f"{name}（{join_zh(mem)}）", f"{name} ({join_en(mem)})"
+                if extra:
+                    zh, en = f"{zh}、{join_zh(extra)}", f"{en}, {join_en(extra)}"
             else:
                 zh, en = f"{name}（{len(mem)} 个 IP）", f"{name} ({len(mem)} IPs)"
+                extra = []
             Us = _stated_u(who, 3, t, hg, U3)
-            ev = {"level": "grp", "items": [f"grp:{g}"], "members": mem, "U": Us, "closed": closed,
+            ev = {"level": "grp", "items": [f"grp:{g}"], "members": mem + extra, "U": Us, "closed": closed,
                   "confidence": 1.0 - Us if closed else 0.0, "distinct": distinct}
+            if extra:
+                ev["outside_group"] = extra
             return ev, zh, en, (1.0 - Us) if closed else 1.0
     # <= 4 prefixes or regions covering >= 90 %; a system whose who arm is the
     # region (P12 'reg': a DHCP pool whose users re-address daily) is stated by

@@ -1044,6 +1044,21 @@ def with_facet_statements(sts: Iterable[Optional[Dict[str, Any]]]) -> List[Dict[
 BIND_MIN_CARD = FD.BIND_MIN_CARD  # distinct payload values system-wide for a binding to be stated
 PART_SHARE = 0.05                # a group's part of a node is stated when it holds >= 5 % of its mass
 PART_MAX = 8                     # parts per node (largest first)
+MEMBER_RECENT_S = 14 * 86400.0   # (round 10) a member silent this long everywhere is no current source
+
+
+def _current(c: Any, m: str, t: float) -> bool:
+    """(round 10) The address still sends rows somewhere: its P11 signature's
+    last row is within MEMBER_RECENT_S (an address without a signature is not
+    judged). A node's IP-level summary keeps a silent source's decayed mass
+    for weeks and a signature's shares do not decay with silence, so the parts
+    of a node listed an address that had left: O-real R3 (round 9, day 35), the
+    财务部 and G18 parts of the finance login / ledger nodes still named
+    192.168.2.11, silent since its owner moved to .51 on day 9 (PG11 R3
+    old_still_live). Two weeks: a holiday week leaves every member current."""
+    sigs = getattr(c, "sigs", None)
+    sg = sigs.get(m) if sigs is not None else None
+    return sg is None or float(t) - float(getattr(sg, "last", t)) <= MEMBER_RECENT_S
 
 
 def _impurity(d: Optional[Mapping[str, Any]], route: str) -> float:
@@ -1396,6 +1411,7 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0, route: Optional
     if rdr:
         # (round 6) a member P11 saw move is seen at its new address, not the old
         seen = {rdr.get(ip, ip) for ip in seen}
+    seen = {ip for ip in seen if _current(c, ip, t)}
     sigs = getattr(c, "sigs", None)
     use_sig = route is not None and sigs is not None
     # at a node with an address context, a signature member counts only when
@@ -1443,7 +1459,7 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0, route: Optional
                 # hitter cut; listing the whole group then claimed 19 sales IPs read
                 # finance's approval list on pack O)
                 if m in seen or (use_sig and i < CF.MEMBERS_CHECKED
-                                 and (not sig_ctx or _ctx_admits(nd, m, c.ip2g))
+                                 and (not sig_ctx or _ctx_admits(nd, m, c.ip2g)) and _current(c, m, t)
                                  and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING):
                     mem.append(m)
         if uk.startswith("dept:"):
@@ -1457,12 +1473,12 @@ def group_parts(c: _Ctx, nd: Any, t: float, impure: float = 0.0, route: Optional
                 if m in mem:
                     continue
                 if m in c.ip2g:
-                    if (use_sig and str(c.ip2g.get(m)) in u["gids"]
+                    if (use_sig and str(c.ip2g.get(m)) in u["gids"] and _current(c, m, t)
                             and (not sig_ctx or _ctx_admits(nd, m, c.ip2g))
                             and CF.signature_share(sigs, c.key, m, t, route, within_key=True) >= CF.SIG_STANDING):
                         mem.append(m)
                     continue
-                if m in seen or (use_sig and (not sig_ctx or _ctx_admits(nd, m, c.ip2g))
+                if m in seen or (use_sig and (not sig_ctx or _ctx_admits(nd, m, c.ip2g)) and _current(c, m, t)
                                  and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING):
                     mem.append(m)
         if not mem:
@@ -1512,6 +1528,7 @@ def _config_dept_units(c: Any, nd: Any, t: float, seen: Set[str], lv0: Any, rout
         for i, m in enumerate(dict.fromkeys(cfg[name])):
             # bounded like group_parts: <= MEMBERS_CHECKED signatures read per department
             if m in seen or (use_sig and i < CF.MEMBERS_CHECKED and (not sig_ctx or _ctx_admits(nd, m, c.ip2g))
+                             and _current(c, m, t)
                              and CF.signature_share(sigs, c.key, m, t, route, within_key=True)
                              >= CF.SIG_STANDING):
                 mem.append(m)
@@ -2565,7 +2582,7 @@ def _members_at(c: Any, nd: Any, members: Set[str], route: Optional[str], t: flo
     """The group's members at a node: seen in its IP-level summary, or - at a
     node without an address context - holding the action in their own
     signatures (group_parts' rule)."""
-    seen = {str(ip) for ip, *_ in nd.who.levels[0].items(t)}
+    seen = {str(ip) for ip, *_ in nd.who.levels[0].items(t) if _current(c, str(ip), t)}
     sigs = getattr(c, "sigs", None)
     use_sig = route is not None and sigs is not None
     # at a node with an address context, a signature member counts only when
@@ -2577,7 +2594,7 @@ def _members_at(c: Any, nd: Any, members: Set[str], route: Optional[str], t: flo
     for i, m in enumerate(sorted(members, key=PR._ip_sort)):
         if "/" in m:
             continue
-        if m in seen or (use_sig and i < CF.MEMBERS_CHECKED
+        if m in seen or (use_sig and i < CF.MEMBERS_CHECKED and _current(c, m, t)
                          and CF.signature_share(sigs, c.key, m, t, route) >= CF.SIG_STANDING):
             out.append(m)
     return out
