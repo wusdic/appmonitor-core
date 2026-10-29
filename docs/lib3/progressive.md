@@ -7469,7 +7469,7 @@ Gains: pack O recall @14 median 0.868 → 0.895 (mean over seeds 0–2 0.912 →
 - Pack O seed 0 again under `PYTHONHASHSEED=1` (16.17.6).
 - O-red and O60: seed 0. O-real (35 days): seeds 0–2.
 - Packs A and E: seed 0, default registry, full and bounded (`scripts/progressive_pg9.py`'s pair job, one mode per process).
-- PG9's large point (pack O, 1 000 transient IPs, 84 h, full then bounded) and PG4's round-7 grid (IPs 500 / 20 000, attributes 340, servers 20 / 100 / 300; 7 days, resumable, thread CPU).
+- PG9's large point (pack O, 1 000 transient IPs, 84 h, bounded then full) and PG4's round-7 grid (IPs 500 / 20 000, attributes 340, servers 20 / 100 / 300; 7 days, resumable, thread CPU).
 - Bisections and diagnostics: pack O seed 1 and O-red without EV9-1; O-red on a62670b (round 8 re-run) and on a62670b + the conformity / governor owner's files alone, both with the RunResult kept; O-real seed 0 on round 9 and on a62670b with a hook dumping finance's statements and P11's model on days 26–35.
 
 The host was **less** loaded than in round 8: pack O runs took 1 553–1 739 s against 2 470–2 808 s, and lib-3's CPU per tick on pack A full fell from 1 489 to 794 ms (mean). Cost figures are therefore compared through ratios measured in the same round.
