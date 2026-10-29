@@ -68,9 +68,10 @@ SUS_CLEAR = -2.0                   # cleared when the odds favour a member 4 : 1
 # one state (the source's group has no standing at the node) until that state
 # changes - so uncapped, a member P03 judged foreign for weeks needed as many
 # supported rows again once P03 accepted it: O-real R3 (round 9), 财务部's clerk
-# readdressed to 192.168.2.51 on day 9 reached +700 bits at the finance ledger
-# node by the time P11 grouped it with its colleagues (day 30), and no finance
-# statement named it by day 35. Capped at 6 foreign rows: ~7 supported rows clear
+# readdressed to 192.168.2.51 on day 9 held +70 bits at the finance ledger and
+# voucher nodes by day 15 and kept accruing until P11 grouped it with its
+# colleagues (day 30); no finance statement named it by day 35. Capped at 6
+# foreign rows: ~7 supported rows clear
 SUS_LLR_MAX = 6.0 * SUS_LLR_FOREIGN
 SUS_SUPPORT_EV = 3.0               # colleagues' standing (evidence units, = P03 MEMBER_EV)
 SUS_SUPPORT_LEVELS = (1, 3)        # /24 prefix, learned group

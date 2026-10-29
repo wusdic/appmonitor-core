@@ -114,8 +114,8 @@ DERIVED_GROUPS: Tuple[frozenset, ...] = (
     # session is exactly the one without a previous route, so a split on the
     # session position "predicted" the previous route trivially. Measured on
     # O-red (round 9): portal's GET /news/{num} split by ctx.sess_pos from day 5
-    # with 336.5 of its 328.5 selective bits from ctx.prev_route (every other
-    # target negative); its young children carried 6-9 meta.z* noise targets
+    # on ctx.prev_route alone (336.5 bits; every other target negative, a
+    # selective gain of 328.5 bits); its young children carried 6-9 meta.z* targets
     # and fed P06 / P03's range-floor loop (+6 MEDIUM false alarms, D4 failed)
     frozenset({"ctx.sess_pos", "ctx.prev_route", "ctx.sid", "ctx.sess_age_s", "ctx.think_s", "sess.key"}),
 )
