@@ -141,35 +141,28 @@ the changes made by the adversarial review of 2026-09-29 and why.
 内存/CPU 对 IP 数、指标数与服务器数的次线性、漂移适应延迟、示例异常（A1–A10，含慢速投毒）的检出与误报、
 以及真实环境扰动（O-real）下的稳健性。
 
-**实测状态（第八轮，2026-10-19，§16.16；包 O 种子 0–4、21 天；评分改为前瞻留出事件 + 符号检验）**：
+**实测状态（第九轮，2026-10-29，§16.17；包 O 种子 0–4、21 天；评分器同第八轮）**——第九轮只修第八轮列出的退步与缺口，门槛是“包 O 种子 0–4 至少与第八轮一样好”，**没有全部达到**：
 
 - **召回与精确**：
-  - 第 14 天模式召回中位数 0.868 [0.789–0.947]，目标 0.90，未达标；中位数与第七轮相同，开发种子 0–2 的均值 0.903 → 0.912。
-  - 精确的主指标 0.955（第七轮按新评分为 0.980），全部陈述 0.883。
-  - 第 21 天召回 / 精确 0.881 / 0.985。
-- **越用越准**：可观测陈述的精确率第 5 → 21 天 0.89 → 0.99；陈述置信度中位数 0.79 → 0.97；校准误差（ECE）第 5 天 0.28 → 第 18–21 天 0.02–0.03。
-- **校准**：池化去偏校准误差 0.059（与第七轮按新评分相同；目标 0.05）；种子 2、4 达标，种子 0 因 4 条第 7 天低置信陈述为 0.076。
-  - “不变模式置信度不降”改用符号检验后 4/5 通过。种子 4 的失败是真实下降：尚无留出检验的节点沿用随全树漂移的先验均值，另有 4 个模式实际置信下降。
-- **误报与漂移**：
-  - ≥ MEDIUM 误报 0.0005/实体·日（不变）；示例异常 50/50。
-  - D1 3/5、D2–D4 5/5、D5 4/5。
-  - 包 O 的 GA + 财务绑定第 14 天 6/6 在 5/5 个种子上成立（第七轮 4/5）。
-- **需求示例**：逐条核对 47/50。种子 0 第 21 天的登录陈述与第七轮逐条相同：3 个 IP、08:31–08:51、1–2 KB、用户名语法与封闭集、3 条绑定、登录 → 首页。
+  - 第 14 天模式召回中位数 0.895 [0.789–0.947]（第八轮 0.868），目标 0.90，未达标（差 0.005）；开发种子 0–2 的均值 0.912 → 0.930；第 21 天 0.881 → 0.905。
+  - 精确的主指标 0.955 → **0.941**（仍 ≥ 0.90），全部陈述 0.877；第 21 天 0.985 → **0.958**。5 个种子池化：第 14 天 0.948 对 0.950（不变），第 21 天失败 16 / 345 条、恰为陈述置信度所预期（14.5），第八轮少于预期（9 / 339 对 13.0），差约 1.4 个标准差、不显著。
+- **越用越准**：可观测陈述的精确率第 5 → 21 天 0.90 → 0.96；陈述置信度中位数 0.79 → 0.98；校准误差（ECE）第 5 天 0.23 → 第 18–21 天 0.03–0.04。
+- **校准**：池化去偏校准误差 0.059 → 0.053（目标 0.05；种子 0 0.030），种子 3、4 变差（0.077、0.080）。
+  - “不变模式置信度不降”（符号检验）4/5 → **5/5**：未经检验的陈述保留签发时的先验，已检验的只沿自己检验结果的方向调整（T9-3）；O-real 每个种子与 O-red 也通过。
+- **误报与漂移**：≥ MEDIUM 误报 0.0005/实体·日、示例异常 50/50、D1 3/5、D2–D4 5/5、D5 4/5、GA + 财务第 14 天 6 条绑定 5/5，均与第八轮相同。
+- **需求示例**：逐条核对 47/50（同）；种子 0 第 21 天的登录陈述每个子句与第八轮相同，种子 0 第 11 天（D1 之前）第一次陈述了综合部 3 个 IP 的登录节点；一个部门分在多处时合成一条陈述（V9-2），种子 1、2 还原 `GA.mail#0`。
 - **O-real（35 天，3 个种子）**：
-  - A2（借用凭据）首次在 3 个种子上全部检出，异常 10 / 9 / 10 个（满分 10）。原因是家族节点继承成员的绑定状态，第 14 天绑定 3 / 0 / 3 条（满分 6）。
-  - 第 35 天召回 0.61–0.72；≥ MEDIUM 误报 0.0007–0.0012；校准误差 0.082–0.116。
-  - 种子 0 的核对清单 7 → 5：家族登录节点在第 18 天按 /24 拆分，综合部登录只在用户视图的群组 G19 中出现。
+  - 族登录节点不再按 /24 分裂（T9-1），但仍没有按群组分裂，核对 5 / 6 / 5（第八轮 5 / 6 / 7）。
+  - **财务出纳换址（R3）之后的财务模式从第 29 天起丢失**（财务节点的“谁”写成部门群组、不含新地址 .51；可能来自 T9-1，未二分）；种子 1 第 35 天召回 0.722 → 0.646。
+  - .21 的新审批页面回到系统视角（V9-4）；种子 0 的校准误差 0.116 → 0.087；异常 10 / 9 / 10。
 - **O-red / O60**：
-  - O-red 第 14 天召回 0.649 → 0.730，异常 10/10，校准误差 0.244 → 0.162。D2 新失败，原因已逐日追踪：P05 在周六把 username 判为丢弃，P08 随之丢掉该节点的绑定草图（§16.16.11）。
-  - O60 第 8 天一致性 0.047（< 0.05）。
-- **PG4**：
-  - 每事件 CPU 对属性数的斜率 0.260 → 0.206，仍略高于 0.2；P05 增长倍数 2.82 → 1.82。
-  - 内存斜率 0.194（通过）。
-  - 打分 / 学习 p95 仍远超预算；本轮机器负载为第七轮的 1.46 倍，同负载下 P 内核为第七轮的 1.14 倍。
-- **PG9**：仍只差包 A 的有界模式多 1 个 ≥ MEDIUM 事件。B14 的告警已消除，现在多出的事件来自 intensity 族重开同一事件。大规模点 0.43（≤ 0.5）。
-- **确定性**：两个散列种子下评分与完整结果对象完全相同。
+  - O-red 的 D2 通过（T9-2、V9-1、EV9-1），符号检验通过，校准误差 0.162 → 0.141；但 ≥ MEDIUM 误报 0.0011 → 0.0027、D4 失败、A4 漏检、第 14 天精确 0.982 → 0.891——门户新的年轻子节点上一个潜伏的 P06 / P03 缺陷（`clean_range` 去掉唯一一天的极值后 P03 的范围下限关闭，带端的值反复得到 p = 1e-9），已诊断、未修。
+  - O60 第 8 天一致性 0.047（< 0.05）；第 7 / 8 天精确 1.000 / 0.968 → 0.967 / 0.903，未追踪。
+- **PG4**：内存对属性数 0.194 → **0.202**（刚超 0.2；T9-2c 让动作字段留在节点目标里），每事件 CPU 对属性数 0.206 → **0.191**（达标）——两者都在重复测量的离散以内；同等负载下 P 内核为第八轮的 0.85 倍。
+- **PG9**：仍只差包 A 的有界模式多 1 个 ≥ MEDIUM 事件；C9-1 补齐了空闲间隙后的 B13 历史，但差距来自许多边界事件单经 B24 校准与信任传播的净结果；大规模点 0.45（≤ 0.5）。
+- **确定性与测试**：两个散列种子下评分与示例 0 处差异；全套测试 3 436 通过、4 跳过、0 失败（第八轮的耗时测试失败已由 C9-3 解决）。
 
-真实日志试点未做。逐句状态见 §3.1，中文完整版见主设计文档库三 §3.0、§3.8.0–§3.8.0c（第八轮；第七轮保留为 §3.8.0d）。
+真实日志试点未做。逐句状态见 §3.1，中文完整版见主设计文档库三 §3.0、§3.8.0–§3.8.0c（第九轮；第八轮保留为 §3.8.0d，第七轮为 §3.8.0e）。
 
 ---
 
@@ -256,35 +249,35 @@ legal factors out of scope (value retention is a switch, §5.1.3);
 libraries raw → derived → behaviour → signatures (P00 raw, P01 derived,
 P02–P15 behaviour; lib-4 optional input §9.3).
 
-### 3.1 Measured status per sentence (round 8, final code; §16.16)
+### 3.1 Measured status per sentence (round 9, final code; §16.17)
 
-Pack O, seeds 0–4, 21 days, `progressive_decision`; "a/5" = seeds passing; medians [min–max]. The round-8 scorer judges held-out claims on the events after the snapshot and PG2's paired confidence by a sign test (lead decisions). In parentheses: round 7 re-scored with the same scorer (§16.16.1).
+Pack O, seeds 0–4, 21 days, `progressive_decision`, final code `code9e` (= checkpoint 5d68af6); "a/5" = seeds passing; medians [min–max]. The scorer is round 8's (held-out claims judged on the events after the snapshot, PG2's paired confidence by a sign test). In parentheses: round 8 as published (`reports/progressive/round8/`, same scorer).
 Status: **met** (the gate's check passes), **partial** (mechanism works on the example, gate not passed), **not met**, **not measured**.
-Round 7's table is kept in git history (commit 8046b0e), round 6's in commit e65d606.
+Round 8's table is kept in git history (commit a62670b), round 7's in commit 8046b0e, round 6's in commit e65d606.
 
-| # | Measured (round 8) | Status |
+| # | Measured (round 9) | Status |
 |---|---|---|
-| S1 | 7-day points on the final code (`scale_r8/`): memory slope vs IPs 0.016, vs systems 0.251, vs attributes 0.194 (pass); idle system 0.39 MB, largest tree 19.4 MB; CPU / event vs IPs −0.066 (pass), **vs attributes 0.206** (0.260; P05's growth 2.82× → 1.82×, the tree owner's own run 0.182); per-event p95 1.16 ms scoring and 3.3 ms learning on a host 1.46× more loaded (round 7: 0.72 / 2.0 ms; target 100 / 250 µs) — not met; P-core time per pack O run 1.14× round 7 at equal load | partial |
-| S2 | recall@14 0.868 [0.789–0.947] (0.868; mean of seeds 0–2 0.903 → 0.912); precision@14 on observable claims 0.955 [0.915–0.981] (0.980), all claims 0.883; @21 0.881 / **0.985** (0.881 / 0.971); 综合部 login node = the 3 IPs + 3 bindings 5/5; finance approval = 192.168.2.10 only 5/5; portal at prefix 5/5; DEV pool one group 5/5; PG3 passes | not met (recall) |
-| S3 | median recall day 5 / 10 / 14 / 18: 0.43 / 0.80 / 0.87 / 0.93 (0.44 / 0.78 / 0.87 / 0.90); precision 0.89 / 0.94 / 0.95 / 0.97; median stated confidence day 7 → 21 0.87 → 0.97; depth non-decreasing 5/5; paired confidence of unchanged patterns non-decreasing (sign test) **4/5** (5/5; seed 4: untested nodes inherit the pooled prior's drift, §16.16.11 item 3); pooled debiased calibration error **0.059** [0.049–0.076] (0.059), stated 0.94 / held 0.94 | partial (rises with time; calibration close, not met) |
-| S4 | D1 3/5, D2 5/5, D3 5/5, D4 5/5, D5 4/5 (seed 3: P00's mean packet counts, EV8-3), .21 still `jack` 5/5; O-real recall @35 0.61–0.72 (0.59–0.70); O-red D2 **fails** (P05 drops the username on a weekend, P08 loses the node's bindings, §16.16.11 item 6) | partial |
-| S5 | PG10 day 11 1/5, day 21 3/5 (same); day-21 window IoU ≥ 0.7 4/5 | partial |
-| S6 | day 21: the 综合部 login node names exactly the 3 IPs 5/5 (O-real day 35: the family node is stated at /24 level; the 综合部 login with .121 / .23 only in group `G19`'s user view, §16.16.11 item 7) | met (example clause) |
-| S7 | 90 % in 1–2 KB 3/5 (seed 1 1–2.5 KB, seed 3 1–3 KB); all in 0.5–3 KB 5/5 | partial |
-| S8 | `username=` required, `[a-z]{4}(\.[a-z])?` and the closed set {jack, mike, mike.w, rose} 5/5 | met (example clause) |
-| S9 | 3 bindings on day 21 5/5; GA + FIN 6 bindings at day 14 on **5/5** (4/5; P14 states a drifting window's other clauses separately, CHANGE2); O-real bindings @14 3 / 0 / 3 of 6 (0 / 0 / 0) and **A2 detected on every seed** (missed on every seed) | met on day 21 (example clause) |
-| S10 | .21's approvals 5/5 under the renamed `/flow/` pages; 17:00 report by .23 / .121 with the form page as required predecessor 5/5; A5 5/5 (O-real 2/3); P10 keeps an accepted edge until its upper bound falls below the cut (CHANGE1, EV8-2); GA.oa.report#1 confirmed on day 12 (S5) | met (example clause) |
-| S11 | both views 5/5; department view lists the 3 IPs, who does what with confidence and support, the negatives | met (via the department view) |
-| S12 | PG3 passes; DEV pool one group 5/5; ARI 0.974 | met |
-| S13 | content component 0.921 [0.895–0.974] (same); missed: FIN approval opinion field at day 14, DEV's ~60-name set (OI8-b) | partial |
+| S1 | 7-day points on the final code (`scale_r9/`): memory slope vs IPs 0.010, vs systems 0.249, **vs attributes 0.202** (0.194; just above 0.2: the oa tree is 2.2 MB larger at 340 attributes, T9-2c); idle system 0.39 MB, largest tree 18.5 MB; CPU / event vs IPs −0.022 (pass), **vs attributes 0.191 (pass)** (0.206) — both attribute slopes within the ±0.03 spread between repeats; per-event p95 0.67 ms scoring and 1.93 ms learning on a host ~0.65× as loaded as round 8's (1.16 / 3.29 ms); P-core 0.85× round 8 at equal load | partial |
+| S2 | recall@14 **0.895** [0.789–0.947] (0.868; mean of seeds 0–2 0.912 → 0.930); precision@14 on observable claims 0.941 [0.933–0.981] (0.955), all claims 0.877 (0.883); @21 0.905 / **0.958** (0.881 / 0.985; pooled 0.954 against a mean stated confidence of 0.958); 综合部 login node = the 3 IPs + 3 bindings 5/5; finance approval = 192.168.2.10 only 5/5; portal at prefix 5/5; DEV pool one group 5/5; PG3 passes | not met (recall, by 0.005) |
+| S3 | median recall day 5 / 10 / 14 / 18: 0.43 / 0.80 / 0.89 / 0.95 (0.43 / 0.80 / 0.87 / 0.93); precision 0.90 / 0.96 / 0.94 / 0.96; median stated confidence day 7 → 21 0.83 → 0.98; depth non-decreasing 5/5; paired confidence of unchanged patterns non-decreasing (sign test) **5/5** (4/5; T9-3: an untested statement keeps its issuance prior, a tested one follows the pool only in its own test's direction); pooled debiased calibration error **0.053** [0.030–0.080] (0.059), stated 0.94 / held 0.93; seeds 3 and 4 worse (0.077 / 0.080) | partial (calibration 0.053 against 0.05) |
+| S4 | D1 3/5, D2 5/5, D3 5/5, D4 5/5, D5 4/5 (same), .21 still `jack` 5/5; O-red **D2 passes** (the dora → dora.k rename stated on day 19) but **D4 now fails** (a P06 / P03 range-floor loop on new portal child nodes, §16.17.11 item 4); O-real recall @35 0.63 / 0.65 / 0.61 (0.63 / 0.72 / 0.61): finance's patterns after R3's readdress are lost from day 29 (§16.17.11 item 3) | partial |
+| S5 | PG10 day 11 **2/5** (1/5: seed 0 now states the 3-IP login node on day 11, 08:59–09:22, confidence 0.92), day 21 3/5; day-21 window IoU ≥ 0.7 4/5; O-real day-35 login window IoU 0.33–0.35 | partial |
+| S6 | day 21: the 综合部 login node names exactly the 3 IPs 5/5 (O-real day 35: no /24 split any more (T9-1), but no group split either; the family login node is stated as learned-group parts and `G19` also holds 192.168.1.40 and 192.168.30.1 — who Jaccard 0.40 / 0.40 / 0.67) | met (example clause) |
+| S7 | 90 % in 1–2 KB 3/5 (seed 1 1–2.5 KB, seed 3 1–3 KB); all in 0.5–3 KB 5/5 (same) | partial |
+| S8 | `username=` required, `[a-z]{4}(\.[a-z])?` and the closed set {jack, mike, mike.w, rose} 5/5 (same); a Chao1 closure rule was measured and withdrawn (V9-5) | met (example clause) |
+| S9 | 3 bindings on day 21 5/5; GA + FIN 6 bindings at day 14 5/5 (same); O-real bindings @14 3 / 3 / 3 of 6 (3 / 0 / 3), A2 detected on every seed (same); a stated binding survives P05's role changes (V9-1, T9-2b, EV9-1) | met on day 21 (example clause) |
+| S10 | .21's approvals 5/5 under the renamed `/flow/` pages (confidence 0.88, round 8 0.95: T9-3's issuance prior); 17:00 report 5/5; A5 5/5 (O-real 2/3); O-real day 35: the new approval route is stated again in the system view (V9-4) | met (example clause) |
+| S11 | both views 5/5; department view lists the 3 IPs, who does what with confidence and support, the negatives; one statement per department across sibling nodes (V9-2: GA.mail#0 recovered on seeds 1 and 2) and configured departments as parts of shared family nodes | met (via the department view) |
+| S12 | PG3 passes; DEV pool one group 5/5; ARI 0.974 (same) | met |
+| S13 | content component 0.921 [0.895–0.974] (same); missed: FIN approval opinion field at day 14, DEV's ~60-name set (OI8-b, limited by the data) | partial |
 | S14 | department view "综合部 在 finance 中从未执行写操作 …；192.168.1.23 的尝试被判定为越权（未学习）" 5/5; A1 5/5 | met |
-| S15 | "财务部（192.168.2.10）访问 POST /fin/approval/{num}/approve（审批）" 5/5 | met |
+| S15 | "财务部（192.168.2.10）访问 POST /fin/approval/{num}/approve（审批）" 5/5; O-real 3/3 (but finance's login / ledger nodes are stated as the group's members, without the readdressed .51) | met |
 | S16 | registered in the first tick 1.0; role within 24 h 1.0 | met |
-| S17 | type correct 1.0; informative kept 1.0; noise dropped and constants → invariants not measured (O-red: P05's node overrides hold independent `meta.z*` noise, §16.16.12 item 5) | met (measured items) |
+| S17 | type correct 1.0; informative kept 1.0; a day without the attribute no longer demotes its role (T9-2a); noise dropped and constants → invariants not measured (O-red: 6–9 of the portal news child nodes' 8–12 target slots are `meta.z*`) | met (measured items) |
 | S18 | 16 P engines + B24–B29 run together on pack O | met (structure) |
 | S19 | 10 top facets, 22 default sub-facets | met (structure) |
-| S20 | arms in truth 0.833 (same); switches after day 7 ≤ 1; who level within 5 % 2/5; O-real R-items 3–5 per seed; PG9 fails on one check only — pack A bounded raises 8 incidents ≥ MEDIUM against 7 (now the `intensity` family re-opening one incident; B14's alarm is gone); packs A / E keep recall and T9 at 0.81 / 0.81 of full mode's lib-3 CPU p95; pack O with 1 000 transient IPs over 84 h 0.43 (≤ 0.5) | not met |
-| S21 | 5 seeds; O-red (never tuned on: recall @14 **0.730** (0.649), anomalies 10/10, CE 0.162 (0.244), D2 fails); O60 day-8 agreement 0.047 (inside 0.05); O-real 3 seeds (recall @35 0.61–0.72, anomalies **9–10 of 10** (8–9), FAR ≥ MEDIUM 0.0007–0.0012, CE 0.082–0.116); pack O seed 0 identical under two hash seeds (scores and the full result pickle); no real-log pilot | not measured (real world) |
+| S20 | arms in truth 0.833 (same); switches after day 7 ≤ 1; who level within 5 % 2/5; O-real R-items 4 / 4 / 3 per seed (5 / 4 / 3: seed 0 lost R4); PG9 fails on one check only — pack A bounded 8 incidents ≥ MEDIUM against 7 (C9-1 makes the bounded B13 history equal full mode's; the gap is the net of many borderline incidents); packs A / E at 0.87 / 0.85 of full mode's lib-3 CPU p95 (0.81 / 0.81); pack E bounded 5 / 0 / 0 against full 6 / 1 / 0 (2 / 0 / 0); the 1 000-IP, 84 h point 0.45 (0.43) | not met |
+| S21 | 5 seeds; O-red (never tuned on: recall @14 0.730 (same), precision @14 **0.891** (0.982), anomalies **9/10** (10/10), FAR ≥ MEDIUM **0.0027** (0.0011), D2 passes, **D4 fails**, CE 0.141 (0.162)); O60 day-8 agreement 0.047 (inside 0.05); O-real 3 seeds (recall @35 0.61–0.65 (0.61–0.72), anomalies 9–10 of 10, FAR ≥ MEDIUM 0.0007–0.0012, CE 0.087–0.120 (0.082–0.116)); pack O seed 0 identical under two hash seeds (18 681 score and example leaves); no real-log pilot | not measured (real environment) |
 
 ---
 
@@ -7442,48 +7435,6 @@ calls per batch is set by P05. Two options, neither exact, both need a pack O ch
       together (FIN.finance.login#0 binding lost on days 11-21); rest-only was not measured.
 ```
 
-## Appendix A. Review changes (adversarial review, 2026-09-29)
-
-The first draft was reviewed sentence by sentence against the user requirement (§3) and
-against the state of the art it cites. Each row lists what was wrong or missing, the change,
-and where it now lives. Nothing here has been implemented or measured; every number added by
-the review is either a default with its reason (§7.1) or an estimate, like the rest of the
-document.
-
-| # | Finding (what was wrong or missing) | Change | Where |
-|---|---|---|---|
-| RC1 | **Requirement gap: servers.** S1 forbids traversing all users *and servers*. Every system had a fixed ≈ 20–30 MB tree and fixed hourly/6-hourly fits, so memory and CPU grew linearly with the number of servers; a new server started from nothing. | System families (shared tree, `net.dst` as an ordinary split attribute: "一类服务器 → 某一台服务器"), activity-proportional tiers incl. XS, checkpoint-out of idle trees, dirty-node periodic work, cold start by family inheritance; PG4 server curves; pack O-servers; R9, R13. | PPC-10, §6.20, §6.19, §7, §11.6, §12 PG4 |
-| RC2 | **Statistical error: evidence inflated by mass.** ω = H(r + m) − H(r) let one aggregated row count ≈ ln m units and a thinned HT row (weight up to ~1 000) ≈ 7 units; split statistics and Dirichlet predictives used mass counts, so HT weights made nodes look far more certain than the learner's observations justify. | Mass and evidence separated everywhere: ω ≤ 1 per observed row (harmonic within a run), evidence-scaled predictives, split statistics in evidence units, sensor sample rate scales mass only. | PPC-9, §5.2.3, §6.5.3–6.5.4, §6.13 |
-| RC3 | **Statistical error: split significance.** The summed prequential saving (a ratio of two Bayes mixtures) is not a test martingale under a composite null, double-counts dependent targets, and "C_eval counts every evaluation" was an unjustified charge; the Bernstein check was a fixed-n bound applied repeatedly. | Rule (V): per-target universal-inference e-values (pooled ML code length vs prequential split code), averaged over targets (valid under any dependence), Ville's inequality ⇒ anytime-valid; multiplicity charged per candidate (log2 i ⇒ ≤ 2^−τ0 · H(C_ever)); MDL sum kept as gain (G); time-uniform Bernstein for (S); learning restarts after R_learn; system-level false-split rate stated; exceptions use the same test with a conservative leave-x-out construction; revision and alternates use an explicit τ0 margin. | PPC-11, §6.5.5, §6.6, §6.7, P04 tests (b)–(b″) |
-| RC4 | **Statistical error: decay vs bounds ("越久越准" violated).** All confidences used H_m-decayed evidence, which plateaus at rate × 10 d: the finance approval node's U could never fall below ≈ 0.016, so its HIGH-candidate severity (U ≤ 0.01) and the P03 test fixture (n_eff = 200) were unreachable; single-IP exceptions (n_eff,x ≥ 20) and node invariants (n_eff ≥ 50) were unreachable for once-a-day sources. | Confidence channel: H_l evidence reset to the H_m state on an accepted change, capped while evolving; shape stays on H_m. Confirmation, closedness, bindings, bounds, invariants, exceptions and statement support use it; the remaining plateau is stated with examples. | §6.9.4, §5.5.3, §6.8.1, §7.1 |
-| RC5 | **Statistical error: range bound.** The 30-day observed range was paired with the H_m n_eff; the rank bound 2/(n+1) needs the number of observations the extremes were taken from. | Daily ring of (min, max, n_obs) over the confidence segment; n_rng; render threshold 30 (was 50, unreachable for small nodes by day 14). | §6.10 |
-| RC6 | **Multiple testing on emissions.** A busy IP was tested per event against fixed thresholds; FAR per entity-day grew with the IP's event count. | Emission thresholds on p_day (Šidák over the IP's scored events at the (node, type) that day); expected chance emissions per clean IP-day bounded. | §6.16.3, P03 test (h) |
-| RC7 | **Who violations conflated DHCP and intruders.** A never-seen IP had grp = ∅ and was flagged `outsider_group` ⇒ HIGH candidate on every re-addressing; A8 had no rule distinguishing credential reuse from re-addressing. | `outsider_group` only for grouped IPs; `unknown_ip`; binding concurrency test (`concurrent_use` vs `readdress_candidate`); provisional P11 join; heavy-set definition; severity rows updated; A8 made explicit. | §6.12, §6.15, §6.16.2–6.16.3, §11.4 |
-| RC8 | **Poisoning gap.** A single foreign source that persisted for 5 days could be accepted into a who-closed node (single-IP persistence rule), and an attacker not yet in an incident learned at full weight. | Who-set changes need a group already present, a readdress candidate, a label, or (σ < 2) ≥ 2 sources of one group; outlier damping for p ≤ 1e-4 events; P02/P10/P11 learn from t − D with trust; new anomaly A9 (low-and-slow) with a non-adoption check. | §6.9.2–6.9.3, §4.2, §11.4, PG6 |
-| RC9 | **Hidden per-IP enumeration / unbounded state.** P01 built a window event for every active IP each grain (96 store reads each); P03's intensity counter beyond its cap sampled new pairs with weight 10 (false alarms possible); B04 shadow LRU of 100 000 IPs (≈ 60 MB per system); P13 composed a portrait for every IP every 2 h; batches of all events were retained 2 h (≈ GBs at 5 000 events/s) and not counted in §7; retired summaries and group views were uncapped; P05 swept all 512 attributes hourly. | W_max with priority sampling; intensity SpaceSaving scored on guaranteed counts plus a separate `pat.rate` batch; B04 shadow only for heavy candidates with shrinkage; P13 IP portraits earned-only; batches compacted to learned rows, retained D + 1 ticks, M_batch/M_tick in §7, R_tick cap; retired summaries ≤ N_max/2; G_max group views; P05 rotating slice; all LRU caps allocated by P15 from the sources seen. | §6.2.3, §6.16.4, §10.2, §6.17.1, §5.2.3, §5.6, §6.8.2, §6.15, §6.4, §7.2 |
-| RC10 | **Infeasible budget.** `cpu_ms_per_tick` = 80 ms (the gate-14 latency figure) while lib-3 already needs ≈ 909 ms at 35 entities and the P-core ≈ 1–2 s per 900-s tick: the ladder would have been engaged permanently, and ladder step 5 touched B-engines even in full mode. | Budgets as CPU share and memory, P-core separate from lib-3; ladder step 5 only in bounded mode; step 7 priority scoring under overload; e_rate default 10/s. | §6.19, §7.1, §13.2 |
-| RC11 | **Metrics still hard-coded.** Sampling strata, P05 context seeds and code-type hints were fixed lists. | Stratum from the tree's own root split; seeds are bootstrap only; type hints are configuration with a data test. | §6.2.2, §6.4, §5.3 |
-| RC12 | **Schema changes looked like behaviour changes.** A missing split attribute sent every event to `other`. | Absence is a value (`⊥`); `attribute_gone` detection; splits on gone attributes collapse. | §5.2.2, §5.5.1, §6.3, §6.6, R10 |
-| RC13 | **Missing real-world cases.** No treatment of SNAT reverse proxies, NAT/VDI, shared terminals, service accounts, IPv6 privacy addresses, holidays vs weekends, month-end jobs, scanners, sensor sampling, late logs, new servers, binary bodies. | Who resolution (XFF, trusted proxies, `snat_suspect`), `shared:<ip>`, `sess.key`, set bindings, `/64`, `ctx.dayclass`/`dom`/`mend`, normal-day counting, dormant patterns, outlier damping, sample-rate mass; a situation table with signals, responses and residual limits; pack O-real (R1–R13) and PG11. | §5.1.4, §5.4, §6.2.3, §6.8.1, §6.12, §6.21, §11.4, PG11 |
-| RC14 | **Grammar example inconsistent with the algorithm.** `[a-z]{1,10}` was presented as learned from jack/rose/mike, which anti-unification cannot produce; PG10 required "at most `[a-z]{1,10}`" although D2 introduces `mike.w`. | Length bounds are observed with coverage; operator-pinned business bounds via B23; example shows `[a-z]{4}`; prefix factoring specified; PG10 split into day 11 and day 21 checks with `[a-z.]{1,10}`. | §6.11, §6.17.2, §3 S8, PG10 |
-| RC15 | **Evaluation could not prove its claims.** PG10 at day 14 conflicted with D1 (day 12) and with the range render threshold; weekly patterns could not be confirmed in 14 d (3 dates needed); A9 was missing though recall was "over 10 anomalies"; nothing measured "precision grows with time", false splits, servers, or real-world conditions; the red-team variant was undefined. | PG1 opportunity rule with ≥ 3 dates; PG2 weekly ≤ 21 d, confidence-growth and false-split checks; PG4 server dimension; PG6 A9; PG10 re-timed; PG11; packs O-real, O-red (with 20 independent attributes), O-servers defined. | §11.6, §12 |
-| RC16 | **Workflow poisoning and id reuse.** P10 counted every current event (including an attacker's) into the DFG; SpaceSaving eviction could reuse an action id. | DFG counts from learned trusted rows of t − D via `prev_act` in `pat.assign`; ids never reused; sessions keyed by (ip, sess.key). | §6.14 |
-| RC17 | **Strategy selection maths.** Hedge ran on a gain/cost ratio (unbounded losses); the who-level code was not a complete code for unseen items. | Utility in one currency (bits − λ_c · µs), clipped for Hedge; ratio only for knapsack packing; who-level two-part code with escapes specified; B-engine applicability arm. | §6.18.2 |
-| RC18 | **Bindings.** The empirical-Bayes prior reused x's own data; no representation for shared terminals or service accounts; the example numbers were not reproducible. | Leave-one-out prior (numbers recomputed with scipy: 5 pure logins ⇒ LB ≈ 0.88), set bindings both directions, `sess.key` bindings behind NAT. | §6.12, P08 tests |
-| RC19 | **Value policy vs requirement.** Production default HMAC would never show `username=jack`, the requirement's own example; secrets were caught by key name only. | Default clear for non-secret values (legal out of scope), secrets shape-only by key glob and value randomness (reusing `lib/template._looks_random`), long values shape-only; lead confirmation kept as an open item. | §5.1.3 |
-| RC20 | **"自动学到综合部".** Names were said to come from config only, which reads as manual upkeep; the requirement expects the department to be recognised. | Stated plainly: membership is learned, a name needs a source; IPAM / DHCP-scope / asset / directory import script. | §0 item 6, §2, §6.15 |
-| RC21 | **No end-to-end trace.** An implementer could not see how the example emerges (which splits, when groups arrive, when each fitter can speak). | Worked trace of the OA example, day by day, with the portal contrast. | §6.22 |
-| RC22 | Small fixes: `p_ref` NaN before the first snapshot; ancestor-sampling uniform keyed by `seeded_uniform`; `rate_Hs` defined; P02 statistics from t − D; lag list in §9.1; family pseudo-system store keys; new events (`attribute_gone`, `pattern_revived`, `family_changed`); references added (Ville, universal inference, e-value combination, time-uniform bounds, priority sampling). | as listed | §5.6, §6.5.1, §6.8.3, §9.1, §15 |
-
-**Open items for the lead** (added or changed by the review, beyond the architect's list):
-
-1. The value-policy default (RC19) supersedes the decisions.md privacy line for the PPC.
-2. Contract additions grow: `compact_batch` on the store (RC9), the `pat.rate` batch, the
-   `fam:<id>` pseudo-system key for shared trees (RC1), and `model.sysfam`.
-3. The confidence plateau (H_l = 30 d, RC4) is a product trade-off: longer H_l means more
-   confidence for unchanging behaviour and slower forgetting of changes no detector flags.
-4. Pack O-real extends pack O to 35 days for R8; eval wall time grows accordingly.
-
 ### 16.17 Round 9: results on the final code (evaluator, 2026-10-29)
 
 Round 9 was a focused round: three owners fixed the regressions and gaps listed in §16.16.11–§16.16.12 on top of a62670b (round 8), with no new mechanisms beyond what each item needed:
@@ -7529,18 +7480,20 @@ The host was **less** loaded than in round 8: pack O runs took 1 553–1 739 s a
 
 #### 16.17.2 The owners' round-9 changes (summary; details and tests in their files)
 
+IDs (used in the Chinese design document §3.3 / §3.8.0b and in `engines.md`): T9-1 – T9-3 = the tree owner's items 1–3 (T9-2a / b / c = the three parts of item 2); V9-1 – V9-4 = the bindings / views owner's changes 1–4 in their report (V9-5 = the withdrawn P07 rule); C9-1 – C9-3 = the conformity / governor owner's items 1–3.
+
 | Owner | Change | Measured by the owner (their snapshots) |
 |---|---|---|
-| tree (P04, P05, `pselect`) | Item 1: `pattern_tree._mask_bound_targets` — a split candidate on the source address (`net.src`, `net.peer_src`) no longer counts the payload of a binding P08 states (the username): any partition of the addresses predicts a username, the finer the better. Replaces 7bf9713's rival deferral, which could block a split for good (`tests/engines/test_p04_round9.py`) | O-real seed 0: the G18 + G19 login node no longer splits by /24; it does not split by group either |
-| | Item 2: a low-utility run demotes a role only if the attribute occurred on the key's latest day of traffic (registry `day_pres` > 0); a stated binding's payload keeps at least the `target` role; an action's field replaces the lowest-ranked kept attribute that is not one in a node's target list (`tests/engines/test_p05_round9.py`) | O-red D2 passes |
-| | Item 3: an untested statement keeps the prior it was issued with; a tested one adopts the pool's current prior only in its own test's direction (`tests/engines/test_p04_round4.py`, re-recorded stream digests) | pack O seed 4's sign test passes (23 lost / 4 gained → 9 / 18) |
-| bindings / views (P08, P14, `prender`, `pwindows`) | P08: payloads of bound pairs stay candidates, a bound pair survives a screen-out with its sketch and value history — only for the bindings the views state (`FD.binding_stated`, published as `model.pbind['bound_stated']`) (`tests/engines/test_p08_round9.py`) | O-red D2: the `dora → dora.k` rename stated on day 19 |
-| | P14: `department_statements` merges one department's pieces across sibling nodes and groups (who = union, when = union or pooled refit, content = what holds for every piece, confidence = minimum of the pieces' `conf_rest`); configured departments become parts on shared family nodes (`_config_dept_units`) (`tests/engines/test_p14_round9.py`) | GA.mail#0 recovered on seeds 1 and 2 |
-| | OI8-j: the window-hold prior centred on the in-sample coverage; a statement confirmed before P04's daily step takes the tree's pooled rate (`tests/lib/test_pwindows_round9.py`); `prender.who_block` states the observed addresses of a dissolved learned group | seed 0 CE 0.076 → 0.038 |
-| | withdrawn after measurement: a Chao1 closure rule in P07 (OI8-b) — it closed O-red's uniform `meta.z*` noise with values missing (O-red CE 0.148 → 0.165) | – |
-| conformity / governor (P03, B13, B28, `gating`) | Item 1: bounded mode's idle-gap catch-up (B13 zero rows for idle hours, gating idle ticks, B28 trust backfill) (`tests/engines/test_b13_bounded_idle_round9.py`) | pack A bounded's B13 history equals full mode's; gate 3 still 8 against 7 |
-| | Item 2 (g3): a credential finding counts against its source inside the incident window as before; beyond it only the (source, credential) pair stays distrusted (`tests/engines/test_b28_credential_pair_round9.py`) | pack O seed 2: all 13 387 score values equal to round 8 |
-| | Item 3: B13's and P03's timing tests measure process CPU against an interleaved reference workload (`tests/engines/test_b13_budget_edges.py`, `test_p03_conformity.py`) | the timing failure of round 8's suite is gone |
+| tree (P04, P05, `pselect`) | T9-1 (item 1): `pattern_tree._mask_bound_targets` — a split candidate on the source address (`net.src`, `net.peer_src`) no longer counts the payload of a binding P08 states (the username): any partition of the addresses predicts a username, the finer the better. Replaces 7bf9713's rival deferral, which could block a split for good (`tests/engines/test_p04_round9.py`) | O-real seed 0: the G18 + G19 login node no longer splits by /24; it does not split by group either |
+| | T9-2 (item 2): (a) a low-utility run demotes a role only if the attribute occurred on the key's latest day of traffic (registry `day_pres` > 0); (b) a stated binding's payload keeps at least the `target` role; (c) an action's field replaces the lowest-ranked kept attribute that is not one in a node's target list (`tests/engines/test_p05_round9.py`) | O-red D2 passes |
+| | T9-3 (item 3): an untested statement keeps the prior it was issued with (`hold_prior_iss`); a tested one adopts the pool's current prior only in its own test's direction (`pattern_tree._hold_priors`; `tests/engines/test_p04_round9.py`, `test_p04_round4.py` updated, re-recorded stream digests) | pack O seed 4's sign test passes (23 lost / 4 gained → 9 / 18) |
+| bindings / views (P08, P14, `prender`, `pwindows`) | V9-1, P08: payloads of bound pairs stay candidates, a bound pair survives a screen-out with its sketch and value history — only for the bindings the views state (`FD.binding_stated`, published as `model.pbind['bound_stated']`) (`tests/engines/test_p08_round9.py`) | O-red D2: the `dora → dora.k` rename stated on day 19 |
+| | V9-2, P14: `department_statements` merges one department's pieces across sibling nodes and groups (who = union, when = union or pooled refit, content = what holds for every piece, confidence = minimum of the pieces' `conf_rest`); configured departments become parts on shared family nodes (`_config_dept_units`) (`tests/engines/test_p14_round9.py`) | GA.mail#0 recovered on seeds 1 and 2 |
+| | V9-3, OI8-j: the window-hold prior centred on the in-sample coverage (`pwindows.window_hold`); a statement confirmed before P04's daily step takes the tree's pooled rate (`views.base_hold`) (`tests/lib/test_pwindows_round9.py`, `test_p14_round9.py`); V9-4: `prender.who_block` states the observed addresses of a dissolved learned group (`test_p14_round9.py`) | seed 0 CE 0.076 → 0.038 |
+| | V9-5, withdrawn after measurement: a Chao1 closure rule in P07 (OI8-b) — it closed O-red's uniform `meta.z*` noise with values missing (O-red CE 0.148 → 0.165) | – |
+| conformity / governor (P03, B13, B28, `gating`) | C9-1 (item 1): bounded mode's idle-gap catch-up (B13 zero rows for idle hours, gating idle ticks, B28 trust backfill) (`tests/engines/test_b13_bounded_idle_round9.py`) | pack A bounded's B13 history equals full mode's; gate 3 still 8 against 7 |
+| | C9-2 (item 2, g3): a credential finding counts against its source inside the incident window as before; beyond it only the (source, credential) pair stays distrusted (`tests/engines/test_b28_credential_pair_round9.py`) | pack O seed 2: all 13 387 score values equal to round 8 |
+| | C9-3 (item 3): B13's and P03's timing tests measure process CPU against an interleaved reference workload (`tests/engines/test_b13_budget_edges.py`, `test_p03_conformity.py`) | the timing failure of round 8's suite is gone |
 
 #### 16.17.3 Evaluator change (EV9-1)
 
@@ -7853,7 +7806,7 @@ The checklist is 47/50, the same three clauses as rounds 7 and 8 (seed 1's band 
 
 5 / 6 / 5 of 10 (round 8: 5 / 6 / 7). The login clauses still fail on every seed: the checklist's login statement is the family login node's part for learned group `G19`, which on day 35 holds 10.168.7.121 and 192.168.1.23 together with two other addresses (192.168.1.40, 192.168.30.1), with a window of 08:29–09:31.
 
-**The example as learned** (P14's text verbatim; the run JSON stores each text up to its first ~1 000 characters, trimmed here with …).
+**The example as learned** (P14's text verbatim from the run JSONs, which store each statement in full; trimmed here with …).
 
 **Pack O seed 0, day 21 — system view (oa).** The login statement, the checklist's statement for clauses 1–6. Every clause is round 8's: the three addresses, 08:31–08:51, 1–2 KB / 1–2.8 KB, the `username=` grammar and closed set, the three bindings, login → home:
 
@@ -7989,3 +7942,45 @@ The rule for this round was "diagnose and fix only clear defects; stop iterating
 14. *Department statement text* omits the action word (cosmetic).
 
 **Still open from round 8** (unchanged this round): OI8-c (Page-Hinkley sd from 5 days), OI8-i / OI8-d (transport-only failures withdraw statements), O-real seed 1's A5, EV8-3 (P00 per-row packet counts; D5 on seed 3), OC8-4 (scoring p95 above 100 µs), OI-H1 / OI-H2 (per-tick loops over every known entity; P02's slope).
+
+## Appendix A. Review changes (adversarial review, 2026-09-29)
+
+The first draft was reviewed sentence by sentence against the user requirement (§3) and
+against the state of the art it cites. Each row lists what was wrong or missing, the change,
+and where it now lives. Nothing here has been implemented or measured; every number added by
+the review is either a default with its reason (§7.1) or an estimate, like the rest of the
+document.
+
+| # | Finding (what was wrong or missing) | Change | Where |
+|---|---|---|---|
+| RC1 | **Requirement gap: servers.** S1 forbids traversing all users *and servers*. Every system had a fixed ≈ 20–30 MB tree and fixed hourly/6-hourly fits, so memory and CPU grew linearly with the number of servers; a new server started from nothing. | System families (shared tree, `net.dst` as an ordinary split attribute: "一类服务器 → 某一台服务器"), activity-proportional tiers incl. XS, checkpoint-out of idle trees, dirty-node periodic work, cold start by family inheritance; PG4 server curves; pack O-servers; R9, R13. | PPC-10, §6.20, §6.19, §7, §11.6, §12 PG4 |
+| RC2 | **Statistical error: evidence inflated by mass.** ω = H(r + m) − H(r) let one aggregated row count ≈ ln m units and a thinned HT row (weight up to ~1 000) ≈ 7 units; split statistics and Dirichlet predictives used mass counts, so HT weights made nodes look far more certain than the learner's observations justify. | Mass and evidence separated everywhere: ω ≤ 1 per observed row (harmonic within a run), evidence-scaled predictives, split statistics in evidence units, sensor sample rate scales mass only. | PPC-9, §5.2.3, §6.5.3–6.5.4, §6.13 |
+| RC3 | **Statistical error: split significance.** The summed prequential saving (a ratio of two Bayes mixtures) is not a test martingale under a composite null, double-counts dependent targets, and "C_eval counts every evaluation" was an unjustified charge; the Bernstein check was a fixed-n bound applied repeatedly. | Rule (V): per-target universal-inference e-values (pooled ML code length vs prequential split code), averaged over targets (valid under any dependence), Ville's inequality ⇒ anytime-valid; multiplicity charged per candidate (log2 i ⇒ ≤ 2^−τ0 · H(C_ever)); MDL sum kept as gain (G); time-uniform Bernstein for (S); learning restarts after R_learn; system-level false-split rate stated; exceptions use the same test with a conservative leave-x-out construction; revision and alternates use an explicit τ0 margin. | PPC-11, §6.5.5, §6.6, §6.7, P04 tests (b)–(b″) |
+| RC4 | **Statistical error: decay vs bounds ("越久越准" violated).** All confidences used H_m-decayed evidence, which plateaus at rate × 10 d: the finance approval node's U could never fall below ≈ 0.016, so its HIGH-candidate severity (U ≤ 0.01) and the P03 test fixture (n_eff = 200) were unreachable; single-IP exceptions (n_eff,x ≥ 20) and node invariants (n_eff ≥ 50) were unreachable for once-a-day sources. | Confidence channel: H_l evidence reset to the H_m state on an accepted change, capped while evolving; shape stays on H_m. Confirmation, closedness, bindings, bounds, invariants, exceptions and statement support use it; the remaining plateau is stated with examples. | §6.9.4, §5.5.3, §6.8.1, §7.1 |
+| RC5 | **Statistical error: range bound.** The 30-day observed range was paired with the H_m n_eff; the rank bound 2/(n+1) needs the number of observations the extremes were taken from. | Daily ring of (min, max, n_obs) over the confidence segment; n_rng; render threshold 30 (was 50, unreachable for small nodes by day 14). | §6.10 |
+| RC6 | **Multiple testing on emissions.** A busy IP was tested per event against fixed thresholds; FAR per entity-day grew with the IP's event count. | Emission thresholds on p_day (Šidák over the IP's scored events at the (node, type) that day); expected chance emissions per clean IP-day bounded. | §6.16.3, P03 test (h) |
+| RC7 | **Who violations conflated DHCP and intruders.** A never-seen IP had grp = ∅ and was flagged `outsider_group` ⇒ HIGH candidate on every re-addressing; A8 had no rule distinguishing credential reuse from re-addressing. | `outsider_group` only for grouped IPs; `unknown_ip`; binding concurrency test (`concurrent_use` vs `readdress_candidate`); provisional P11 join; heavy-set definition; severity rows updated; A8 made explicit. | §6.12, §6.15, §6.16.2–6.16.3, §11.4 |
+| RC8 | **Poisoning gap.** A single foreign source that persisted for 5 days could be accepted into a who-closed node (single-IP persistence rule), and an attacker not yet in an incident learned at full weight. | Who-set changes need a group already present, a readdress candidate, a label, or (σ < 2) ≥ 2 sources of one group; outlier damping for p ≤ 1e-4 events; P02/P10/P11 learn from t − D with trust; new anomaly A9 (low-and-slow) with a non-adoption check. | §6.9.2–6.9.3, §4.2, §11.4, PG6 |
+| RC9 | **Hidden per-IP enumeration / unbounded state.** P01 built a window event for every active IP each grain (96 store reads each); P03's intensity counter beyond its cap sampled new pairs with weight 10 (false alarms possible); B04 shadow LRU of 100 000 IPs (≈ 60 MB per system); P13 composed a portrait for every IP every 2 h; batches of all events were retained 2 h (≈ GBs at 5 000 events/s) and not counted in §7; retired summaries and group views were uncapped; P05 swept all 512 attributes hourly. | W_max with priority sampling; intensity SpaceSaving scored on guaranteed counts plus a separate `pat.rate` batch; B04 shadow only for heavy candidates with shrinkage; P13 IP portraits earned-only; batches compacted to learned rows, retained D + 1 ticks, M_batch/M_tick in §7, R_tick cap; retired summaries ≤ N_max/2; G_max group views; P05 rotating slice; all LRU caps allocated by P15 from the sources seen. | §6.2.3, §6.16.4, §10.2, §6.17.1, §5.2.3, §5.6, §6.8.2, §6.15, §6.4, §7.2 |
+| RC10 | **Infeasible budget.** `cpu_ms_per_tick` = 80 ms (the gate-14 latency figure) while lib-3 already needs ≈ 909 ms at 35 entities and the P-core ≈ 1–2 s per 900-s tick: the ladder would have been engaged permanently, and ladder step 5 touched B-engines even in full mode. | Budgets as CPU share and memory, P-core separate from lib-3; ladder step 5 only in bounded mode; step 7 priority scoring under overload; e_rate default 10/s. | §6.19, §7.1, §13.2 |
+| RC11 | **Metrics still hard-coded.** Sampling strata, P05 context seeds and code-type hints were fixed lists. | Stratum from the tree's own root split; seeds are bootstrap only; type hints are configuration with a data test. | §6.2.2, §6.4, §5.3 |
+| RC12 | **Schema changes looked like behaviour changes.** A missing split attribute sent every event to `other`. | Absence is a value (`⊥`); `attribute_gone` detection; splits on gone attributes collapse. | §5.2.2, §5.5.1, §6.3, §6.6, R10 |
+| RC13 | **Missing real-world cases.** No treatment of SNAT reverse proxies, NAT/VDI, shared terminals, service accounts, IPv6 privacy addresses, holidays vs weekends, month-end jobs, scanners, sensor sampling, late logs, new servers, binary bodies. | Who resolution (XFF, trusted proxies, `snat_suspect`), `shared:<ip>`, `sess.key`, set bindings, `/64`, `ctx.dayclass`/`dom`/`mend`, normal-day counting, dormant patterns, outlier damping, sample-rate mass; a situation table with signals, responses and residual limits; pack O-real (R1–R13) and PG11. | §5.1.4, §5.4, §6.2.3, §6.8.1, §6.12, §6.21, §11.4, PG11 |
+| RC14 | **Grammar example inconsistent with the algorithm.** `[a-z]{1,10}` was presented as learned from jack/rose/mike, which anti-unification cannot produce; PG10 required "at most `[a-z]{1,10}`" although D2 introduces `mike.w`. | Length bounds are observed with coverage; operator-pinned business bounds via B23; example shows `[a-z]{4}`; prefix factoring specified; PG10 split into day 11 and day 21 checks with `[a-z.]{1,10}`. | §6.11, §6.17.2, §3 S8, PG10 |
+| RC15 | **Evaluation could not prove its claims.** PG10 at day 14 conflicted with D1 (day 12) and with the range render threshold; weekly patterns could not be confirmed in 14 d (3 dates needed); A9 was missing though recall was "over 10 anomalies"; nothing measured "precision grows with time", false splits, servers, or real-world conditions; the red-team variant was undefined. | PG1 opportunity rule with ≥ 3 dates; PG2 weekly ≤ 21 d, confidence-growth and false-split checks; PG4 server dimension; PG6 A9; PG10 re-timed; PG11; packs O-real, O-red (with 20 independent attributes), O-servers defined. | §11.6, §12 |
+| RC16 | **Workflow poisoning and id reuse.** P10 counted every current event (including an attacker's) into the DFG; SpaceSaving eviction could reuse an action id. | DFG counts from learned trusted rows of t − D via `prev_act` in `pat.assign`; ids never reused; sessions keyed by (ip, sess.key). | §6.14 |
+| RC17 | **Strategy selection maths.** Hedge ran on a gain/cost ratio (unbounded losses); the who-level code was not a complete code for unseen items. | Utility in one currency (bits − λ_c · µs), clipped for Hedge; ratio only for knapsack packing; who-level two-part code with escapes specified; B-engine applicability arm. | §6.18.2 |
+| RC18 | **Bindings.** The empirical-Bayes prior reused x's own data; no representation for shared terminals or service accounts; the example numbers were not reproducible. | Leave-one-out prior (numbers recomputed with scipy: 5 pure logins ⇒ LB ≈ 0.88), set bindings both directions, `sess.key` bindings behind NAT. | §6.12, P08 tests |
+| RC19 | **Value policy vs requirement.** Production default HMAC would never show `username=jack`, the requirement's own example; secrets were caught by key name only. | Default clear for non-secret values (legal out of scope), secrets shape-only by key glob and value randomness (reusing `lib/template._looks_random`), long values shape-only; lead confirmation kept as an open item. | §5.1.3 |
+| RC20 | **"自动学到综合部".** Names were said to come from config only, which reads as manual upkeep; the requirement expects the department to be recognised. | Stated plainly: membership is learned, a name needs a source; IPAM / DHCP-scope / asset / directory import script. | §0 item 6, §2, §6.15 |
+| RC21 | **No end-to-end trace.** An implementer could not see how the example emerges (which splits, when groups arrive, when each fitter can speak). | Worked trace of the OA example, day by day, with the portal contrast. | §6.22 |
+| RC22 | Small fixes: `p_ref` NaN before the first snapshot; ancestor-sampling uniform keyed by `seeded_uniform`; `rate_Hs` defined; P02 statistics from t − D; lag list in §9.1; family pseudo-system store keys; new events (`attribute_gone`, `pattern_revived`, `family_changed`); references added (Ville, universal inference, e-value combination, time-uniform bounds, priority sampling). | as listed | §5.6, §6.5.1, §6.8.3, §9.1, §15 |
+
+**Open items for the lead** (added or changed by the review, beyond the architect's list):
+
+1. The value-policy default (RC19) supersedes the decisions.md privacy line for the PPC.
+2. Contract additions grow: `compact_batch` on the store (RC9), the `pat.rate` batch, the
+   `fam:<id>` pseudo-system key for shared trees (RC1), and `model.sysfam`.
+3. The confidence plateau (H_l = 30 d, RC4) is a product trade-off: longer H_l means more
+   confidence for unchanging behaviour and slower forgetting of changes no detector flags.
+4. Pack O-real extends pack O to 35 days for R8; eval wall time grows accordingly.
