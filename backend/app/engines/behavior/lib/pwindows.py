@@ -35,6 +35,10 @@ Algorithm (per node and day type):
   5. confidence coverage (mass share inside), n distinct dates and day stability
               (share of dates whose sampled arrivals all fall inside), the
               latter two from the reservoir's timestamps (None in slot mode).
+  6. stated   (round 10) the coverage a statement states is the largest c with
+              P(theta >= c - eps(c)) >= 0.95 under the fit's evidence
+              (coverage_bound, _state_lb); the point value ('coverage_pt')
+              stays for the fit's own decisions.
 
 Deviation from the text of §6.13 (measured in tests/lib/test_pwindows.py):
 r_bg = mass/1440 rejects every broad pattern (08:00-20:00 activity has only 2x

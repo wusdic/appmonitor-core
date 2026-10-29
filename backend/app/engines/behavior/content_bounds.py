@@ -27,6 +27,11 @@ Hygiene Every tick the numeric values of rows P03 judged violations (any typed
         day whose extreme is a violating value takes its next extreme from the
         exceedance reservoirs, or that side of the day leaves the range (its
         other extreme is clean and stays; n_rng = the smaller side's sample).
+        (Round 10) A ledger row keeps its time, and removes only its OWN
+        reservoir item: a clean row tied with it at a discrete value keeps the
+        extreme (O-red seed 0: one violating 460-B row took every 460-B row of
+        a young segment's only day with it; range None, then P03's floor-less
+        p = 1e-9 at the band's own end - the range-floor loop).
         (2026-10-01: A3's undamped 12 KB injection login was the OA login
         node's stated maximum, "0-12 KB".) The informational flags
         above_range / below_range / grammar / length are NOT violations: a
