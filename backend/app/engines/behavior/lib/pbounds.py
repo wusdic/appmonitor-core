@@ -237,16 +237,56 @@ def _close(a: float, b: float) -> bool:
     return abs(float(a) - float(b)) <= 1e-9 * (1.0 + abs(float(b)))
 
 
-def clean_range(num: Any, day_now: int, excl: Optional[Mapping[int, Sequence[float]]] = None,
+TS_TOL = 1e-3                          # seconds: a ledger row and a reservoir item are one row
+
+
+def _bad_rows(seq: Optional[Sequence[Any]]) -> List[Tuple[float, Optional[float]]]:
+    """[(y, ts or None)] of one day's excluded values (P06's ledger gives
+    (y, ts) pairs since round 10; a bare y is a row of unknown time)."""
+    out: List[Tuple[float, Optional[float]]] = []
+    for e in seq or ():
+        if isinstance(e, (tuple, list)):
+            y = float(e[0])
+            t = float(e[1]) if len(e) > 1 and e[1] is not None and _fin(e[1]) else None
+        else:
+            y, t = float(e), None
+        out.append((y, t))
+    return out
+
+
+def _clean_pool(pool: List[Tuple[float, float]], bad: Sequence[Tuple[float, Optional[float]]]
+                ) -> List[Tuple[float, float]]:
+    """The reservoir items of one day without the excluded rows: an excluded
+    row removes ITS OWN item - the one with its timestamp - or, when its
+    time is unknown, one item of its value. (Round 10: every item equal to an
+    excluded value was removed, so one violating row at a discrete atom took
+    every clean row of that value with it; O-red seed 0, portal GET /news:
+    the 460-byte minimum of a young segment's only day.)"""
+    left = list(pool)
+    for yb, tb in bad:
+        if tb is not None:
+            left = [(y, t) for y, t in left if not (abs(t - tb) <= TS_TOL and _close(y, yb))]
+            continue
+        for j, (y, _t) in enumerate(left):
+            if _close(y, yb):
+                del left[j]
+                break
+    return left
+
+
+def clean_range(num: Any, day_now: int, excl: Optional[Mapping[int, Sequence[Any]]] = None,
                 day_of: Any = None) -> Tuple[float, float, float, int]:
     """(min, max, n_rng, days dropped) of the node's daily ring over the
     current confidence segment (pnode.NumSummary.observed_range), without
     the values of rows P03 judged violations (§6.9.3: a violation never
     teaches the pattern; an undamped 12 KB injection login must not become
-    the login's stated maximum). excl = {local day: [y values]} (transformed
-    scale). A day whose extreme is such a value takes its next extreme from
-    the exceedance reservoirs (values beyond the running Q(0.10) / Q(0.90),
-    with their timestamps; day_of(ts) -> local day); when they hold none for
+    the login's stated maximum). excl = {local day: [y or (y, ts)]}
+    (transformed scale; ts = the row's time when the ledger kept it). A day
+    whose extreme is such a value takes its next extreme from the exceedance
+    reservoirs (values beyond the running Q(0.10) / Q(0.90), with their
+    timestamps; day_of(ts) -> local day) less the excluded rows' own items
+    (_clean_pool: a clean row tied with an excluded one keeps the extreme);
+    when they hold none for
     that day, that SIDE of the day leaves the range (its other extreme is a
     clean observation and stays). The minimum and the maximum may then be
     taken over different days: n_rng is the smaller of the two samples
@@ -271,22 +311,24 @@ def clean_range(num: Any, day_now: int, excl: Optional[Mapping[int, Sequence[flo
     lo_out, hi_out = [], []                 # (excluded extreme, n) of sides that left the range
     for row in r[ok]:
         d, lo, hi, n = int(row[0]), float(row[1]), float(row[2]), float(row[3])
-        bad = [float(y) for y in (excl.get(d) or ())]
+        bad = _bad_rows(excl.get(d))
         bad_lo = bad_hi = NAN
         if bad:
-            if any(_close(hi, y) for y in bad):
+            if any(_close(hi, y) for y, _t in bad):
                 bad_hi = hi
                 if res_hi is None:
                     res_hi = [(float(y), float(t)) for y, _w, t in num.hi_res.items()]
-                c = [y for y, t in res_hi if day_of is not None and day_of(t) == d and y < hi
-                     and not any(_close(y, b) for b in bad)]
+                pool = [(y, t) for y, t in res_hi if day_of is not None and day_of(t) == d
+                        and (y < hi or _close(y, hi))]
+                c = [y for y, _t in _clean_pool(pool, bad)]
                 hi = max(c) if c else NAN
-            if any(_close(lo, y) for y in bad):
+            if any(_close(lo, y) for y, _t in bad):
                 bad_lo = lo
                 if res_lo is None:
                     res_lo = [(float(y), float(t)) for y, _w, t in num.lo_res.items()]
-                c = [y for y, t in res_lo if day_of is not None and day_of(t) == d and y > lo
-                     and not any(_close(y, b) for b in bad)]
+                pool = [(y, t) for y, t in res_lo if day_of is not None and day_of(t) == d
+                        and (y > lo or _close(y, lo))]
+                c = [y for y, _t in _clean_pool(pool, bad)]
                 lo = min(c) if c else NAN
             # the excluded extremes were rows of the ring's count: they leave it
             n = max(0.0, n - float(_fin(bad_hi)) - float(_fin(bad_lo) and not _close(bad_lo, bad_hi)))
@@ -315,7 +357,7 @@ def clean_range(num: Any, day_now: int, excl: Optional[Mapping[int, Sequence[flo
 
 def fit_numeric(num: Any, t: float, day_now: int, n_c: float = NAN, n_eff: float = NAN,
                 approx_share: float = 0.0, unit: str = "", pin: Optional[Mapping[str, Any]] = None,
-                excl: Optional[Mapping[int, Sequence[float]]] = None, day_of: Any = None
+                excl: Optional[Mapping[int, Sequence[Any]]] = None, day_of: Any = None
                 ) -> Optional[Dict[str, Any]]:
     """Fitted numeric constraint of one node attribute (§6.10); None when the
     summary is empty. n_c / n_eff: the attribute's evidence on the confidence

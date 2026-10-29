@@ -139,7 +139,7 @@ def test_violation_ledger_order_does_not_depend_on_hash_seed():
     ctx = Context(store=store, now=now, window_s=900.0, config={})
     CB.ContentBoundsEngine()._ledger(ctx, "portal", now)
     st = store.get_model("portal", SYSTEM_ENTITY, CB.STATE)
-    print([list(v) for _, _, _, v in st["led"]])
+    print([list(e[3]) for e in st["led"]])
     """
     outs = _outputs(code)
     assert len(outs) == 1, outs

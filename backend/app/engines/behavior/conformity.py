@@ -1631,18 +1631,52 @@ def _ref_record(nd: Any, name: str, attr: str) -> Optional[Mapping[str, Any]]:
 RANGE_MARGIN = 0.01             # beyond an observed extreme by <= 1 % of the range width: a new extreme
 
 
+def _floor_ref(rec: Any) -> Tuple[Optional[Sequence[Any]], Optional[float]]:
+    """(interval, n) the numeric floor of _in_range_floor reads: the record's
+    observed clean range with n_rng, or - when the record has no usable range
+    (P06's clean_range left a side of every day of a young confidence segment
+    out, or the approx share withholds it) - the band98 the node states, with
+    the record's confidence-channel evidence n_c (round 10).
+
+    Why the band: the band's ends are values the node's digest observed (a
+    quantile between observations, or an atom snap_atom moved it to), so a
+    value at or inside them is no more extreme than an observed row and its
+    exchangeable rank p is at least 2 / (n + 1); one resolution step beyond is
+    a new extreme, 1 / (n + 1). Without it the bounded GPD tail put the
+    band's own lower end at p = 1e-9: O-red seed 0 (round 9), portal
+    GET /news/{num} children with range None and band98 [460, 516] judged
+    net.bytes_up = 460 a violation, P06 excluded it again, and the range never
+    came back - six MEDIUM false alarms and D4 (progressive.md §16.17.11
+    item 4)."""
+    if not isinstance(rec, Mapping):
+        return None, None
+    rng = rec.get("range")
+    n_rng = rec.get("n_rng")
+    if rng and n_rng is not None and float(n_rng) >= 1.0:
+        return rng, float(n_rng)
+    band = rec.get("band98")
+    n_c = rec.get("n_c")
+    if not band or n_c is None:
+        return None, None
+    n_c = float(n_c)
+    if not (n_c >= 1.0):
+        return None, None
+    return band, n_c
+
+
 def _in_range_floor(rec: Mapping[str, Any], v: Any, p: float) -> float:
     """A value inside the record's observed clean range is at least as common
     as the observed extreme it does not pass: p >= (1 + 1) / (n_rng + 1). The
     tail models can say otherwise - a bounded GPD (xi < 0) fitted to integer
     counts ends at its estimated endpoint, and pack O's 192.168.1.21 sending
     net.pkts_down = 6 (the node's observed minimum, range 6-14) got p = 1e-9,
-    was damped as an outlier and lost its trust for the day (B28)."""
+    was damped as an outlier and lost its trust for the day (B28). A record
+    without an observed range uses the band98 it states with n = n_c
+    (_floor_ref, round 10)."""
     if _nan(p):
         return p
-    rng = rec.get("range") if isinstance(rec, Mapping) else None
-    n_rng = rec.get("n_rng") if isinstance(rec, Mapping) else None
-    if not rng or n_rng is None or not (float(n_rng) >= 1.0):
+    rng, n_rng = _floor_ref(rec)
+    if rng is None:
         return p
     try:
         x = float(v)
@@ -1709,9 +1743,8 @@ class _NumFast:
         a third of the numeric check); floor() is _in_range_floor with them."""
         self.fl_on = False
         try:
-            rng = rec.get("range")
-            n_rng = rec.get("n_rng")
-            if not rng or n_rng is None or not (float(n_rng) >= 1.0):
+            rng, n_rng = _floor_ref(rec)
+            if rng is None:
                 return
             lo, hi = float(rng[0]), float(rng[1])
             tol = 1e-9 * max(1.0, abs(lo), abs(hi))

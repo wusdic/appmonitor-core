@@ -225,7 +225,10 @@ class ContentBoundsEngine(Engine):
                     if x == x:
                         vals[a] = x
                 if vals:
-                    st["led"].append((kind, int(lf), local_day(float(b.ts[i]), ctx.config), vals))
+                    # (round 10) with the row's time: clean_range removes this
+                    # row's own reservoir item, not every row of its value
+                    st["led"].append((kind, int(lf), local_day(float(b.ts[i]), ctx.config), vals,
+                                      float(b.ts[i])))
                     n += 1
         if n or st["last"]:
             store.put_model(key, SYSTEM_ENTITY, STATE, st, ts=now)
@@ -237,27 +240,32 @@ class ContentBoundsEngine(Engine):
         """The ledger's rows by node: a row belongs to its leaf and to every
         ancestor (P04 updates the targets along the whole path). O(rows x depth)."""
         out: Dict[int, List[Any]] = {}
-        for k, lf, d, vals in st.get("led") or ():
+        for e in st.get("led") or ():
+            k, lf, d, vals = e[0], e[1], e[2], e[3]
+            ts = e[4] if len(e) > 4 else None          # a ledger saved before round 10: no time
             if k != kind or d <= day_now - PN.RING_DAYS:
                 continue
             cur = tree.nodes.get(lf)
             while cur is not None:
-                out.setdefault(cur.id, []).append((d, vals))
+                out.setdefault(cur.id, []).append((d, vals, ts))
                 cur = tree.nodes.get(cur.parent) if cur.parent is not None else None
         return out
 
     @staticmethod
-    def _excl(rows: List[Any], summ: Any, a: str) -> Dict[int, List[float]]:
-        """{local day: [y]} of attribute a among a node's violating rows."""
-        out: Dict[int, List[float]] = {}
-        for d, vals in rows:
+    def _excl(rows: List[Any], summ: Any, a: str) -> Dict[int, List[Any]]:
+        """{local day: [(y, ts)]} of attribute a among a node's violating rows
+        (ts None for a row the ledger kept without its time)."""
+        out: Dict[int, List[Any]] = {}
+        for e in rows:
+            d, vals = e[0], e[1]
+            ts = e[2] if len(e) > 2 else None
             if a not in vals:
                 continue
             try:
                 y = summ.y(vals[a])
             except (TypeError, ValueError):
                 continue
-            out.setdefault(int(d), []).append(float(y))
+            out.setdefault(int(d), []).append((float(y), ts))
         return out
 
     def fit_tree(self, ctx: Context, key: str, ptm: Any, now: float) -> tuple:
