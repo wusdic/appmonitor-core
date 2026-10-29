@@ -102,7 +102,14 @@ NON_TARGET = frozenset({"ctx.sid", "ctx.sess_age_s", "ctx.think_s", "sess.key", 
 # attributes derived from the same source field (a split on one trivially predicts the other)
 DERIVED_GROUPS: Tuple[frozenset, ...] = (
     frozenset({"http.route", "http.path", "http.method", "http.host", "hdr.host"}),
-    frozenset({"net.src", "net.peer_src"}),
+    # (round 10) behind a trusted proxy P00 resolves net.src FROM these headers
+    # (pparse.resolve_who: x-forwarded-for, forwarded, x-real-ip) and the proxy
+    # is net.peer_src: one source field. O-real (R1, SNAT proxy on OA): the
+    # family login node of 综合部 + 财务部 offered net.peer_src and the /24
+    # level, both paid by hdr.x-forwarded-for (8-12 bits), in its two who slots,
+    # and the department (group) level that predicts the body sizes and login
+    # minutes lost its slot before its e-process could pay
+    frozenset({"net.src", "net.peer_src", "hdr.x-forwarded-for", "hdr.forwarded", "hdr.x-real-ip"}),
     frozenset({"ctx.tod_min", "ctx.when"}),
     frozenset({"ctx.daytype", "ctx.dayclass", "ctx.dow", "ctx.when"}),
     frozenset({"http.status", "http.sclass"}),

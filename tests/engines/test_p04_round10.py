@@ -206,3 +206,18 @@ def test_context_is_not_an_action_field_of_a_node():
     got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["meta.z01", "meta.z02"], m_t=2, n_min=8,
                                       local_pool=["ctx.prev_route", "body.kv.q"])
     assert "body.kv.q" in got[nid] and "ctx.prev_route" not in got[nid], got
+
+
+# --------------------------------------------------------------- item 3
+def test_the_proxy_headers_are_the_source_field_of_the_address():
+    """Behind a trusted proxy P00 resolves net.src from x-forwarded-for /
+    forwarded / x-real-ip and the proxy is net.peer_src: a split on any of
+    them predicting the header is the source predicting itself (O-real R1:
+    the family login node's who slots went to net.peer_src and /24, paid by
+    hdr.x-forwarded-for)."""
+    from app.engines.behavior.lib import pselect as SEL
+    for a in ("net.src", "net.peer_src"):
+        for h in ("hdr.x-forwarded-for", "hdr.x-forwarded-for.len", "hdr.forwarded", "hdr.x-real-ip"):
+            assert SEL.same_source(a, h), (a, h)
+    assert not SEL.same_source("net.src", "hdr.user-agent")
+    assert not SEL.same_source("net.src", "body.kv.username")
