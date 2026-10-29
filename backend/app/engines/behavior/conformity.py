@@ -1160,7 +1160,7 @@ class _TreeCtx:
         k = ("wp", kind, nd.id, daytype)
         if k in self.info:
             return self.info[k]
-        par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
+        par = self.time_parent(tree, nd)
         prior = self.when_pred(kind, tree, par, daytype) if par is not None else None
         h, N = self._when_counts(nd, daytype)
         if prior is None:
@@ -1197,7 +1197,7 @@ class _TreeCtx:
             return self.info[k]
         h, N = self._when_counts(nd, daytype)
         own = _hdr_table(SC.when_density(h, N)) if N > 0 and np.asarray(h).sum() > 0 else None
-        par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
+        par = self.time_parent(tree, nd)
         pt = self.when_ptab(kind, tree, par, daytype) if par is not None else None
         if pt is None:
             out = own
@@ -1238,7 +1238,7 @@ class _TreeCtx:
         t = self.now
         d = 1 if daytype else 0
         h, N = self._when_counts(nd, daytype)
-        par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
+        par = self.time_parent(tree, nd)
         prior = self.when_pred(kind, tree, par, daytype) if par is not None else None
         pt = self.when_ptab(kind, tree, par, daytype) if par is not None else None
         cur = None
@@ -1257,6 +1257,30 @@ class _TreeCtx:
                                      pt if self.content_child(kind, tree, nd) else np.minimum(ref, pt))
         self.info[k] = (cur, ref)
         return cur, ref
+
+    def time_parent(self, tree: Any, nd: Any) -> Any:
+        """(round 10) The node whose time-of-day law backs the node's own off
+        (when_pred / when_ptab / when_table): its parent, unless the parent
+        splits on the ACTION (a route attribute) - the children of a route
+        split are different actions, not samples of the mixture of every
+        action above them, so a route node's time law starts with itself.
+        Why: the root of a system mixes all its actions, and a machine monitor
+        polling /health every minute around the clock puts a third of the
+        root's mass at night; under it as a prior every route node read its
+        night slots as used: O-red seed 0 (round 9), the login route node
+        (339 evidence units, none at night) put 03:00 at p 4.1e-3 against
+        its own 1.3e-4, its 'other sources' child (46 units) inherited 1.0e-3
+        through min(own, parent), and A4 (10.77.2.14's 03:05 login, a source
+        that only logs in at 08:xx) scored p 2.0e-3 - no finding. A content
+        split's child is a sample of its parent's law (content_child) and a
+        source split's a sub-population of the same action: both keep their
+        parent."""
+        if tree is None or nd is None or nd.parent is None:
+            return None
+        par = tree.nodes.get(nd.parent)
+        if par is not None and par.split is not None and par.split.attr in ROUTE_ATTRS:
+            return None
+        return par
 
     def content_child(self, kind: int, tree: Any, nd: Any) -> bool:
         """Whether the node is a child of a CONTENT split (its parent split
