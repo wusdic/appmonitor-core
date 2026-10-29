@@ -110,10 +110,19 @@ DERIVED_GROUPS: Tuple[frozenset, ...] = (
     # R3's client stack token is a function of JA3, user agent, TTL and TCP window
     # (lib/stack.stack_token): a split on one of them trivially "predicts" the others
     frozenset({"client.stack", "http.ua", "hdr.user-agent", "tls.ja3", "net.ttl", "net.win"}),
+    # (round 10) P01's session context is one sequence: the first request of a
+    # session is exactly the one without a previous route, so a split on the
+    # session position "predicted" the previous route trivially. Measured on
+    # O-red (round 9): portal's GET /news/{num} split by ctx.sess_pos from day 5
+    # with 336.5 of its 328.5 selective bits from ctx.prev_route (every other
+    # target negative); its young children carried 6-9 meta.z* noise targets
+    # and fed P06 / P03's range-floor loop (+6 MEDIUM false alarms, D4 failed)
+    frozenset({"ctx.sess_pos", "ctx.prev_route", "ctx.sid", "ctx.sess_age_s", "ctx.think_s", "sess.key"}),
 )
 # calendar context (§5.4.3): split candidates of the when facet, never m_t targets
 # (when is summarised separately in every node)
 CALENDAR_ATTRS = frozenset({"ctx.dow", "ctx.daytype", "ctx.dayclass", "ctx.dom", "ctx.mend"})
+CTX_PREFIX = "ctx."            # P01's derived context attributes
 MISSING = "\x00unrecorded"   # probe: the row did not record this attribute
 ROLE_ORDER = ("invariant", "redundant", "split", "target", "shape", "dropped", "probe")
 
@@ -169,7 +178,13 @@ def _same_source(a: str, b: str) -> bool:
 
 
 _UP_SIZE = frozenset({"net.bytes_up", "net.pkts_up", "body.len"})
-_DOWN_SIZE = frozenset({"net.bytes_down", "net.pkts_down", "resp.len"})
+# (round 10) the response's length attribute is P00's `net.resp_len` (lib/pparse);
+# the set named it 'resp.len', an attribute nothing produces, so a split on the
+# downstream byte / packet bins was paid by the response length - the same
+# quantity. Measured on PG4's 340-attribute point: OA's GET /health split on
+# net.bytes_down (level 2) into four children, 241.8 of its 293 selective bits
+# from net.resp_len (+2.6 MB of node state, the attribute slope 0.194 -> 0.202)
+_DOWN_SIZE = frozenset({"net.bytes_down", "net.pkts_down", "net.resp_len", "resp.len"})
 
 
 def _size_side(x: str) -> Optional[str]:
@@ -2200,6 +2215,13 @@ def node_targets_from_probe(tree: Any, probe: StratifiedProbe, t: float, hier: A
     lg_rows: Dict[str, Any] = {}
 
     def is_field(a: str, ii: np.ndarray) -> bool:
+        if a.startswith(CTX_PREFIX):
+            # (round 10) P01's context (the previous route, the session) is no
+            # field of the request: its presence marks where a node sits in a
+            # session, not what the action carries (O-red: GET /news/{num} took
+            # ctx.prev_route into its slots, and then split on the session
+            # position that it alone paid for)
+            return False
         r = lg_rows.get(a)
         if r is None:
             ca, ua, rec_a, pres_a = cods[a]

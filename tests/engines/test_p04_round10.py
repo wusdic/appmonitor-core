@@ -145,3 +145,64 @@ def test_a_renamed_route_hands_its_pattern_over_to_the_new_routes_node():
     assert "body.len" in nn.targets
     ev = [e for e in sim.events("pattern_retired") if (e.extra or {}).get("renamed_to") == NEW_R]
     assert len(ev) == 1
+
+
+# --------------------------------------------------------------- item 4
+def test_the_response_length_is_the_same_quantity_as_the_downstream_bytes():
+    """P00 names the response length `net.resp_len` (lib/pparse); the
+    transport-measure rule listed 'resp.len', which no engine produces, so a
+    split on the downstream byte / packet bins was paid by the response
+    length (PG4's 340-attribute point: OA GET /health split on net.bytes_down,
+    241.8 of 293 bits from net.resp_len, four children of noise targets)."""
+    from app.engines.behavior.lib import pselect as SEL
+    for a in ("net.bytes_down", "net.pkts_down"):
+        assert SEL.same_source(a, "net.resp_len") and SEL.same_source("net.resp_len", a)
+    assert not SEL.same_source("net.bytes_up", "net.resp_len")
+    assert not SEL.same_source("body.len", "net.resp_len")
+
+
+# --------------------------------------------------------------- item 5
+def test_a_session_position_split_is_not_paid_by_the_previous_route():
+    """O-red (round 9): portal GET /news/{num} split by ctx.sess_pos from day 5,
+    all of its selective gain from ctx.prev_route - the first request of a
+    session is exactly the one without a previous route. P01's session
+    attributes are one source: a split on one is never paid by another."""
+    from app.engines.behavior.lib import pselect as SEL
+    assert SEL.same_source("ctx.sess_pos", "ctx.prev_route")
+    assert SEL.same_source("ctx.prev_route", "ctx.sess_pos")
+    assert SEL.same_source("ctx.sess_pos", "ctx.think_s")
+    assert not SEL.same_source("ctx.sess_pos", "http.route")
+    assert not SEL.same_source("ctx.sess_pos", "body.len")
+
+
+def test_context_is_not_an_action_field_of_a_node():
+    """The round-9 field rule (an attribute whose presence the node predicts
+    keeps a scarce target slot) took P01's ctx.prev_route into the slots of
+    O-red's GET /news/{num}: its presence marks where the node sits in a
+    session, not what the request carries. A real field still keeps its slot."""
+    import numpy as np
+    from app.engines.behavior.lib import phier as PH
+    from app.engines.behavior.lib import pselect as SEL
+    from app.engines.behavior.lib import ptree as PT
+    probe = SEL.StratifiedProbe(512)
+    rng = np.random.default_rng(0)
+    for i in range(400):
+        news = i % 4 == 0
+        row = {"http.route": "GET h /news/{num}" if news else "GET h /",
+               "meta.z01": f"v{int(rng.integers(0, 16))}", "meta.z02": f"z{int(rng.integers(0, 12))}"}
+        if news:
+            row["ctx.prev_route"] = "GET h /" if rng.random() < 0.7 else "GET h /list"
+        if news and i % 8 == 0:
+            row["body.kv.q"] = f"q{int(rng.integers(0, 5))}"
+        probe.offer("all", row, 1.0, float(i), float(rng.random()))
+    tr = PT.Tree(0, 0.0)
+    tr.split(tr.root, "http.route", 0, [["GET h /news/{num}"]], 0.0)
+    nid = tr.nodes[tr.root].split.children[0]
+    hier = PH.Hierarchies(registry={"meta.z01": {"type": "categorical"}, "meta.z02": {"type": "categorical"},
+                                    "ctx.prev_route": {"type": "categorical"}})
+    got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["meta.z01", "meta.z02"], m_t=2, n_min=8,
+                                      local_pool=["ctx.prev_route"])
+    assert "ctx.prev_route" not in got.get(nid, []), got
+    got = SEL.node_targets_from_probe(tr, probe, 400.0, hier, ["meta.z01", "meta.z02"], m_t=2, n_min=8,
+                                      local_pool=["ctx.prev_route", "body.kv.q"])
+    assert "body.kv.q" in got[nid] and "ctx.prev_route" not in got[nid], got
