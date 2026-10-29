@@ -685,12 +685,14 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
     if minute_mode:
         inside = in_windows_mask(mins, windows).astype(np.float64)
         cov = float(np.sum(inside * cw) / max(float(cw.sum()), 1e-12))
+        sample = (cov, n_units)
         if not info.get("all_day"):
             cov = predictive_coverage(cov, n_units, len(windows))
     else:
         tot = h.sum()
         mids = np.arange(SLOTS) * SLOT_MIN + SLOT_MIN / 2.0
         cov = float(sum(h[i] for i in range(SLOTS) if in_windows(mids[i], windows)) / tot)
+        sample = (cov, float(n))
         if not info.get("all_day"):
             # (round 6) the slot share is an in-sample share like the minute
             # mode's: the windows were chosen to hold the sample, so the next
@@ -718,6 +720,7 @@ def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[A
             dates = 0
     return {"windows": windows, "labels": [label(s, e) for s, e in windows],
             "shares": [round(float(x[2]), 4) for x in wins_u], "coverage": cov,
+            "sample": [float(sample[0]), float(sample[1])],
             "res": "minute" if minute_mode else "slot", "n": float(n), "n_points": len(pts),
             "w_points": round(float(cw.sum()), 3),
             "dates": dates, "stability": stab, "blocks": int(info.get("blocks", 0)),
@@ -851,7 +854,7 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
             since, provisional = cut["since"], not cut["accepted"]
     if young_cut is not None:
         est = [p for p in pts if float(p[1]) < young_cut["since"]]
-        rec = fit_regime(hist, n, est, tz_offset_s=tz_offset_s, young=False)
+        rec = fit_regime(hist, n, est, tz_offset_s=tz_offset_s, young=False)   # (stated: _state_lb)
         if rec is not None:
             dr = recent_drift(rec, [p for p in pts if float(p[1]) >= young_cut["since"]], tz_offset_s,
                               alpha=1.0)
@@ -910,8 +913,91 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
                     if dr is not None:
                         est["drift"] = dr
                         est["provisional"] = True
+                        _state_lb(est)
                         return est
+    _state_lb(rec)
     return rec
+
+
+STATE_Q = 0.05                   # the stated coverage is the 95 % lower confidence bound of the windows' coverage
+
+
+def coverage_bound(rec: Mapping[str, Any], q: float = STATE_Q) -> Optional[float]:
+    """(round 10) The coverage the windows of `rec` can be STATED at: the
+    largest c with P(theta >= c - eps(c)) >= 1 - q, theta = the share of new
+    arrivals inside the windows, eps = pnode.hold_eps(c) the tolerance of
+    "holds" of the statement contract (P04's held-out tests, the
+    evaluator's checks); so a statement holds with probability >= 1 - q
+    under theta's distribution given the fit's evidence:
+      in sample  k of the n independent units (sessions; slot mode: evidence)
+                 inside W windows whose edges are order statistics of the
+                 sample: such windows cover Beta(k - W, n - k + W + 1) of the
+                 law (Wilks: W intervals between order statistics span k - W
+                 of the n + 1 sample spacings; its mean is predictive_coverage's
+                 rank bound);
+      out of sample  when the date cross-validation lowered the coverage
+                 (_apply_cv: the posterior mean is below the in-sample value),
+                 its posterior Beta(h + FWD_PRIOR c_in, m - h + FWD_PRIOR
+                 (1 - c_in)).
+    None for an all-day record or without evidence. window_hold reads the
+    same probability back: >= 1 - q at the stated coverage."""
+    if not rec or rec.get("all_day") or not rec.get("windows"):
+        return None
+    from scipy.special import betaincinv
+    from . import pnode as PN
+    ab: Optional[Tuple[float, float]] = None
+    cv = rec.get("cv")
+    c_pt = float(rec.get("coverage") or 0.0)
+    c_in = float(rec.get("coverage_in", c_pt))
+    if cv and float(cv[1]) > 0 and c_pt < c_in - 1e-12:
+        h, m = float(cv[0]), float(cv[1])
+        ci = min(max(c_in, 1e-6), 1.0 - 1e-6)
+        ab = (h + FWD_PRIOR * ci, max(m - h, 0.0) + FWD_PRIOR * (1.0 - ci))
+    else:
+        smp = rec.get("sample")
+        if smp and len(smp) == 2 and smp[1] and float(smp[1]) > 0:
+            c_s, n_s = float(smp[0]), float(smp[1])
+            w = float(len(rec["windows"]))
+            k = min(max(c_s, 0.0), 1.0) * n_s
+            ab = (k - w, n_s - k + w + 1.0)
+    if ab is None:
+        return None
+    lo = float(betaincinv(ab[0], ab[1], q)) if ab[0] > 0 and ab[1] > 0 else 0.0
+    c = min(c_pt, lo + PN.hold_eps(lo))
+    for _ in range(4):                       # c = min(c_pt, lo + eps(c)): eps varies slowly with c
+        c = min(c_pt, lo + PN.hold_eps(c))
+    return float(max(0.0, c))
+
+
+def _state_lb(rec: Optional[Dict[str, Any]]) -> None:
+    """(round 10) The STATED coverage of fitted windows ('coverage': what
+    the statement says, P04's hold tests and the evaluator check) becomes the
+    95 % lower confidence bound (coverage_bound); the point value the fit's
+    own decisions use (the flat-day rule, the drift tests, a young regime's
+    previous law, P09's confidence) is kept as 'coverage_pt'.
+    Why: the point value - the predictive rank bound, lowered to the
+    cross-validated posterior mean - is the share the NEXT arrival falls
+    inside on average; a statement made at it fails its check about half the
+    time its evidence is thin (fewer than ~30 sessions). Synthetic (tests/lib/
+    test_pwindows_round10.py): windows of a normal arrival law over 9-60
+    sessions failed a 300-arrival check at their stated coverage in 8-18 % of
+    fits. Pack O (round 9, §16.17.11 item 1): seed 1's finance ledger
+    windows stated 0.966-0.971 and held 0.93-0.94."""
+    if rec is None or "coverage_pt" in rec:
+        return
+    c = rec.get("coverage")
+    if c is None:
+        return
+    rec["coverage_pt"] = float(c)
+    lb = coverage_bound(rec)
+    if lb is not None:
+        rec["coverage"] = float(min(float(c), lb))
+
+
+def _cov_pt(rec: Mapping[str, Any]) -> float:
+    """The point coverage of a fitted record (before _state_lb)."""
+    c = rec.get("coverage_pt", rec.get("coverage"))
+    return float(c or 0.0)
 
 
 def _apply_cv(rec: Dict[str, Any], hist: np.ndarray, use: Sequence[Sequence[Any]], tz_offset_s: float) -> None:
@@ -996,7 +1082,7 @@ def _old_density(old: Mapping[str, Any]) -> Optional[Tuple[np.ndarray, np.ndarra
     outside), windows, lengths) or None (no minute windows)."""
     if old is None or old.get("res") != "minute" or old.get("all_day") or not old.get("windows"):
         return None
-    c = float(old.get("coverage") or 0.0)
+    c = _cov_pt(old)
     if not (FLAT_SHARE <= c < 1.0) or (old.get("dates") or 0) < REGIME_DATES:
         return None
     wins = [list(map(int, w)) for w in old["windows"]]
@@ -1177,7 +1263,7 @@ def recent_drift(rec: Mapping[str, Any], young: Sequence[Sequence[Any]],
     a boundary) and the parts read the union 08:32-09:21 until day 17."""
     if rec.get("res") != "minute" or rec.get("all_day") or not rec.get("windows"):
         return None
-    c = float(rec.get("coverage") or 0.0)
+    c = _cov_pt(rec)                    # the windows' share, not the stated bound (round 10)
     if not 0.0 < c < 1.0:
         return None
     clean = [(float(p[0]), _local_date(float(p[1]), tz_offset_s), str(p[3]) if len(p) > 3 else "")
@@ -1350,7 +1436,7 @@ def predictive_coverage(cov_in: float, n: float, n_windows: int) -> float:
 def confidence(rec: Mapping[str, Any]) -> float:
     """Statement confidence of a when-constraint: coverage x day stability
     (§6.17.2); coverage alone when the stability is unknown (slot mode)."""
-    c = float(rec.get("coverage") or 0.0)
+    c = _cov_pt(rec)                    # (round 10) the point coverage, as before the stated bound
     dr = rec.get("drift")
     if isinstance(dr, Mapping) and dr.get("coverage") is not None:
         c = min(c, float(dr["coverage"]))       # recent_drift: the windows stopped holding
@@ -1415,7 +1501,9 @@ def window_hold(rec: Optional[Mapping[str, Any]]) -> Optional[float]:
     if not (0.0 < c <= 1.0) or m <= 0.0:
         return None
     cv = rec.get("cv")
-    c_in = float(rec.get("coverage_in", c))
+    # (round 10) without a cross-validation the prior's centre is the point
+    # coverage, not the stated lower bound (_state_lb)
+    c_in = float(rec.get("coverage_in", rec.get("coverage_pt", c)))
     if not (0.0 < c_in <= 1.0):
         c_in = c
     if cv and float(cv[1]) > 0:
