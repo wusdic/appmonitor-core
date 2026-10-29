@@ -1,0 +1,183 @@
+{
+ "gate": {
+  "name": "PG9 bounded mode",
+  "value": 0.4489814974691977,
+  "target": "A/E: no accuracy loss and no cost increase; large populations: p95 <= 0.5 x full",
+  "pass": false,
+  "details": {
+   "checks": [
+    {
+     "name": "A seed 0: gate 1 recall drop (full 1.0, bounded 1.0)",
+     "value": 0.0,
+     "target": "<= 0.03",
+     "pass": true
+    },
+    {
+     "name": "A seed 0: gate 3 incidents >= MEDIUM (full 7)",
+     "value": 8,
+     "target": "<= 7",
+     "pass": false
+    },
+    {
+     "name": "A seed 0: gate 3 incidents HIGH (full 2)",
+     "value": 2,
+     "target": "<= 2",
+     "pass": true
+    },
+    {
+     "name": "A seed 0: gate 8 t9 kept",
+     "value": true,
+     "target": "True",
+     "pass": true
+    },
+    {
+     "name": "A seed 0: lib-3 CPU p95 bounded / full (no cost increase)",
+     "value": 0.8720585675941466,
+     "target": "<= 1.0",
+     "pass": true
+    },
+    {
+     "name": "E seed 0: gate 1 recall drop (full 1.0, bounded 1.0)",
+     "value": 0.0,
+     "target": "<= 0.03",
+     "pass": true
+    },
+    {
+     "name": "E seed 0: gate 3 incidents >= MEDIUM (full 1)",
+     "value": 0,
+     "target": "<= 1",
+     "pass": true
+    },
+    {
+     "name": "E seed 0: gate 3 incidents HIGH (full 0)",
+     "value": 0,
+     "target": "<= 0",
+     "pass": true
+    },
+    {
+     "name": "E seed 0: lib-3 CPU p95 bounded / full (no cost increase)",
+     "value": 0.8504869909551455,
+     "target": "<= 1.0",
+     "pass": true
+    },
+    {
+     "name": "O-scale 1000 IPs (7-day pack, first 84 h): lib-3 CPU p95 bounded / full (unearned IPs dominate)",
+     "value": 0.4489814974691977,
+     "target": "<= 0.5",
+     "pass": true
+    }
+   ]
+  }
+ },
+ "pairs": {
+  "A seed 0": {
+   "full": {
+    "pack": "A",
+    "seed": 0,
+    "n_scenarios": 12,
+    "detected": 12,
+    "recall": 1.0,
+    "within_deadline": 8,
+    "n_low": 18,
+    "n_medium": 7,
+    "n_high": 2,
+    "twins_ok": false,
+    "t9": true,
+    "t9b": true,
+    "t19": null,
+    "cost": {
+     "p95_ms": 1433.5786371495567,
+     "mean_ms": 794.1180755713771,
+     "n_ticks": 384,
+     "basis": "thread CPU"
+    }
+   },
+   "bounded": {
+    "pack": "A",
+    "seed": 0,
+    "n_scenarios": 12,
+    "detected": 12,
+    "recall": 1.0,
+    "within_deadline": 8,
+    "n_low": 17,
+    "n_medium": 8,
+    "n_high": 2,
+    "twins_ok": null,
+    "t9": true,
+    "t9b": false,
+    "t19": null,
+    "cost": {
+     "p95_ms": 1250.1645328462112,
+     "mean_ms": 700.2697823076087,
+     "n_ticks": 384,
+     "basis": "thread CPU"
+    }
+   }
+  },
+  "E seed 0": {
+   "full": {
+    "pack": "E",
+    "seed": 0,
+    "n_scenarios": 3,
+    "detected": 3,
+    "recall": 1.0,
+    "within_deadline": 0,
+    "n_low": 6,
+    "n_medium": 1,
+    "n_high": 0,
+    "twins_ok": false,
+    "t9": null,
+    "t9b": null,
+    "t19": null,
+    "cost": {
+     "p95_ms": 381.09648492261766,
+     "mean_ms": 244.53852899324136,
+     "n_ticks": 1440,
+     "basis": "thread CPU"
+    }
+   },
+   "bounded": {
+    "pack": "E",
+    "seed": 0,
+    "n_scenarios": 3,
+    "detected": 3,
+    "recall": 1.0,
+    "within_deadline": 2,
+    "n_low": 5,
+    "n_medium": 0,
+    "n_high": 0,
+    "twins_ok": null,
+    "t9": null,
+    "t9b": null,
+    "t19": null,
+    "cost": {
+     "p95_ms": 324.11760272542006,
+     "mean_ms": 231.801700924756,
+     "n_ticks": 1440,
+     "basis": "thread CPU"
+    }
+   }
+  }
+ },
+ "large": {
+  "O-scale 1000 IPs (7-day pack, first 84 h)": {
+   "full": {
+    "p95_ms": 9584.904999999999,
+    "mean_ms": 4891.659255952381,
+    "n_ticks": 336,
+    "span_h": 84.0,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 10445.557499999999
+   },
+   "bounded": {
+    "p95_ms": 4303.445,
+    "mean_ms": 2179.616755952381,
+    "n_ticks": 336,
+    "span_h": 84.0,
+    "basis": "thread CPU, common ticks",
+    "p95_ms_last_day": 5272.099999999999
+   }
+  }
+ },
+ "generated": "2026-10-29 07:39:41"
+}
