@@ -116,8 +116,17 @@ DAYS = 4.0
 # towards demoting its role, a stated binding's payload keeps the target role
 # and model.attrsel carries who_bound (pselect.assign_roles); an action's field
 # is not displaced from a node's target slots (pselect.node_targets_from_probe).
-GOLDEN = {"model.ptree": "610a3373398b29e515e3a03a3a81bcd8a972a24c",
-          "model.attrsel": "3a44efbeb911d8a26c566328a00a8afa8febec91"}
+# Re-recorded in round 10 (be296780... / 00628c79...), deliberately, by the tree
+# owner: P05's same-source groups gained P01's session context (a split on
+# ctx.sess_pos is not paid by ctx.prev_route), the response length under its
+# real name net.resp_len (a split on the downstream bytes is not paid by it)
+# and the proxy headers of net.src; a context attribute is no action field
+# of a node (pselect.node_targets_from_probe); a long-damped suspect source's
+# sequential test is capped (pnode.SUS_LLR_MAX); a confident node of a renamed
+# route takes over the stale node of the old route (_handover_renamed; not
+# exercised by this stream).
+GOLDEN = {"model.ptree": "be2967802c43fa4c5f5b86115b0e70e14493e4db",
+          "model.attrsel": "00628c79324d13395bd185ad35bb7fd3f8159fbc"}
 
 
 def _dec(v: Any) -> Any:
