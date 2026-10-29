@@ -1694,9 +1694,9 @@ diagnosis and open issues; §16.16.13 – §16.16.14 are the harness owner's own
 `engines.md` ("As built, round 8"); Chinese narrative: design doc §3.0 (status per requirement sentence), §3.3 (the
 changes in place, numbered T8-n (tree, = that owner's step Sn), V8-n (temporal / workflow / content / views, = that owner's
 CHANGE n), C8-1 – C8-4 (conformity: B14-1, B14-2, OC7-6, COST-1), H8-1 – H8-4 (harness)), §3.4, §3.5 (PG9, packs A / E),
-§3.6 (O-real), §3.7 (cost), §3.8.0 – §3.8.0c (round 8, with the example verbatim in both views on pack O days 11 / 14 / 21
-and O-real day 35; round 7 kept as §3.8.0d with the example condensed into §3.8.0d-1, round 6 as §3.8.0e, round 5 as
-§3.8.0f, round 4 as §3.8.0g, round 3 as §3.8.0h, round 2 as §3.8.0i), §3.9.8 (B14), §3.10.2 (packs A / E), §3.11, §3.12.1.
+§3.6 (O-real), §3.7 (cost), §3.8.0 – §3.8.0c at the time (round 8, with the example verbatim in both views on pack O days 11 / 14 / 21
+and O-real day 35; since round 9: §3.8.0d, with the example condensed into §3.8.0d-1; the older rounds moved one letter on),
+§3.9.8 (B14), §3.10.2 (packs A / E), §3.11, §3.12.1.
 Four owners worked concurrently with strict file ownership on top of commit 8046b0e (tree: P04, P05, `pnode`, `pselect`;
 temporal / workflow / content / views: P06, P08, P10, P14, `pbounds`, `pdfg`, `pfd`, `prender`; conformity: P03, B14;
 harness: the evaluation harness, `pipeline/build.py`, P00 – P02's input path, `lib/pregistry`, lib-4); the lead
@@ -1785,3 +1785,91 @@ D5 from P00's record-mean packet counts (the fix needs P03's sequence path expla
 re-open in bounded mode (OC8-1). Per-tick loops over every known entity in D2 session, B21, B17, B27, B23 and
 `MetricStore.entities_active` (OI-H1). Timing test B13 borderline on a loaded host. B–D packs and A / E seeds ≥ 1 not
 re-run; round 8's A / E run JSONs not committed; no real-log pilot.
+
+## 21. Progressive profile core, round 9 (2026-10-29)
+
+Full record: `progressive.md` §16.17 (the owners' changes, the evaluator's EV9-1, results on the final code `code9e` =
+checkpoint 5d68af6 in `backend/`, `scripts/` and `data/`, against round 8 on the same scorer; determinism, cost, PG4, PG9,
+packs A / E, O-real on 3 seeds, O-red, O60; the diagnosis of every regression against round 8 and the open issues);
+as-built rows: `engines.md` ("As built, round 9"); Chinese narrative: design doc §3.0 (status per requirement sentence),
+§3.3 (the changes in place, numbered T9-1 – T9-3 (tree, = that owner's item n), V9-1 – V9-5 (bindings / views; V9-5
+withdrawn), C9-1 – C9-3 (conformity / governor), EV9-1), §3.4, §3.5 (PG9, packs A / E), §3.6 (O-real), §3.7 (cost, PG4),
+§3.8.0 – §3.8.0c (round 9, with the example verbatim in both views on pack O days 11 / 14 / 21 and O-real day 35; round 8
+kept as §3.8.0d with the example condensed into §3.8.0d-1, round 7 as §3.8.0e, round 6 as §3.8.0f, round 5 as §3.8.0g,
+round 4 as §3.8.0h, round 3 as §3.8.0i, round 2 as §3.8.0j), §3.9.8 (B13), §3.9.14 (B28), §3.10.2 (packs A / E), §3.11,
+§3.12.1. A focused round: three owners fixed the regressions and gaps listed after round 8, with no new mechanism beyond
+what each item needed, concurrently and with strict file ownership on top of a62670b (tree: P04, P05, `pselect`; bindings /
+views: P08, P14, `prender`, `pwindows`; conformity / governor: P03, B13, B28, `lib/gating`); the lead checkpointed their
+work through commits 7bf9713 – 557b9fd, the evaluator applied one cross-owner patch (EV9-1, 12ef610) and measured
+`code9e`. The round's bar was "every change leaves pack O seeds 0–4 at least as good as round 8"; it was not fully met.
+
+### 21.1 What changed in the integrated system
+
+- **Tree (T9-1 – T9-3).** A split candidate on the source address is no longer paid by the payload of a binding P08 states
+  (`pattern_tree._mask_bound_targets`, P05's `model.attrsel['who_bound']`): O-real's family login node no longer splits by
+  /24, but does not split by group either. P05: a day without the attribute does not count towards demoting its role
+  (`day_pres`), a stated binding's payload keeps the target role, an action's field is not displaced from a node's target
+  slots by an attribute that is not one. An untested statement keeps its issuance prior; a tested one follows the pool's
+  prior only in its own test's direction (PG2 sign test 4/5 → 5/5).
+- **Bindings / views (V9-1 – V9-4).** Bindings the views state survive P05's role changes (`model.pbind['bound_stated']`);
+  one statement per department across sibling nodes (`views.department_statements`, confidence from the pieces'
+  `conf_rest`) and configured departments as parts of shared family nodes (`views._config_dept_units`); the window-hold prior
+  centred on the in-sample coverage (OI8-j); a dissolved learned group is not the who of a node (`prender.who_block`).
+  A Chao1 closure rule in P07 (V9-5) was measured and withdrawn.
+- **Conformity / governor (C9-1 – C9-3).** Bounded mode catches B13, the commit gate and B28's trust up after an idle gap
+  (`budget._idle_catchup`, `gating.idle_ticks`, `governor.backfill_idle`); beyond an incident's window only the
+  (source, credential) pair of a credential finding stays distrusted (`model.governor['cred_pairs']`, P03 damps that pair's
+  rows); the B13 and P03 timing tests read process CPU in units of an interleaved reference workload.
+- **Evaluator (EV9-1).** `pselect.bound_payloads` reads P08's `bound_stated` list (the views owner's proposal), with a
+  regression test.
+- **Tried and reverted:** the tree owner's rival deferral, stale-role hold, two node-target exclusion / re-ranking variants
+  and a "chance split candidate" rule; the views owner's carry-every-bound-pair variant and the P07 Chao1 closure; the
+  governor owner's pair-scoped trust inside the incident window (g2).
+
+### 21.2 Results (all measured; `reports/progressive/`)
+
+- Pack O, seeds 0–4, 21 days (round 9 against round 8 as published, same scorer): PG1 recall @ 14 **0.895**
+  [0.789–0.947] (0.868; mean of seeds 0–2 0.912 → 0.930), @ 21 0.905 (0.881); headline precision @ 14 **0.941**
+  [0.933–0.981] (0.955), @ 21 **0.958** (0.985) — pooled over the 5 seeds day 14 is unchanged (0.948 vs 0.950) and day 21
+  fails 16 of 345 claims where the stated confidences predict 14.5 (round 8: 9 of 339 against 13.0; ~1.4 standard
+  deviations); calibration error 0.053 [0.030–0.080] (0.059; seeds 3 and 4 worse: 0.077, 0.080); PG2 sign test **5/5**
+  (4/5); FAR ≥ MEDIUM 0.0005, ≥ LOW 0.0013, anomalies 50 / 50, D1 3/5, D2 – D4 5/5, D5 4/5, GA + FIN 6 bindings at day 14
+  5/5, checklist 47 / 50 — all unchanged. Gates passing: PG3, PG6, PG7 (as in round 8).
+- PG4 (`reports/progressive/scale_r9/`, 7-day points, thread CPU, a host ~0.65× as loaded as round 8's): memory slope vs
+  attributes 0.194 → **0.202** (now above 0.2: the oa tree is 2.2 MB larger at 340 attributes), CPU / event slope vs
+  attributes 0.206 → **0.191** (now passes) — both within the ±0.03 spread between repeats; vs IPs 0.010 / −0.022, vs systems
+  0.249; scoring / learning p95 670 / 1 926 µs. P-core per pack O run 0.85× round 8 at equal load (load reference: the
+  unchanged B24 – B27 at 0.645×).
+- PG9 (`reports/progressive/pg9_r9/pg9.json`): still fails only on pack A bounded's gate 3 (8 against 7 incidents
+  ≥ MEDIUM; not a cold start at promotion — forcing 10.30.2.23 earned from the start still gives 8); lib-3 CPU p95 bounded /
+  full 0.87 (A) and 0.85 (E); pack E bounded 5 / 0 / 0 against full 6 / 1 / 0 (round 8: 2 / 0 / 0); the 1 000-IP / 84 h point
+  0.45. Packs A / E full mode with `scripts/evaluate.py` equal round 8 on every figure (A 12/12, 18 / 7 / 2, class ARI 0.780;
+  E 3/3, 6 / 1 / 0, class ARI 0.797; `reports/progressive/round9_diag/{A,E}_0_full.json`).
+- Determinism: pack O seed 0 under `PYTHONHASHSEED` 0 and 1 — 0 differences in 18 681 score and example leaves; reruns
+  reproduce their JSON exactly (round 8's O-red re-run on a62670b reproduces the published JSON).
+- O-real seeds 0–2 (35 days): recall @ 35 0.63 / 0.65 / 0.61 (0.63 / 0.72 / 0.61); calibration error 0.087 / 0.091 / 0.120
+  (0.116 / 0.082 / 0.098); anomalies 10 / 9 / 10; FAR ≥ MEDIUM unchanged; bindings @ 14 3 / 3 / 3 of 6 (3 / 0 / 3); checklist
+  day 35 5 / 6 / 5 (5 / 6 / 7); sign test passes on every seed. **Finance's patterns after R3's readdress are lost from day
+  29** (the who clause is stated as the department group, whose P11 membership never gains the readdressed .51; round 8
+  stated the observed addresses). O-red seed 0: D2 passes and the sign test passes, CE 0.162 → 0.141, recall @ 21 0.773 →
+  0.818, but **FAR ≥ MEDIUM 0.0011 → 0.0027, D4 fails, A4 missed, precision @ 14 0.982 → 0.891** (a P06 `clean_range` /
+  P03 range-floor loop on young portal child nodes). O60 seed 0: day-8 agreement 0.047 (inside 0.05); day-7 / day-8
+  precision 1.000 / 0.968 → 0.967 / 0.903.
+- Tests: full suite on `code9e` 3 436 passed, 4 skipped, 0 failed (19 min 47 s); round 8's timing failure is gone (C9-3).
+- The report was assembled by the evaluator (`scripts/progressive_report.py --assemble --seeds 0,1,2,3,4 --variants
+  O-red,O60,O-real --scale reports/progressive/scale_r9 --pg9 reports/progressive/pg9_r9/pg9.json`); round 8's report and
+  runs are kept in `reports/progressive/round8/`; the diagnostic dumps are in `reports/progressive/round9_diag/`.
+
+### 21.3 Open (ordered by impact; details in design doc §3.11 and `progressive.md` §16.17.11 – §16.17.12)
+
+Lead decision: accept round 9, or fix the O-real finance loss and the O-red loop first and re-run the evaluation. Tree
+owner: keep an address-level who clause when the group's membership does not cover a node's observed sources (verify
+whether `_mask_bound_targets` moves the who-level choice); the family login node's group split; noise in node slots and the
+split-utility null; the O-red A4 trace. P06 / P03 owners: the `clean_range` / `_in_range_floor` loop (patch proposals:
+apply the floor inside band98 when the range is None; an excluded value removes one occurrence, not every equal value).
+Conformity / governor owner: PG9 gate 3 needs bounded-versus-full equivalence in B24; P03 never flags R3's readdress (in
+round 8 either). Tree / views: a renamed route's statement aliases should move to the node that takes it over. Temporal /
+views: OI8-f / OI8-h (windows and bands fitted from fewer than ~30 arrivals; now the common cause of pack O's failing
+claims), OI8-b (limited by the data), configured-department part windows. Still open from round 8: OI8-c, OI8-i / OI8-d,
+O-real seed 1's A5, EV8-3 (D5), OC8-4 (per-event p95), OI-H1 / OI-H2. Peak RSS of checkpointed runs depends on checkpoint
+pickling (compare memory only without `--checkpoint`). B–D packs and A / E seeds ≥ 1 not re-run; no real-log pilot.
