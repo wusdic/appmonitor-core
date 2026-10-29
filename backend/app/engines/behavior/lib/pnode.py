@@ -62,6 +62,16 @@ SUS_KEEP_S = 30 * DAY              # a suspect source is forgotten after 30 d wi
 SUS_LLR_FOREIGN = math.log2(0.5 / 0.02)     # +4.64 bits per row damped as foreign
 SUS_LLR_SUPPORT = math.log2(0.02 / 0.5)     # -4.64 bits per row of a supported source
 SUS_CLEAR = -2.0                   # cleared when the odds favour a member 4 : 1
+# (round 10) the test's statistic is capped (Page's CUSUM for a change from
+# foreign to member: evidence for "foreign" beyond the cap is not kept). P03's
+# foreign judgement of a source is not an independent draw per row - it repeats
+# one state (the source's group has no standing at the node) until that state
+# changes - so uncapped, a member P03 judged foreign for weeks needed as many
+# supported rows again once P03 accepted it: O-real R3 (round 9), 财务部's clerk
+# readdressed to 192.168.2.51 on day 9 reached +700 bits at the finance ledger
+# node by the time P11 grouped it with its colleagues (day 30), and no finance
+# statement named it by day 35. Capped at 6 foreign rows: ~7 supported rows clear
+SUS_LLR_MAX = 6.0 * SUS_LLR_FOREIGN
 SUS_SUPPORT_EV = 3.0               # colleagues' standing (evidence units, = P03 MEMBER_EV)
 SUS_SUPPORT_LEVELS = (1, 3)        # /24 prefix, learned group
 
@@ -126,13 +136,13 @@ class WhoSummary:
         if r is None:
             if len(d) >= SUS_MAX:
                 del d[min(d, key=lambda k: d[k][0])]
-            d[ip] = [float(t), 1.0, max(float(llr), SUS_CLEAR + 1e-9)]
+            d[ip] = [float(t), 1.0, min(SUS_LLR_MAX, max(float(llr), SUS_CLEAR + 1e-9))]
         else:
             if len(r) < 3:
                 r.append(SUS_LLR_FOREIGN)
             r[0] = max(r[0], float(t))
             r[1] += 1.0
-            r[2] = max(r[2], SUS_CLEAR) + float(llr)
+            r[2] = min(SUS_LLR_MAX, max(r[2], SUS_CLEAR) + float(llr))
 
     def support(self, keys: Sequence[Any], ip: str, t: float) -> bool:
         """The source's colleagues use the node: its /24 or its learned group
@@ -287,7 +297,7 @@ class WhoSummary:
                 if len(cur) < 3:
                     cur.append(SUS_LLR_FOREIGN)
                 cur[0] = max(cur[0], r[0])
-                cur[2] = max(cur[2], self._llr(r))
+                cur[2] = min(SUS_LLR_MAX, max(cur[2], self._llr(r)))
         return self
 
     def reset_confidence(self, t: float) -> None:

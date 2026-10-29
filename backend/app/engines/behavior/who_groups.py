@@ -20,7 +20,8 @@ Per tick (O(learned rows of tick t - D); nothing iterates over IPs):
               (_pattern_node; none without one): payload-bin and action-split
               nodes (net.bytes_up bins, GET / POST) split SALES on pack O
               (ARI 1.0 -> 0.53 -> 0.49 on days 9 / 11 / 21).
-              Mass w/pi x trust x damp and
+              Mass w/pi x trust (round 10: not x P03's damp - what the source
+              does, see _signatures) and
               evidence units trust x damp / (r + 1) (burst run (source, item), PPC-9).
               Source = the IP for systems whose who mode is ip / grp, the /24
               for prefix mode; reg / none systems contribute nothing (§6.15.1).
@@ -445,14 +446,28 @@ class WhoGroupsEngine(Engine):
                     if damp is not None:
                         x = damp[i]
                         dm = float(x) if x is not None and x is not EV.ABSENT and x == x else 1.0
+                    # (round 10) P03's damping weighs the row's EVIDENCE (how much
+                    # the source's signature counts towards eligibility and joins:
+                    # a damped source still needs ~10x the rows, i.e. days of
+                    # sustained work), not its MASS (what the source does: the
+                    # action mix the similarity reads). P03 damps a source whose
+                    # group has no standing at a who-closed node - the question
+                    # P11 answers - so damped mass made the answer circular: O-real
+                    # R3, 财务部's clerk moved .2.11 -> .2.51 on day 9; every finance
+                    # row of .51 was damped as foreign, its signature held only its
+                    # OA reading, it never joined 财务部's group (G36, 综合部's
+                    # approver, on day 12), and P03 kept damping it (round 9: the
+                    # finance statements never named .51, days 9-35). Trust (B28:
+                    # a source under incident, quarantine) still weighs both.
                     f = tr * dm
+                    f_m = tr
                     src = ip if mode in ("ip", "grp") else _source_prefix_mode(st, ip, ts_b, off)
                     if src is None:
                         continue
                     item = f"{key}|{r}"
                     ts = float(b.ts[i])
                     ev = st.burst.unit((src, item), ts, f)
-                    sg = st.sigs.add(src, item, ts, float(mass[i]) * f, ev, int((ts + off) // DAY))
+                    sg = st.sigs.add(src, item, ts, float(mass[i]) * f_m, ev, int((ts + off) // DAY))
                     if cnode is not None:
                         c = cnode[i]
                         pn = _pattern_node(tree, int(c), pcache) \
@@ -460,7 +475,7 @@ class WhoGroupsEngine(Engine):
                         if pn != root:
                             # IP x pattern co-occurrence: the covering confident pattern
                             # (its context part, see _pattern_node)
-                            st.sigs.add(src, f"{key}|@{pn}", ts, float(mass[i]) * f, 0.0)
+                            st.sigs.add(src, f"{key}|@{pn}", ts, float(mass[i]) * f_m, 0.0)
                     if sg.ev >= EV_JOIN and "/" not in src and src not in (model.get("ip2g") or {}):
                         st.join_queue.add(src)
                     n += 1
