@@ -3381,6 +3381,7 @@ class PatternTreeEngine(Engine):
             self._drift_daily(lc, tr, nd, t, day, s, normal_days)
             if nd.state in ("confirmed", "stable", "evolving") and nd.split is None and not nd.is_exc:
                 self._exceptions_daily(lc, tr, nd, kind, t)
+        self._handover_renamed(lc, tr, kind, s, t)
         # 4. EFDT revision on the R_max busiest internal nodes
         # only nodes whose children are all leaves: the revision statistics compare
         # the current ONE-LEVEL split with an alternative one-level split on the
@@ -3415,6 +3416,61 @@ class PatternTreeEngine(Engine):
         # 6. dormant memory expiry
         for nid in [n for n, r in tr.dormant.items() if t - r.get("since", t) >= DORMANT_KEEP_S]:
             tr.dormant.pop(nid, None)
+
+    def _handover_renamed(self, lc: _LC, tr: PT.Tree, kind: int, s: str, t: float) -> None:
+        """(round 10) A route P10 confirmed as renamed (model.pflow 'renamed':
+        new -> {'from': old}) whose new route's leaf is confident while the old
+        route's leaf went stale: the old leaf's retained state (who, when,
+        target summaries, pairs, dates, mass) moves into the new leaf, which
+        is the same pattern under its new page, and the old leaf retires.
+
+        Before, P14 stated the stale old node under the new route (views
+        renamed_routes) only while the new route had no confident node; once
+        the new node was confirmed its statement replaced it with five days of
+        its own when / content, and the old node's history was dropped with
+        it. Measured by the conformity owner (round 9, pack O seed 2 with
+        192.168.1.21's held rows released on days 17-21): GA.oa.approvals#2's
+        statement stayed on stale node 9 (POST /approval/{num}/approve) and
+        was dropped on day 20, when node 28 (POST /flow/{num}/approve) was
+        confirmed without when / content (recall @21 0.881 -> 0.857).
+
+        Only leaves (not exceptions, not the `other` child of their parent's
+        split) of one route each; once per new node (meta 'handover').
+        Bounded: one pass over the tree's nodes per day."""
+        pf = lc.store.get_model(lc.key, SYSTEM_ENTITY, MP.PFLOW)
+        rn = pf.get("renamed") if isinstance(pf, Mapping) else None
+        if not rn:
+            return
+        by_route: Dict[str, List[PN.Node]] = {}
+        for nid in sorted(tr.nodes):
+            nd = tr.nodes[nid]
+            if nd.split is not None or nd.is_exc or nd.parent is None:
+                continue
+            rc = [c for c in nd.ctx if c[0] in ("http.route", "http.path") and not c[3]]
+            if not rc or len(rc[-1][2]) != 1:
+                continue
+            by_route.setdefault(str(next(iter(rc[-1][2]))), []).append(nd)
+        for new in sorted(str(k) for k in rn):
+            rec = rn.get(new)
+            old = (rec or {}).get("from") if isinstance(rec, Mapping) else None
+            if not old:
+                continue
+            news = [n for n in by_route.get(new, ()) if n.state in ("confirmed", "stable")
+                    and not n.meta.get("handover")]
+            olds = [n for n in by_route.get(str(old), ()) if n.state == "stale"]
+            if len(news) != 1 or len(olds) != 1:
+                continue
+            nn, on = news[0], olds[0]
+            par = tr.nodes.get(on.parent)
+            if par is None or par.split is None or on.id == par.split.other or on.id not in par.split.children:
+                continue
+            nn.absorb(on)
+            nn.meta["handover"] = {"from": int(on.id), "route": str(old), "t": float(t)}
+            nn.version += 1
+            self._emit(lc, s, "pattern_retired", tr, on, Severity.INFO,
+                       f"模式 {ctx_text(on.ctx, lc.hier)} 的页面已更名为 {new}，其历史并入新页面的模式",
+                       {"renamed_to": new, "into": int(nn.id)})
+            tr.retire_leaf(on.id, t, {"renamed_to": new, "into": int(nn.id)})
 
     def _confirm(self, lc: _LC, tr: PT.Tree, kind: int, nd: PN.Node, s: str, t: float) -> bool:
         """Confirm a candidate node whose evidence meets the confirmation rule

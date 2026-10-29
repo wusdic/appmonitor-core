@@ -70,3 +70,78 @@ def test_a_group_who_clause_names_the_nodes_sources_outside_the_group():
     assert ev["level"] == "grp"
     assert "192.168.2.51" in ev["members"] and "192.168.2.51" in zh and "192.168.2.51" in en
     assert set(ev["members"]) >= {"192.168.2.10", "192.168.2.12"}
+
+
+# --------------------------------------------------------------- item 2
+OLD_R = "POST oa.corp.local /approval/{num}/approve"
+NEW_R = "POST oa.corp.local /flow/{num}/approve"
+
+
+def _approvals(d, t0, rng):
+    from ptree_sim import is_workday
+    out = []
+    if not is_workday(t0 + 12 * 3600):
+        return out
+    route = OLD_R if d < 10 else NEW_R
+    for k in range(4):
+        ts = t0 + (9.5 + 0.25 * k + 0.05 * rng.random()) * 3600.0
+        out.append((ts, "oa", "192.168.1.21", {"http.route": route, "http.method": "POST",
+                                                "body.len": float(rng.integers(900, 1400)),
+                                                "net.bytes_down": float(rng.integers(300, 600))}))
+    for k in range(6):                     # other traffic of the system
+        ts = t0 + (9.0 + k) * 3600.0 + 60.0 * rng.random()
+        out.append((ts, "oa", f"192.168.1.{30 + k}", {"http.route": "GET oa.corp.local /docs",
+                                                       "http.method": "GET",
+                                                       "net.bytes_down": float(rng.integers(5000, 9000))}))
+    return out
+
+
+def test_a_renamed_route_hands_its_pattern_over_to_the_new_routes_node():
+    """Item 2 (the conformity owner's round-9 finding): a route renamed
+    mid-run (P10 confirmed the rename: model.pflow 'renamed'). Once the new
+    route's node is confident and the old route's node stale, the old node's
+    when / target summaries move into the new node (its statement keeps the
+    pattern's history: windows and bands from all its days, not its first
+    few) and the old node retires; before, the old node stayed stale and its
+    history was dropped with it 30 days later."""
+    from ptree_sim import DAY, MON, Sim, daily
+    from app.engines.behavior.lib import m_ptree as MP
+    from app.models.schema import SYSTEM_ENTITY
+
+    sim = Sim(p05=True)
+    sim.add(daily(_approvals, 24))
+
+    def pflow(s):
+        if s.now >= MON + 12 * DAY:
+            s.st.put_model("oa", SYSTEM_ENTITY, MP.PFLOW,
+                           {"renamed": {NEW_R: {"from": OLD_R, "day": 12, "sources": ["192.168.1.21"]}}}, ts=s.now)
+    sim.hooks.append(pflow)
+    old_when = {}
+
+    def watch(s):
+        tr = s.tree()
+        if tr is None:
+            return
+        for nd in tr.nodes.values():
+            rc = [c for c in nd.ctx if c[0] == "http.route"]
+            if rc and set(rc[-1][2]) == {OLD_R} and nd.split is None:
+                old_when["mass"] = nd.when.mass(0, s.now)
+                old_when["n"] = nd.n_obs()
+    sim.hooks.append(watch)
+    sim.run_until(MON + 24 * DAY)
+    tr = sim.tree()
+    news = [nd for nd in tr.nodes.values() if [c for c in nd.ctx if c[0] == "http.route"]
+            and set([c for c in nd.ctx if c[0] == "http.route"][-1][2]) == {NEW_R} and nd.split is None]
+    olds = [nd for nd in tr.nodes.values() if [c for c in nd.ctx if c[0] == "http.route"]
+            and set([c for c in nd.ctx if c[0] == "http.route"][-1][2]) == {OLD_R}]
+    assert len(news) == 1, [(n.id, n.ctx, n.state) for n in tr.nodes.values()]
+    nn = news[0]
+    assert nn.state in ("confirmed", "stable")
+    assert (nn.meta.get("handover") or {}).get("route") == OLD_R
+    assert not olds                                        # the old node retired into it
+    assert old_when.get("n", 0) > 0
+    # its history: the old route's observations are the new node's too
+    assert nn.n_obs() >= old_when["n"]
+    assert "body.len" in nn.targets
+    ev = [e for e in sim.events("pattern_retired") if (e.extra or {}).get("renamed_to") == NEW_R]
+    assert len(ev) == 1
