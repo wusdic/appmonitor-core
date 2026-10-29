@@ -31,9 +31,10 @@ def _ref_in_range_floor(rec: Mapping[str, Any], v: Any, p: float) -> float:
     was damped as an outlier and lost its trust for the day (B28)."""
     if _nan(p):
         return p
-    rng = rec.get("range") if isinstance(rec, Mapping) else None
-    n_rng = rec.get("n_rng") if isinstance(rec, Mapping) else None
-    if not rng or n_rng is None or not (float(n_rng) >= 1.0):
+    # (round 10) the floor's interval: the observed range, else the band98 the
+    # record states with n_c (CF._floor_ref; test_p06_p03_round10.py)
+    rng, n_rng = CF._floor_ref(rec)
+    if rng is None:
         return p
     try:
         x = float(v)
