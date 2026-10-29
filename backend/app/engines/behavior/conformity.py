@@ -1160,7 +1160,8 @@ class _TreeCtx:
         k = ("wp", kind, nd.id, daytype)
         if k in self.info:
             return self.info[k]
-        prior, _pt = self._back_off(kind, tree, nd, daytype)
+        par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
+        prior = self.when_pred(kind, tree, par, daytype) if par is not None else None
         h, N = self._when_counts(nd, daytype)
         if prior is None:
             f = SC.when_density(h, N) if N > 0 and np.asarray(h).sum() > 0 else None
@@ -1196,7 +1197,8 @@ class _TreeCtx:
             return self.info[k]
         h, N = self._when_counts(nd, daytype)
         own = _hdr_table(SC.when_density(h, N)) if N > 0 and np.asarray(h).sum() > 0 else None
-        _f, pt = self._back_off(kind, tree, nd, daytype)
+        par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
+        pt = self.when_ptab(kind, tree, par, daytype) if par is not None else None
         if pt is None:
             out = own
         elif own is None:
@@ -1236,7 +1238,9 @@ class _TreeCtx:
         t = self.now
         d = 1 if daytype else 0
         h, N = self._when_counts(nd, daytype)
-        prior, pt = self._back_off(kind, tree, nd, daytype)
+        par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
+        prior = self.when_pred(kind, tree, par, daytype) if par is not None else None
+        pt = self.when_ptab(kind, tree, par, daytype) if par is not None else None
         cur = None
         if N >= SC.N_MIN:
             cur = self.when_ptab(kind, tree, nd, daytype) if tree is not None \
@@ -1253,68 +1257,6 @@ class _TreeCtx:
                                      pt if self.content_child(kind, tree, nd) else np.minimum(ref, pt))
         self.info[k] = (cur, ref)
         return cur, ref
-
-    def route_mix(self, kind: int, tree: Any, par: Any, daytype: int) -> Optional[np.ndarray]:
-        """(round 10) The time-of-day law a ROUTE node backs off to: its route
-        split's children's own slot densities (pscore.when_density) mixed in
-        proportion to their EVIDENCE - the system's actions weighed by how many
-        independent observations each one is - instead of the split node's
-        mass-weighted law. Shares come from mass, sample sizes from evidence
-        (PPC-9): a machine monitor polling /health every minute around the
-        clock is one long burst run, ~8 evidence units a day against its 1 440
-        rows, yet it holds a third of the root's MASS at night. Under the
-        mass-weighted root every route node read its night slots as used:
-        O-red seed 0 (round 9), the login route node (339 units, none at
-        night) put 03:00 at p 4.1e-3 against its own 1.3e-4, its young child
-        inherited 1.0e-3, and A4 (10.77.2.14's 03:05 login) scored 2.0e-3 -
-        no finding. A route node with no back-off at all (its own law only)
-        lost the protection of the system's human population on the portal:
-        evening comments of a normal 07:00-23:00 law became MEDIUM findings
-        (pack O seed 0: FAR >= MEDIUM 0.0005 -> 0.0018); the evidence-weighted
-        mixture keeps it. None when the children hold no evidence."""
-        k = ("rm", kind, par.id, daytype)
-        if k in self.info:
-            return self.info[k]
-        sp = par.split
-        ids = list(getattr(sp, "children", None) or [])
-        oth = getattr(sp, "other", None)
-        if oth is not None:
-            ids.append(oth)
-        acc, tot = None, 0.0
-        for cid in sorted(set(int(c) for c in ids)):
-            c = tree.nodes.get(cid)
-            if c is None:
-                continue
-            h, N = self._when_counts(c, daytype)
-            if not (N > 0) or float(np.asarray(h).sum()) <= 0:
-                continue
-            f = SC.when_density(h, N) * float(N)
-            acc = f if acc is None else acc + f
-            tot += float(N)
-        out = acc / tot if acc is not None and tot > 0 else None
-        self.info[k] = out
-        return out
-
-    def _back_off(self, kind: int, tree: Any, nd: Any, daytype: int
-                  ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """(predictive, HDR p table) a node's time law backs off to: its
-        parent's (when_pred, when_ptab), or - for a child of a route split -
-        the evidence-weighted mixture of the split's actions (route_mix)."""
-        if tree is None or nd is None or nd.parent is None:
-            return None, None
-        par = tree.nodes.get(nd.parent)
-        if par is None:
-            return None, None
-        if par.split is not None and par.split.attr in ROUTE_ATTRS:
-            f = self.route_mix(kind, tree, par, daytype)
-            if f is None:
-                return None, None
-            k = ("rmt", kind, par.id, daytype)
-            pt = self.info.get(k)
-            if pt is None:
-                pt = self.info[k] = _hdr_table(f)
-            return f, pt
-        return self.when_pred(kind, tree, par, daytype), self.when_ptab(kind, tree, par, daytype)
 
     def content_child(self, kind: int, tree: Any, nd: Any) -> bool:
         """Whether the node is a child of a CONTENT split (its parent split
