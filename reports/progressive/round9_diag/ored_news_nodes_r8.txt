@@ -1,0 +1,8 @@
+1 
+2 0:2[cand] bu_t=False nz=0/0 - | 0:5[cand] bu_t=False nz=8/8 -
+3 0:2[cand] bu_t=False nz=0/0 - | 0:5[conf] bu_t=False nz=8/11 -
+5 0:2[cand] bu_t=False nz=0/0 - | 0:5[conf] bu_t=False nz=8/11 -
+7 0:2[cand] bu_t=False nz=0/0 - | 0:5[conf] bu_t=True nz=8/12 {"band98": [460.0, 516.0], "range": [460.0, 516.0], "n_rng": 358.45099622599594, "excluded_days": 0}
+10 0:2[cand] bu_t=False nz=0/0 - | 0:5[stab] bu_t=True nz=8/12 {"band98": [460.0, 516.0], "range": [460.0, 516.0], "n_rng": 1091.5440698190687, "excluded_days": 0}
+14 0:2[cand] bu_t=False nz=0/0 - | 0:5[stab] bu_t=False nz=10/12 -
+21 0:2[cand] bu_t=False nz=0/0 - | 0:5[stab] bu_t=False nz=8/10 {"band98": [460.0, 516.0], "range": [460.0, 516.0], "n_rng": 2530.511469086467, "excluded_days": 0}
