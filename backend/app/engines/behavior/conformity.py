@@ -2505,7 +2505,6 @@ class ConformityEngine(Engine):
                             if ent.get("bound") and str(ent.get("top")) == top and ent.get("LB") is not None:
                                 lb_x = float(ent["LB"]) if _nan(lb_x) else max(lb_x, float(ent["LB"]))
                         continue
-                    seen_attr.add(("bind", X_, Y_))
                     if rec.get("dir") == "rev":
                         y = get(X_)                              # payload value (e.g. a user name)
                         wa, wl = FD.parse_x(Y_)
@@ -2543,7 +2542,20 @@ class ConformityEngine(Engine):
                         if ent.get("bound") and ent.get("top") is not None:
                             bind_top[(X_, Y_)] = str(ent["top"])
                     if _nan(p):
+                        # (round 10, A2) no verdict here: this node's record of the
+                        # pair does not bind the source (no entry for it, or an entry
+                        # neither bound nor a closed set) - the pair is NOT checked at
+                        # this node, so the nearest ancestor's record of the same pair
+                        # speaks (forward: its table binds the source, and the value
+                        # bound to another source there is cross_binding; reverse:
+                        # its closed sources of the value). O-real seed 0 day 17:
+                        # 192.168.1.21 logs in as rose at the login node's 'other'
+                        # child, whose net.src -> username table has no entry for .21
+                        # (its DEV pool does not hold), while the route node binds
+                        # rose -> .23: the pair was marked checked at the child and
+                        # the route node's record never read - A2 missed
                         continue
+                    seen_attr.add(("bind", X_, Y_))
                     ps.append(p)
                     bind_fl.update(fl)
                     if p < worst[0]:
