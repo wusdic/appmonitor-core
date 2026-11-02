@@ -214,6 +214,14 @@ def checklist(day: Mapping[str, Any], truth: Sequence[Mapping[str, Any]], d: int
                               ("GA.oa.report", "/report/generate", "下午 5 点提交报告（.23、.121）")):
         r = next((x for x in truth if x.get("activity") == act and "generate" in str(x.get("route")) or
                   (x.get("activity") == act and route in str(x.get("route")))), None)
+        # the clause is about the activity's pages as the truth valid on day d
+        # names them: a route drift (pack O / O-real D3, /approval/ -> /flow/ on
+        # day 14) closes the row and opens one at the new route, and an engine
+        # that has handed the old route's node over to the new one (P04
+        # _handover_renamed) states the approvals only at /flow/* (round 10)
+        rv = valid(act, 0)
+        if act == "GA.oa.approvals" and rv is not None and route not in str(rv.get("route")):
+            r, route = rv, "/" + str(rv.get("route")).strip("/").split("/")[0]
         if r is None:
             continue
         j, s = best(oa, route, r["who"]["value"])

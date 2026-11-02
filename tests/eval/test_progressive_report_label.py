@@ -62,3 +62,36 @@ def test_example_reads_the_family_view_of_a_system_that_joined_one():
             "org": {"model.sysfam": {"member": {"oa": "fam:1", "oa-r2": "fam:1"}}}}
     assert m._stmts(snap, "oa") == [st]
     assert m._stmts({"systems": {"oa": {"model.pviews": {"statements": [st]}}}}, "oa") == [st]
+
+
+def _stmt(route, who):
+    return {"route": f"GET oa.corp.local {route}", "who": {"level": "ip", "items": list(who), "members": list(who)},
+            "context": []}
+
+
+def _truth_rows():
+    base = {"activity": "GA.oa.approvals", "step": 0, "who": {"value": ["192.168.1.21"]}}
+    return [dict(base, route="/approval/list", valid_from_day=1, valid_to_day=14),
+            dict(base, route="/flow/list", valid_from_day=14, valid_to_day=99)]
+
+
+def _approval_row(rows):
+    return next(r for r in rows if "审批" in r["clause"])
+
+
+def test_approvals_clause_follows_the_route_the_truth_names_on_the_day():
+    """Round 10: after the D3 route drift (/approval/ -> /flow/ on day 14) and
+    P04's hand-over of the old route's node, the approvals are stated only at
+    /flow/*; the clause matched '/approval' and failed although the statement
+    names exactly 192.168.1.21 (O-real seed 0 day 35, Jaccard 0.00)."""
+    m = _mod()
+    day = {"oa_statements": [_stmt("/flow/list", ["192.168.1.21"])]}
+    row = _approval_row(m.checklist(day, _truth_rows(), 35))
+    assert row["pass"] and row["measured"] == "who Jaccard 1.00"
+    # before the drift the /approval statement is still the one matched
+    day = {"oa_statements": [_stmt("/approval/list", ["192.168.1.21"]),
+                             _stmt("/flow/list", ["192.168.1.99"])]}
+    assert _approval_row(m.checklist(day, _truth_rows(), 10))["pass"]
+    # after the drift a stale /approval statement alone no longer satisfies it
+    day = {"oa_statements": [_stmt("/approval/list", ["192.168.1.21"])]}
+    assert not _approval_row(m.checklist(day, _truth_rows(), 35))["pass"]
