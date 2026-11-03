@@ -263,6 +263,7 @@ GROUP_MIN_MEMBERS = 2           # other members with standing that make a node a
 MEMBER_EV = 3.0                 # a source recurring at an ANCESTOR population (back-off) is a member
 CAL_TYPES = ("when", "content", "seq")
 DT_DATES = 8                    # local dates per day type remembered per tree (ConfState.day_seen)
+READDR_NOTES = 64               # (round 11) readdress candidates of the current local day remembered (ConfState.readdr_note)
 EXPO_DATES = 1                  # complete dates of a day type before a node's own day-type table speaks
 INT_P = 1e-3                    # an hour count is a finding only at this tail (§6.16.4)
 E_MAX = 1.0                     # a node's routine: >= this many such scores per day
@@ -915,7 +916,8 @@ class ConfState:
 
     def nbytes(self) -> int:
         return int(sum(h.nbytes() for h in self.hour.values()) + 120 * len(self.cells)
-                   + 100 * len(self.last_active) + self.cal.nbytes() + self.led().nbytes() + 1024)
+                   + 100 * len(self.last_active) + self.cal.nbytes() + self.led().nbytes()
+                   + 120 * len(getattr(self, "readdr_notes", None) or ()) + 1024)
 
     def tally(self) -> RateTally:
         r = getattr(self, "rate_tally", None)
@@ -944,6 +946,25 @@ class ConfState:
             lst.append(int(lday))
         if len(lst) > DT_DATES:
             del lst[:len(lst) - DT_DATES]
+
+    def readdr_note(self, s: str, x: str, src: str, lday: int) -> None:
+        """(round 11) Remember that source x of system s was a readdress
+        candidate of `src` on local date `lday` (lib/pfd.check_reverse's
+        `readdr_of`): x is known after its first event, and its later events
+        of the day must stay candidates of the same source until P11 records
+        the move. Only the current date's notes are kept (<= READDR_NOTES)."""
+        nt = getattr(self, "readdr_notes", None)
+        if nt is None:                          # a state saved before the notes existed
+            nt = self.readdr_notes = {}
+        for k in [k for k, v in nt.items() if v[1] < int(lday)]:
+            del nt[k]
+        if (s, x) not in nt and len(nt) >= READDR_NOTES:
+            return
+        nt[(s, x)] = (str(src), int(lday))
+
+    def readdr_of(self, s: str, x: str, lday: int) -> Optional[str]:
+        e = (getattr(self, "readdr_notes", None) or {}).get((s, x))
+        return e[0] if e is not None and e[1] == int(lday) else None
 
     def exposure(self, key: str, daytype: int, after: int, today: int) -> int:
         """The number of COMPLETE local dates of a day type the tree `key`
@@ -2535,10 +2556,12 @@ class ConformityEngine(Engine):
                             continue
                         known = self._known(tc, st, s, ip)
                         day_start = ts - ((ts + tc.tz) % DAY)
+                        lday_ = int((ts + tc.tz) // DAY)
                         rinfo: Dict[str, Any] = {}
                         p, fl = FD.check_reverse(rec, x, y, ts,
                                                  lambda src: st.last_active.peek((s, str(src))),
-                                                 known, day_start, info=rinfo)
+                                                 known, day_start, info=rinfo,
+                                                 readdr_of=st.readdr_of(s, str(x), lday_) if known else None)
                         old_x = tc.readdr_old.get(str(x)) if fl and getattr(tc, "readdr_old", None) else None
                         if old_x is not None and FD.check_reverse(rec, old_x, y, ts) == (1.0, []):
                             # (round 11) y's source at its new address (P11's readdress,
@@ -2549,9 +2572,11 @@ class ConformityEngine(Engine):
                             p, fl = 1.0, []
                         if "readdress_candidate" in fl:
                             # (round 11) the source the candidate replaces as check_reverse
-                            # judged it (a set's silent dominant member; was the set's
-                            # alphabetically first member)
+                            # judged it (a set's silent major member; was the set's
+                            # alphabetically first member), noted for x's later events today
                             readdr_src = str(rinfo["src"]) if rinfo.get("src") is not None else None
+                            if readdr_src is not None:
+                                st.readdr_note(s, str(x), readdr_src, lday_)
                     else:
                         xa, xl = FD.parse_x(X_)
                         x = tc.hier.gen(xa, xl, get(xa))

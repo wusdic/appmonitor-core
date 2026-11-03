@@ -97,3 +97,22 @@ def test_readdressed_source_is_one_entry_of_a_set_binding():
     fx.score("finance", [(t + 60.0, STRANGER, ev)])
     flags = {f for e in fx.violations(STRANGER) for f in (e.extra.get("flags") or [])}
     assert "concurrent_use" in flags
+
+
+def test_readdress_notes_last_the_local_day_and_are_bounded():
+    """(round 11) ConfState.readdr_note / readdr_of: the source a new address
+    was a readdress candidate of is remembered for the rest of that local day
+    (lib/pfd.check_reverse's `readdr_of`), not after it; a state saved before
+    the notes existed reads none; at most READDR_NOTES are kept."""
+    st = CF.ConfState(16, 16)
+    assert st.readdr_of("finance", NEW, 100) is None             # no notes attribute yet
+    st.readdr_note("finance", NEW, OLD, 100)
+    assert st.readdr_of("finance", NEW, 100) == OLD
+    assert st.readdr_of("oa", NEW, 100) is None
+    assert st.readdr_of("finance", NEW, 101) is None
+    for i in range(CF.READDR_NOTES + 10):
+        st.readdr_note("finance", f"10.9.{i // 250}.{i % 250}", OLD, 100)
+    assert len(st.readdr_notes) == CF.READDR_NOTES
+    st.readdr_note("finance", STRANGER, OLD, 101)                 # a new day drops the old notes
+    assert list(st.readdr_notes) == [("finance", STRANGER)]
+    assert st.readdr_of("finance", NEW, 101) is None

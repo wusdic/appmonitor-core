@@ -832,7 +832,8 @@ SHARE_TIE = 1e-9            # set_members: shares this close to 1 / |set| count 
 def check_reverse(rec: Mapping[str, Any], x: Any, y: Any, t: float,
                   last_active: Optional[Callable[[str], Optional[float]]] = None,
                   x_known: bool = True, day_start: Optional[float] = None,
-                  t_conc: float = T_CONC, info: Optional[Dict[str, Any]] = None) -> Tuple[float, List[str]]:
+                  t_conc: float = T_CONC, info: Optional[Dict[str, Any]] = None,
+                  readdr_of: Optional[str] = None) -> Tuple[float, List[str]]:
     """(p, flags) of the event (x, y) against the reverse Y -> X binding
     (rec fitted on the pair (Y, X)): y's sources are closed and x is not
     among them -> foreign_source, refined by the concurrency test.
@@ -858,7 +859,15 @@ def check_reverse(rec: Mapping[str, Any], x: Any, y: Any, t: float,
       Only when every major member is active today is a concurrent major
       member 'concurrent_use' (an additional user of the value).
     A bound entry is unchanged. `info` (a dict) receives 'src', the source a
-    readdress candidate replaces."""
+    readdress candidate replaces.
+    `readdr_of` (round 11): the source x was found a readdress candidate of
+    earlier on the same local day (behavior.conformity keeps the note). x is
+    known after its first event, so without it only that first event was a
+    candidate: O-real seed 2, .51's first finance login (09:03:45) was a
+    readdress of .11 and the next, 2 s later, 'concurrent_use' with the
+    colleague .12 - a HIGH incident before P11 recorded the move (09:15). A
+    known x stays a candidate of THAT source only, while it is one of y's
+    sources (a major member of a set) and silent today."""
     if not rec:
         return NAN, []
     ent = (rec.get("table") or {}).get(str(_jv(y)))
@@ -878,6 +887,13 @@ def check_reverse(rec: Mapping[str, Any], x: Any, y: Any, t: float,
     if xs in sources:
         return 1.0, []
     flags = ["foreign_source"]
+
+    def eligible(cands: Sequence[str]) -> List[str]:
+        # the sources x may have replaced: any, for an unknown x; for a known x
+        # only the one it was a readdress candidate of today
+        if not x_known:
+            return list(cands)
+        return [m for m in cands if readdr_of is not None and m == str(readdr_of)]
     if last_active is not None:
         act = {s: last_active(s) for s in sources}
 
@@ -889,8 +905,8 @@ def check_reverse(rec: Mapping[str, Any], x: Any, y: Any, t: float,
             k = len(members)
             major = [m for m, sh in members if sh >= 1.0 / k - SHARE_TIE]
             conc = any(act.get(m) is not None and abs(float(t) - float(act[m])) <= t_conc for m in major)
-            maj_silent = [m for m in major if silent(m)]      # by share, largest first
-            if not x_known and maj_silent:
+            maj_silent = eligible([m for m in major if silent(m)])   # by share, largest first
+            if maj_silent:
                 flags.append("readdress_candidate")
                 if info is not None:
                     info["src"] = maj_silent[0]
@@ -900,11 +916,11 @@ def check_reverse(rec: Mapping[str, Any], x: Any, y: Any, t: float,
         acts = [a for a in act.values() if a is not None]
         if conc:
             flags.append("concurrent_use")
-        elif not x_known and (day_start is None or not any(a >= day_start for a in acts)):
+        elif eligible(sources) and (day_start is None or not any(a >= day_start for a in acts)):
             flags.append("readdress_candidate")
             p = float(ent.get("U", p)) if ent.get("set") else float(ent.get("p_viol", p))
             if info is not None:
-                info["src"] = sources[0]
+                info["src"] = eligible(sources)[0]
     return p, flags
 
 

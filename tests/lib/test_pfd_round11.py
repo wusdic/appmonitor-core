@@ -116,3 +116,43 @@ def test_silent_major_member_is_a_readdress_while_the_largest_colleague_is_activ
     act[OWN] = now - 3600.0; act[MATE] = now - 2 * DAY
     p, f = FD.check_reverse(r, NEW, JA3, now, act.get, x_known=False, day_start=day_start)
     assert f == ["foreign_source", "concurrent_use"]
+
+
+def test_a_known_source_stays_a_readdress_of_the_source_it_replaced_today():
+    """O-real seed 2: .51's first finance login (09:03:45) was a readdress of
+    .11; the next event, 2 s later, found .51 KNOWN (its first event made it
+    so) and was 'concurrent_use' with the active colleague .12 - a HIGH
+    incident before P11 recorded the move. `readdr_of` (conformity's note of
+    the day) keeps the known source a candidate of THAT source only."""
+    r = _fit([(MATE, 14), (OWN, 41), (MINOR, 46)])
+    now = T0 + 10 * DAY + 9 * 3600.0 + 227.0
+    day_start = now - 9 * 3600.0 - 227.0
+    act = {MATE: now - 160.0, MINOR: now - 227.0, OWN: now - DAY - 3600.0, NEW: now - 2.0}
+    p, f = FD.check_reverse(r, NEW, JA3, now, act.get, x_known=True, day_start=day_start)
+    assert f == ["foreign_source", "concurrent_use"]              # without the note
+    info = {}
+    p, f = FD.check_reverse(r, NEW, JA3, now, act.get, x_known=True, day_start=day_start,
+                            info=info, readdr_of=OWN)
+    assert f == ["foreign_source", "readdress_candidate"] and info["src"] == OWN
+    # a note naming a source that is not a (major) source of this value: no readdress here
+    p, f = FD.check_reverse(r, NEW, JA3, now, act.get, x_known=True, day_start=day_start,
+                            readdr_of=MATE)
+    assert f == ["foreign_source", "concurrent_use"]
+    # the replaced source active again today: no longer a candidate
+    act[OWN] = now - 600.0
+    p, f = FD.check_reverse(r, NEW, JA3, now, act.get, x_known=True, day_start=day_start,
+                            readdr_of=OWN)
+    assert "readdress_candidate" not in f
+    # a bound value (the clerk's user name): the same rule
+    ps = PN.PairSketch()
+    for x, y in [(OWN, "tom"), ("192.168.1.23", "rose"), ("10.168.7.121", "mike")]:
+        for _ in range(8):
+            ps.update(y, x, T0, 1, 1)
+    rb = FD.fit_pair(ps, T0)
+    assert rb["table"]["tom"].get("bound")
+    act = {OWN: now - DAY}
+    p, f = FD.check_reverse(rb, NEW, "tom", now, act.get, x_known=True, day_start=day_start)
+    assert f == ["foreign_source"]
+    p, f = FD.check_reverse(rb, NEW, "tom", now, act.get, x_known=True, day_start=day_start,
+                            readdr_of=OWN)
+    assert f == ["foreign_source", "readdress_candidate"]
