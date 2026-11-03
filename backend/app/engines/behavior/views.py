@@ -514,6 +514,38 @@ def drift_conf(drift: Any, when_ev: Optional[Mapping[str, Any]], when_c: Optiona
     return float(when_c) if (when_c is not None and math.isfinite(float(when_c))) else 1.0
 
 
+def _seed_part_extremes(c: Any, nd: Any, m: Any, a: str, gids: Sequence[str], day: int) -> None:
+    """(round 11) A group part's numeric summary (P04 'gnum': the group's
+    held-out rows since the record started) takes the observed extremes of the
+    group's sources that the node keeps per source (pnode.SourceExtremes
+    'sext' by address, 'sext24' by /24 with a representative address: every
+    row the leaf learned, its split-inherited history included), so the
+    part's hard range covers the group's own earlier rows as a split child's
+    does (pattern_tree._inherit_source_extremes). Pack O seed 1 (round 10):
+    the 综合部 login node (a /24 split's child, range 643-2743 B) was merged
+    back into its parent on day 18 (saving < 0); 综合部 was then stated as a
+    group part of the parent with a range from the group's held-out rows of
+    the last days only, 1-2.8 KB, and the 643 B login of day 2 (the truth's
+    0.5-3 KB) fell out of the statement. Extremes before the node's own
+    confidence segment of the attribute (a content drift restarted it) are
+    not taken."""
+    ip2g = getattr(c, "ip2g", None) or {}
+    want = {str(g)[4:] if str(g).startswith("grp:") else str(g) for g in gids}
+    meta = getattr(nd, "meta", None) or {}
+    own = (getattr(nd, "targets", None) or {}).get(a)
+    seg = getattr(own, "seg_day", None)              # the node's confidence segment of the attribute
+    for nm in ("sext", "sext24"):
+        sx = meta.get(nm)
+        if sx is None or not len(sx):
+            continue
+        e = sx.union(lambda rep: str(ip2g.get(str(rep))) in want).get(a)
+        if e is None:
+            continue
+        for v, d in ((e[0], e[1]), (e[2], e[3])):
+            if seg is None or int(d) >= int(seg):
+                m.seed_extreme(v, int(d), int(day), extend=True)
+
+
 def part_content(c: "_Ctx", nd: Any, ent: Optional[Mapping[str, Any]], gids: Sequence[str],
                  t: float) -> Optional[Mapping[str, Any]]:
     """P06's entry of a node with its numeric constraints refitted on ONE
@@ -549,6 +581,7 @@ def part_content(c: "_Ctx", nd: Any, ent: Optional[Mapping[str, Any]], gids: Seq
             m.merge(x)
         if m.td.total(t) <= 0 or node_mass <= 0:
             continue
+        _seed_part_extremes(c, nd, m, a, gids, day)
         share = min(1.0, float(m.td.total(t)) / node_mass)
         rr = c.reg.get(a) if c.reg is not None else None
         approx = float(getattr(rr, "approx_share", 0.0) or 0.0) if rr is not None else 0.0

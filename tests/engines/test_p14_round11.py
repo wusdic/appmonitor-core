@@ -72,3 +72,47 @@ def test_a_configured_department_states_its_unlisted_colleague_at_the_node():
     assert by["cfg:财务部"][1] == ["192.168.2.10", "192.168.2.12", "192.168.2.51"]
     # never another configured department's address, nor one without the action
     assert all("192.168.1.21" not in by["cfg:财务部"][1] and "192.168.2.77" not in p[1] for p in parts)
+
+
+def test_a_group_part_keeps_its_sources_earlier_extremes():
+    """Item 4 (round 10, pack O seed 1): the 综合部 login node (a /24 split's
+    child, 'all within 643-2743 B' from the extremes its sources' records
+    carried into it) was merged back into its parent on day 18 (split saving
+    < 0); 综合部 was then a group part of the parent, its range refitted on the
+    group's held-out rows of the last days only (P04 'gnum': 1038-2743 B), and
+    the 643 B login of day 2 fell out of the statement (truth 0.5-3 KB). The
+    part's range now takes the group's sources' extremes the node keeps per
+    source (pnode.SourceExtremes), within the node's confidence segment."""
+    import numpy as np
+    from helpers import make_store
+    from app.engines.behavior.lib import pbounds as PB
+    from app.engines.behavior.lib import pnode as PN
+    cfg = {"progressive": {"enabled": True}, "tz": "Asia/Shanghai"}
+    t = 1.7e9
+    day = PB.local_day(t, cfg)
+    rng = np.random.default_rng(1)
+    g = PN.NumSummary(log=True)
+    allv = PN.NumSummary(log=True)
+    allv.seed_extreme(600.0, day - 19, day, extend=True)       # the node's own segment from day 2
+    for d in range(4, 0, -1):
+        for i in range(8):
+            v = float(rng.uniform(1038.0, 2743.0))
+            ts = t - d * 86400.0 + i * 60.0
+            g.update(v, ts, 1.0, 1.0, day=day - d)
+            allv.update(v, ts, 1.0, 1.0, day=day - d)
+    s24 = PN.SourceExtremes()
+    s24.note("192.168.1.0/24", "body.len", 643.0, day - 19, t - 19 * 86400.0, rep="192.168.1.21")
+    s24.note("192.168.1.0/24", "body.len", 2100.0, day - 18, t - 18 * 86400.0, rep="192.168.1.21")
+    s24.note("192.168.3.0/24", "body.len", 300.0, day - 10, t - 10 * 86400.0, rep="192.168.3.20")
+    nd = NS(meta={"gnum": {"grp:G9": {"body.len": g}}, "sext24": s24}, targets={"body.len": allv},
+            mass_at=lambda t_: 400.0, n_c=lambda t_: 400.0, n_m=lambda t_: 400.0)
+    c = NS(ip2g={"192.168.1.21": "G9", "192.168.1.23": "G9", "192.168.3.20": "G2"}, reg=None,
+           config=cfg, store=make_store(), key="oa")
+    ent = {"attrs": {"body.len": {"kind": "num", "unit": "B", "range": [600.0, 2743.0]}}}
+    rec = VW.part_content(c, nd, ent, ["G9"], t)["attrs"]["body.len"]
+    assert rec.get("part") and rec["range"][0] <= 643.0 + 1e-6, rec.get("range")
+    assert rec["range"][0] > 300.0                                # never another group's source
+    # an extreme before the node's own segment of the attribute is not taken
+    allv.seg_day = day - 5
+    rec = VW.part_content(c, nd, ent, ["G9"], t)["attrs"]["body.len"]
+    assert rec["range"][0] >= 1038.0 - 1e-6, rec.get("range")
