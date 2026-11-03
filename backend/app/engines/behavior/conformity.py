@@ -2513,13 +2513,15 @@ class ConformityEngine(Engine):
                             continue
                         known = self._known(tc, st, s, ip)
                         day_start = ts - ((ts + tc.tz) % DAY)
+                        rinfo: Dict[str, Any] = {}
                         p, fl = FD.check_reverse(rec, x, y, ts,
                                                  lambda src: st.last_active.peek((s, str(src))),
-                                                 known, day_start)
+                                                 known, day_start, info=rinfo)
                         if "readdress_candidate" in fl:
-                            ent = (rec.get("table") or {}).get(str(FD._jv(y))) or {}
-                            readdr_src = str(ent.get("top")) if ent.get("bound") else \
-                                (str((ent.get("set") or [None])[0]) if ent.get("set") else None)
+                            # (round 11) the source the candidate replaces as check_reverse
+                            # judged it (a set's silent dominant member; was the set's
+                            # alphabetically first member)
+                            readdr_src = str(rinfo["src"]) if rinfo.get("src") is not None else None
                     else:
                         xa, xl = FD.parse_x(X_)
                         x = tc.hier.gen(xa, xl, get(xa))

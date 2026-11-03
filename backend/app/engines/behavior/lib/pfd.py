@@ -654,15 +654,20 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
                 bound_mass += c["mass"]
         if not ent.get("bound"):
             ys = sorted(c["y"].items(), key=lambda kv: -kv[1])
-            acc, sset = 0.0, []
+            acc, sset, sev = 0.0, [], {}
             for yy, e in ys:
                 if acc >= SET_COVER * n:
                     break
                 sset.append(_jv(yy))
+                sev[str(_jv(yy))] = float(e)
                 acc += e
             if c["U"] <= SET_U and len(sset) <= SET_K and acc >= SET_COVER * n - 1e-9 and len(sset) >= 2:
                 ent["set"] = sorted(sset, key=lambda v: (type(v).__name__, str(v)))
                 ent["U"] = float(c["U"])
+                # (round 11) each member's share of x's evidence, aligned with
+                # 'set' (check_reverse: which members a concurrency or a
+                # readdress is judged against)
+                ent["shares"] = [float(sev[str(v)] / n) if n > 0 else 0.0 for v in ent["set"]]
             elif multi_source(c, k, n, n_bind):
                 ent["multi"] = True
         table[_jx(x)] = ent
@@ -808,24 +813,57 @@ def check_forward(rec: Mapping[str, Any], x: Any, y: Any) -> Tuple[float, List[s
     return NAN, []
 
 
+def set_members(ent: Mapping[str, Any]) -> List[Tuple[str, float]]:
+    """(source, share of the value's evidence) of a SET entry of a reverse
+    record, the largest share first (ties by name); equal shares for an
+    entry fitted before the shares were kept."""
+    srcs = [str(s) for s in ent.get("set") or []]
+    sh = ent.get("shares")
+    if not srcs:
+        return []
+    if not isinstance(sh, (list, tuple)) or len(sh) != len(srcs):
+        sh = [1.0 / len(srcs)] * len(srcs)
+    return sorted(zip(srcs, (float(v) for v in sh)), key=lambda kv: (-kv[1], kv[0]))
+
+
+SHARE_TIE = 1e-9            # set_members: shares this close to the largest are the value's dominant sources
+
+
 def check_reverse(rec: Mapping[str, Any], x: Any, y: Any, t: float,
                   last_active: Optional[Callable[[str], Optional[float]]] = None,
                   x_known: bool = True, day_start: Optional[float] = None,
-                  t_conc: float = T_CONC) -> Tuple[float, List[str]]:
+                  t_conc: float = T_CONC, info: Optional[Dict[str, Any]] = None) -> Tuple[float, List[str]]:
     """(p, flags) of the event (x, y) against the reverse Y -> X binding
     (rec fitted on the pair (Y, X)): y's sources are closed and x is not
-    among them -> foreign_source, refined by the concurrency test."""
+    among them -> foreign_source, refined by the concurrency test.
+
+    A SET entry (y used by 2-4 sources: a shared terminal's user, the client
+    stack of one department's machines) is refined per member (round 11):
+      * the concurrency test reads only its MAJOR members (share of y's
+        evidence >= 1 / |set|): a minor member active elsewhere says nothing
+        about who uses y here;
+      * an unknown x is a readdress candidate when the value's DOMINANT
+        source (largest share) has been silent since the start of the local
+        day, even while another member is active: that member is a colleague
+        sharing y, not the owner of the address x replaced. O-real seed 0
+        (R3, the finance clerk 192.168.2.11 -> .51 on day 9): .51's first
+        event matched the set entry tls.ja3 -> {.10, .11, .12} while .10 was
+        active, so it was 'concurrent_use' and never a readdress candidate.
+    A bound entry is unchanged. `info` (a dict) receives 'src', the source a
+    readdress candidate replaces."""
     if not rec:
         return NAN, []
     ent = (rec.get("table") or {}).get(str(_jv(y)))
     if ent is None:
         return NAN, []
     xs = str(x)
+    members: List[Tuple[str, float]] = []
     if ent.get("bound"):
         sources = [str(ent["top"])]
         p = float(ent["p_viol"])
     elif ent.get("set"):
-        sources = [str(s) for s in ent["set"]]
+        members = set_members(ent)
+        sources = [m for m, _sh in members]
         p = float(ent.get("U", NAN))
     else:
         return NAN, []
@@ -833,12 +871,34 @@ def check_reverse(rec: Mapping[str, Any], x: Any, y: Any, t: float,
         return 1.0, []
     flags = ["foreign_source"]
     if last_active is not None:
-        acts = [a for a in (last_active(s) for s in sources) if a is not None]
-        if any(abs(float(t) - a) <= t_conc for a in acts):
+        act = {s: last_active(s) for s in sources}
+
+        def silent(s: str) -> bool:
+            a = act.get(s)
+            return a is None or (day_start is not None and float(a) < float(day_start)) or \
+                (day_start is None and abs(float(t) - float(a)) > t_conc)
+        if members:
+            k = len(members)
+            major = [m for m, sh in members if sh >= 1.0 / k - SHARE_TIE]
+            top = members[0][1]
+            dom = [m for m, sh in members if sh >= top - SHARE_TIE]
+            conc = any(act.get(m) is not None and abs(float(t) - float(act[m])) <= t_conc for m in major)
+            dom_silent = [m for m in dom if silent(m)]
+            if not x_known and dom_silent:
+                flags.append("readdress_candidate")
+                if info is not None:
+                    info["src"] = dom_silent[0]
+                return p, flags
+        else:
+            conc = any(a is not None and abs(float(t) - float(a)) <= t_conc for a in act.values())
+        acts = [a for a in act.values() if a is not None]
+        if conc:
             flags.append("concurrent_use")
         elif not x_known and (day_start is None or not any(a >= day_start for a in acts)):
             flags.append("readdress_candidate")
             p = float(ent.get("U", p)) if ent.get("set") else float(ent.get("p_viol", p))
+            if info is not None:
+                info["src"] = sources[0]
     return p, flags
 
 
