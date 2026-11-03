@@ -115,10 +115,51 @@ def test_a_real_change_on_the_fit_date_is_still_seen():
 def test_windows_are_fitted_on_complete_dates():
     """O60 seed 0, day 7 (21:15): non-workday windows fitted on two dates,
     the second only up to 21:15, ended at 20:18 and stated 0.82 where the law
-    puts 0.74; the fit date's arrivals wait for the next day's fit."""
-    h, pts, now = _broad(11, 1, 200, 20 * 60.0 + 15.0)
+    puts 0.74; the fit date's arrivals wait for the next day's fit. (There
+    10.6 % of the other date's arrivals came after 21:15; here, N(15:00,
+    200 min), 7.7 % come after 19:45.)"""
+    h, pts, now = _broad(11, 1, 200, 19 * 60.0 + 45.0)
     cen = PW._censored(pts, 0.0, now)
-    assert cen is not None and abs(cen[1] - 1215.0) < 1e-6
+    assert cen is not None and abs(cen[1] - 1185.0) < 1e-6
     kept = PW._complete(pts, 0.0, now)
     assert kept and all(p[1] < T0 + DAY for p in kept)
     assert PW._complete(pts, 0.0, None) == pts
+
+
+def _office(seed: int, now_min: float, first_from: float = 660.0, per_date: int = 60):
+    """An office law, uniform 09:00-18:00, on 3 complete dates - the node's
+    first date seen only from `first_from` (it was born that morning) - and
+    the fit date observed up to `now_min`."""
+    rng = np.random.default_rng(seed)
+    pts = []
+    for d in range(4):
+        for i in range(per_date):
+            m = float(rng.uniform(540.0, 1080.0))
+            if (d == 0 and m < first_from) or (d == 3 and m >= now_min):
+                continue
+            pts.append((m, T0 + d * DAY + m * 60.0, 1.0, f"10.2.{d}.{i}"))
+    h = np.zeros(PW.SLOTS)
+    for m, *_ in pts:
+        h[int(m // PW.SLOT_MIN)] += 1.0
+    return h, pts, T0 + 3 * DAY + now_min * 60.0
+
+
+def test_a_date_missing_less_than_a_window_share_is_kept():
+    """Pack O seed 2, day 6 (make-up Saturday, 17:45): 3.2 % of CRM's
+    arrivals fall after 17:45, so the date was dropped as censored (threshold
+    0.02) and the windows were fitted on 3 dates whose first began at 11:00 -
+    10:56-16:57 stated 0.76, held 0.65. A date missing less of its law than
+    the smallest share P09 states as a window (MIN_SHARE) is kept."""
+    assert PW.CENSOR_SHARE >= PW.MIN_SHARE
+    hits = 0
+    for seed in range(12):
+        h, pts, now = _office(seed, 17 * 60.0 + 45.0)
+        assert PW._censored(pts, 0.0, now) is None          # ~2.8 % after 17:45
+        assert PW._complete(pts, 0.0, now) == pts
+        rec = PW.fit_regime(h, float(len(pts)), pts, tz_offset_s=0.0, now=now)
+        law = sum(max(0.0, min(e, 1080.0) - max(s, 540.0)) for s, e in rec["windows"]) / 540.0
+        hits += law >= 0.85
+    assert hits >= 10
+    # a fit date missing a window's share (15:15: ~1/3 of the law) is still censored
+    h, pts, now = _office(0, 15 * 60.0 + 15.0)
+    assert PW._censored(pts, 0.0, now) is not None

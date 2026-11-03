@@ -610,7 +610,14 @@ def _local_date(ts: float, tz_offset_s: float) -> int:
 
 
 CENSOR_MIN = SLOT_MIN            # a date seen up to < 15 min before its end is complete
-CENSOR_SHARE = 0.02              # the other dates' arrivals after the fit's minute that make its date a censored sample
+CENSOR_SHARE = MIN_SHARE         # the other dates' arrivals after the fit's minute that make its date a censored sample
+# (round 11, second step: was 0.02) a date missing less of its law than the
+# smallest share P09 states as a window (MIN_SHARE) still shows every window
+# the law has; dropping it costs a whole date of evidence. Pack O seed 2,
+# day 6 (the make-up Saturday, 17:45): CRM's customer node lost the day's 70
+# arrivals (3.2 % of the other dates' arrivals fall after 17:45) and was fitted
+# on 3 dates, the first of which began at 11:00 - workdays 10:56-16:57 stated
+# 0.76, held 0.65 (with the date: 09:04-16:56, 0.81)
 
 
 def _censored(pts: Sequence[Sequence[Any]], tz_offset_s: float, now: Optional[float]) -> Optional[Tuple[int, float]]:
