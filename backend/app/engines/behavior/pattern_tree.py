@@ -1313,10 +1313,10 @@ class PatternTreeEngine(Engine):
             for a in [a for a in nd.targets if a not in keep]:
                 last = td.get(a)
                 if _has_rows(nd.targets[a], t) and (last is None or d_last - int(last) >= TG_STALE_DAYS):
-                    del nd.targets[a]
+                    _forget_target(nd, a)
         if len(nd.targets) > M_T + 4:              # bounded: drop summaries no longer targeted
             for a in [a for a in nd.targets if a not in keep][:len(nd.targets) - M_T]:
-                del nd.targets[a]
+                _forget_target(nd, a)
         if td:
             for a in [a for a in td if a not in nd.targets]:
                 del td[a]
@@ -3891,6 +3891,33 @@ class PatternTreeEngine(Engine):
 
 
 # ================================================================ helpers
+def _forget_target(nd: PN.Node, a: str) -> None:
+    """Drop a node's target summary with the state kept about it: its content
+    drift detector's daily means (meta 'dph' "<a>|<day type>|<scale>"), an
+    open drift episode ('evolving'), its invariant and its last-learned day.
+    (round 11) Kept, a summary made again later (the attribute targeted
+    again) was judged against the old summary's daily means: its first days
+    raised a drift alarm and the node's statement was 'evolving', not
+    confirmed, until the episode expired (pack O seed 0, crm POST /crm/visit,
+    days 19-21)."""
+    nd.targets.pop(a, None)
+    meta = nd.meta
+    if meta:
+        dph = meta.get("dph")
+        if dph:
+            for k in [k for k in dph if str(k).split("|", 1)[0] == a]:
+                del dph[k]
+        ev = meta.get("evolving")
+        if ev:
+            ev.pop(a, None)
+        td = meta.get("tgd")
+        if td:
+            td.pop(a, None)
+    inv = getattr(nd, "inv", None)
+    if inv:
+        inv.pop(a, None)
+
+
 def _has_rows(sm: Any, t: float) -> bool:
     """Whether a target summary learned rows (a numeric summary seeded with a
     source split's extremes only has none: its moments carry no weight)."""
