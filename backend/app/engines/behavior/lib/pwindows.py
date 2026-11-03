@@ -1629,7 +1629,8 @@ def block_coverage(by: Mapping[str, Optional[Mapping[str, Any]]]) -> Dict[str, A
 
 
 def part_when(when: Any, members: Iterable[str], tz_offset_s: float = 0.0,
-              min_points: int = MIN_POINTS, drop: Optional[set] = None) -> Optional[Dict[str, Any]]:
+              min_points: int = MIN_POINTS, drop: Optional[set] = None,
+              now: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """The statement-contract `when` block of ONE learned group's part of a
     node, fitted by the node's own pipeline (fit_regime: learning-mass weights,
     the current regime, current-persistence acceptance, cross-validated coverage) on
@@ -1644,7 +1645,9 @@ def part_when(when: Any, members: Iterable[str], tz_offset_s: float = 0.0,
     before D1 (08:49-09:21, held-out coverage 0.08-0.13 against a stated
     0.80-0.90, seed 0 day 14) and the mail parts their in-sample coverage.
     `drop` = {(ts, source)} of rows P03 judged violations (P06's ledger,
-    behavior.content_bounds.point_ledger), left out as in the node fit."""
+    behavior.content_bounds.point_ledger), left out as in the node fit.
+    `now` (round 11): the statement time - the fit date's censored arrivals
+    are handled as in the node fit (fit_regime); None keeps round 10."""
     res = getattr(when, "res", None)
     if res is None or not len(res):
         return None
@@ -1662,7 +1665,7 @@ def part_when(when: Any, members: Iterable[str], tz_offset_s: float = 0.0,
         h = np.zeros(SLOTS)
         for m, _t, w, _s in pts:
             h[int(m // 15) % SLOTS] += w
-        rec = fit_regime(h, float(len(pts)), pts, tz_offset_s=tz_offset_s)
+        rec = fit_regime(h, float(len(pts)), pts, tz_offset_s=tz_offset_s, now=now)
         if rec is not None:
             rec["confidence"] = confidence(rec)
             rec["text_zh"] = render_zh(dk, rec)
