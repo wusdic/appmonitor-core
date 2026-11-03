@@ -499,7 +499,7 @@ class TimeWindowEngine(Engine):
                 for p in pts:
                     hist[int(p[0] // PW.SLOT_MIN) % PW.SLOTS] += p[2]
             rec = PW.fit_regime(hist, n_m, pts, tz_offset_s=off, since0=since0,
-                                provisional0=rg.get("when_t0") is not None)
+                                provisional0=rg.get("when_t0") is not None, now=now)
             if rec is None:
                 by[dk] = None
                 continue

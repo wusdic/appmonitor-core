@@ -609,6 +609,55 @@ def _local_date(ts: float, tz_offset_s: float) -> int:
     return int((float(ts) + tz_offset_s) // 86400.0)
 
 
+CENSOR_MIN = SLOT_MIN            # a date seen up to < 15 min before its end is complete
+CENSOR_SHARE = 0.02              # the other dates' arrivals after the fit's minute that make its date a censored sample
+
+
+def _censored(pts: Sequence[Sequence[Any]], tz_offset_s: float, now: Optional[float]) -> Optional[Tuple[int, float]]:
+    """(round 11) (local date, local minute) of the fit time `now` when the
+    points include arrivals of that date and that date is a CENSORED sample
+    of the day's law: observed only up to `now`'s minute while the other
+    dates put >= CENSOR_SHARE of their (clean) arrivals after that minute.
+    P09 fits at 03:15 / 09:15 / 15:15 / 21:15: a portal's law runs to 23:12,
+    so the fit date lacks its late arrivals; a login window that is over by
+    then is the date's whole day (None: nothing is censored). None without
+    `now`, without arrivals of that date or of other dates."""
+    if now is None:
+        return None
+    d_now = _local_date(float(now), tz_offset_s)
+    m_now = ((float(now) + tz_offset_s) % 86400.0) / 60.0
+    if m_now >= DAY_MIN - CENSOR_MIN:
+        return None
+    today, tot, late = False, 0.0, 0.0
+    for p in pts:
+        if len(p) < 2:
+            continue
+        if _local_date(float(p[1]), tz_offset_s) == d_now:
+            today = True
+            continue
+        w = float(p[2]) if len(p) > 2 else 1.0
+        if w >= CLEAN_W:
+            tot += w
+            if float(p[0]) >= m_now:
+                late += w
+    if not today or tot <= 0.0 or late / tot < CENSOR_SHARE:
+        return None
+    return d_now, float(m_now)
+
+
+def _complete(pts: Sequence[Sequence[Any]], tz_offset_s: float, now: Optional[float]) -> List[Sequence[Any]]:
+    """(round 11) The arrivals the windows and their coverage are fitted on:
+    without the fit date's own arrivals when they are a censored sample of
+    the day (_censored; the date enters the next day's fits complete).
+    O60 seed 0, day 7 (21:15): portal's non-workday POST /comment windows,
+    fitted on the first weekend's two dates (the second up to 21:15), ended at
+    20:18 and stated 0.82 where the law puts 0.74 (held 0.65)."""
+    cen = _censored(pts, tz_offset_s, now)
+    if cen is None:
+        return list(pts)
+    return [p for p in pts if _local_date(float(p[1]), tz_offset_s) != cen[0]]
+
+
 def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[Any]]] = None,
                 tz_offset_s: float = 0.0, kappa: float = KAPPA, min_share: float = MIN_SHARE,
                 p0: float = P0, min_points: int = MIN_POINTS) -> Optional[Dict[str, Any]]:
@@ -822,7 +871,7 @@ def cv_coverage(hist: np.ndarray, pts: Sequence[Sequence[Any]], tz_offset_s: flo
 
 def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offset_s: float = 0.0,
                since0: Optional[float] = None, provisional0: bool = False,
-               young: bool = True, cv: bool = True) -> Optional[Dict[str, Any]]:
+               young: bool = True, cv: bool = True, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """Windows of one node (or one group's part of it) and day type from its
     arrivals [(minute, ts, weight, source)]: P09's pipeline shared by the
     node fit (behavior.time_window) and part_when.
@@ -850,12 +899,16 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
         young arrivals show; regime_cut fits the new law once it has its
         dates. `young` False: no step 4 (the recursive established fit).
       `cv` False (round 7): no step 3; the record carries the arrivals it
-      was fitted on ('_use', for _apply_cv) - the lazy established fit."""
+      was fitted on ('_use', for _apply_cv) - the lazy established fit.
+      `now` (round 11): the fit time - the change tests of steps 1 and 4
+      judge the date it falls on by the minutes observed so far (regime_cut,
+      recent_drift)."""
     pts = list(pts)
     since, provisional, cut = since0, bool(provisional0), None
     young_cut = None
     if since is None:
-        cut = regime_cut(pts, hist, tz_offset_s=tz_offset_s, min_after=1 if young else REGIME_DATES)
+        cut = regime_cut(pts, hist, tz_offset_s=tz_offset_s, min_after=1 if young else REGIME_DATES,
+                         now=now)
         if cut is not None and cut["dates_after"] < REGIME_DATES:
             young_cut, cut = cut, None          # 4 below: a change too young to fit
         elif cut is not None:
@@ -865,7 +918,7 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
         rec = fit_regime(hist, n, est, tz_offset_s=tz_offset_s, young=False)
         if rec is not None:
             dr = recent_drift(rec, [p for p in pts if float(p[1]) >= young_cut["since"]], tz_offset_s,
-                              alpha=1.0)
+                              alpha=1.0, now=now, ref=est)
             if dr is not None:
                 rec["drift"] = dict(dr, change={k: young_cut[k] for k in ("p", "dates_after", "sources_after")})
                 rec["provisional"] = True
@@ -875,6 +928,7 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
     spans = cut is not None or len({_local_date(float(p[1]), tz_offset_s) for p in recent}) >= REGIME_DATES
     use_recent = since is not None and len(recent) >= need and spans
     use = recent if use_recent else pts
+    use = _complete(use, tz_offset_s, now)
     rec = fit_daytype(hist, max(float(n), float(len(pts))), use, tz_offset_s=tz_offset_s,
                       min_points=min(need, MIN_POINTS))
     if rec is None:
@@ -915,9 +969,9 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
             if est is not None:
                 est_use = est.pop("_use", est_pts)
                 c0 = float(est.get("coverage") or 0.0)
-                if c0 >= 1.0 or recent_drift(est, young_pts, tz_offset_s) is not None:
+                if c0 >= 1.0 or recent_drift(est, young_pts, tz_offset_s, now=now, ref=est_use) is not None:
                     _apply_cv(est, hist, est_use, tz_offset_s)
-                    dr = recent_drift(est, young_pts, tz_offset_s)
+                    dr = recent_drift(est, young_pts, tz_offset_s, now=now, ref=est_use)
                     if dr is not None:
                         est["drift"] = dr
                         est["provisional"] = True
@@ -1168,7 +1222,9 @@ def _binom_cdf(k: int, n: int, p: float) -> float:
 
 
 def recent_drift(rec: Mapping[str, Any], young: Sequence[Sequence[Any]],
-                 tz_offset_s: float = 0.0, alpha: float = DRIFT_ALPHA) -> Optional[Dict[str, Any]]:
+                 tz_offset_s: float = 0.0, alpha: float = DRIFT_ALPHA,
+                 now: Optional[float] = None,
+                 ref: Optional[Sequence[Sequence[Any]]] = None) -> Optional[Dict[str, Any]]:
     """Do the windows `rec` (fitted on the established dates) hold on the
     `young` arrivals (the dates after them, < REGIME_DATES of them)? Per young
     date, the number k of clean arrivals inside the windows is tested against
@@ -1185,7 +1241,13 @@ def recent_drift(rec: Mapping[str, Any], young: Sequence[Sequence[Any]],
     statements read '08:49-09:21' (the young date's block joined the old one)
     at 0.77-0.85 and held 0.08-0.13 (seed 0: 4 of 13 failing statements); at
     day 15 regime_cut placed the change one date early (it needs 3 dates after
-    a boundary) and the parts read the union 08:32-09:21 until day 17."""
+    a boundary) and the parts read the union 08:32-09:21 until day 17.
+    (Round 11) `now` and `ref` (the established arrivals): a young date that
+    is the fit's own date is observed only up to `now`'s minute (_censored),
+    so its arrivals are tested against the windows' share of the arrivals
+    before that minute - c x (the in-window share of `ref`'s arrivals before
+    it) / (their in-window share overall) - not against the whole day's c;
+    without enough `ref` arrivals before that minute the date is not tested."""
     if rec.get("res") != "minute" or rec.get("all_day") or not rec.get("windows"):
         return None
     c = float(rec.get("coverage") or 0.0)
@@ -1198,12 +1260,30 @@ def recent_drift(rec: Mapping[str, Any], young: Sequence[Sequence[Any]],
     dates = sorted({x[1] for x in clean})
     single = len({x[2] for x in clean}) <= 1
     wins = rec["windows"]
+    cen = _censored(young, tz_offset_s, now)
+    c_cen = None
+    if cen is not None:
+        rc_ = [(float(p[0]), float(p[2]) if len(p) > 2 else 1.0) for p in (ref or [])
+               if (float(p[2]) if len(p) > 2 else 1.0) >= CLEAN_W]
+        early = [(m, w_) for m, w_ in rc_ if m < cen[1]]
+        if len(early) >= MIN_POINTS and rc_:
+            s_all = sum(w_ for m, w_ in rc_ if in_windows(m, wins)) / max(sum(w_ for _m, w_ in rc_), 1e-12)
+            s_early = sum(w_ for m, w_ in early if in_windows(m, wins)) / max(sum(w_ for _m, w_ in early), 1e-12)
+            if s_all > 0.0:
+                c_cen = float(min(1.0, max(0.0, c * s_early / s_all)))
     hit = None
     for d in dates:
+        c_d = c
+        if cen is not None and d == cen[0]:
+            if c_cen is None:
+                continue
+            c_d = c_cen
+            if c_d >= 1.0:
+                continue
         day = [x for x in clean if x[1] == d]
         k = sum(1 for x in day if in_windows(x[0], wins))
         out_src = {x[2] for x in day if not in_windows(x[0], wins)}
-        p = min(1.0, _binom_cdf(k, len(day), c) * len(dates))
+        p = min(1.0, _binom_cdf(k, len(day), c_d) * len(dates))
         if p <= alpha and out_src and (len(out_src) >= 2 or single):
             hit = (d, p, len(out_src))
             break
@@ -1285,7 +1365,8 @@ def _wks(ua: np.ndarray, wa: np.ndarray, ub: np.ndarray, wb: np.ndarray) -> Tupl
 
 def regime_cut(points: Sequence[Sequence[Any]], hist: np.ndarray, tz_offset_s: float = 0.0,
                alpha: float = REGIME_ALPHA, min_dates: int = REGIME_DATES,
-               min_points: int = REGIME_POINTS, min_after: Optional[int] = None) -> Optional[Dict[str, Any]]:
+               min_points: int = REGIME_POINTS, min_after: Optional[int] = None,
+               now: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """The arrival-time change P09 owns (§6.9.2, §16.2 M8): the local date from
     which a node's arrivals of one day type follow a different time-of-day law.
 
@@ -1302,7 +1383,14 @@ def regime_cut(points: Sequence[Sequence[Any]], hist: np.ndarray, tz_offset_s: f
     'accepted'} or None. min_after (default min_dates): fewer dates allowed
     after a boundary - fit_regime passes 1 to place a young change on its
     real first date (with 3 dates required after it, a change two dates old
-    was placed one date early: pack O seed 0, day 15, the union 08:32-09:21)."""
+    was placed one date early: pack O seed 0, day 15, the union 08:32-09:21).
+    `now` (round 11): the fit time. The date it falls on is observed only up
+    to its minute (_censored); a boundary whose later side is that date
+    alone compares both sides on the minutes before it, and the later side of
+    a longer boundary leaves that date's arrivals out. O60 seed 0, day 8
+    (15:09): portal's POST /comment (a law over 07:05-23:12) had 23 arrivals
+    of the day, all before 15:09, against full earlier days - a 'change'
+    (p 1e-4) that made the node evolving and lost PUB.portal.visit#3."""
     pts = [p for p in points if len(p) >= 2]
     if len(pts) < 2 * min_points:
         return None
@@ -1314,20 +1402,32 @@ def regime_cut(points: Sequence[Sequence[Any]], hist: np.ndarray, tz_offset_s: f
         return None
     u = np.asarray([(float(p[0]) - cut) % DAY_MIN for p in pts], dtype=np.float64)
     w = np.asarray([float(p[2]) if len(p) > 2 else 1.0 for p in pts], dtype=np.float64)
+    cen = _censored(pts, tz_offset_s, now)
+    if cen is not None:
+        today = dates == cen[0]
+        early = np.asarray([float(p[0]) for p in pts], dtype=np.float64) < cen[1]
     cands = []
     for k in range(min_dates, ud.size - m_after + 1):
         after = dates >= ud[k]
-        if after.sum() < min_points or (~after).sum() < min_points:
+        before = ~after
+        if cen is not None:
+            if k == ud.size - 1 and ud[k] == cen[0]:
+                # the censored date alone: both sides on the minutes it was observed
+                after = after & early
+                before = before & early
+            else:
+                after = after & ~today
+        if after.sum() < min_points or before.sum() < min_points:
             continue
-        cands.append((k, after))
+        cands.append((k, after, before))
     if not cands:
         return None
     best = None
-    for k, after in cands:
-        D, p = _wks(u[after], w[after], u[~after], w[~after])
+    for k, after, before in cands:
+        D, p = _wks(u[after], w[after], u[before], w[before])
         pa = min(1.0, p * len(cands))
         if best is None or pa < best[0] or (pa == best[0] and D > best[2]):
-            best = (pa, k, D, after)
+            best = (pa, k, D, dates >= ud[k])
     pa, k, D, after = best
     if pa > alpha:
         return None
