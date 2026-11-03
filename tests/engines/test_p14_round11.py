@@ -104,7 +104,11 @@ def test_a_group_part_keeps_its_sources_earlier_extremes():
     s24.note("192.168.1.0/24", "body.len", 643.0, day - 19, t - 19 * 86400.0, rep="192.168.1.21")
     s24.note("192.168.1.0/24", "body.len", 2100.0, day - 18, t - 18 * 86400.0, rep="192.168.1.21")
     s24.note("192.168.3.0/24", "body.len", 300.0, day - 10, t - 10 * 86400.0, rep="192.168.3.20")
-    nd = NS(meta={"gnum": {"grp:G9": {"body.len": g}}, "sext24": s24}, targets={"body.len": allv},
+    # a member's 12 KB row inside the group's own record (a violation P06 cleaned from the node)
+    sx = PN.SourceExtremes()
+    sx.note("192.168.1.23", "body.len", 1200.0, day - 2, t - 2 * 86400.0)
+    sx.note("192.168.1.23", "body.len", 12288.0, day - 2, t - 2 * 86400.0 + 60.0)
+    nd = NS(meta={"gnum": {"grp:G9": {"body.len": g}}, "sext24": s24, "sext": sx}, targets={"body.len": allv},
             mass_at=lambda t_: 400.0, n_c=lambda t_: 400.0, n_m=lambda t_: 400.0)
     c = NS(ip2g={"192.168.1.21": "G9", "192.168.1.23": "G9", "192.168.3.20": "G2"}, reg=None,
            config=cfg, store=make_store(), key="oa")
@@ -112,6 +116,7 @@ def test_a_group_part_keeps_its_sources_earlier_extremes():
     rec = VW.part_content(c, nd, ent, ["G9"], t)["attrs"]["body.len"]
     assert rec.get("part") and rec["range"][0] <= 643.0 + 1e-6, rec.get("range")
     assert rec["range"][0] > 300.0                                # never another group's source
+    assert rec["range"][1] < 3000.0                               # nor a row inside its own record
     # an extreme before the node's own segment of the attribute is not taken
     allv.seg_day = day - 5
     rec = VW.part_content(c, nd, ent, ["G9"], t)["attrs"]["body.len"]

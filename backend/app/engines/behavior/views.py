@@ -514,7 +514,8 @@ def drift_conf(drift: Any, when_ev: Optional[Mapping[str, Any]], when_c: Optiona
     return float(when_c) if (when_c is not None and math.isfinite(float(when_c))) else 1.0
 
 
-def _seed_part_extremes(c: Any, nd: Any, m: Any, a: str, gids: Sequence[str], day: int) -> None:
+def _seed_part_extremes(c: Any, nd: Any, m: Any, a: str, gids: Sequence[str], day: int,
+                        node_range: Optional[Sequence[Any]] = None) -> None:
     """(round 11) A group part's numeric summary (P04 'gnum': the group's
     held-out rows since the record started) takes the observed extremes of the
     group's sources that the node keeps per source (pnode.SourceExtremes
@@ -526,14 +527,26 @@ def _seed_part_extremes(c: Any, nd: Any, m: Any, a: str, gids: Sequence[str], da
     back into its parent on day 18 (saving < 0); 综合部 was then stated as a
     group part of the parent with a range from the group's held-out rows of
     the last days only, 1-2.8 KB, and the 643 B login of day 2 (the truth's
-    0.5-3 KB) fell out of the statement. Extremes before the node's own
-    confidence segment of the attribute (a content drift restarted it) are
-    not taken."""
+    0.5-3 KB) fell out of the statement.
+    Only the history the part's own record cannot hold is taken: extremes of
+    days before the group's summary started (from then on its held-out rows
+    are its record, and the source records also keep rows P03 / P06 judged
+    violations: a 12 KB login of a 销售部 address on day 18 of pack O seed 0
+    widened the 销售部 part to 0.6-12 KB), inside the node's own range (P06's,
+    the violations cleaned) and within its confidence segment of the
+    attribute (a content drift restarted it)."""
     ip2g = getattr(c, "ip2g", None) or {}
     want = {str(g)[4:] if str(g).startswith("grp:") else str(g) for g in gids}
     meta = getattr(nd, "meta", None) or {}
     own = (getattr(nd, "targets", None) or {}).get(a)
     seg = getattr(own, "seg_day", None)              # the node's confidence segment of the attribute
+    g0 = getattr(m, "seg_day", None)                 # the first day of the group's own record
+    try:
+        lo, hi = float(node_range[0]), float(node_range[1])
+        if not (lo == lo and hi == hi):
+            lo = hi = None
+    except (TypeError, ValueError, IndexError):
+        lo = hi = None
     for nm in ("sext", "sext24"):
         sx = meta.get(nm)
         if sx is None or not len(sx):
@@ -542,8 +555,13 @@ def _seed_part_extremes(c: Any, nd: Any, m: Any, a: str, gids: Sequence[str], da
         if e is None:
             continue
         for v, d in ((e[0], e[1]), (e[2], e[3])):
-            if seg is None or int(d) >= int(seg):
-                m.seed_extreme(v, int(d), int(day), extend=True)
+            if seg is not None and int(d) < int(seg):
+                continue                             # before the node's confidence segment
+            if g0 is not None and int(d) >= int(g0):
+                continue                             # the group's own record covers that day
+            if lo is not None and not (lo - 1e-9 * max(1.0, abs(lo)) <= float(v) <= hi + 1e-9 * max(1.0, abs(hi))):
+                continue                             # outside the node's own (cleaned) range
+            m.seed_extreme(v, int(d), int(day), extend=True)
 
 
 def part_content(c: "_Ctx", nd: Any, ent: Optional[Mapping[str, Any]], gids: Sequence[str],
@@ -581,7 +599,7 @@ def part_content(c: "_Ctx", nd: Any, ent: Optional[Mapping[str, Any]], gids: Seq
             m.merge(x)
         if m.td.total(t) <= 0 or node_mass <= 0:
             continue
-        _seed_part_extremes(c, nd, m, a, gids, day)
+        _seed_part_extremes(c, nd, m, a, gids, day, rec.get("range_raw") or rec.get("range"))
         share = min(1.0, float(m.td.total(t)) / node_mass)
         rr = c.reg.get(a) if c.reg is not None else None
         approx = float(getattr(rr, "approx_share", 0.0) or 0.0) if rr is not None else 0.0

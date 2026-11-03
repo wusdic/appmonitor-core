@@ -2774,7 +2774,10 @@ class ConformityEngine(Engine):
                     p_cur = min(ni.who_U, u_min * n_t)
                 p_ref = NAN
                 if ni.who_ref is not None and ni.who_l == 0:
-                    p_ref = 1.0 if str(ip) in ni.who_ref else ni.who_U
+                    # (round 11) the reference statement names a readdressed member at
+                    # its old address until it is re-stated
+                    p_ref = 1.0 if (str(ip) in ni.who_ref
+                                    or (member and old_ip is not None and old_ip in ni.who_ref)) else ni.who_U
                 p_who = SC.dual_anchor(p_cur, p_ref)
                 if "@who" in ni.evolving:
                     p_who = max(p_cur, p_ref) if not _nan(p_ref) else p_cur

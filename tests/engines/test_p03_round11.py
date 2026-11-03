@@ -55,6 +55,11 @@ def test_readdressed_member_of_the_stated_who_is_not_damped():
     # round 10: p_who = U (foreign, 'outsider_group'), damp 0.1
     assert p_who == 1.0 and damp == 1.0
     assert not [e for e in fx.violations(NEW) if e.extra["type"] == "who"]
+    # the node's reference statement (yesterday's who list) still names the
+    # member at its old address: not a second, contradicting anchor
+    nd.ref = dict(nd.ref or {}, who=[OLD])
+    p_who, damp = _read(fx, NEW, t + 600.0)
+    assert p_who == 1.0 and damp == 1.0
 
 
 def test_a_group_member_without_a_place_at_the_node_stays_an_outsider():
