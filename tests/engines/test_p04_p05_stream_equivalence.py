@@ -130,7 +130,11 @@ DAYS = 4.0
 # of its rows while outside its target list is dropped (pattern_tree.
 # _drop_stale_targets; each node keeps the last day an attribute was a target
 # of a learned row, meta 'tgd') with its drift-detector state (_forget_target).
-GOLDEN = {"model.ptree": "46caf437e22b0499dafe4e9193697313cc1215d4",
+# Re-recorded again in round 11 (ptree 4661aa93...; attrsel unchanged),
+# deliberately, by the tree owner: a node's reference keeps its tracked
+# groups' own bands ('hold_g', pattern_tree._group_bands; empty in this
+# stream) and a group's held-out record no longer judges the node's who list.
+GOLDEN = {"model.ptree": "4661aa9350d5206e1c775742de924aa2cb41ca73",
           "model.attrsel": "00628c79324d13395bd185ad35bb7fd3f8159fbc"}
 
 
