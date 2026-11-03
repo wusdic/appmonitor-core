@@ -495,6 +495,24 @@ def _label_known(lv: Any, g: str, groups: Optional[Mapping[str, Any]]) -> bool:
     return any(f"grp:{x}" in lv for x in _labels(g, groups))
 
 
+def readdressed_old(wg: Any) -> Dict[str, str]:
+    """(round 11) {new address: old address} of the members P11 saw move
+    (who_groups 'readdressed' = {old: {'new', 't', 'g'}}, kept while the old
+    address stays silent); the newest move wins for a new address."""
+    rd = wg.get("readdressed") if isinstance(wg, Mapping) else None
+    out: Dict[str, Tuple[float, str]] = {}
+    if not isinstance(rd, Mapping):
+        return {}
+    for old in sorted(rd, key=str):
+        e = rd[old]
+        if not isinstance(e, Mapping) or not e.get("new"):
+            continue
+        new, t_ = str(e["new"]), float(e.get("t") or 0.0)
+        if new != str(old) and (new not in out or t_ > out[new][0]):
+            out[new] = (t_, str(old))
+    return {k: v[1] for k, v in out.items()}
+
+
 def _own_standing(nd: Any, ip: Any, t: float) -> bool:
     """The address itself brought >= MEMBER_EV evidence units to the node's
     IP-level who summary (damped rows count 0.1: persistence of a foreign
@@ -979,6 +997,10 @@ class _TreeCtx:
         wg = MP.who_groups(store)
         self.ip2g = wg.get("ip2g") or {}
         self.groups = wg.get("groups") or {}
+        # (round 11) P11's readdressed members, new address -> old address (who_groups
+        # 'readdressed': the old address silent since the move; P14 states the
+        # member at its new address, prender.who_block)
+        self.readdr_old: Dict[str, str] = readdressed_old(wg)
         ws = store.get_model(ORG, ORG, WG_STATE)
         self.sigs = getattr(ws, "sigs", None)
         # (round 7, cost) what depends on the configuration and the tick only is
@@ -2517,6 +2539,14 @@ class ConformityEngine(Engine):
                         p, fl = FD.check_reverse(rec, x, y, ts,
                                                  lambda src: st.last_active.peek((s, str(src))),
                                                  known, day_start, info=rinfo)
+                        old_x = tc.readdr_old.get(str(x)) if fl and getattr(tc, "readdr_old", None) else None
+                        if old_x is not None and FD.check_reverse(rec, old_x, y, ts) == (1.0, []):
+                            # (round 11) y's source at its new address (P11's readdress,
+                            # the old address silent since): one binding entry, not a
+                            # second source of y - O-real seed 0, the moved clerk .51 was
+                            # 'concurrent_use' of 财务部's client stack (tls.ja3 -> {.11,
+                            # .12}) whenever its colleague .12 was active, and damped
+                            p, fl = 1.0, []
                         if "readdress_candidate" in fl:
                             # (round 11) the source the candidate replaces as check_reverse
                             # judged it (a set's silent dominant member; was the set's
@@ -2626,10 +2656,37 @@ class ConformityEngine(Engine):
             ab_ = ab_.get(str(ip)) if ab_ else None
             absorbed_ = ab_ is not None and ab_[0] <= ts <= ab_[1]
 
+            old_ip = tc.readdr_old.get(str(ip)) if getattr(tc, "readdr_old", None) else None
+
             def _is_member(ni_: Any, keys_: Sequence[Any]) -> bool:
                 if absorbed_:
                     # §6.9.2 (iii): the operator absorbed the source (label_absorbed)
                     return True
+                if old_ip is not None and _old_standing(ni_, tc.who_keys(old_ip), old_ip):
+                    # (round 11) P11 saw this address take over a member's place (its
+                    # readdress: the old address silent since, P03's own binding
+                    # evidence at the move) - the node's statement names the member
+                    # at this address (prender.who_block), so it is a member here as
+                    # the old address was, never a foreign source of the node it
+                    # used. O-real seed 0 (R3): 192.168.2.11 -> .51 on day 9; the
+                    # clerk's individual finance nodes judged .51 foreign (its group
+                    # 财务部 had no OTHER member with standing there: outsider_group)
+                    # and damped its rows until P04's suspect test capped
+                    return True
+                return _member_by_standing(ni_, keys_)
+
+            def _old_standing(ni_: Any, keys_: Sequence[Any], old: str) -> bool:
+                # the old address's own place at the node: in its heavy set, or
+                # >= MEMBER_EV evidence units at the closed level or at the IP level
+                item_ = keys_[ni_.who_l]
+                if item_ in ni_.who_heavy:
+                    return True
+                ss_ = ni_.nd.who.levels[ni_.who_l]
+                if item_ in ss_ and ss_.evidence(item_, t) >= MEMBER_EV:
+                    return True
+                return _own_standing(ni_.nd, old, t)
+
+            def _member_by_standing(ni_: Any, keys_: Sequence[Any]) -> bool:
                 item_ = keys_[ni_.who_l]
                 if item_ in ni_.who_heavy:
                     return True
