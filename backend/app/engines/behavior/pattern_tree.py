@@ -1165,7 +1165,16 @@ class PatternTreeEngine(Engine):
         if w is not None:
             lvl, items, nom = w
             k = keys[lvl] if lvl < len(keys) else None
-            add("who", str(k) in items, nom)
+            # (round 11) the node's record only: a group's part states the
+            # GROUP's members as its who (P14 who of a part), and the row's
+            # source is one of them by its group key - the node's heavy set is
+            # not the part's clause. Checked on the group's record, a group of
+            # light sources outside the node's listed heavy set failed its
+            # tests on 'who' (pack O seed 2, days 9-13: 4 of the 7 failed tests
+            # of stated nodes' group records, e.g. mail TLS G7 / G13 at a node
+            # holding 9.27 of 9.27 tests), and the part was stated far below
+            # the node while it held every evaluator test
+            hr.add("who", str(k) in items, nom, ts, omega, cl)
         if who_only:
             return
         wh = cons.get("when")

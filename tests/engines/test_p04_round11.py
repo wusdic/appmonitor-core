@@ -149,3 +149,30 @@ def test_a_group_part_is_held_out_tested_on_the_bands_it_states():
     # the node's, not dragged down by tests of the node's band
     assert VW.part_hold(nd, ["G2"], 0.95) > 0.9, (nd.meta["hold_g"]["grp:G2"].tests(), p_node)
     assert VW.part_hold(nd, ["G1"], 0.95) > 0.9
+
+
+def test_a_group_part_is_not_held_out_tested_on_the_nodes_who_list():
+    """Item 1b (round 11; pack O seed 2, mail TLS / oa login parts): a group's
+    part states the GROUP's members as its who; its held-out record checked
+    the NODE's who (the node's listed heavy set) on the group's rows, so a
+    group of light sources outside that list failed every test on 'who' and
+    its part was stated far below a node that held every test. The group's
+    record no longer judges the node's who list; the node's record still does."""
+    from app.engines.behavior.pattern_tree import PatternTreeEngine
+    from app.engines.behavior import views as VW
+    nd = PN.Node(1, 0, 1, 0, (), MON)
+    nd.state = "confirmed"
+    heavy = frozenset(f"10.0.1.{i}" for i in range(1, 6))
+    nd.ref = {"t": MON, "hold": {"who": (0, heavy, 0.8), "when": ("win", {0: ((480.0, 720.0),)}, 0.9)}}
+    t = MON
+    for k in range(12000):                      # 42 days: G2 (light, unlisted sources) is 1/20 of the rows
+        t += 300.0
+        g2 = k % 20 == 0
+        ip = f"10.0.2.{k % 3 + 1}" if g2 else f"10.0.1.{k % 5 + 1}"
+        keys = [ip, ip.rsplit(".", 1)[0] + ".0/24", "10.0.0.0/16", "grp:G2" if g2 else "grp:G1", "reg:∅"]
+        PatternTreeEngine._hold_check(None, nd, lambda a: None, keys, 0, 600.0, t, 1.0)
+    assert nd.p_hold(t) > 0.85                                  # the node's who holds (95 % listed)
+    ps, n = nd.meta["hold_g"]["grp:G2"].tests()
+    assert n > 3 and ps == n                                    # G2's tests judge its window, and pass
+    assert VW.part_hold(nd, ["G2"], nd.p_hold(t)) >= nd.p_hold(t) - 1e-9
+    assert nd.meta["hold"].F.get("who", 0.0) == 0.0
