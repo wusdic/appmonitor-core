@@ -75,3 +75,32 @@ def test_a_target_taken_in_and_out_of_the_node_slots_is_kept():
     assert {str(k) for k, *_ in nd.targets["net.win"].ss.items(sim.now)} == {"65535.0", "64240.0"}
     # its history: every day's afternoon rows, not one afternoon's (~35 units)
     assert nd.targets["net.win"].ss.total_evidence(sim.now) > 150.0
+
+
+def test_a_dropped_target_leaves_no_drift_state_behind():
+    """A dropped summary takes its content drift detector's daily means, its
+    drift episode and its invariant with it (pattern_tree._forget_target).
+    Kept, a summary made again for the attribute later was judged against
+    the old summary's daily means (the round-6 note on re-made summaries)."""
+    both = {"targets_sys": {0: ["net.bytes_up", "net.bytes_down"]}, "split_cands": {0: []}, "roles": {}}
+    one = {"targets_sys": {0: ["net.bytes_up"]}, "split_cands": {0: []}, "roles": {}}
+    sim = Sim(sel=both)
+    clients = [f"10.60.1.{i}" for i in range(20)]
+
+    def day(d, t0, rng):
+        return [(t0 + rng.uniform(8 * 3600, 20 * 3600), "portal", ip,
+                 dict(NEWS, **{"net.bytes_up": float(rng.uniform(800, 1200)),
+                               "net.bytes_down": float(rng.uniform(3000, 9000))}))
+                for ip in clients for _ in range(3)]
+    sim.add(daily(day, 11, seed=7))
+    sim.hooks.append(lambda s: setattr(s, "sel", both if s.now < MON + 6 * DAY else one))
+    sim.run_until(MON + 6 * DAY)
+    nd = sim.tree("portal").nodes[sim.top("portal")]
+    assert any(str(k).startswith("net.bytes_down|") for k in (nd.meta.get("dph") or {}))
+    sim.run_until(MON + 11 * DAY)
+    nd = sim.tree("portal").nodes[sim.top("portal")]
+    assert "net.bytes_down" not in nd.targets
+    assert not any(str(k).startswith("net.bytes_down|") for k in (nd.meta.get("dph") or {}))
+    assert "net.bytes_down" not in (nd.meta.get("evolving") or {})
+    assert "net.bytes_down" not in (nd.meta.get("tgd") or {})
+    assert any(str(k).startswith("net.bytes_up|") for k in (nd.meta.get("dph") or {}))
