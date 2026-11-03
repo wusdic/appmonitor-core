@@ -1522,6 +1522,7 @@ def _config_dept_units(c: Any, nd: Any, t: float, seen: Set[str], lv0: Any, rout
             k = rdr.get(str(ip), str(ip))
             mass[k] = mass.get(k, 0.0) + float(cnt) / tot
     sigs = getattr(c, "sigs", None)
+    listed = {m for lst in cfg.values() for m in lst}
     out: Dict[str, Dict[str, Any]] = {}
     for name in sorted(cfg):
         mem = []
@@ -1534,6 +1535,8 @@ def _config_dept_units(c: Any, nd: Any, t: float, seen: Set[str], lv0: Any, rout
                 mem.append(m)
         if not mem:
             continue
+        if use_sig:
+            mem += _dept_colleagues(c, nd, t, mem, listed, route, sig_ctx)
         gids = {c.ip2g.get(m) for m in mem}
         clean = None not in gids and all(
             str((c.groups.get(g) or {}).get("dept") or "") == name
@@ -1544,6 +1547,43 @@ def _config_dept_units(c: Any, nd: Any, t: float, seen: Set[str], lv0: Any, rout
         share = float(sum(mass.get(m, 0.0) for m in mem))
         out[f"cfg:{name}"] = {"members": sorted(set(mem), key=PR._ip_sort), "share": share, "name": name,
                               "gids": [], "cfg": True}
+    return out
+
+
+def _dept_colleagues(c: Any, nd: Any, t: float, mem: Sequence[str], listed: Set[str],
+                     route: Optional[str], sig_ctx: bool) -> List[str]:
+    """(round 11) A configured department's members at a node that its list
+    does not hold: the other members of the learned groups (P11) of the
+    department's members at the node that belong to no configured department,
+    are current (_current), satisfy the node's address context and hold the
+    action as a recurring use within this system (their own signature, as the
+    listed members' signature path). The department's who is then its
+    people at the node, not only its listed addresses - the learned-group
+    parts (T10-1c's outside_group) already state such colleagues.
+    O-real seed 0 (round 10): 财务部's clerk moved from the listed
+    192.168.2.11 to the unlisted .51 on day 9; P11 put .51 into G18 with its
+    colleague .12 from day 11 and G18's part of the finance login named it,
+    while the 财务部 part kept .10 / .11 / .12 (then .10 / .12) to day 35, so
+    FIN.finance.login#0@1 (who .10 / .12 / .51, Jaccard >= 0.8) was never found.
+    Bounded: <= MEMBERS_CHECKED signatures read per department; an address of
+    another configured department is that department's, never added."""
+    sigs = getattr(c, "sigs", None)
+    if sigs is None or route is None:
+        return []
+    have = set(mem)
+    gids = sorted({str(c.ip2g.get(m)) for m in mem if c.ip2g.get(m) is not None})
+    cand: List[str] = []
+    for g in gids:
+        for x in (c.groups.get(g) or {}).get("members") or []:
+            x = str(x)
+            if "/" in x or x in listed or x in have or x in cand:
+                continue
+            cand.append(x)
+    out: List[str] = []
+    for x in sorted(cand, key=PR._ip_sort)[:CF.MEMBERS_CHECKED]:
+        if (_current(c, x, t) and (not sig_ctx or _ctx_admits(nd, x, c.ip2g))
+                and CF.signature_share(sigs, c.key, x, t, route, within_key=True) >= CF.SIG_STANDING):
+            out.append(x)
     return out
 
 
