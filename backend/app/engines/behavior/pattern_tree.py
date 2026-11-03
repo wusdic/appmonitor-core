@@ -1067,17 +1067,25 @@ class PatternTreeEngine(Engine):
             sg = seen.get("_g")
             sg = dict(sg) if isinstance(sg, Mapping) else {}
             g_recs = nd.meta.get("hold_g") or {}
-            for g_, bands in sorted(gb.items()):
+            # (a band the record checked before - the group's previous one, else
+            # the node's - is the old constraint: a group record that starts
+            # checking its own band, or falls back to the node's, restarts too)
+            for g_ in sorted(set(gb) | set(sg)):
+                new_b = gb.get(g_) or {}
                 old_b = sg.get(g_) or {}
                 g_hr = g_recs.get(g_)
                 if g_hr is not None:
-                    gone_ = [a for a, c in sorted(bands.items())
-                             if old_b.get(a) is not None and _hold_material(old_b[a], c)]
+                    gone_ = []
+                    for a in sorted(set(new_b) | set(old_b)):
+                        o_, n_ = old_b.get(a, cons.get(a)), new_b.get(a, cons.get(a))
+                        if o_ is not None and n_ is not None and _hold_material(o_, n_):
+                            gone_.append(a)
                     if gone_:
                         g_hr.drop(gone_)
-                sg[g_] = bands
-            for g_ in [g_ for g_ in sg if g_ not in gb]:
-                del sg[g_]
+                if new_b:
+                    sg[g_] = new_b
+                else:
+                    sg.pop(g_, None)
             for k in [k for k in seen if k not in ("_ref", "_g") and k not in cons]:
                 del seen[k]
             seen["_g"] = sg

@@ -1,6 +1,10 @@
 """P04 / P07 / P08, round 11 (tree owner)."""
 from __future__ import annotations
 
+import numpy as np
+
+from app.engines.behavior.lib import pnode as PN
+
 from ptree_sim import DAY, MON, Sim, daily
 
 NEWS = {"http.route": "GET portal /news/{num}", "http.method": "GET"}
@@ -104,3 +108,44 @@ def test_a_dropped_target_leaves_no_drift_state_behind():
     assert "net.bytes_down" not in (nd.meta.get("evolving") or {})
     assert "net.bytes_down" not in (nd.meta.get("tgd") or {})
     assert any(str(k).startswith("net.bytes_up|") for k in (nd.meta.get("dph") or {}))
+
+
+def test_a_group_part_is_held_out_tested_on_the_bands_it_states():
+    """Item 1b (round 11; pack O seed 2, oa GET /docs/{}): P14 states a tracked
+    group's part of a shared node with the GROUP's own bands (part_content),
+    but the group's held-out record checked the NODE's bands on the group's
+    rows. A group in the tail of the node's distribution failed every test of
+    a band its part does not state, and the part (views.part_hold: the group's
+    tests pooled with the node's rate) was stated 0.5-0.8 while it held every
+    evaluator test. The group's record now checks the group's own band (the
+    reference's 'hold_g', built from the group's earlier rows only)."""
+    from app.engines.behavior.pattern_tree import PatternTreeEngine, _group_bands
+    from app.engines.behavior import views as VW
+    rng = np.random.default_rng(3)
+    nd = PN.Node(1, 0, 1, 0, (), MON)
+    nd.state = "confirmed"
+    node_band = ("num", 100.0, 1000.0, 0.9)          # the node's band: fitted on its (mostly G1) rows
+    nd.ref = {"t": MON, "hold": {"body.len": node_band}}
+    t = MON
+    for d in range(21):
+        day = 739900 + d
+        if d > 0:                                   # the daily reference: built from earlier rows only
+            nd.ref = {"t": t, "hold": {"body.len": node_band},
+                      "hold_g": _group_bands(nd, t, {"body.len": node_band}, day)}
+        for k in range(200):
+            t = MON + d * DAY + 8 * 3600 + k * 120.0
+            g2 = k % 8 == 0                          # G2: 1/8 of the rows, all above the node's band
+            g = "grp:G2" if g2 else "grp:G1"
+            ip = f"10.0.{2 if g2 else 1}.{k % 5 + 1}"
+            keys = [ip, ip.rsplit(".", 1)[0] + ".0/24", "10.0.0.0/16", g, "reg:∅"]
+            v = float(rng.uniform(1200.0, 1500.0) if g2 else rng.uniform(150.0, 900.0))
+            nd.update_core(t, 1.0, 1.0, keys, ip, 0, 600.0, day)
+            PatternTreeEngine._hold_check(None, nd, lambda a, v=v: v if a == "body.len" else None,
+                                          keys, 0, 600.0, t, 1.0, 1.0, day)
+    gb = nd.ref.get("hold_g") or {}
+    assert "grp:G2" in gb and gb["grp:G2"]["body.len"][1] > 1000.0      # G2's own band
+    p_node = nd.p_hold(t)
+    # the part states G2's own band and G2's rows keep to it: its confidence is
+    # the node's, not dragged down by tests of the node's band
+    assert VW.part_hold(nd, ["G2"], 0.95) > 0.9, (nd.meta["hold_g"]["grp:G2"].tests(), p_node)
+    assert VW.part_hold(nd, ["G1"], 0.95) > 0.9
