@@ -652,17 +652,30 @@ def _censored(pts: Sequence[Sequence[Any]], tz_offset_s: float, now: Optional[fl
     return d_now, float(m_now)
 
 
-def _complete(pts: Sequence[Sequence[Any]], tz_offset_s: float, now: Optional[float]) -> List[Sequence[Any]]:
+def _complete(pts: Sequence[Sequence[Any]], tz_offset_s: float, now: Optional[float],
+              min_points: int = MIN_POINTS) -> List[Sequence[Any]]:
     """(round 11) The arrivals the windows and their coverage are fitted on:
     without the fit date's own arrivals when they are a censored sample of
     the day (_censored; the date enters the next day's fits complete).
     O60 seed 0, day 7 (21:15): portal's non-workday POST /comment windows,
     fitted on the first weekend's two dates (the second up to 21:15), ended at
-    20:18 and stated 0.82 where the law puts 0.74 (held 0.65)."""
+    20:18 and stated 0.82 where the law puts 0.74 (held 0.65).
+    Censoring is a minute-mode device (the points carry their dates; the
+    slot histogram fit_daytype falls back to does not): when the complete
+    dates leave fewer than `min_points` points of a set that had them, the
+    points are kept - dropped, the fit fell back to the histogram, which still
+    holds the censored date's partial mass. O-real seed 2, day 13 (Saturday
+    15:15): portal's POST /comment non-workday node had 3 arrivals on the
+    first weekend and 7 that morning; without them the slot fit stated
+    07:00-12:15 from the morning's mass, and the evening's comments raised a
+    LOW incident inside the D4 drift (PG5 D4 failed)."""
     cen = _censored(pts, tz_offset_s, now)
     if cen is None:
         return list(pts)
-    return [p for p in pts if _local_date(float(p[1]), tz_offset_s) != cen[0]]
+    kept = [p for p in pts if _local_date(float(p[1]), tz_offset_s) != cen[0]]
+    if len(kept) < min_points <= len(pts):
+        return list(pts)
+    return kept
 
 
 def fit_daytype(hist: np.ndarray, n: float, points: Optional[Sequence[Sequence[Any]]] = None,
@@ -935,7 +948,7 @@ def fit_regime(hist: np.ndarray, n: float, pts: Sequence[Sequence[Any]], tz_offs
     spans = cut is not None or len({_local_date(float(p[1]), tz_offset_s) for p in recent}) >= REGIME_DATES
     use_recent = since is not None and len(recent) >= need and spans
     use = recent if use_recent else pts
-    use = _complete(use, tz_offset_s, now)
+    use = _complete(use, tz_offset_s, now, min_points=min(need, MIN_POINTS))
     rec = fit_daytype(hist, max(float(n), float(len(pts))), use, tz_offset_s=tz_offset_s,
                       min_points=min(need, MIN_POINTS))
     if rec is None:

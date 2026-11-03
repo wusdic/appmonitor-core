@@ -163,3 +163,27 @@ def test_a_date_missing_less_than_a_window_share_is_kept():
     # a fit date missing a window's share (15:15: ~1/3 of the law) is still censored
     h, pts, now = _office(0, 15 * 60.0 + 15.0)
     assert PW._censored(pts, 0.0, now) is not None
+
+
+def test_a_censored_date_is_kept_when_dropping_it_would_leave_slot_mode():
+    """O-real seed 2, day 13 (Saturday 15:15): portal's non-workday POST
+    /comment node had 3 arrivals on the first weekend and 7 that morning.
+    Dropped as censored, the 3 left the fit to the slot histogram - which
+    still held the morning's mass - and it stated 07:00-12:15; the evening's
+    comments raised a LOW incident inside the D4 drift. Censoring applies
+    only while the complete dates keep the fit in minute mode."""
+    first = [(976.0, T0 + 976 * 60.0), (1171.0, T0 + 1171 * 60.0), (1389.0, T0 + DAY + 1389 * 60.0)]
+    today = [(m, T0 + 7 * DAY + m * 60.0) for m in (427.0, 486.0, 515.0, 520.0, 581.0, 707.0, 734.0)]
+    pts = [(m, t, 1.0, f"10.60.{i}.1") for i, (m, t) in enumerate(first + today)]
+    now = T0 + 7 * DAY + 915 * 60.0
+    assert PW._censored(pts, 0.0, now) is not None
+    assert PW._complete(pts, 0.0, now) == pts                   # round 11 first step: 3 points
+    h = np.zeros(PW.SLOTS)
+    for m, *_ in pts:
+        h[int(m // PW.SLOT_MIN)] += 1.0
+    rec = PW.fit_regime(h, 30.0, pts, tz_offset_s=0.0, now=now)
+    assert PW.in_windows(21 * 60.0 + 7.0, rec["windows"])       # 21:07 was 'outside_windows'
+    # with enough complete points the date is still dropped
+    more = [(float(m), T0 + DAY + m * 60.0, 1.0, f"10.61.{i}.1")
+            for i, m in enumerate(range(600, 1380, 60))]
+    assert len(PW._complete(pts + more, 0.0, now)) == len(first) + len(more)
