@@ -1283,6 +1283,47 @@ class PatternTreeEngine(Engine):
             self._replay_route_rows(lc, tr, tr.nodes[sp.children[-1]], rows)
 
     # --------------------------------------------------------- targets
+    def _drop_stale_targets(self, lc: _LC, tr: PT.Tree, nd: PN.Node, kind: int, sel: Mapping[str, Any],
+                            t: float) -> None:
+        """(round 11, daily) A target summary the node no longer learns is
+        dropped: one that learned rows and has been outside the node's target
+        list (_targets_of: P05's system / node targets and the fitters'
+        requests) at two consecutive daily checks. Kept, it is a frozen sample
+        of the rows learned while it was a target, and every consumer reads it
+        as the node's present traffic: P06 / P07 fit it, P14 states it, P04's
+        held-out test checks it and P03 compares new rows with it. Pack O seed
+        2 (round 10): portal GET /news/{num} learned net.win on 8 rows (one
+        client's 65535) before P05's node targets left it out; P07 stated the
+        closed set {65535} (n 3.5, U 0.11, nominal 0.89) for a week while 32 %
+        of the node's held-out rows carried it, every held-out test failed on
+        that clause alone and the statement stood at 0.03-0.17 on days 5-12.
+        A summary that holds only seeded extremes (_inherit_source_extremes:
+        a source split's child, before the attribute is one of its targets)
+        has no rows and is kept for when it becomes one; the number of
+        summaries stays bounded (M_T + 4) as before."""
+        keep = set(self._targets_of(lc, tr, nd, kind, sel))
+        off = [a for a in nd.targets if a not in keep]
+        if not off:
+            nd.meta.pop("untg", None)
+            return
+        before = set(nd.meta.get("untg") or ())
+        first = []
+        for a in off:
+            if not _has_rows(nd.targets[a], t):
+                continue
+            if a in before:
+                del nd.targets[a]
+            else:
+                first.append(a)
+        if len(nd.targets) > M_T + 4:              # bounded: drop summaries no longer targeted
+            for a in [a for a in nd.targets if a not in keep][:len(nd.targets) - M_T]:
+                del nd.targets[a]
+            first = [a for a in first if a in nd.targets]
+        if first:
+            nd.meta["untg"] = tuple(first)
+        else:
+            nd.meta.pop("untg", None)
+
     def _targets_of(self, lc: _LC, tr: PT.Tree, nd: PN.Node, kind: int, sel: Mapping[str, Any]) -> List[str]:
         own = nd.meta.get("targets")
         extra = lc.extra_targets.get((kind, nd.id)) if lc is not None else None
@@ -3362,10 +3403,7 @@ class PatternTreeEngine(Engine):
             if cd is not None and nd.split_stats is None and cd.hver != self._hver(lc, cd.targets):
                 nd.meta["C"] = self._new_coder(lc, nd, self._coder_targets(lc, tr, nd, kind, sel), t, tr)
                 nd.xstats = None
-            if len(nd.targets) > M_T + 4:              # bounded: drop summaries no longer targeted
-                keep = set(self._targets_of(lc, tr, nd, kind, sel)) | set(lc.extra_targets.get((kind, nid), ()))
-                for a in [a for a in nd.targets if a not in keep][:len(nd.targets) - M_T]:
-                    del nd.targets[a]
+            self._drop_stale_targets(lc, tr, nd, kind, sel, t)
             if nd.state == "candidate":
                 self._confirm(lc, tr, kind, nd, s, t)
             elif nd.state == "confirmed":
@@ -3846,6 +3884,14 @@ class PatternTreeEngine(Engine):
 
 
 # ================================================================ helpers
+def _has_rows(sm: Any, t: float) -> bool:
+    """Whether a target summary learned rows (a numeric summary seeded with a
+    source split's extremes only has none: its moments carry no weight)."""
+    if isinstance(sm, PN.NumSummary):
+        return sm.moments(t)[0] > 0.0
+    return True
+
+
 def _next_ref_sn(lc: _LC) -> int:
     """Serial number of a reference statement within its tree (P04 private state)."""
     aux = getattr(lc, "aux", None) if lc is not None else None
