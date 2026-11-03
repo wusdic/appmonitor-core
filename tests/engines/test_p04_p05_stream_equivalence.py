@@ -125,7 +125,12 @@ DAYS = 4.0
 # sequential test is capped (pnode.SUS_LLR_MAX); a confident node of a renamed
 # route takes over the stale node of the old route (_handover_renamed; not
 # exercised by this stream).
-GOLDEN = {"model.ptree": "be2967802c43fa4c5f5b86115b0e70e14493e4db",
+# Re-recorded in round 11 (ptree a7bffbf5...; attrsel unchanged), deliberately,
+# by the tree owner: a target summary the node has not learned for two days
+# of its rows while outside its target list is dropped (pattern_tree.
+# _drop_stale_targets; each node keeps the last day an attribute was a target
+# of a learned row, meta 'tgd').
+GOLDEN = {"model.ptree": "a7bffbf5dc16325c2d0c01a7df043297d37d6519",
           "model.attrsel": "00628c79324d13395bd185ad35bb7fd3f8159fbc"}
 
 
