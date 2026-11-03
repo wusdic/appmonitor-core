@@ -3893,7 +3893,7 @@ class PatternTreeEngine(Engine):
             fit = {name: _fitted_entry(mdl, kind, nd.id) for name, mdl in fitted.items()
                    if _fitted_entry(mdl, kind, nd.id) is not None}
             hold = _hold_constraints(nd, t, targets, fit, card_of)
-            hold_g = _group_bands(nd, t, hold, _local_day(t, lc.off))
+            hold_g = _group_bands(nd, t, hold, _local_day(t, float(getattr(lc, "off", 0.0) or 0.0)))
             if hold != nd.ref.get("hold") or hold_g != nd.ref.get("hold_g"):
                 nd.ref = dict(nd.ref, hold=hold, hold_g=hold_g, sn=_next_ref_sn(lc), hold_t=t)
             return
@@ -3915,7 +3915,7 @@ class PatternTreeEngine(Engine):
                            "nwd": nd.when.density(1).astype(np.float32)},
                   "fitted": fit,
                   "hold": _hold_constraints(nd, t, targets, fit, card_of)}
-        nd.ref["hold_g"] = _group_bands(nd, t, nd.ref["hold"], _local_day(t, lc.off))
+        nd.ref["hold_g"] = _group_bands(nd, t, nd.ref["hold"], _local_day(t, float(getattr(lc, "off", 0.0) or 0.0)))
 
     # -------------------------------------------------------------- events
     def _emit(self, lc: _LC, s: str, kind: str, tr: PT.Tree, nd: PN.Node, sev: Severity, desc: str,
