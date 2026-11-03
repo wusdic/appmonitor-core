@@ -89,3 +89,30 @@ def test_bound_entry_and_old_set_entries_unchanged():
     p, f = FD.check_reverse(rec, NEW, JA3, now, act.get, x_known=False, day_start=now - 9 * 3600)
     # both are dominant (tie); MATE is silent -> a readdress of MATE
     assert f == ["foreign_source", "readdress_candidate"]
+
+
+def test_silent_major_member_is_a_readdress_while_the_largest_colleague_is_active():
+    """O-real seed 2 (R3): the clerk's stack {.10 0.14, .11 0.41, .12 0.46} -
+    the colleague .12 holds the largest share and was active at 09:00; .51's
+    first finance login (09:03) was 'concurrent_use' (a HIGH incident) under
+    the dominant-member rule. The silent MAJOR member .11 makes it a
+    readdress of .11; with every major member active it stays concurrent."""
+    r = _fit([(MATE, 14), (OWN, 41), (MINOR, 46)])
+    e = r["table"][JA3]
+    sh = dict(zip(e["set"], e["shares"]))
+    assert sh[MINOR] > sh[OWN] > 1.0 / 3.0 > sh[MATE]
+    now = T0 + 10 * DAY + 9 * 3600.0 + 225.0
+    day_start = now - 9 * 3600.0 - 225.0
+    act = {MATE: now - 160.0, MINOR: now - 225.0, OWN: now - DAY - 3600.0}
+    info = {}
+    p, f = FD.check_reverse(r, NEW, JA3, now, act.get, x_known=False, day_start=day_start, info=info)
+    assert f == ["foreign_source", "readdress_candidate"]       # dominant rule: concurrent_use
+    assert info["src"] == OWN
+    # every major member active today: an additional user of the value
+    act[OWN] = now - 3600.0
+    p, f = FD.check_reverse(r, NEW, JA3, now, act.get, x_known=False, day_start=day_start)
+    assert f == ["foreign_source", "concurrent_use"]
+    # a silent MINOR member is no readdress source
+    act[OWN] = now - 3600.0; act[MATE] = now - 2 * DAY
+    p, f = FD.check_reverse(r, NEW, JA3, now, act.get, x_known=False, day_start=day_start)
+    assert f == ["foreign_source", "concurrent_use"]

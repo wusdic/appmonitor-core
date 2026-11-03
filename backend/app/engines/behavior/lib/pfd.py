@@ -826,7 +826,7 @@ def set_members(ent: Mapping[str, Any]) -> List[Tuple[str, float]]:
     return sorted(zip(srcs, (float(v) for v in sh)), key=lambda kv: (-kv[1], kv[0]))
 
 
-SHARE_TIE = 1e-9            # set_members: shares this close to the largest are the value's dominant sources
+SHARE_TIE = 1e-9            # set_members: shares this close to 1 / |set| count as a major member
 
 
 def check_reverse(rec: Mapping[str, Any], x: Any, y: Any, t: float,
@@ -842,13 +842,21 @@ def check_reverse(rec: Mapping[str, Any], x: Any, y: Any, t: float,
       * the concurrency test reads only its MAJOR members (share of y's
         evidence >= 1 / |set|): a minor member active elsewhere says nothing
         about who uses y here;
-      * an unknown x is a readdress candidate when the value's DOMINANT
-        source (largest share) has been silent since the start of the local
-        day, even while another member is active: that member is a colleague
-        sharing y, not the owner of the address x replaced. O-real seed 0
-        (R3, the finance clerk 192.168.2.11 -> .51 on day 9): .51's first
-        event matched the set entry tls.ja3 -> {.10, .11, .12} while .10 was
-        active, so it was 'concurrent_use' and never a readdress candidate.
+      * an unknown x is a readdress candidate when a MAJOR member has been
+        silent since the start of the local day, even while another member
+        is active: a shared value in use by a colleague is the value's norm,
+        not a second use of one owner's credential, and the silent member is
+        the one x may have replaced (the largest-share silent major is
+        'src'). O-real seed 0 (R3, the finance clerk 192.168.2.11 -> .51 on
+        day 9): .51's first event matched the set entry tls.ja3 -> {.10, .11,
+        .12} while .10 was active, so it was 'concurrent_use' and never a
+        readdress candidate. (Round 11, second step: the first version asked
+        for the DOMINANT member to be silent; on seed 2 the same clerk's
+        stack was {.10 0.14, .11 0.41, .12 0.46}, the colleague .12 the
+        largest and active at 09:00 - .51's first finance login, 09:03, was
+        'concurrent_use', escalated to a HIGH incident.)
+      Only when every major member is active today is a concurrent major
+      member 'concurrent_use' (an additional user of the value).
     A bound entry is unchanged. `info` (a dict) receives 'src', the source a
     readdress candidate replaces."""
     if not rec:
@@ -880,14 +888,12 @@ def check_reverse(rec: Mapping[str, Any], x: Any, y: Any, t: float,
         if members:
             k = len(members)
             major = [m for m, sh in members if sh >= 1.0 / k - SHARE_TIE]
-            top = members[0][1]
-            dom = [m for m, sh in members if sh >= top - SHARE_TIE]
             conc = any(act.get(m) is not None and abs(float(t) - float(act[m])) <= t_conc for m in major)
-            dom_silent = [m for m in dom if silent(m)]
-            if not x_known and dom_silent:
+            maj_silent = [m for m in major if silent(m)]      # by share, largest first
+            if not x_known and maj_silent:
                 flags.append("readdress_candidate")
                 if info is not None:
-                    info["src"] = dom_silent[0]
+                    info["src"] = maj_silent[0]
                 return p, flags
         else:
             conc = any(a is not None and abs(float(t) - float(a)) <= t_conc for a in act.values())
