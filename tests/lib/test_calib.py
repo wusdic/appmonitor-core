@@ -843,22 +843,53 @@ def test_conformal_fast_path_is_bit_identical_to_combine():
     assert raw.p_value(1.5, 0.5) == C.randomized_conformal_p(raw.scores, 1.5, 0.5)
 
 
+def _reference_work(xs) -> float:
+    """A fixed CPU workload of the same kind as the conformal branch (one
+    numpy searchsorted, one bisect and a little float arithmetic per score on
+    a sorted ring of RING_M scores), timed interleaved with the code under
+    test in the same process: the load of other processes slows both alike
+    (round 11)."""
+    import bisect
+    arr = np.sort(np.random.default_rng(5).exponential(size=M))
+    lst = arr.tolist()
+    tot = 0.0
+    for x in xs:
+        i = int(np.searchsorted(arr, x, side="left"))
+        j = bisect.bisect_right(lst, x)
+        tot += (len(lst) - j + 1.0) / (len(lst) + 1.0) + math.log1p(i)
+    return tot
+
+
+# (round 11) The bound in units of _reference_work's CPU measured interleaved
+# in the same process, as B13's and P03's timing tests (round 9). The round-4
+# bound was 4 ms of process CPU for the 1 240 scores; on the host where both
+# were measured together (idle) _reference_work took 2.3-2.8 ms (median 2.5)
+# and the conformal branch 2.9-3.6 ms, i.e. ~1.25 reference units, so 4 ms =
+# 1.6 units: what the test checks is unchanged there, and it no longer
+# depends on the host's load (round 10's suite: 5.3 ms against 4 ms under a
+# load average of 3.6 with the branch unchanged; progressive.md 16.18.12).
+REF_UNITS = 1.6
+
+
 def test_conformal_branch_meets_b24_per_tick_budget():
-    # B24 Perf: 40 keys x 31 detectors ~ 2 ms per tick on the bisect path
-    # (median of 5 runs; generous 2x bound for shared CI).
+    # B24 Perf: 40 keys x 31 detectors ~ 2 ms per tick on the bisect path.
     rng = np.random.default_rng(13)
     ring = make_ring(rng.exponential(size=M))
     xs = (rng.exponential(size=1240) * 0.5).tolist()
-    # process CPU time and the best of 5 runs: other processes can only add
-    # time to a run, so the minimum estimates the code's own cost (the median
-    # of wall times exceeded the bound whenever the machine was loaded)
-    runs = []
-    for _ in range(5):
+    # process CPU time, the code under test and the reference interleaved;
+    # the best of 7 runs of each: other processes can only add time to a
+    # run, so the minimum estimates each one's own cost
+    runs, refs = [], []
+    for _ in range(7):
+        t0 = time.process_time()
+        _reference_work(xs)
+        refs.append(time.process_time() - t0)
         t0 = time.process_time()
         for x in xs:
             K.p_from_ring(ring, x, 0.5)
         runs.append(time.process_time() - t0)
-    assert min(runs) < 0.004, runs
+    assert min(refs) > 0.0
+    assert min(runs) < REF_UNITS * min(refs), (runs, refs)
 
 
 # ------------------------------------------------- spec v2.1 grain strata
