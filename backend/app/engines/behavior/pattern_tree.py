@@ -240,6 +240,7 @@ GNUM_SHARE = 0.01              # a group's own numeric summaries at a node it ho
                                # department's part (its role groups merged) from 5 % (PART_SHARE), and pack O's
                                # 综合部 holds that as two role groups of 1-3 % each at OA's login node
 HOLD_GROUPS_MAX = 8            # learned groups with their own held-out record per node (round 4; = P14 PART_MAX)
+HOLD_GBAND_MIN = 10.0          # (round 11) a group's own band is checked once its summary holds this many evidence units
 SUS_OTHER_P = ("p_when", "p_content", "p_seq", "p_novel")
 SUS_BIND_FLAGS = frozenset({"cross_binding", "concurrent_use", "readdress_candidate"})
 FITTERS = (MP.PBOUNDS, MP.PGRAMMAR, MP.PBIND, MP.PWIN)
@@ -1060,8 +1061,26 @@ class PatternTreeEngine(Engine):
                     for g_hr in (nd.meta.get("hold_g") or {}).values():
                         g_hr.drop([k])
                 seen[k] = c                     # the reference's own tuple (shared, not copied)
-            for k in [k for k in seen if k != "_ref" and k not in cons]:
+            # (round 11) a group's own bands (ref 'hold_g', _group_bands): its
+            # record restarts a band's counts when that band moved materially
+            gb = nd.ref.get("hold_g") or {}
+            sg = seen.get("_g")
+            sg = dict(sg) if isinstance(sg, Mapping) else {}
+            g_recs = nd.meta.get("hold_g") or {}
+            for g_, bands in sorted(gb.items()):
+                old_b = sg.get(g_) or {}
+                g_hr = g_recs.get(g_)
+                if g_hr is not None:
+                    gone_ = [a for a, c in sorted(bands.items())
+                             if old_b.get(a) is not None and _hold_material(old_b[a], c)]
+                    if gone_:
+                        g_hr.drop(gone_)
+                sg[g_] = bands
+            for g_ in [g_ for g_ in sg if g_ not in gb]:
+                del sg[g_]
+            for k in [k for k in seen if k not in ("_ref", "_g") and k not in cons]:
                 del seen[k]
+            seen["_g"] = sg
             seen["_ref"] = rid
             nd.meta["hold_fp"] = seen
         # (round 4) the same checks also go to the record of the source's learned
@@ -1129,6 +1148,11 @@ class PatternTreeEngine(Engine):
             for r in recs_add:
                 r.add(key, hit, nom, ts, omega, cl)
 
+        # (round 11) the group's OWN bands where its part states them (P14
+        # part_content refits a tracked group's numeric constraints on its
+        # rows): its record checks those, not the node's
+        gbands = (nd.ref.get("hold_g") or {}).get(gk) if hg is not None else None
+
         w = cons.get("who")
         if w is not None:
             lvl, items, nom = w
@@ -1177,7 +1201,13 @@ class PatternTreeEngine(Engine):
                     # exact comparison failed every check of a constant attribute
                     # (pack O: every health-check statement, 0 of 1 066 checks)
                     tol = 1e-9 * max(1.0, abs(c[1]), abs(c[2]))
-                    add(a, c[1] - tol <= x <= c[2] + tol, c[3])
+                    gc = gbands.get(a) if gbands else None
+                    if gc is None:
+                        add(a, c[1] - tol <= x <= c[2] + tol, c[3])
+                    else:
+                        hr.add(a, c[1] - tol <= x <= c[2] + tol, c[3], ts, omega, cl)
+                        gtol = 1e-9 * max(1.0, abs(gc[1]), abs(gc[2]))
+                        hg.add(a, gc[1] - gtol <= x <= gc[2] + gtol, gc[3], ts, omega, cl)
             elif c[0] == "rx":
                 rx = _rx(c[1])
                 if rx is not None:
@@ -3855,8 +3885,9 @@ class PatternTreeEngine(Engine):
             fit = {name: _fitted_entry(mdl, kind, nd.id) for name, mdl in fitted.items()
                    if _fitted_entry(mdl, kind, nd.id) is not None}
             hold = _hold_constraints(nd, t, targets, fit, card_of)
-            if hold != nd.ref.get("hold"):
-                nd.ref = dict(nd.ref, hold=hold, sn=_next_ref_sn(lc), hold_t=t)
+            hold_g = _group_bands(nd, t, hold, _local_day(t, lc.off))
+            if hold != nd.ref.get("hold") or hold_g != nd.ref.get("hold_g"):
+                nd.ref = dict(nd.ref, hold=hold, hold_g=hold_g, sn=_next_ref_sn(lc), hold_t=t)
             return
         # the reference who also keeps every source with standing of its own
         # (>= REF_MEMBER_EV evidence units; P03's member rule): a low-volume
@@ -3876,6 +3907,7 @@ class PatternTreeEngine(Engine):
                            "nwd": nd.when.density(1).astype(np.float32)},
                   "fitted": fit,
                   "hold": _hold_constraints(nd, t, targets, fit, card_of)}
+        nd.ref["hold_g"] = _group_bands(nd, t, nd.ref["hold"], _local_day(t, lc.off))
 
     # -------------------------------------------------------------- events
     def _emit(self, lc: _LC, s: str, kind: str, tr: PT.Tree, nd: PN.Node, sev: Severity, desc: str,
@@ -4566,6 +4598,48 @@ def _iv_iou(a: Sequence[Tuple[float, float]], b: Sequence[Tuple[float, float]]) 
 def _jacc(a: Iterable[Any], b: Iterable[Any]) -> float:
     a, b = set(a), set(b)
     return len(a & b) / len(a | b) if (a or b) else 1.0
+
+
+def _group_bands(nd: PN.Node, t: float, cons: Mapping[str, Any], day: int) -> Dict[str, Dict[str, Tuple]]:
+    """(round 11) The bands a tracked group's part of the node states, as
+    checkable constraints for the group's held-out record: per group with its
+    own numeric summaries (meta 'gnum', the group's earlier held-out rows) and
+    per stated numeric content band of the node, the group's central interval
+    at the node band's nominal coverage, ('num', lo, hi, nominal); a summary
+    with fewer than HOLD_GBAND_MIN evidence units in its segment states none
+    (the group's record then checks the node's band, as P14 would state it).
+    Why: P14 states such a part with the GROUP's bands (views.part_content),
+    but the group's record checked the NODE's bands on the group's rows - a
+    group in a tail of the node's distribution failed tests of bands its part
+    never states, and the part's confidence (views.part_hold: the group's
+    tests pooled with the node's rate) fell while its own statement held.
+    Pack O seed 2 (round 10 / 11 t3, days 9-18): oa GET /docs/{} parts of G8
+    and 综合部 stated 0.49-0.80 while every facet of the node held 0.99 and
+    the parts held every evaluator test."""
+    gn = nd.meta.get("gnum") if nd.meta else None
+    if not gn:
+        return {}
+    out: Dict[str, Dict[str, Tuple]] = {}
+    for gk in sorted(gn):
+        sums = gn.get(gk) or {}
+        bands: Dict[str, Tuple] = {}
+        for a in sorted(sums):
+            c = cons.get(a)
+            gs = sums[a]
+            if c is None or c[0] != "num" or not isinstance(gs, PN.NumSummary):
+                continue
+            if gs.observed_range(int(day))[2] < HOLD_GBAND_MIN or gs.td.total(t) <= 0.0:
+                continue
+            nom = float(c[3])
+            q = max(0.0, min(0.5, 0.5 * (1.0 - nom)))
+            lo, hi = float(gs.td.quantile(q)), float(gs.td.quantile(1.0 - q))
+            if gs.log:
+                lo, hi = math.exp(lo), math.exp(hi)
+            if lo == lo and hi == hi and lo <= hi:
+                bands[a] = ("num", lo, hi, nom)
+        if bands:
+            out[gk] = bands
+    return out
 
 
 def _hold_material(old: Tuple, new: Tuple) -> bool:
