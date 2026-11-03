@@ -728,6 +728,7 @@ FWD_PRIOR = 2.0                  # out-of-sample coverage: Beta prior strength c
 
 
 CV_FOLDS = 5                     # date folds of the out-of-sample coverage
+CV_MIN_DATES = 2                 # (round 11) dates needed for the date cross-validation (was 3)
 
 
 def _log_scores(windows: Sequence[Sequence[float]], c: float) -> Tuple[float, float]:
@@ -748,8 +749,8 @@ def cv_coverage(hist: np.ndarray, pts: Sequence[Sequence[Any]], tz_offset_s: flo
     folds; the windows fitted on the other folds' arrivals are checked on the
     clean arrivals of each fold (the arrivals of one date stay together: they
     are not independent). Returns (weighted hits, weighted tests) or None
-    (fewer than 3 dates, slot mode, an all-day fit, no fold with >= MIN_POINTS
-    training points). The training fits saw fewer arrivals than the stated
+    (fewer than CV_MIN_DATES = 2 dates, slot mode, an all-day fit, no fold with
+    >= MIN_POINTS training points). The training fits saw fewer arrivals than the stated
     windows: their edges (order statistics, the rank bound of
     predictive_coverage) leave 2 / (n + 1) per window outside where the full
     fit leaves 2 / (N + 1); the difference is credited, so the estimate
@@ -764,6 +765,16 @@ def cv_coverage(hist: np.ndarray, pts: Sequence[Sequence[Any]], tz_offset_s: flo
     tried first: on a department's part of the mail node, ~20 arrivals, it
     halved the stated coverage, 0.86 -> 0.47, against ~0.68 held: a third of
     the dates missing from training is too pessimistic for small samples.)
+    (Round 11) Two dates are cross-validated too (two folds: each date's
+    arrivals against the windows of the other's). With 3 dates required, a
+    day type seen on 2 dates - the first weekend, days 6-12 of pack O - was
+    stated at its IN-SAMPLE coverage, which the windows' own sample chose:
+    O60 seed 0, day 7, portal's non-workday windows of POST /comment and
+    GET /news/{num} (88 / 72 arrivals on 2 dates) stated 0.82 / 0.89 where
+    the arrival law puts 0.74 / 0.77 (held 0.65 / 0.72); synthetic (tests/lib/
+    test_pwindows_round11.py), a normal law on 2 dates: the windows held at
+    their stated coverage in 68-72 % of fits, 82-83 % with the two-fold
+    cross-validation (3 dates: 82 %).
     `info` (round 7), when given, receives 'dates' (clean dates) and 'llr':
     the mean out-of-sample log score of the training folds' windowed laws
     against a flat day (_log_scores; nats per arrival, weighted) - the test of
@@ -776,7 +787,7 @@ def cv_coverage(hist: np.ndarray, pts: Sequence[Sequence[Any]], tz_offset_s: flo
     dates = sorted({d for d, w in zip(day, wts) if w >= CLEAN_W})
     if info is not None:
         info["dates"] = len(dates)
-    if len(dates) < 3:
+    if len(dates) < CV_MIN_DATES:
         return None
     K = min(int(folds), len(dates))
     fold_of = {d: i % K for i, d in enumerate(dates)}
