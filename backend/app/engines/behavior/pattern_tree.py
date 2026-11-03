@@ -3896,10 +3896,11 @@ def _forget_target(nd: PN.Node, a: str) -> None:
     drift detector's daily means (meta 'dph' "<a>|<day type>|<scale>"), an
     open drift episode ('evolving'), its invariant and its last-learned day.
     (round 11) Kept, a summary made again later (the attribute targeted
-    again) was judged against the old summary's daily means: its first days
-    raised a drift alarm and the node's statement was 'evolving', not
-    confirmed, until the episode expired (pack O seed 0, crm POST /crm/visit,
-    days 19-21)."""
+    again) is judged against the old summary's daily means and episode (the
+    round-6 note in _ph_num). Measured on pack O seed 0: dropping the summary
+    alone lost the crm POST /crm/visit statement on days 19-21 (no confirmed
+    statement of the route; SALES.crm#1 missed), dropping it with this state
+    kept it (recall equal to round 10 on every day)."""
     nd.targets.pop(a, None)
     meta = nd.meta
     if meta:
