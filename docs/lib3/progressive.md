@@ -260,7 +260,7 @@ Round 10's table is kept in git history (commit d0e44c0), round 9's in e5970cb, 
 
 | # | Measured (round 11) | Status |
 |---|---|---|
-| S1 | {{S1}} | partial |
+| S1 | 7-day points on the final code (`scale_r11/`): memory slope vs IPs 0.038, vs systems 0.239, **vs attributes 0.150** (0.150); idle system 0.39 MB, largest tree 11.5 MB (11.6); CPU / event vs IPs −0.054, vs attributes 0.188 (0.165; within the 0.2 target); per-event p95 0.68 ms scoring and 1.61 ms learning (0.75 / 1.73) — the latency budgets are still missed; P-core 0.99× round 10 at equal load | partial |
 | S2 | recall@14 0.895 [0.816–0.947] (0.895; mean of seeds 0–2 0.930); precision@14 on observable claims 0.956 [0.944–1.000] (0.967; pooled 0.962 = round 10), all claims 0.896 (0.905); @21 0.905 / 0.968 (0.905 / 0.971; pooled **0.979**, round 10 0.970, round 8 0.973); 综合部 login node = the 3 IPs + 3 bindings 5/5; finance approval = 192.168.2.10 only 5/5; portal at prefix 5/5; DEV pool one group 5/5; PG3 passes | not met (recall, by 0.005) |
 | S3 | median recall day 5 / 10 / 14 / 18: 0.44 / 0.83 / 0.89 / 0.93 (0.44 / 0.80 / 0.89 / 0.95); precision 0.85 / 0.98 / 0.96 / 0.93 (0.88 / 0.98 / 0.97 / 0.97); median stated confidence day 7 → 21 0.84 → 0.98; sign test 5/5 (5/5); pooled debiased calibration error **0.060** [0.041–0.078] (0.071), stated 0.953 / held 0.950 — balanced (round 10: under-confident 0.940 / 0.952) | partial (calibration 0.060 against 0.05) |
 | S4 | D1 3/5, D2 5/5, D3 5/5, **D4 4/5** (5/5: seed 1's PUB login at 22:47, §16.19.11 item 1), D5 4/5; .21 still `jack` 5/5; O-red D1–D5 all pass; O-real recall @35 **0.70 / 0.73 / 0.67** (0.71 / 0.71 / 0.62): finance's login **and** bookkeeping after R3's move found from days 11–17 to day 35 on every seed (B11-2 / B11-3 with T11-4); R3's readdress passes on seeds 0 and 2; O-real seed 2's D2 still one day late (passes only with the reverted T11-5 / T11-6) | partial |
@@ -8449,7 +8449,7 @@ Their work is in the checkpoint commits after d0e44c0. The evaluator applied one
 | O-real seed 2 checklist ≥ 7 | 7 | 5 | 6 | **5** | ✗ (16.19.11 item 8) |
 | O60 day-8 agreement ≤ 0.05 | 0.047 | 0.047 | 0.077 | **0.047** | ✓ |
 | O60 precision @7 ≥ 0.967 | 1.000 | 0.967 | 0.867 | **0.900** | ✗ |
-| PG4 slopes against attributes ≤ 0.2 | 0.194 / 0.206 | 0.202 / 0.191 | 0.150 / 0.165 | {{PG4SLOPES}} | {{PG4OK}} |
+| PG4 slopes against attributes ≤ 0.2 | 0.194 / 0.206 | 0.202 / 0.191 | 0.150 / 0.165 | 0.150 / 0.188 | ✓ |
 | determinism and full suite unchanged | – | 0 diffs | 0 diffs; 3 456 / 4 / 0 | 0 differences in 17 707 leaves; {{SUITE}} | ✓ |
 
 **Regressions against round 10, in one list** (each is diagnosed in 16.19.11 with its owner; "fin5" = `code10` + the bounds owner's files only, "t5" / "t7" = `code10` + the tree owner's files only, before / after T11-5 and T11-6):
@@ -8645,7 +8645,32 @@ At equal load the P-core costs **0.99×** round 10: the round-11 changes (P04's 
 
 #### 16.19.8 PG4 (7-day scale points)
 
-{{PG4}}
+`scripts/progressive_scale.py`'s round-7 grid, one resumable process per point (`pscale.run_point_resumable`), thread CPU, `code11` (`reports/progressive/scale_r11/`). The points ran one or two at a time beside a PG9 pair or the large point.
+
+| Point (7 days) | memory MB r9 → r10 → r11 | P-core µs/event (thread CPU) r9 → r10 → r11 | scoring p95 µs r9 → r10 → r11 | learning p95 µs r9 → r10 → r11 | wall s r9 → r10 → r11 |
+|---|---|---|---|---|---|
+| 500 IPs, 40 attributes | 32.0 → 29.0 → 28.7 | 1970 → 1860 → 1673 | 282 → 262 → 233 | 1209 → 1163 → 1002 | 209 → 198 → 178 |
+| 20000 IPs, 40 attributes | 33.2 → 33.3 → 33.0 | 1813 → 1556 → 1369 | 332 → 324 → 265 | 1436 → 1334 → 1115 | 1779 → 1501 → 1339 |
+| 500 IPs, 340 attributes | 49.4 → 40.0 → 39.6 | 2964 → 2650 → 2502 | 649 → 580 → 568 | 1926 → 1732 → 1612 | 323 → 290 → 275 |
+| 20 servers | 36.9 → 35.7 → 35.2 | 19128 → 18621 → 18009 | 670 → 755 → 683 | 1334 → 1379 → 1301 | 101 → 99 → 96 |
+| 100 servers | 54.9 → 51.4 → 51.3 | 17985 → 17438 → 16897 | 574 → 618 → 605 | 1385 → 1509 → 1369 | 221 → 215 → 208 |
+| 300 servers | 72.5 → 67.9 → 67.3 | 16488 → 17665 → 15848 | 462 → 513 → 446 | 1452 → 1604 → 1358 | 505 → 547 → 490 |
+
+**PG4 checks:**
+
+| Check | Target | Round 8 | Round 9 | Round 10 | Round 11 |
+|---|---|---|---|---|---|
+| memory slope vs IPs | ≤ 0.15 | 0.016 | 0.010 | 0.037 | 0.038 |
+| CPU / event slope vs IPs | ≤ 0.1 | −0.066 | −0.022 | −0.048 | −0.054 |
+| memory slope vs attributes | ≤ 0.2 | 0.194 | **0.202** | 0.150 | 0.150 |
+| CPU / event slope vs attributes | ≤ 0.2 | **0.206** | 0.191 | 0.165 | 0.188 |
+| memory slope vs systems | ≤ 0.3 | 0.251 | 0.249 | 0.237 | 0.239 |
+| idle system after ≥ 1 day | ≤ 1 MB | 0.39 MB | 0.39 MB | 0.39 MB | 0.39 MB |
+| largest tree | ≤ 40 MB | 19.4 MB | 18.5 MB | 11.6 MB | 11.5 MB |
+| scoring p95 (max over points) | ≤ 100 µs | **1 159 µs** | **670 µs** | **755 µs** | **683 µs** |
+| learning p95 (max over points) | ≤ 250 µs | **3 293 µs** | **1 926 µs** | **1 732 µs** | **1 612 µs** |
+
+**Reading.** Both attribute slopes stay within the 0.2 target (memory 0.150 = round 10; CPU 0.165 → 0.188, within the ±0.03 spread of repeated points measured in round 10 — the 40-attribute point got cheaper per event (1 860 → 1 673 µs) more than the 340-attribute point (2 650 → 2 502 µs) on a less loaded host). Every memory figure is round 10's or lower; per-event costs are 0.90–0.95× round 10 (host load 0.87×). Both latency budgets are still missed by about 7× (OC8-4).
 
 #### 16.19.9 Variants: O-real, O-red, O60
 
@@ -8790,7 +8815,7 @@ The rule for this round: fix only clear defects found before the final runs; onc
 #### 16.19.12 Open issues (round 11 → owners)
 
 **For the lead (decisions).**
-1. *The round-11 bar.* Met: pack O recall kept, checklist 47/50, anomalies / sign test / FAR ≥ MEDIUM kept, O-red kept in full, O-real seed 1 recall @35 0.734 ≥ 0.722 with finance's post-move login rows found (on every seed, days 17–35), O60 agreement 0.047, PG4 {{PG4OK2}}, determinism and the suite. Not met: pack O CE 0.060 (target 0.059; round 10 0.071), pack O precision @21 median 0.968 (pooled 0.979, the best of any round), O-real seed 2's D2, bindings @14 (2/6) and checklist (5/10), O60 precision @7 0.900. New regressions: pack O seed 1's D4 (16.19.11 item 1), the precision @14 median, O-real's late GA.oa.documents rows (item 7), T11-4's 综合部 who (item 8), O-real seed 2's FAR / R11 (item 9).
+1. *The round-11 bar.* Met: pack O recall kept, checklist 47/50, anomalies / sign test / FAR ≥ MEDIUM kept, O-red kept in full, O-real seed 1 recall @35 0.734 ≥ 0.722 with finance's post-move login rows found (on every seed, days 17–35), O60 agreement 0.047, PG4 slopes (0.150 / 0.188), determinism and the suite. Not met: pack O CE 0.060 (target 0.059; round 10 0.071), pack O precision @21 median 0.968 (pooled 0.979, the best of any round), O-real seed 2's D2, bindings @14 (2/6) and checklist (5/10), O60 precision @7 0.900. New regressions: pack O seed 1's D4 (16.19.11 item 1), the precision @14 median, O-real's late GA.oa.documents rows (item 7), T11-4's 综合部 who (item 8), O-real seed 2's FAR / R11 (item 9).
 2. *EV11-2 against O-real seed 2's D2.* With T11-5 / T11-6, pack O seed 0 loses FIN.finance.login#0 on days 11–21 (a development seed; bindings @14 6/6 → 3/6) and O-real seed 2's D2 passes; without them (the final code) the reverse. The final code keeps the revert. Re-land T11-5 / T11-6 only with a fix of the seed-0 loss (item 5 below).
 3. *Item 1b* (the tree owner's question): should P04's statement confidence leave out the `~net` transport facet the scorer never judges (`net.win`, `net.pkts_*`, `net.dur_ms` bands), or should the scorer judge transport clauses? Pack O CE is now balanced (stated 0.953, held 0.950), so the remaining 0.060 is not one-sided.
 
