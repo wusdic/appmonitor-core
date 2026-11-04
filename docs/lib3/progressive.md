@@ -8641,7 +8641,21 @@ The profile still gets more precise and more confident the longer it runs (preci
 
 At equal load the P-core costs **0.99×** round 10: the round-11 changes (P04's stale-target drop, P09's censored-date handling, P03's readdress notes, P14's colleague lookup) cost nothing measurable.
 
-{{PG9}}
+**Packs A and E, PG9** (`scripts/progressive_pg9.py`'s pair job, default registry, seed 0, one mode per process, thread CPU; `reports/progressive/pg9_r11/`). The pairs ran beside one other heavy process (the bisection runs or PG4 points), so only the ratios within a pair are compared.
+
+| | Pack A full | Pack A bounded | Pack E full | Pack E bounded |
+|---|---|---|---|---|
+| gate 1 detected (within deadline) | 12/12 (8) | 12/12 (8) | 3/3 (0) | 3/3 (2) |
+| gate 3 incidents ≥ LOW / ≥ MEDIUM / HIGH | 18 / 7 / 2 | 17 / **8** / 2 | 6 / 1 / 0 | 5 / 0 / 0 |
+| gate 8 T9 / T9b | ✓ / ✓ | ✓ / ✗ | – | – |
+| lib-3 CPU p95 / mean per live tick (ms) | 1 269 / 700 | 1 075 / 606 (**0.85** / 0.86) | 320 / 214 | 302 / 206 (**0.94** / 0.96) |
+| round 10 | 12/12 (8), 18 / 7 / 2, ✓ / ✓ | 12/12 (8), 17 / 8 / 2, ✓ / ✗, 0.85 / 0.86 | 3/3 (0), 6 / 1 / 0 | 3/3 (2), 5 / 0 / 0, 0.87 / 0.93 |
+
+All four pair runs are **identical to round 10 in every non-timing leaf** (564 / 556 / 179 / 172 leaves): the round-11 changes leave lib-3 / lib-4 on packs A and E unchanged. Pack A's bounded gate 3 is still 8 against 7 MEDIUM (rounds 8–10's open issue). Pack E's bounded / full CPU ratio rose 0.87 → 0.94 (the full run beside the O-real bisection, the bounded one beside PG4 points; still ≤ 1).
+
+**Large point** (pack O with 1 000 transient public IPs over 84 h; the full run beside the last PG4 point, then beside the bounded run; thread CPU of lib-3 per tick over the 336 common ticks): full p95 / mean 6.43 / 3.49 s, bounded 3.07 / 1.59 s, **ratio 0.48 / 0.46** (round 10: 0.43 / 0.42; round 9: 0.45 / 0.45) — still within the 0.5 target; the full run got cheaper per tick (7.77 → 6.43 s p95) more than the bounded one (3.32 → 3.07 s) on a less loaded host. Peak RSS 5.8 GB (full) against 4.3 GB (bounded), 1 044 known IPs at the end, 0 exceptions in both modes — as in rounds 8–10. PG9's gate (`reports/progressive/pg9_r11/pg9.json`): every check passes except pack A's gate 3 (8 against 7), as in rounds 8–10.
+
+{{AE}}
 
 #### 16.19.8 PG4 (7-day scale points)
 
