@@ -210,6 +210,7 @@ EXC_SAVE_BITS = 2.0
 EXC_N_CONF = 10.0
 PRUNE_RUNS = 3
 TG_STALE_DAYS = 2                # (round 11) a target summary unlearned this many days of the node's rows is dropped
+TG_HARD = 2 * (M_T + 4)          # (round 11) summaries a node holds at most while keeping slot flickers
 PRUNE_MIN_AGE = 7 * DAY        # a split's children have this long before it can be pruned
 TAU_MERGE = 0.02
 _NOVAL = object()                # _pairs: a request's values not read yet
@@ -1362,8 +1363,30 @@ class PatternTreeEngine(Engine):
                 if _has_rows(nd.targets[a], t) and (last is None or d_last - int(last) >= TG_STALE_DAYS):
                     _forget_target(nd, a)
         if len(nd.targets) > M_T + 4:              # bounded: drop summaries no longer targeted
-            for a in [a for a in nd.targets if a not in keep][:len(nd.targets) - M_T]:
+            # (round 11) the longest-untargeted first; one targeted within
+            # TG_STALE_DAYS of the node's latest row is a slot flicker (above)
+            # and is kept unless the node holds more than TG_HARD summaries.
+            # Pack O seed 3 (round 10): the OA approve node held 24 summaries
+            # on day 2; on day 3 it inherited the system list (its P05 node
+            # override missing for one refit) and this cap deleted every
+            # untargeted one, body.kv.opinion with them; made again on day 4
+            # from that day's rows, P07 could not show the opinion set closed
+            # (Good-Turing U 0.112 vs the rarest member's 0.099 on day 8; 0.025
+            # vs 0.159 with the unbroken summary) until day 11, and
+            # GA.oa.approvals#2's closed opinion set was missing on days 6-10
+            d_l = _local_day(float(nd.last_seen), lc.off) if nd.last_seen is not None else None
+
+            def age(a: str) -> float:
+                last = td.get(a)
+                return math.inf if (last is None or d_l is None) else float(d_l - int(last))
+            n_drop = len(nd.targets) - M_T
+            for a in sorted((a for a in nd.targets if a not in keep), key=lambda a: (-age(a), a)):
+                if n_drop <= 0:
+                    break
+                if age(a) < TG_STALE_DAYS and len(nd.targets) <= TG_HARD:
+                    continue
                 _forget_target(nd, a)
+                n_drop -= 1
         if td:
             for a in [a for a in td if a not in nd.targets]:
                 del td[a]

@@ -134,7 +134,11 @@ DAYS = 4.0
 # deliberately, by the tree owner: a node's reference keeps its tracked
 # groups' own bands ('hold_g', pattern_tree._group_bands; empty in this
 # stream) and a group's held-out record no longer judges the node's who list.
-GOLDEN = {"model.ptree": "4661aa9350d5206e1c775742de924aa2cb41ca73",
+# Re-recorded a third time in round 11 (ptree 7af6ea2b...; attrsel unchanged),
+# deliberately, by the tree owner: the bounded cap on a node's summaries drops
+# the longest-untargeted first and keeps one targeted within TG_STALE_DAYS
+# unless the node holds more than TG_HARD (pattern_tree._drop_stale_targets).
+GOLDEN = {"model.ptree": "7af6ea2be7582022861b4b664a175bf6b2057731",
           "model.attrsel": "00628c79324d13395bd185ad35bb7fd3f8159fbc"}
 
 
