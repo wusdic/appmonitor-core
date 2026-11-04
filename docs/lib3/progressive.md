@@ -8441,7 +8441,7 @@ Their work is in the checkpoint commits after d0e44c0. The evaluator applied one
 | pack O example checklist back to 47/50 | 47/50 | 47/50 | 46/50 | **47/50** (seed 1's range clause passes again, T11-3) | ✓ |
 | pack O anomalies 50/50, sign test 5/5, FAR ≥ MEDIUM 0.0005 | 50/50, 4/5, 0.0005 | 50/50, 5/5, 0.0005 | 50/50, 5/5, 0.0005 | 50/50, 5/5, 0.0005 [0.0004–0.0009] | ✓ |
 | pack O precision @14 kept (round 10's gain) | 0.955 | 0.941 | 0.967 | **0.956** (pooled 275 / 286 = 0.962, equal to round 10) | ✗ on the median (16.19.11 item 2) |
-| pack O D1–D5 kept | | | 3 / 5 / 5 / 5 / 4 | 3 / 5 / 5 / **4** / 4 (seed 1's D4) | ✗ (16.19.11 item 3) |
+| pack O D1–D5 kept | | | 3 / 5 / 5 / 5 / 4 | 3 / 5 / 5 / **4** / 4 (seed 1's D4) | ✗ (16.19.11 item 1) |
 | O-red seed 0: FAR ≥ MEDIUM 0.0002, D1–D5, A4, precision @14 0.982 | | | all | 0.0002, PPPPP, A4 detected, 0.982 | ✓ |
 | O-real seed 2 D2 passes | ✓ | ✓ | ✗ | ✗ (passes with T11-5 / T11-6, which EV11-2 reverted: 16.19.11 item 6) | ✗ |
 | O-real seed 2 bindings @14 ≥ 3/6 | 3/6 | 3/6 | 0/6 | **2/6** | ✗ |
@@ -8458,9 +8458,9 @@ Their work is in the checkpoint commits after d0e44c0. The evaluator applied one
 3. Pack O seed 3 FAR ≥ MEDIUM 0.0007 → 0.0009 (one more incident; t7 has it too — tree). Pack O FAR ≥ LOW median 0.0011 → 0.0013 (seed 1).
 4. Pack O recall @7 of seed 0 0.545 → 0.515 and O60's 0.500 → 0.469 (PUB.portal.visit#1, B11-1: bounds); seed 1 @18 0.951 → 0.927 (visit#3 on days 18–19, bounds); seed 4 @10 0.805 → 0.780 (visit#2 on day 10). Recall @14 / @21 are unchanged or better on every seed.
 5. Pack O ECE @14 seeds 1 and 2 0.083 / 0.069 → 0.099 / 0.098 (tree: t5 has the same); confirmed statements on day 21 76 → 67 (median; seed 1 77 → 67, tree).
-6. O-real seed 2: D2 still fails, bindings @14 2/6, checklist 6 → 5/10 (the 综合部 who clause, tree), FAR ≥ LOW 0.0017 → 0.0022 and ≥ MEDIUM 0.0009 → 0.0010 (tree), precision @14 0.976 → 0.963, R11 (scanner) passes → fails (portal growth 0 → 0.143, tree).
+6. O-real seed 2: D2 still fails, bindings @14 2/6, checklist 6 → 5/10 (the 综合部 who clause: T11-4 names the moved finance clerk as a 综合部 member, a defect — 16.19.11 item 8), FAR ≥ LOW 0.0017 → 0.0022 and ≥ MEDIUM 0.0009 → 0.0010 (tree), precision @14 0.976 → 0.963, R11 (scanner) passes → fails (portal growth 0 → 0.143, tree).
 7. O-real seeds 0–2: GA.oa.documents rows lost late (seed 0 days 33–35 with GA.mail#0, seed 1 days 30–35, seed 2 days 33–35): seed 0's recall @35 0.709 → **0.696** (still above rounds 8 / 9's 0.633). O-real seed 1 CE 0.086 → 0.092.
-8. O-red precision @21 0.954 → 0.938 (one claim, tree: t5 has it).
+8. O-red precision @21 0.954 → 0.938 (one claim, tree: t5 has it); O60 precision @7 0.933 (`fin5`) → 0.900 with the tree files.
 9. Still open, not regressions of this round: pack O seed 3's GA.oa.approvals#2 on days 6–10 (item 6), O-real seed 1's A5, the O60 / pack O small-n windows behind precision @7.
 
 #### 16.19.1 What was measured
