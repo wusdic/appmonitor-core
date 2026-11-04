@@ -142,7 +142,12 @@ DAYS = 4.0
 # deliberately, by the tree owner: rows replayed into a node (route-wait rows,
 # a split's inherited rows and seeded values) mark their targets' last-targeted
 # day (pattern_tree._mark_tgd).
-GOLDEN = {"model.ptree": "1307ea00f6ed7093360806f16ab661cb27db1471",
+# Back to the second round-11 digest (ptree 4661aa93...), deliberately, by the
+# round-11 evaluator: the third and fourth changes (T11-5 / T11-6, progressive.md
+# §16.19.3 EV11-2) were reverted - they did not recover their target (pack O
+# seed 3's GA.oa.approvals#2 on days 6-10) and lost FIN.finance.login#0 on days
+# 11-21 of pack O seed 0 (bindings @14 6/6 -> 3/6).
+GOLDEN = {"model.ptree": "4661aa9350d5206e1c775742de924aa2cb41ca73",
           "model.attrsel": "00628c79324d13395bd185ad35bb7fd3f8159fbc"}
 
 
