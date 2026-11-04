@@ -163,7 +163,7 @@ the changes made by the adversarial review of 2026-09-29 and why.
   - **未达到 / 退步**：种子 2 的 D2 仍晚一天（只有带上被撤回的 T11-5 / T11-6 时才通过）、第 14 天绑定 2/6（目标 3）、核对 5/10（目标 7：T11-4 从混合了财务人员的学习群组把 .2.51 加进了综合部的 who，评估者认为是缺陷，补丁提案见 §16.19.12 第 4 条）；种子 2 的 ≥ LOW 误报 0.0017 → 0.0022、R11 不再通过；三个种子在最后几天丢 GA.oa.documents（树负责人的文件）。
 - **O60**：第 8 天与包 O 的召回一致性 0.077 → **0.047**（≤ 0.05，恢复）；第 7 天精确 0.867 → 0.900（目标 0.967 未达到）。
 - **PG4 / PG9 / 成本**：PG4 内存 / 每事件 CPU 对属性数斜率 0.150 / 0.188（第十轮 0.150 / 0.165，仍 ≤ 0.2），最大树 11.5 MB；同等负载下 P 内核为第十轮的 0.99 倍；评分 / 学习 p95 683 / 1 612 µs，仍约为预算的 7 倍。PG9 仍只差包 A 有界模式多 1 个 ≥ MEDIUM 事件；包 A、E 的成对运行与第十轮逐叶相同；有界 / 全量 CPU p95 包 A 0.85、包 E 0.94；大规模点 0.48（≤ 0.5；第十轮 0.43）。
-- **确定性与测试**：两个散列种子下 17 707 个评分与示例叶子 0 处差异；{{ZH_SUITE}}
+- **确定性与测试**：两个散列种子下 17 707 个评分与示例叶子 0 处差异；全套测试 3 481 通过、4 跳过、0 失败（第十轮 3 456 / 4 / 0）。
 
 真实日志试点未做。逐句状态见 §3.1，第十一轮完整结果见 §16.19（第十轮在 §16.18），中文完整版见主设计文档库三 §3.0、§3.6、§3.7、§3.8.0–§3.8.0c（第十轮；第九轮在 §3.8.0d）。
 
@@ -8450,7 +8450,7 @@ Their work is in the checkpoint commits after d0e44c0. The evaluator applied one
 | O60 day-8 agreement ≤ 0.05 | 0.047 | 0.047 | 0.077 | **0.047** | ✓ |
 | O60 precision @7 ≥ 0.967 | 1.000 | 0.967 | 0.867 | **0.900** | ✗ |
 | PG4 slopes against attributes ≤ 0.2 | 0.194 / 0.206 | 0.202 / 0.191 | 0.150 / 0.165 | 0.150 / 0.188 | ✓ |
-| determinism and full suite unchanged | – | 0 diffs | 0 diffs; 3 456 / 4 / 0 | 0 differences in 17 707 leaves; {{SUITE}} | ✓ |
+| determinism and full suite unchanged | – | 0 diffs | 0 diffs; 3 456 / 4 / 0 | 0 differences in 17 707 leaves; 3 481 / 4 / 0 | ✓ |
 
 **Regressions against round 10, in one list** (each is diagnosed in 16.19.11 with its owner; "fin5" = `code10` + the bounds owner's files only, "t5" / "t7" = `code10` + the tree owner's files only, before / after T11-5 and T11-6):
 1. Pack O seed 1: **D4 fails** (a MEDIUM incident on the PUB login 10.60.123.142, Saturday 22:47), FAR ≥ MEDIUM 0.0005 → 0.0009, ≥ LOW 0.0011 → 0.0014 — tree (T11-1; the tree owner's diagnosis).
@@ -8623,7 +8623,7 @@ The profile still gets more precise and more confident the longer it runs (preci
 #### 16.19.6 Determinism and tests
 
 - **Determinism.** Pack O seed 0 under `PYTHONHASHSEED=0` and `=1` in separate processes: **0 differences** in 17 707 score and example leaves (timings excluded).
-- **Full suite** on the final tree: {{SUITE_LONG}} The pre-EV11 tree passed 3 482 / 4 / 0 in 18 min 11 s (round 10: 3 456 / 4 / 0). `test_p04_p05_stream_equivalence.py` passes with the digest EV11-2 set back (ptree `4661aa93…`, the tree owner's second round-11 record); the bounds owner's relative `test_calib` budget passed.
+- **Full suite** on the final tree: **3 481 passed, 4 skipped, 0 failed** in 19 min 10 s (round 10: 3 456 / 4 / 0; +27 owner tests, +1 EV11-1 test, −2 tests removed with EV11-2). The pre-EV11 tree passed 3 482 / 4 / 0 in 18 min 11 s (round 10: 3 456 / 4 / 0). `test_p04_p05_stream_equivalence.py` passes with the digest EV11-2 set back (ptree `4661aa93…`, the tree owner's second round-11 record); the bounds owner's relative `test_calib` budget passed.
 
 #### 16.19.7 Cost, packs A / E and PG9
 
