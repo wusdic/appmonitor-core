@@ -8623,7 +8623,7 @@ The profile still gets more precise and more confident the longer it runs (preci
 #### 16.19.6 Determinism and tests
 
 - **Determinism.** Pack O seed 0 under `PYTHONHASHSEED=0` and `=1` in separate processes: **0 differences** in 17 707 score and example leaves (timings excluded).
-- **Full suite** on the final tree: **3 481 passed, 4 skipped, 0 failed** in 19 min 10 s (round 10: 3 456 / 4 / 0; +27 owner tests, +1 EV11-1 test, −2 tests removed with EV11-2). The pre-EV11 tree passed 3 482 / 4 / 0 in 18 min 11 s (round 10: 3 456 / 4 / 0). `test_p04_p05_stream_equivalence.py` passes with the digest EV11-2 set back (ptree `4661aa93…`, the tree owner's second round-11 record); the bounds owner's relative `test_calib` budget passed.
+- **Full suite** on the final tree: **3 481 passed, 4 skipped, 0 failed** in 19 min 10 s (round 10: 3 456 / 4 / 0; +26 owner tests, +1 EV11-1 test, −2 tests removed with EV11-2). The pre-EV11 tree passed 3 482 / 4 / 0 in 18 min 11 s (round 10: 3 456 / 4 / 0). `test_p04_p05_stream_equivalence.py` passes with the digest EV11-2 set back (ptree `4661aa93…`, the tree owner's second round-11 record); the bounds owner's relative `test_calib` budget passed.
 
 #### 16.19.7 Cost, packs A / E and PG9
 
