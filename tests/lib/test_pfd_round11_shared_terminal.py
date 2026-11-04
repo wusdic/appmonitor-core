@@ -1,4 +1,4 @@
-"""Proposed for the bounds owner (lib/pfd.fit_pair): a shared terminal whose small value set has not
+"""EV11-1 (the tree owner's proposal, applied by the evaluator; lib/pfd.fit_pair): a shared terminal whose small value set has not
 closed yet (2 users over 8 logins: U = 0.5/9 > SET_U) is no counter-example of the node's binding.
 O-real seed 2 (round 10, day 12-15): family login node fam:1 0:18, 192.168.1.40 (jack2 x5, rose2 x3)
 judged -> g3 0.059 > FD_G3 -> holds False -> no net.src -> username binding stated (bindings @14 0/6)."""

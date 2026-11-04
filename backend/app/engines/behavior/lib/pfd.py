@@ -71,6 +71,7 @@ FD_G3 = 0.05
 SET_U = 0.05
 SET_K = 4
 SET_COVER = 0.95
+SET_U_OPEN = 0.2         # (round 11) an unclosed small set: U above SET_U only for want of events
 S_CAP = 20.0
 SCREEN_HY = 0.5
 SCREEN_HY_SET = 1.0
@@ -670,6 +671,14 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
                 ent["shares"] = [float(sev[str(v)] / n) if n > 0 else 0.0 for v in ent["set"]]
             elif multi_source(c, k, n, n_bind):
                 ent["multi"] = True
+            elif 2 <= len(sset) <= SET_K and acc >= SET_COVER * n - 1e-9 and c["U"] <= SET_U_OPEN:
+                # (round 11) a small set whose closure the evidence cannot show yet
+                # (Good-Turing U >= 0.5 / (n + 1) > SET_U below n = 10 events): a
+                # terminal two users share, undecided - neither a binding nor a
+                # counter-example of the node's binding. O-real seed 2 (round 10,
+                # days 12-15): 192.168.1.40 (jack2 x5, rose2 x3) at the family login
+                # node vetoed every other source's binding (g3 0.059 > FD_G3)
+                ent["set_open"] = sorted(sset, key=lambda v: (type(v).__name__, str(v)))
         table[_jx(x)] = ent
     N = sum(c["n"] for c in heavy.values())
     # set-bound sources (shared terminals) are explained by their sets: they
@@ -688,7 +697,7 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
     # binding of those nodes was credential-grade: A2 (192.168.1.21 using
     # rose's credential) was judged against no binding on seed 1
     judged = [x for x in heavy if (heavy[x]["n"] >= n_bind or table[_jx(x)].get("bound"))
-              and not table[_jx(x)].get("multi")]
+              and not table[_jx(x)].get("multi") and not table[_jx(x)].get("set_open")]
     ents = dict(zip(heavy, table.values()))
     tot_mass = sum(heavy[x]["mass"] for x in judged)
     set_mass = sum(heavy[x]["mass"] for x in judged if ents[x].get("set"))
