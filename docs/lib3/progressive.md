@@ -162,7 +162,7 @@ the changes made by the adversarial review of 2026-09-29 and why.
   - 第 35 天召回 0.709 / 0.709 / 0.620 → 0.696 / **0.734** / 0.671（种子 1 达到 ≥ 0.722 的目标）；核对 5 / 6 / 6 → 7 / 7 / 5；第 14 天绑定 3 / 3 / 0 → 5 / 5 / 2；校准误差 0.118 / 0.086 / 0.156 → 0.075 / 0.092 / 0.100；R3 换址在种子 0、2 上第一次通过。
   - **未达到 / 退步**：种子 2 的 D2 仍晚一天（只有带上被撤回的 T11-5 / T11-6 时才通过）、第 14 天绑定 2/6（目标 3）、核对 5/10（目标 7：T11-4 从混合了财务人员的学习群组把 .2.51 加进了综合部的 who，评估者认为是缺陷，补丁提案见 §16.19.12 第 4 条）；种子 2 的 ≥ LOW 误报 0.0017 → 0.0022、R11 不再通过；三个种子在最后几天丢 GA.oa.documents（树负责人的文件）。
 - **O60**：第 8 天与包 O 的召回一致性 0.077 → **0.047**（≤ 0.05，恢复）；第 7 天精确 0.867 → 0.900（目标 0.967 未达到）。
-- **PG4 / PG9 / 成本**：{{ZH_PG}}
+- **PG4 / PG9 / 成本**：PG4 内存 / 每事件 CPU 对属性数斜率 0.150 / 0.188（第十轮 0.150 / 0.165，仍 ≤ 0.2），最大树 11.5 MB；同等负载下 P 内核为第十轮的 0.99 倍；评分 / 学习 p95 683 / 1 612 µs，仍约为预算的 7 倍。PG9 仍只差包 A 有界模式多 1 个 ≥ MEDIUM 事件；包 A、E 的成对运行与第十轮逐叶相同；有界 / 全量 CPU p95 包 A 0.85、包 E 0.94；大规模点 0.48（≤ 0.5；第十轮 0.43）。
 - **确定性与测试**：两个散列种子下 17 707 个评分与示例叶子 0 处差异；{{ZH_SUITE}}
 
 真实日志试点未做。逐句状态见 §3.1，第十一轮完整结果见 §16.19（第十轮在 §16.18），中文完整版见主设计文档库三 §3.0、§3.6、§3.7、§3.8.0–§3.8.0c（第十轮；第九轮在 §3.8.0d）。
@@ -279,7 +279,7 @@ Round 10's table is kept in git history (commit d0e44c0), round 9's in e5970cb, 
 | S17 | type correct 1.0; informative kept 1.0; a target summary a node no longer learns is dropped after 2 days of its rows (T11-1) | met (measured items) |
 | S18 | 16 P engines + B24–B29 run together on pack O | met (structure) |
 | S19 | 10 top facets, 22 default sub-facets | met (structure) |
-| S20 | {{S20}} | not met |
+| S20 | arms in truth 0.833 (same); switches after day 7 ≤ 1; who level within 5 % 2/5; O-real R-items 5 / 4 / 4 per seed (4 / 4 / 4: R3's readdress passes on seeds 0 and 2, seed 2 loses R11); PG9 fails on one check only — pack A bounded 8 incidents ≥ MEDIUM against 7 (same); packs A / E at 0.85 / 0.94 of full mode's lib-3 CPU p95 (0.85 / 0.87); pack E bounded 5 / 0 / 0 against full 6 / 1 / 0 (same); the 1 000-IP, 84 h point 0.48 (0.43); packs A / E identical to round 10 in every non-timing leaf | not met |
 | S21 | 5 seeds; O-red (never tuned on: recall @14 0.784 (0.784), precision @14 0.982 (0.982), anomalies 10/10, FAR ≥ MEDIUM 0.0002 (0.0002), D1–D5 all pass, CE 0.131 (0.151)); O60 day-8 agreement **0.047** (0.077; within 0.05 again); O-real 3 seeds (recall @35 0.67–0.73 (0.62–0.71), anomalies 9–10 of 10, FAR ≥ MEDIUM 0.0006–0.0012, CE 0.075–0.100 (0.086–0.156)); pack O seed 0 identical under two hash seeds (17 707 score and example leaves); no real-log pilot | not measured (real environment) |
 
 ---
@@ -8518,7 +8518,19 @@ Medians [min–max] over seeds 0–4; **bold** = worse than round 10.
 
 **Gate status** (`compute_pgates` over pack O seeds 0–4 with the O-red / O60 / O-real variants; `reports/progressive/progressive_report.json` against `round10/`, `round9/` and `round8/`). Only the checks whose value or status changed are listed.
 
-{{GATES}}
+| Gate | r8 | r9 | r10 | r11 | Checks that changed (r8 → r9 → r10 → r11) |
+|---|---|---|---|---|---|
+| PG1 | fail | fail | fail | fail | recall @14 0.868 → 0.895 → 0.895 → 0.895 (target 0.9); precision @14 0.955 → 0.941 → 0.967 → **0.956**; O-red precision @14 0.982 → 0.891 → 0.982 → 0.982 |
+| PG2 | fail | fail | fail | fail | calibration error 0.059 → 0.053 → 0.071 → **0.060** (target 0.05); sign test 0.8 → 1.0 → 1.0 → 1.0 |
+| PG3 | pass | pass | pass | pass | – |
+| PG4 | fail | fail | fail | fail | memory slope vs attributes 0.194 → 0.202 → 0.150 → 0.150; CPU / event slope vs attributes 0.206 → 0.191 → 0.165 → 0.188; largest tree 19.4 → 18.5 → 11.6 → 11.5 MB; scoring / learning p95 1 159 / 3 293 → 670 / 1 926 → 755 / 1 732 → 683 / 1 612 µs (fails only on the two latency budgets) |
+| PG5 | fail | fail | fail | fail | **D4 1.0 → 1.0 → 1.0 → 0.8** (seed 1); D1 3/5, D5 4/5 unchanged |
+| PG6 | pass | pass | pass | pass | FAR ≥ LOW 0.00126 → 0.00126 → 0.00109 → 0.00126; ≥ MEDIUM 0.00054 throughout; pattern violations ≥ LOW 0.0058 → 0.0058 → 0.0045 → 0.0045 |
+| PG7 | pass | pass | pass | pass | – |
+| PG8 | fail | fail | fail | fail | – (arms in truth 0.833, switches after day 7 ≤ 1, who level within 5 % 0.4) |
+| PG9 | fail | fail | fail | fail | pack A gate 3 still 8 against 7 (the only failing check); bounded / full CPU p95 A 0.81 → 0.87 → 0.85 → 0.85, E 0.81 → 0.85 → 0.87 → 0.94, large point 0.43 → 0.45 → 0.43 → 0.48 |
+| PG10 | fail | fail | fail | fail | – (OA statement day 11 0.2 → 0.4 → 0.4 → 0.4) |
+| PG11 | fail | fail | fail | fail | **R3 adapted on 0 → 0 → 0 → 2 O-real seeds** (seeds 0 and 2); R11 1 → 1 → 1 → **0** (seed 2 lost); R4 1 → 0 → 1 → 1; O-real recall drop at day 21 against pack O 0.202 → 0.220 → 0.220 → 0.182 |
 
 Pack O checks:
 
