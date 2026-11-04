@@ -138,7 +138,11 @@ DAYS = 4.0
 # deliberately, by the tree owner: the bounded cap on a node's summaries drops
 # the longest-untargeted first and keeps one targeted within TG_STALE_DAYS
 # unless the node holds more than TG_HARD (pattern_tree._drop_stale_targets).
-GOLDEN = {"model.ptree": "7af6ea2be7582022861b4b664a175bf6b2057731",
+# Re-recorded a fourth time in round 11 (ptree 1307ea00...; attrsel unchanged),
+# deliberately, by the tree owner: rows replayed into a node (route-wait rows,
+# a split's inherited rows and seeded values) mark their targets' last-targeted
+# day (pattern_tree._mark_tgd).
+GOLDEN = {"model.ptree": "1307ea00f6ed7093360806f16ab661cb27db1471",
           "model.attrsel": "00628c79324d13395bd185ad35bb7fd3f8159fbc"}
 
 

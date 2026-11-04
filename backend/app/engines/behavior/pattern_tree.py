@@ -2325,7 +2325,8 @@ class PatternTreeEngine(Engine):
             ts_r, ip, day, dt, minute, mass, om, ext, sus, tv, _cv = row
             nd.update_core(ts_r, mass, om, lc.who_keys(ip), ip, dt, minute, day, suspicious=sus)
             for attr, val in tv.items():
-                self._apply_target(lc, nd, attr, val, ts_r, mass, om, day, ext, ip)
+                if self._apply_target(lc, nd, attr, val, ts_r, mass, om, day, ext, ip) is not None:
+                    _mark_tgd(nd, attr, day)
         st_ = lc.aux["stats"]
         st_["route_rows_inherited"] = st_.get("route_rows_inherited", 0) + len(rows)
 
@@ -2409,7 +2410,8 @@ class PatternTreeEngine(Engine):
             skip = seeded if cid in named else ()
             for attr, val in tv.items():
                 if attr not in skip:
-                    self._apply_target(lc, child, attr, val, ts_r, mass, om, day, ext, ip)
+                    if self._apply_target(lc, child, attr, val, ts_r, mass, om, day, ext, ip) is not None:
+                        _mark_tgd(child, attr, day)
             n += 1
         st_ = lc.aux["stats"]
         st_["rows_inherited"] = st_.get("rows_inherited", 0) + n
@@ -2472,6 +2474,7 @@ class PatternTreeEngine(Engine):
                     # mass = evidence x the leaf's mass / evidence ratio; the evidence
                     # of a seeded value is its split-statistics evidence
                     child.update_target(name, v, ts, c * ratio, c, k, pol, lg)
+                    _mark_tgd(child, name, _local_day(float(ts), lc.off))
         # the children carry the evidence the split statistics already hold for
         # them: evidence units (<= the leaf's own), the local dates their values
         # were seen on and, for a split on the source address, the leaf's who
@@ -3989,6 +3992,30 @@ def _forget_target(nd: PN.Node, a: str) -> None:
     inv = getattr(nd, "inv", None)
     if inv:
         inv.pop(a, None)
+
+
+def _mark_tgd(nd: PN.Node, a: str, day: Optional[int]) -> None:
+    """(round 11) A row replayed into a node (a new route node's waiting rows,
+    a split's inherited rows, a split child's seeded values) was learned with
+    `a` as a target: the node's last-targeted day of `a` (meta 'tgd', read by
+    _drop_stale_targets) is that row's day at least. Without it a summary a
+    node received at its birth had no day and was dropped at the node's first
+    daily check whenever P05's list for the node had moved on: pack O seed 3
+    (round 10), the OA approve node p:oa:0:10, born on day 2 with the parent's
+    rows (24 summaries, body.kv.opinion among them) and learning its own day-2
+    rows under an inherited list without it, lost the opinion summary on day
+    3; made again on day 4, P07's closure test failed until day 11 (Good-
+    Turing U 0.112 vs the rarest member's share 0.099 on day 8; 0.025 vs 0.159
+    unbroken) and GA.oa.approvals#2's closed opinion set was missing on days
+    6-10."""
+    if day is None:
+        return
+    td = nd.meta.get("tgd")
+    if td is None:
+        td = nd.meta["tgd"] = {}
+    d = int(day)
+    if td.get(a) is None or int(td[a]) < d:
+        td[a] = d
 
 
 def _has_rows(sm: Any, t: float) -> bool:
