@@ -8465,7 +8465,7 @@ Their work is in the checkpoint commits after d0e44c0. The evaluator applied one
 
 #### 16.19.1 What was measured
 
-**Code state.** Every final run used **`code11`**: a snapshot of `backend/`, `scripts/` and `data/` built as `code10` plus **only** the owners' files and the evaluator's two changes (the round-10 lesson: no working-tree copy that might hold another agent's files in progress). `diff -rq code10 code11` lists exactly six files: the tree owner's `pattern_tree.py` and `views.py` as of their snapshot `t5` (EV11-2 reverted the later T11-5 / T11-6), the bounds owner's `conformity.py`, `lib/pfd.py`, `lib/pwindows.py` and `time_window.py` as of their snapshot `fin5`, and EV11-1's hunk in `lib/pfd.py`. The working tree equals `code11` (md5 in `reports/progressive/round11_diag/README.txt`). The full suite ran on the same tree.
+**Code state.** Every final run used **`code11`**: a snapshot of `backend/`, `scripts/` and `data/` built as `code10` plus **only** the owners' files and the evaluator's two changes (the round-10 lesson: no working-tree copy that might hold another agent's files in progress). `diff -rq code10 code11` lists exactly six files: the tree owner's `pattern_tree.py` and `views.py` as of their snapshot `t5` (EV11-2 reverted the later T11-5 / T11-6), the bounds owner's `conformity.py`, `lib/pfd.py`, `lib/pwindows.py` and `time_window.py` as of their snapshot `fin5`, and EV11-1's hunk in `lib/pfd.py`. The working tree equals `code11` (md5 of the six files in `reports/progressive/round11_diag/code11_owned_files.md5`). The full suite ran on the same tree.
 
 **Runs** (one restartable queue, `scratchpad/prog11/ev11/evq.py`, at most two heavy processes, one O-real at a time under the machine-wide lock; `scripts/progressive_report.py --checkpoint … --segment-s 600 --skip-existing --no-series --registry progressive_decision`, `PYTHONHASHSEED=0`):
 - Pack O: seeds 0–4, 21 days at 900 s; seed 0 again under `PYTHONHASHSEED=1`.
@@ -8667,7 +8667,7 @@ All four pair runs are **identical to round 10 in every non-timing leaf** (564 /
 
 **Large point** (pack O with 1 000 transient public IPs over 84 h; the full run beside the last PG4 point, then beside the bounded run; thread CPU of lib-3 per tick over the 336 common ticks): full p95 / mean 6.43 / 3.49 s, bounded 3.07 / 1.59 s, **ratio 0.48 / 0.46** (round 10: 0.43 / 0.42; round 9: 0.45 / 0.45) — still within the 0.5 target; the full run got cheaper per tick (7.77 → 6.43 s p95) more than the bounded one (3.32 → 3.07 s) on a less loaded host. Peak RSS 5.8 GB (full) against 4.3 GB (bounded), 1 044 known IPs at the end, 0 exceptions in both modes — as in rounds 8–10. PG9's gate (`reports/progressive/pg9_r11/pg9.json`): every check passes except pack A's gate 3 (8 against 7), as in rounds 8–10.
 
-{{AE}}
+**Packs A and E with `scripts/evaluate.py`** (default registry, full mode, seed 0, `code11`; `reports/progressive/round11_diag/{A,E}_0_full.json`): **identical to round 10** in every non-timing leaf (1 037 and 463 leaves), hence to rounds 8 and 9 — pack A 12/12, 8 within the deadline, incidents 18 / 7 / 2, classes ARI 0.780, gate 7's anti-conservative D⁺ maximum 0.102 (`marg_int`); pack E 3/3, 6 / 1 / 0, ARI 0.797, D⁺ 0.123.
 
 #### 16.19.8 PG4 (7-day scale points)
 
