@@ -8798,7 +8798,7 @@ Every round-10 O-red gain is kept (FAR ≥ MEDIUM 0.0002, D1–D5, A4, precision
 
 The other statements of the example are round 10's too, with three small differences: the report statement (`POST /report/generate`, 17:00–17:15, .121 / .23) now states `net.pkts_down 90 % 在 3–11` where round 10 stated the downstream bytes on n = 8; the renamed approvals pages (`GET /flow/list`, `GET /flow/{num}`) state their upstream bytes on n = 21–22 instead of 12; the finance approval statement covers 12 working days instead of 13 (09:57–11:33、14:58–16:03, confidence 0.96).
 
-**Pack O seed 0, day 21 — department view (综合部).** Unchanged from round 10:
+**Pack O seed 0, day 21 — department view (综合部).** Round 10's text, except the approvals statements' sample sizes noted above:
 
 > 综合部（3 个 IP，2 个行为群组）使用 mail、oa … 综合部 访问 oa（占其活动 82 %）：文档（GET /docs）、…、登录（POST /login）、查看报告（GET /report/form）[10.168.7.121、192.168.1.23]、提交报告（POST /report/generate）[10.168.7.121、192.168.1.23]、查看审批（GET /flow/list）[192.168.1.21]、查看审批（GET /flow/{num}）[192.168.1.21]、审批（POST /flow/{num}/approve）[192.168.1.21]。置信 0.75 · 依据 3 个成员
 >
