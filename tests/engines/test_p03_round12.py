@@ -133,3 +133,75 @@ def test_a_flat_24_hour_stretch_has_no_rare_slot_and_an_empty_one_stays_rare():
     assert SC.when_hdr_table(g)[37] > 0.3
     # tie = 0 is the mid-p HDR table of the smoothed density
     assert np.allclose(SC.when_hdr_table(f, tie=0.0), CF._hdr_table(SC.when_smooth(f)))
+
+
+# ---------------------------------------------------------------- exposure
+def _monitor_today(k_dates: int, cut_h: float):
+    """A 24-hour machine source (one row every 15 minutes, every workday) on
+    a tree whose dates the conformity state remembers (ConfState.day_seen):
+    `k_dates` complete workdays, then the current workday learned up to
+    `cut_h` o'clock (the tick being scored is learned after it)."""
+    fx = Fx()
+    routes = [LOGIN, HEALTH]
+    days = workdays(k_dates + 1)
+    st = CF.ConfState()
+    for k, d in enumerate(days):
+        lday = int((d + 8 * 3600) // 86400.0)
+        st.day_seen("oa", 0, lday)
+        for s in range(96):
+            ts = d + (15 * s + 7) * 60.0
+            if k == k_dates and ts >= d + cut_h * 3600.0:
+                break
+            _learn(fx, routes, MONITOR, HEALTH, ts)
+    tr = fx.tree("oa", routes)
+    for nd in tr.nodes.values():
+        nd.state = "stable"
+    now = days[k_dates] + cut_h * 3600.0 + 1800.0
+    tc = CF._TreeCtx(fx.eng, fx.st, "oa", "oa", CFG, now)
+    return fx, tr, fx.node("oa", HEALTH), tc, st
+
+
+def test_the_slots_still_ahead_today_are_not_thinner_for_a_24_hour_source():
+    """Round 12 (pack O seed 1, the monitor 192.168.9.9): the slots of the
+    rest of the current day hold one date less than the slots behind the
+    learned time, so every evening row of a 24-hour source scored low
+    (p_when 0.01 - 0.1 at k = 2 non-workday dates, a fusion evidence-CUSUM
+    incident on a Sunday). Read per unit of exposure, the source's law is
+    flat again whatever the hour; with no tracker (no state) the masses are
+    read as they are."""
+    for k, cut in ((2, 18.0), (2, 23.0), (4, 21.0)):
+        fx, tr, nd, tc, st = _monitor_today(k, cut)
+        raw, _ = tc.when_table(0, nd, 0, tr)            # no ConfState: masses as they are
+        late = int(cut * 4) + 1
+        assert raw[late] < 0.1, (k, cut, raw[late])
+        tc2 = CF._TreeCtx(fx.eng, fx.st, "oa", "oa", CFG, tc.now)
+        tc2.st = st
+        cur, _ = tc2.when_table(0, nd, 0, tr)
+        h, _ = tc2._when_counts(nd, 0, 0, tr)
+        assert h.max() / h.min() < 1.02, (k, cut, h.min(), h.max())
+        assert cur.min() > 0.3, (k, cut, cur.min())
+        assert cur[late] > 0.3
+
+
+def test_exposure_keeps_an_unused_slot_of_a_day_population_rare():
+    """The exposure only re-weights slots by the dates that could hold them:
+    a login population's empty night stays empty (A4's 03:05)."""
+    fx = Fx()
+    routes = [LOGIN, HEALTH]
+    days = workdays(6)
+    st = CF.ConfState()
+    rng = np.random.default_rng(3)
+    for k, d in enumerate(days):
+        st.day_seen("oa", 0, int((d + 8 * 3600) // 86400.0))
+        for ip in OTHERS:
+            if k == 5:
+                continue                                  # today: nothing learned yet (00:00 - 02:00)
+            _learn(fx, routes, ip, LOGIN, d + (8 * 60 + 30 + 90 * rng.random()) * 60.0)
+    tr = fx.tree("oa", routes)
+    for nd in tr.nodes.values():
+        nd.state = "stable"
+    tc = CF._TreeCtx(fx.eng, fx.st, "oa", "oa", CFG, days[5] + 3 * 3600.0)
+    tc.st = st
+    cur, _ = tc.when_table(0, fx.node("oa", LOGIN), 0, tr)
+    assert cur[int((3 * 60 + 5) // 15)] < 1e-3
+    assert cur[int((9 * 60) // 15)] > 0.2

@@ -262,7 +262,7 @@ SIG_STANDING = 0.02             # share of an address's own signature that is a 
 GROUP_MIN_MEMBERS = 2           # other members with standing that make a node a pattern of their group
 MEMBER_EV = 3.0                 # a source recurring at an ANCESTOR population (back-off) is a member
 CAL_TYPES = ("when", "content", "seq")
-DT_DATES = 8                    # local dates per day type remembered per tree (ConfState.day_seen)
+DT_DATES = 40                   # local dates per day type remembered per tree (ConfState.day_seen; round 12: 8 -> 40, the when exposure)
 READDR_NOTES = 64               # (round 11) readdress candidates of the current local day remembered (ConfState.readdr_note)
 EXPO_DATES = 1                  # complete dates of a day type before a node's own day-type table speaks
 INT_P = 1e-3                    # an hour count is a finding only at this tail (§6.16.4)
@@ -1154,17 +1154,87 @@ class _TreeCtx:
             r = memo[k] = DF.seq_scores(self.pflow, g, a_key, b_key, bits, self.now)
         return r
 
-    def _when_counts(self, nd: Any, daytype: int) -> Tuple[np.ndarray, float]:
+    def _when_counts(self, nd: Any, daytype: int, kind: Optional[int] = None,
+                     tree: Any = None) -> Tuple[np.ndarray, float]:
         """(slot mass, evidence) of a node for a day type, all day types when
-        the day type has < N_MIN evidence (pscore.when_p's back-off)."""
+        the day type has < N_MIN evidence (pscore.when_p's back-off).
+
+        (round 12) The slot mass is read per unit of EXPOSURE (_when_expo):
+        h(s) / E(s), E(s) the decayed number of dates of the day type whose
+        slot s the tree has learned. Without it every slot still ahead of the
+        tree's learned time today held one date less than the slots behind
+        it (and the H_m decay tilted every date by ~10 % from 00:00 to
+        23:45): a 24-hour source's slots of the rest of the day were the
+        lowest of its flat law and its own rows scored p_when 0.01 - 0.1
+        every evening (pack O seed 1, the monitor 192.168.9.9, a Sunday at
+        k = 2 non-workday dates: the slots after the current hour at half
+        density; fusion's evidence CUSUM made incidents of them)."""
         t = self.now
         d = 1 if daytype else 0
         N = nd.when.evidence(d, t)
         h = nd.when.hist[d]
+        ds: Tuple[int, ...] = (d,)
         if N < SC.N_MIN or not self.day_exposed(nd, d):
             N = nd.when.evidence(0, t) + nd.when.evidence(1, t)
             h = nd.when.hist.sum(axis=0)
+            ds = (0, 1)
+        E = None
+        for dd in ds:
+            e = self._when_expo(kind, tree, dd)
+            if e is None:
+                E = None
+                break
+            E = e if E is None else E + e
+        if E is not None:
+            h = np.asarray(h, dtype=np.float64)
+            pos = E > 0
+            if bool(pos.any()) and not bool((h[~pos] > 0).any()):
+                hc = np.zeros_like(h)
+                hc[pos] = h[pos] / E[pos]
+                h = hc
         return h, float(N)
+
+    def _when_expo(self, kind: Optional[int], tree: Any, d: int) -> Optional[np.ndarray]:
+        """(round 12) Per-slot exposure of a tree's day type d at H_m:
+        E(s) = sum over the remembered local dates D of day type d
+        (ConfState.day_seen, DT_DATES) of 2^-((now - t_D,s) / H_m), t_D,s the
+        middle of slot s on date D - weighted by the share of the slot the
+        tree has LEARNED on the current date (through the end of the slot of
+        its root's last learned row; the batch being scored is learned after
+        it). The same decay as the
+        slot masses (pnode.WhenSummary), so h(s) / E(s) is a recency-weighted
+        rate per date. None without the tracker (a tree context outside a
+        run: the slot masses are read as they are). Per tree, day type and
+        batch."""
+        st = getattr(self, "st", None)
+        if st is None:
+            return None
+        k = ("wx", kind, int(d))
+        if k in self.info:
+            return self.info[k]
+        lst = (getattr(st, "dt_dates", None) or {}).get(self.key, {}).get(int(d)) or ()
+        now = float(self.now)
+        today = int((now + self.tz) // DAY)
+        L = now
+        if tree is not None:
+            root = tree.nodes.get(tree.root)
+            ls = getattr(root, "last_seen", None) if root is not None else None
+            # ticks end on slot boundaries: the slot of the last learned row is
+            # learned whole (its later rows belong to the next tick)
+            L = min(now, (math.floor((float(ls) + self.tz) / 900.0) + 1.0) * 900.0 - self.tz) \
+                if ls is not None else -math.inf
+        E = np.zeros(96)
+        for D in lst:
+            if D > today:
+                continue
+            t0 = float(D) * DAY - float(self.tz)
+            w = np.exp2((t0 + _SLOT_MID - now) / PS.H_M)
+            if D == today:
+                w = w * np.clip((L - (t0 + _SLOT_START)) / 900.0, 0.0, 1.0)
+            E += w
+        out = E if bool((E > 0).any()) else None
+        self.info[k] = out
+        return out
 
     def day_exposed(self, nd: Any, d: int) -> bool:
         """(round 7) Whether the node has lived through a COMPLETE local date
@@ -1205,7 +1275,7 @@ class _TreeCtx:
             return self.info[k]
         par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
         prior = self.when_pred(kind, tree, par, daytype) if par is not None else None
-        h, N = self._when_counts(nd, daytype)
+        h, N = self._when_counts(nd, daytype, kind, tree)
         if prior is None:
             f = SC.when_density(h, N) if N > 0 and np.asarray(h).sum() > 0 else None
         else:
@@ -1238,7 +1308,7 @@ class _TreeCtx:
         k = ("wt", kind, nd.id, daytype)
         if k in self.info:
             return self.info[k]
-        h, N = self._when_counts(nd, daytype)
+        h, N = self._when_counts(nd, daytype, kind, tree)
         own = _when_hdr(SC.when_density(h, N)) if N > 0 and np.asarray(h).sum() > 0 else None
         par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
         pt = self.when_ptab(kind, tree, par, daytype) if par is not None else None
@@ -1280,7 +1350,7 @@ class _TreeCtx:
             return hit
         t = self.now
         d = 1 if daytype else 0
-        h, N = self._when_counts(nd, daytype)
+        h, N = self._when_counts(nd, daytype, kind, tree)
         par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
         prior = self.when_pred(kind, tree, par, daytype) if par is not None else None
         pt = self.when_ptab(kind, tree, par, daytype) if par is not None else None
@@ -1661,6 +1731,10 @@ def _hdr_table(f: np.ndarray) -> np.ndarray:
     lo = np.searchsorted(srt, f, "left")
     hi = np.searchsorted(srt, f, "right")
     return np.minimum(1.0, cs[lo] + 0.5 * (cs[hi] - cs[lo]))
+
+
+_SLOT_START = np.arange(96, dtype=np.float64) * 900.0      # 15-minute slot starts (s after local midnight)
+_SLOT_MID = _SLOT_START + 450.0
 
 
 def _when_hdr(f: np.ndarray) -> np.ndarray:
