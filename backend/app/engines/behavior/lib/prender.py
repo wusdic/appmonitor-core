@@ -250,6 +250,19 @@ def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
         hp, cp = who.heavy_set(l, t, PREFIX_COVER)
         if not hp or len(hp) > PREFIX_MAX or cp < PREFIX_COVER - 1e-9:
             continue
+        if l != 4:
+            # (round 12) every prefix the node has seen, when they all fit in the
+            # list: the heavy set stops at 90 % and the statement then claimed
+            # its sources come from the listed prefixes with 1 - (the mass left
+            # out) - a share estimated from a decayed summary of a few days.
+            # O60 seed 0 (round 11, day 7): GET /docs stated three /24s (who
+            # 0.96) and left out 10.168.7.0/24 (综合部's 10.168.7.121), whose
+            # docs rows were more than 4 % of the held-out events; the claim
+            # failed on who alone (precision @7 0.900)
+            have = set(hp)
+            rest = [k for k, _c, g, _e in who.levels[l].items(t) if k not in have and g > 0]
+            if rest and len(hp) + len(rest) <= PREFIX_MAX:
+                hp = list(hp) + rest
         items: List[str] = []
         ok = True
         for x in hp:
