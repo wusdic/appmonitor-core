@@ -840,6 +840,7 @@ def node_statement(c: _Ctx, kind: int, nd: Any, route: str, view: str = "system"
         pb_ent = part_content(c, nd, pb_ent, list(part[4]) if len(part) > 4 else [part[0]], t)
     content, czh, cen, c_c = PR.content_block(pb_ent, g_ent, c.labels, skip)
     bent = PB.lookup(c.pbind, kind, nd.id) if isinstance(c.pbind, Mapping) else None
+    bent = _inherited_bind(c, kind, nd, bent, restrict)
     if bent and c.reg is not None:
         # a "binding" of an attribute with a handful of values system-wide (body
         # format, content type) is a constant of the action, already stated as
@@ -1215,6 +1216,61 @@ def _pool_group_of(c: Any, prefixes: Sequence[str]) -> Optional[str]:
         if all(n.version == pn.version and n.subnet_of(pn) for n in nets):
             return str(gr.get("name") or g)
     return None
+
+
+INHERIT_HOPS = 3                 # (round 12) ancestors a node without its own P08 record reads
+
+
+def _inherited_bind(c: Any, kind: int, nd: Any, bent: Optional[Mapping[str, Any]],
+                    restrict: Optional[Set[str]] = None) -> Optional[Mapping[str, Any]]:
+    """(round 12) A node P08 keeps no sketch of a pair at (a young node: the
+    pair-node budget goes to the stated and the existing sketches first) states
+    the binding of its nearest ancestor (<= INHERIT_HOPS up) whose dependency
+    holds, restricted to the sources seen at the node (its tracked sources and,
+    for a group's part, the members the part states): the ancestor's sketch
+    counts the node's events too, and a dependency that holds on a set of
+    events holds on every subset of it. Only forward pairs from net.src, of a
+    payload the node itself summarises (P05 target), and only where the node
+    has no record of its own (its own evidence, holding or not, decides).
+    O-real seed 2 (round 11-12, days 33-35): after the GA login moved to the
+    192.168.100.100/101 servers, 综合部's login statements came from the new
+    nodes p:fam:1:0:36/37 (born day 32, below the budget's existing sketches)
+    and stated no binding, while their parent 0:14 bound 10.168.7.121 ->
+    mike.w, 192.168.1.21 -> jack, 192.168.1.23 -> rose (holds, g3 0.001)."""
+    if not isinstance(c.pbind, Mapping) or getattr(c, "ptm", None) is None:
+        return bent
+    tree = (getattr(c.ptm, "kinds", None) or {}).get(kind)
+    if tree is None or nd.parent is None:
+        return bent
+    own = dict(((bent or {}).get("pairs") or {}))
+    targets = set(getattr(nd, "targets", None) or ())
+    try:
+        seen = {str(k) for k, _, _, _ in nd.who.levels[0].items(c.now)}
+        seen |= {str(x) for x in (restrict or ())}
+    except (AttributeError, IndexError, TypeError):
+        return bent
+    if not seen or not targets:
+        return bent
+    add: Dict[str, Any] = {}
+    pid, hops = nd.parent, 0
+    while pid is not None and pid in tree.nodes and hops < INHERIT_HOPS:
+        anc = PB.lookup(c.pbind, kind, pid)
+        for pk, rec in sorted(((anc or {}).get("pairs") or {}).items()):
+            if pk in own or pk in add or not isinstance(rec, Mapping) or rec.get("dir") == "rev":
+                continue
+            X, Y = rec.get("x"), rec.get("y")
+            if not X or not Y:
+                X, _, Y = str(pk).partition("->")
+            if X != "net.src" or Y not in targets or not (rec.get("fd") or {}).get("holds"):
+                continue
+            tab = {x: e for x, e in sorted((rec.get("table") or {}).items()) if str(x) in seen}
+            if not any(isinstance(e, Mapping) and e.get("bound") for e in tab.values()):
+                continue
+            add[pk] = dict(rec, table=tab, inherited_from=int(pid))
+        pid, hops = tree.nodes[pid].parent, hops + 1
+    if not add:
+        return bent
+    return dict(bent or {}, pairs={**own, **add})
 
 
 def _restrict_bind(bent: Optional[Mapping[str, Any]], members: Set[str]) -> Optional[Mapping[str, Any]]:
