@@ -186,6 +186,8 @@ CHANGED_J = 0.9
 CONTAIN = 0.8               # ... and a merged group keeps the id of a predecessor it contains >= 80 % of
 LINEAGE_IDS = 16            # predecessor ids kept per group (rec 'lineage', read by P03)
 LINEAGE_S = 7 * DAY         # a dissolved group's id is reused when it re-forms within 7 days (round 3)
+LEFT_S = 14 * DAY           # (round 12) members that left a group are kept in its rec 'left' this long ...
+LEFT_MAX = 16               # ... at most this many (the most recent): P14 states them with the group
 SHARED_MAX = 4096
 WHO_LEVEL_MODE = {0: "ip", 1: "prefix", 2: "prefix", 3: "grp", 4: "reg"}
 SIG_MODES = ("ip", "grp", "prefix")
@@ -835,6 +837,7 @@ class WhoGroupsEngine(Engine):
                                  for k, _ in sorted(gp.items(), key=lambda kv: -kv[1])[:2]
                                  if not (sigs.items.key_of(k) or "").partition("|")[2].startswith("@")]
             old = old_groups.get(g) or {}
+            left = _left_members(old.get("left"), prev.get(g), final[g], now)
             # (round 3) sticky display labels: a group keeps the labels of its
             # name while they are still among its representative actions (the
             # role 192.168.1.21 was '综合部·oa GET /approval/{num}' one day and
@@ -861,6 +864,7 @@ class WhoGroupsEngine(Engine):
                    "first_seen": old.get("first_seen", now), "changed": now, "provisional": prov,
                    "name_labels": [x["label"] for x in top],
                    "lineage": sorted((set(old.get("lineage") or []) | lineage_new.get(g, set())) - {g})[-LINEAGE_IDS:],
+                   "left": left,
                    "materialise": rank < G_MAX or bool(nm)}
             if not old:
                 events.append(("group_formed", g, {"members": members[:32], "n": len(members),
@@ -1014,6 +1018,29 @@ def _peel(lab: np.ndarray, M: np.ndarray, rho: float, sample: int = 16,
         if intra is not None and len(mem) < len(members[c]):
             intra[c] = LV._mean_j(M, LV._sample(mem, sample))
     return lab
+
+
+def _left_members(old: Optional[Mapping[str, float]], before: Optional[Set[str]],
+                  members: Set[str], now: float) -> Dict[str, float]:
+    """(round 12) {ip: when it left} of a group: addresses that were its members
+    at the previous run and are not now (a move accepted by the two-run rule,
+    an evicted signature), kept LEFT_S (two half-lives of the node summaries'
+    shape channel) and at most LEFT_MAX, the most recent; an address back in the
+    group is no longer 'left'. The node summaries attribute an event to the
+    group of its source AT LEARNING TIME, so a group's share of a node's mass
+    still holds its former members' events for weeks: P14 states them with the
+    group (prender.who_block) - a who of the current members alone claims
+    that share for fewer addresses. O60 seed 0 (round 12 views v6, days 6-7):
+    销售部 G11 (20) lost .3.34/.3.38 to a pair; the crm nodes' G11 share 0.95
+    still held their pre-split events, the statements named G11's 18 members
+    at a stated who of 0.95 and held 0.86-0.89 on the evaluator's events."""
+    out = {str(ip): float(t) for ip, t in (old or {}).items()
+           if now - float(t) <= LEFT_S and str(ip) not in members}
+    for ip in sorted((before or set()) - set(members)):
+        if "/" not in ip:
+            out[ip] = float(now)
+    keep = sorted(out.items(), key=lambda kv: (-kv[1], _ip_key(kv[0])))[:LEFT_MAX]
+    return {ip: t for ip, t in sorted(keep, key=lambda kv: _ip_key(kv[0]))}
 
 
 def _trust(store: Any, s: str, ip: str, at: float,

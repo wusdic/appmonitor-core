@@ -227,18 +227,35 @@ def who_block(who: Any, t: float, n_days: int, ip2g: Mapping[str, str],
             extra = [str(x) for x in heavy if "/" not in str(x)
                      and (str(x)[7:] if str(x).startswith("shared:") else str(x)) not in ms] if mem else []
             extra = sorted({str((readdr or {}).get(x, x)) for x in extra} - ms, key=_ip_sort)
-            if mem and len(mem) + len(extra) <= MEMBERS_LISTED:
+            # (round 12) the group's members that left it recently (P11 'left'):
+            # the node's group-level mass counts their events under the group
+            # (sources are attributed to their group at learning time), so the
+            # group's share is theirs too - a who of the current members alone
+            # claimed that share for fewer addresses. O60 seed 0 (views v6, days
+            # 6-7): crm's G11 share 0.95 held .3.34 / .3.38's events from before
+            # they left 销售部's group; the statements named the 18 current
+            # members at who 0.95 and held 0.86-0.89
+            left = [str(x) for x in (gr.get("left") or {})] if mem else []
+            left = sorted({str((readdr or {}).get(x, x)) for x in left} - ms, key=_ip_sort)
+            if mem and len(mem) + len(set(extra) | set(left)) <= MEMBERS_LISTED:
+                left = [x for x in left if x not in extra]
                 zh, en = f"{name}（{join_zh(mem)}）", f"{name} ({join_en(mem)})"
-                if extra:
-                    zh, en = f"{zh}、{join_zh(extra)}", f"{en}, {join_en(extra)}"
+                if extra or left:
+                    zh, en = f"{zh}、{join_zh(extra + left)}", f"{en}, {join_en(extra + left)}"
             else:
                 zh, en = f"{name}（{len(mem)} 个 IP）", f"{name} ({len(mem)} IPs)"
                 extra = []
+                if left:
+                    lz = join_zh(left) if len(left) <= MEMBERS_LISTED else f"{len(left)} 个 IP"
+                    le = join_en(left) if len(left) <= MEMBERS_LISTED else f"{len(left)} IPs"
+                    zh, en = f"{zh}及近期离组的 {lz}", f"{en} and its recent former members {le}"
             Us = _stated_u(who, 3, t, hg, U3)
-            ev = {"level": "grp", "items": [f"grp:{g}"], "members": mem + extra, "U": Us, "closed": closed,
+            ev = {"level": "grp", "items": [f"grp:{g}"], "members": mem + extra + left, "U": Us, "closed": closed,
                   "confidence": 1.0 - Us if closed else 0.0, "distinct": distinct}
             if extra:
                 ev["outside_group"] = extra
+            if left:
+                ev["left_group"] = left
             return ev, zh, en, (1.0 - Us) if closed else 1.0
     # <= 4 prefixes or regions covering >= 90 %; a system whose who arm is the
     # region (P12 'reg': a DHCP pool whose users re-address daily) is stated by

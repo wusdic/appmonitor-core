@@ -92,3 +92,36 @@ def test_a_prefix_who_lists_every_seen_prefix_that_fits():
     assert ev["level"] == "prefix"
     assert set(ev["items"]) == {"192.168.3.0/24", "192.168.1.0/24", "192.168.2.0/24", "10.168.7.0/24"}
     assert ev["U"] < 0.02
+
+
+def test_a_group_who_states_the_members_that_left_the_group():
+    """O60 seed 0 (round 12 views v6, days 6-7): P11 split 销售部's group G11
+    (20 addresses) into G11 (18) and a pair {.3.34, .3.38}. The crm nodes'
+    group-level summary attributes an event to its source's group at learning
+    time, so G11's share (0.95) still held the pair's events from before the
+    split; the statements named G11's 18 current members at a stated who of
+    0.95 and held 0.86-0.89 on the evaluator's events. The members that left
+    the group recently (P11 rec 'left') are part of the group's who."""
+    from app.engines.behavior.lib import pnode as PN
+    from app.engines.behavior.lib import prender as PR
+    sales = [f"192.168.3.{20 + i}" for i in range(20)]
+    gone = ["192.168.3.34", "192.168.3.38"]
+    w = PN.WhoSummary()
+    t = 0.0
+    for d in range(6):
+        for j, ip in enumerate(sales):
+            t = d * DAY + 30.0 * j
+            w.update([ip, "192.168.3.0/24", None, "grp:G11", None], ip, t, 1.0, 1.0)
+    cur = [ip for ip in sales if ip not in gone]
+    groups = {"G11": {"members": cur, "name": "销售部", "left": {ip: 5 * DAY for ip in gone}},
+              "G65": {"members": gone, "name": "销售部·crm POST /crm/visit"}}
+    ip2g = {**{ip: "G11" for ip in cur}, **{ip: "G65" for ip in gone}}
+    ev, zh, en, c = PR.who_block(w, t + 60.0, 6, ip2g, groups)
+    assert ev["level"] == "grp" and ev["items"] == ["grp:G11"]
+    assert set(gone) <= set(ev["members"]) and set(cur) <= set(ev["members"])
+    assert ev["left_group"] == gone
+    assert "192.168.3.34" in zh
+    # without the record, the who is the current members only (round-11 behaviour)
+    groups["G11"].pop("left")
+    ev2 = PR.who_block(w, t + 60.0, 6, ip2g, groups)[0]
+    assert not set(gone) & set(ev2["members"])

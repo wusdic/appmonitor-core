@@ -63,3 +63,20 @@ def test_identical_and_uniform_communities_are_kept():
     lab = np.array([0] * 4 + [4] * 6)
     out = WG._peel(lab, M, WG.RHO)
     assert list(out) == list(lab)
+
+
+def test_members_that_left_a_group_are_recorded_for_a_while():
+    """(round 12) A group's rec 'left' = addresses that were its members at the
+    previous run and are not now; kept LEFT_S, at most LEFT_MAX (the most
+    recent), dropped when back in the group (prender.who_block states them
+    with the group: the node summaries counted their events under it)."""
+    DAY = 86400.0
+    now = 10 * DAY
+    prev = {"192.168.3.34", "192.168.3.38", "192.168.3.20", "192.168.3.0/24"}
+    cur = {"192.168.3.20"}
+    old = {"192.168.3.50": now - WG.LEFT_S - 1.0, "192.168.3.51": now - DAY, "192.168.3.20": now - DAY}
+    left = WG._left_members(old, prev, cur, now)
+    assert left == {"192.168.3.34": now, "192.168.3.38": now, "192.168.3.51": now - DAY}
+    many = {f"10.0.0.{i}": now - i for i in range(1, 40)}
+    left = WG._left_members(many, set(), set(), now)
+    assert len(left) == WG.LEFT_MAX and "10.0.0.1" in left and "10.0.0.39" not in left
