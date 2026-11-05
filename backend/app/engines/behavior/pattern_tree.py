@@ -210,6 +210,8 @@ EXC_SAVE_BITS = 2.0
 EXC_N_CONF = 10.0
 PRUNE_RUNS = 3
 TG_STALE_DAYS = 2                # (round 11) a target summary unlearned this many days of the node's rows is dropped
+TG_HARD = 2 * (M_T + 4)          # (round 11) summaries a node holds at most while keeping slot flickers
+BORN_DAYS = TG_STALE_DAYS        # (round 12) days a new node learns its birth summaries without a P05 list of its own
 PRUNE_MIN_AGE = 7 * DAY        # a split's children have this long before it can be pruned
 TAU_MERGE = 0.02
 _NOVAL = object()                # _pairs: a request's values not read yet
@@ -1329,6 +1331,7 @@ class PatternTreeEngine(Engine):
             # `other` child - a daily two-person action (17:00 report) lost its
             # first two days and confirmed after day 18 (pack O)
             self._replay_route_rows(lc, tr, tr.nodes[sp.children[-1]], rows)
+            _note_born(tr.nodes[sp.children[-1]], ts)
 
     # --------------------------------------------------------- targets
     def _drop_stale_targets(self, lc: _LC, tr: PT.Tree, nd: PN.Node, kind: int, sel: Mapping[str, Any],
@@ -1353,6 +1356,9 @@ class PatternTreeEngine(Engine):
         (_inherit_source_extremes, before the attribute is one of the child's
         targets) has no rows and is kept for when it becomes one. The number of
         summaries stays bounded (M_T + 4) as before."""
+        if nd.meta.get("born_tl") is not None and (_overrides_of(sel, kind).get(nd.id) is not None
+                                                   or t - float(nd.created) >= BORN_DAYS * DAY):
+            nd.meta.pop("born_tl", None)            # P05 lists the node, or it is no longer new
         keep = set(self._targets_of(lc, tr, nd, kind, sel))
         td = nd.meta.get("tgd") or {}
         if nd.last_seen is not None:
@@ -1362,8 +1368,30 @@ class PatternTreeEngine(Engine):
                 if _has_rows(nd.targets[a], t) and (last is None or d_last - int(last) >= TG_STALE_DAYS):
                     _forget_target(nd, a)
         if len(nd.targets) > M_T + 4:              # bounded: drop summaries no longer targeted
-            for a in [a for a in nd.targets if a not in keep][:len(nd.targets) - M_T]:
+            # (round 11) the longest-untargeted first; one targeted within
+            # TG_STALE_DAYS of the node's latest row is a slot flicker (above)
+            # and is kept unless the node holds more than TG_HARD summaries.
+            # Pack O seed 3 (round 10): the OA approve node held 24 summaries
+            # on day 2; on day 3 it inherited the system list (its P05 node
+            # override missing for one refit) and this cap deleted every
+            # untargeted one, body.kv.opinion with them; made again on day 4
+            # from that day's rows, P07 could not show the opinion set closed
+            # (Good-Turing U 0.112 vs the rarest member's 0.099 on day 8; 0.025
+            # vs 0.159 with the unbroken summary) until day 11, and
+            # GA.oa.approvals#2's closed opinion set was missing on days 6-10
+            d_l = _local_day(float(nd.last_seen), lc.off) if nd.last_seen is not None else None
+
+            def age(a: str) -> float:
+                last = td.get(a)
+                return math.inf if (last is None or d_l is None) else float(d_l - int(last))
+            n_drop = len(nd.targets) - M_T
+            for a in sorted((a for a in nd.targets if a not in keep), key=lambda a: (-age(a), a)):
+                if n_drop <= 0:
+                    break
+                if age(a) < TG_STALE_DAYS and len(nd.targets) <= TG_HARD:
+                    continue
                 _forget_target(nd, a)
+                n_drop -= 1
         if td:
             for a in [a for a in td if a not in nd.targets]:
                 del td[a]
@@ -1376,13 +1404,18 @@ class PatternTreeEngine(Engine):
             # (model.pwant, P06/P07: content attributes P05 gave only the split
             # role must still be fitted, §6.5.2 item 3)
             return list(own) + [a for a in (extra or ()) if a not in own]
-        ovs = (sel.get("node_overrides") or {}).get(kind) or (sel.get("node_overrides") or {}).get(str(kind)) or {}
+        ovs = _overrides_of(sel, kind)
         ov = None
         cur: Optional[PN.Node] = nd
         while cur is not None and ov is None:           # nearest ancestor's override
             ov = ovs.get(cur.id)
             cur = tr.nodes.get(cur.parent) if cur.parent is not None else None
         base = list(ov) if ov else list((sel.get("targets_sys") or {}).get(kind) or [])[:M_T]
+        born = nd.meta.get("born_tl")
+        if born and ovs.get(nd.id) is None:
+            # (round 12) a node P05 has not ranked yet learns the summaries it
+            # was born with (_note_born) besides its ancestor's list
+            base = base + [a for a in born if a not in base]
         if extra:
             base = base + [a for a in extra if a not in base]
         return base
@@ -2302,7 +2335,8 @@ class PatternTreeEngine(Engine):
             ts_r, ip, day, dt, minute, mass, om, ext, sus, tv, _cv = row
             nd.update_core(ts_r, mass, om, lc.who_keys(ip), ip, dt, minute, day, suspicious=sus)
             for attr, val in tv.items():
-                self._apply_target(lc, nd, attr, val, ts_r, mass, om, day, ext, ip)
+                if self._apply_target(lc, nd, attr, val, ts_r, mass, om, day, ext, ip) is not None:
+                    _mark_tgd(nd, attr, day)
         st_ = lc.aux["stats"]
         st_["route_rows_inherited"] = st_.get("route_rows_inherited", 0) + len(rows)
 
@@ -2386,7 +2420,8 @@ class PatternTreeEngine(Engine):
             skip = seeded if cid in named else ()
             for attr, val in tv.items():
                 if attr not in skip:
-                    self._apply_target(lc, child, attr, val, ts_r, mass, om, day, ext, ip)
+                    if self._apply_target(lc, child, attr, val, ts_r, mass, om, day, ext, ip) is not None:
+                        _mark_tgd(child, attr, day)
             n += 1
         st_ = lc.aux["stats"]
         st_["rows_inherited"] = st_.get("rows_inherited", 0) + n
@@ -2449,6 +2484,7 @@ class PatternTreeEngine(Engine):
                     # mass = evidence x the leaf's mass / evidence ratio; the evidence
                     # of a seeded value is its split-statistics evidence
                     child.update_target(name, v, ts, c * ratio, c, k, pol, lg)
+                    _mark_tgd(child, name, _local_day(float(ts), lc.off))
         # the children carry the evidence the split statistics already hold for
         # them: evidence units (<= the leaf's own), the local dates their values
         # were seen on and, for a split on the source address, the leaf's who
@@ -2530,6 +2566,9 @@ class PatternTreeEngine(Engine):
         self._inherit_extremes(lc, tr, leaf, sp, (a, int(l)), named,
                                [(list(g), c, False) for g, c in zip(sp.groups, sp.children)]
                                + [(other_vals, sp.other, True)], ts)
+        for cid in list(sp.children) + ([sp.other] if sp.other is not None else []):
+            if cid in tr.nodes:
+                _note_born(tr.nodes[cid], ts)
         leaf.split_stats = None
         leaf.meta.pop("cands", None)
         leaf.meta.pop("C", None)
@@ -3966,6 +4005,53 @@ def _forget_target(nd: PN.Node, a: str) -> None:
     inv = getattr(nd, "inv", None)
     if inv:
         inv.pop(a, None)
+
+
+def _overrides_of(sel: Mapping[str, Any], kind: int) -> Mapping[int, Any]:
+    """P05's node target lists of a tree kind ({nid: [a...]})."""
+    ovs = sel.get("node_overrides") or {}
+    return ovs.get(kind) or ovs.get(str(kind)) or {}
+
+
+def _note_born(nd: PN.Node, t: float) -> None:
+    """(round 12) The summaries a new node is born with (its parent's kept rows
+    replayed into it, a route node's waiting rows): it keeps learning them
+    until P05 ranks the node's own targets or BORN_DAYS pass (_targets_of).
+    P05 refits node lists once a day and needs n_min probe rows of the node;
+    until then the node inherited its nearest ancestor's list, ranked on the
+    ancestor's mixture. Pack O seed 3 (rounds 10-11): the OA approve node
+    p:oa:0:10, born on day 2 with 24 summaries (the approval opinion among
+    them), learned day 3 under the root's list (the login form's captcha /
+    csrf / password, no opinion); the opinion's rare value 退回 lost that
+    day's evidence, P07 could not show the opinion set closed until day 11
+    and GA.oa.approvals#2's closed set was missing on days 6-10."""
+    tl = sorted(a for a, sm in nd.targets.items() if _has_rows(sm, t))
+    if tl:
+        nd.meta["born_tl"] = tl
+
+
+def _mark_tgd(nd: PN.Node, a: str, day: Optional[int]) -> None:
+    """(round 11) A row replayed into a node (a new route node's waiting rows,
+    a split's inherited rows, a split child's seeded values) was learned with
+    `a` as a target: the node's last-targeted day of `a` (meta 'tgd', read by
+    _drop_stale_targets) is that row's day at least. Without it a summary a
+    node received at its birth had no day and was dropped at the node's first
+    daily check whenever P05's list for the node had moved on: pack O seed 3
+    (round 10), the OA approve node p:oa:0:10, born on day 2 with the parent's
+    rows (24 summaries, body.kv.opinion among them) and learning its own day-2
+    rows under an inherited list without it, lost the opinion summary on day
+    3; made again on day 4, P07's closure test failed until day 11 (Good-
+    Turing U 0.112 vs the rarest member's share 0.099 on day 8; 0.025 vs 0.159
+    unbroken) and GA.oa.approvals#2's closed opinion set was missing on days
+    6-10."""
+    if day is None:
+        return
+    td = nd.meta.get("tgd")
+    if td is None:
+        td = nd.meta["tgd"] = {}
+    d = int(day)
+    if td.get(a) is None or int(td[a]) < d:
+        td[a] = d
 
 
 def _has_rows(sm: Any, t: float) -> bool:

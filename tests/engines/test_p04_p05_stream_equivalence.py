@@ -147,7 +147,13 @@ DAYS = 4.0
 # §16.19.3 EV11-2) were reverted - they did not recover their target (pack O
 # seed 3's GA.oa.approvals#2 on days 6-10) and lost FIN.finance.login#0 on days
 # 11-21 of pack O seed 0 (bindings @14 6/6 -> 3/6).
-GOLDEN = {"model.ptree": "4661aa9350d5206e1c775742de924aa2cb41ca73",
+# Re-recorded in round 12 (ptree e2213eb4...; attrsel unchanged), deliberately,
+# by the learning owner: T11-5 / T11-6 re-landed (pack O seed 0's finance loss
+# traced to P12 switching P08 off while the users' username binding was still
+# pending - the system_profile.fitted_gain proposal of round 12) and a node P05
+# has not ranked yet learns the summaries it was born with for at most
+# BORN_DAYS (pattern_tree._note_born; pack O seed 3's approval opinion).
+GOLDEN = {"model.ptree": "e2213eb4a32c6020c8883597332baeb5917fac9f",
           "model.attrsel": "00628c79324d13395bd185ad35bb7fd3f8159fbc"}
 
 
