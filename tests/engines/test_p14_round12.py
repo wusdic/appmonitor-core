@@ -125,3 +125,59 @@ def test_a_group_who_states_the_members_that_left_the_group():
     groups["G11"].pop("left")
     ev2 = PR.who_block(w, t + 60.0, 6, ip2g, groups)[0]
     assert not set(gone) & set(ev2["members"])
+
+
+def _bind_rec(table, holds=True):
+    return {"x": "net.src", "y": "body.kv.username", "dir": "fwd",
+            "fd": {"holds": holds, "g3": 0.001 if holds else 0.3},
+            "table": {x: {"top": y, "bound": True, "LB": 0.95, "n": 9.0} for x, y in table.items()}}
+
+
+def _moved_login(child_pairs=None, child_targets=("body.kv.username",), parent_holds=True):
+    """O-real seed 2, day 35: the GA login moved to new servers; the new child
+    node 37 (net.dst = 192.168.100.101:8080) of the family login node 14 has
+    no P08 sketch; node 14 binds the department's sources."""
+    PK = "net.src->body.kv.username"
+    tab = {"10.168.7.121": "mike.w", "192.168.1.21": "jack", "192.168.1.23": "rose",
+           "192.168.3.20": "amy", "192.168.2.10": "lucy"}
+    nodes_bind = {14: {"pairs": {PK: _bind_rec(tab, parent_holds)}}}
+    if child_pairs is not None:
+        nodes_bind[37] = {"pairs": child_pairs}
+    pbind = {"nodes": {0: nodes_bind}}
+    root = NS(id=0, parent=None)
+    n3 = NS(id=3, parent=0)
+    n14 = NS(id=14, parent=3)
+    seen = [("10.168.7.121", 2.0), ("192.168.3.20", 3.0)]            # tracked at the young node
+    n37 = NS(id=37, parent=14, targets=set(child_targets), who=NS(levels=[_Lvl(seen)]))
+    tree = NS(nodes={0: root, 3: n3, 14: n14, 37: n37}, root=0)
+    c = NS(pbind=pbind, ptm=NS(kinds={0: tree}), now=35 * DAY)
+    return c, n37, PK
+
+
+def test_a_young_node_states_its_ancestors_binding_for_its_sources():
+    """A dependency that holds on the parent's events holds on the child's
+    subset: the young node without a sketch states the parent's binding,
+    restricted to the sources seen at it (and a part's members). Without it
+    综合部's day-35 login statements (new nodes after the move) stated no
+    binding (O-real seed 2 checklist binding clause 0/3)."""
+    c, nd, PK = _moved_login()
+    got = VW._inherited_bind(c, 0, nd, None)
+    rec = got["pairs"][PK]
+    assert sorted(rec["table"]) == ["10.168.7.121", "192.168.3.20"]
+    assert rec["inherited_from"] == 14 and rec["fd"]["holds"]
+    part = VW._inherited_bind(c, 0, nd, None, {"192.168.1.21", "192.168.1.23", "10.168.7.121"})
+    assert sorted(part["pairs"][PK]["table"]) == ["10.168.7.121", "192.168.1.21", "192.168.1.23",
+                                                   "192.168.3.20"]
+    binds, zh, _en, _lb = VW.PR.binding_block(got)
+    assert binds["body.kv.username"]["table"]["10.168.7.121"] == "mike.w" and "mike.w" in zh
+
+
+def test_no_inherited_binding_where_the_node_has_its_own_record_or_no_such_payload():
+    PK = "net.src->body.kv.username"
+    c, nd, _ = _moved_login(child_pairs={PK: _bind_rec({"10.168.7.121": "mike"}, holds=False)})
+    own = c.pbind["nodes"][0][37]
+    assert VW._inherited_bind(c, 0, nd, own) is own                     # its own evidence decides
+    c, nd, _ = _moved_login(child_targets=("http.ua",))
+    assert VW._inherited_bind(c, 0, nd, None) is None                   # the node has no username
+    c, nd, _ = _moved_login(parent_holds=False)
+    assert VW._inherited_bind(c, 0, nd, None) is None                   # the ancestor's dependency fails
