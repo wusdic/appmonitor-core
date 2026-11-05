@@ -220,3 +220,19 @@ def test_a_mid_day_reference_snapshot_is_read_per_unit_of_exposure():
     r = tc._ref_when(nd, 0)
     assert r.max() / r.min() < 1.02
     assert abs(r.sum() - 1.0) < 1e-9
+
+
+def test_a_reference_taken_before_a_complete_date_of_the_day_type_does_not_speak():
+    """A node born mid-day keeps no mass in the slots of its birth date before
+    its birth: a reference snapshot taken before it lived through a complete
+    date of the day type (pack O seed 1: the monitor's portal node born on a
+    Saturday, its Sunday 03:15 / 22:30 rows at p_ref 2e-3) is not read for
+    that day type - day_exposed's rule at the snapshot time."""
+    fx, tr, nd, tc, st = _monitor_today(4, 12.0)
+    tc.st = st
+    days = workdays(5)
+    nd.created = days[1] + 10 * 3600.0                   # born mid-day on the 2nd date
+    for k, ok in ((2, False), (3, True), (4, True)):     # snapshots at 00:00 of later dates
+        nd.ref = {"t": days[k] + 60.0, "when": {"wd": nd.when.density(0).astype(np.float32),
+                                                 "nwd": nd.when.density(1)}}
+        assert (tc._ref_when(nd, 0) is not None) == ok, k

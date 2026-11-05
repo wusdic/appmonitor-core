@@ -1250,8 +1250,18 @@ class _TreeCtx:
         if refw is None:
             return None
         rt = ref.get("t")
-        if rt is None or getattr(self, "st", None) is None:
+        st = getattr(self, "st", None)
+        if rt is None or st is None:
             return refw
+        # the snapshot's day-type shares speak only if the node had lived
+        # through a complete date of the day type by then (day_exposed's rule
+        # at the snapshot time): pack O seed 1, the monitor's portal node 1
+        # (born on a Saturday, its reference taken that weekend) kept no
+        # mass in the Saturday slots before its birth, and the Sunday 03:15 /
+        # 22:30 rows of the 24-hour monitor read p_ref 1.6e-3 - 2.5e-3
+        born = int((float(nd.created) + self.tz) // DAY)
+        if st.exposure(self.key, int(d), born, int((float(rt) + self.tz) // DAY)) < EXPO_DATES:
+            return None
         k = ("wr", int(d), float(rt))
         E = self.info.get(k)
         if E is None and k not in self.info:
