@@ -266,3 +266,45 @@ def test_the_last_tick_of_a_date_runs_at_the_next_midnight():
     assert h.max() / h.min() < 1.02, (h.min(), h.max())
     cur, _ = tc2.when_table(0, nd, 0, tr)
     assert cur[95] > 0.3
+
+
+def test_a_flat_sibling_is_left_out_of_a_populations_prior(monkeypatch):
+    """O-red A4 (a 03:05 login of the 综合部 approver): read per exposure, the
+    oa root's night is the 24-hour monitor's flat mass, and as the login
+    route node's hierarchical prior it put the empty 03:05 slot at p 2e-3
+    (round 11 read 2.8e-4 only through the partial-day ordering). A flat
+    sibling (a 24-hour machine source) is left out of the prior."""
+    fx = Fx()
+    routes = [LOGIN, HEALTH]
+    rng = np.random.default_rng(7)
+    days = workdays(19)
+    st = CF.ConfState()
+    for k, d in enumerate(days):
+        st.day_seen("oa", 0, int((d + 8 * 3600) // 86400.0))
+        if k == 18:
+            break
+        for ip in OTHERS:
+            _learn(fx, routes, ip, LOGIN, d + (8 * 60 + 30 + 90 * rng.random()) * 60.0)
+        for s in range(96):
+            _learn(fx, routes, MONITOR, HEALTH, d + (15 * s + 7) * 60.0)
+    tr = fx.tree("oa", routes)
+    for nd in tr.nodes.values():
+        nd.state = "stable"
+    login = fx.node("oa", LOGIN)
+    slot = int((3 * 60 + 5) // 15)
+
+    def cur03():
+        tc = CF._TreeCtx(fx.eng, fx.st, "oa", "oa", CFG, days[18] + 4 * 3600.0)
+        tc.st = st
+        assert tc._flat_node(0, tr, fx.node("oa", HEALTH), 0)
+        assert not tc._flat_node(0, tr, login, 0)
+        return tc.when_table(0, login, 0, tr)[0][slot]
+    p = cur03()
+    with monkeypatch.context() as m:
+        m.setattr(CF, "FLAT_SLOT", 2.0)                  # no source is flat: the monitor stays in the prior
+        assert CF.FLAT_SLOT == 2.0
+        tc = CF._TreeCtx(fx.eng, fx.st, "oa", "oa", CFG, days[18] + 4 * 3600.0)
+        tc.st = st
+        p_with = tc.when_table(0, login, 0, tr)[0][slot]
+    assert p < 5e-4 and p_with > 2 * p, (p, p_with)
+    assert tc.when_table(0, login, 0, tr)[0][int(9 * 4)] > 0.2
