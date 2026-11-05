@@ -528,7 +528,17 @@ def pair_counts(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, 
                 n = max(0.0, n - sum(ys[k] for k in drop))
                 ys = {k: e for k, e in ys.items() if k not in drop}
                 n1 = sum(1 for e in ys.values() if e < PS.N1_EVIDENCE)
-                U = min(1.0, (n1 + 0.5) / (n + 1.0))
+                # (round 12, the views owner's proposal) the evidence of the
+                # values the sketch evicted is still unseen mass (PS.unseen's
+                # E term): dropping a pending value must not make a
+                # many-valued source look closed. O-real seed 2 day 19: the
+                # branch NAT 192.168.30.1 (~10 users, more than its sketch
+                # tracks) lost E with the pending 'mztie' -> U 0.05, not
+                # multi_source -> a counter-example (g3 0.23) of the family
+                # login node's binding, whose table (10.168.7.121 -> mike.w,
+                # D2) went unstated that day
+                ev = tab.eviction_evidence(t) if hasattr(tab, "eviction_evidence") else 0.0
+                U = min(1.0, (n1 + float(ev) + 0.5) / (n + 1.0))
         sg = (seg or {}).get(x)
         if sg:
             f = _decay(t, sg["t"])
