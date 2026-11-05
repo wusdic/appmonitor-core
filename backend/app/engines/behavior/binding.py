@@ -498,36 +498,14 @@ class BindingEngine(Engine):
             st["screened_t"] = now
             self._seed_histories(ctx, key, st, model["screen"], hier)
         specs = model["screen"]
-        by_kind: Dict[int, Dict[int, List[List[str]]]] = {}
-        budget = PAIR_NODES
         bound_nodes: Dict[Tuple[int, str], List[int]] = {}
         for k_, n_, pk_ in sorted(self._stated_keys(st)):
             bound_nodes.setdefault((int(k_), str(pk_)), []).append(int(n_))
+        by_kind: Dict[int, Dict[int, List[List[str]]]] = {}
         for kind, tree in ptm.kinds.items():
             if kind != EV.KIND_TXN:
                 continue
-            for d in specs:
-                payload = d["y"] if d["dir"] == "fwd" else d["x"]
-                nodes = [nd for nd in tree.nodes.values() if payload in nd.targets and not nd.is_exc]
-                if not nodes:
-                    nodes = [tree.nodes[tree.root]]
-                nodes.sort(key=lambda nd: -nd.mass_at(now))
-                sel = nodes[:P_NODES]
-                # (round 9) a node holding bound entries of the pair keeps its
-                # sketch although the payload left its targets (P05's node
-                # override is bounded and rotates; O-red's GA login node held
-                # nine attributes, five of them meta.z* noise, no username)
-                ids = {nd.id for nd in sel}
-                for nid in bound_nodes.get((int(kind), pair_key(d["x"], d["y"])), ()):
-                    nd = tree.nodes.get(nid)
-                    if nd is not None and nid not in ids and not nd.is_exc:
-                        sel.append(nd)
-                        ids.add(nid)
-                for nd in sel:
-                    if budget <= 0:
-                        break
-                    by_kind.setdefault(kind, {}).setdefault(nd.id, []).append([d["x"], d["y"]])
-                    budget -= 1
+            by_kind.update(self._allocate(int(kind), tree, specs, bound_nodes, now, PAIR_NODES))
         want = MP.get_model(store, key, MP.PWANT)
         if not isinstance(want, dict):
             want = {}
@@ -639,6 +617,55 @@ class BindingEngine(Engine):
         store.put_model(key, SYSTEM_ENTITY, MP.PBIND, model, version=model["version"], ts=now)
         store.put_model(key, SYSTEM_ENTITY, STATE, st, ts=now)
         return n_fit
+
+    @staticmethod
+    def _allocate(kind: int, tree: Any, specs: List[Mapping[str, Any]],
+                  bound_nodes: Mapping[Tuple[int, str], List[int]], now: float,
+                  budget: int = PAIR_NODES) -> Dict[int, Dict[int, List[List[str]]]]:
+        """The pair-nodes P04 keeps a sketch at (model.pwant['pairs']), <= `budget`
+        per tree: for every screened pair (in the screen's rank order) the <=
+        P_NODES heaviest nodes where its payload is a target, plus (round 9) the
+        nodes holding stated bound entries of the pair (P05's node override is
+        bounded and rotates; O-red's GA login node held nine attributes, five of
+        them meta.z* noise, no username).
+
+        (round 12) The budget goes first to the pair-nodes whose binding the
+        views state, then to the sketches that already exist, then to new ones
+        (each tier in the pairs' rank order, then the nodes' mass order). Before,
+        it went pair by pair, so a pair re-screened lower (or carried for its
+        stated entries, appended last) lost its sketch at its lightest node on
+        any day the higher-ranked pairs' node lists grew; P04 then dropped the
+        sketch and a later day started it from nothing. Pack O seed 0 (round
+        11): 综合部's login node p:oa:0:17 (the lightest login node) lost
+        'body.kv.username -> net.src' (budget 32, 31 requested on day 21); on
+        day 21 its sketch held one row and the statement lost the four reverse
+        clauses 'username=jack 只来自 192.168.1.21' ... that round 10 stated.
+        Each node's list keeps the pairs' rank order (P04 keeps the first
+        PAIRS_NODE_MAX of them)."""
+        cands: List[Tuple[int, int, int, int, List[str]]] = []
+        for si, d in enumerate(specs):
+            payload = d["y"] if d["dir"] == "fwd" else d["x"]
+            nodes = [nd for nd in tree.nodes.values() if payload in nd.targets and not nd.is_exc]
+            if not nodes:
+                nodes = [tree.nodes[tree.root]]
+            nodes.sort(key=lambda nd: -nd.mass_at(now))
+            sel = nodes[:P_NODES]
+            ids = {nd.id for nd in sel}
+            stated = bound_nodes.get((int(kind), pair_key(d["x"], d["y"])), ())
+            for nid in stated:
+                nd = tree.nodes.get(nid)
+                if nd is not None and nid not in ids and not nd.is_exc:
+                    sel.append(nd)
+                    ids.add(nid)
+            for r, nd in enumerate(sel):
+                tier = 0 if nd.id in stated else (1 if (d["x"], d["y"]) in (nd.pairs or {}) else 2)
+                cands.append((tier, si, r, int(nd.id), [d["x"], d["y"]]))
+        cands.sort(key=lambda c: (c[0], c[1], c[2]))
+        chosen = sorted(cands[:max(0, int(budget))], key=lambda c: (c[1], c[2]))
+        out: Dict[int, Dict[int, List[List[str]]]] = {}
+        for _t, _si, _r, nid, pr in chosen:
+            out.setdefault(int(kind), {}).setdefault(nid, []).append(pr)
+        return out
 
     @staticmethod
     def _seed_histories(ctx: Context, key: str, st: Dict[str, Any], specs: Iterable[Mapping[str, Any]],
