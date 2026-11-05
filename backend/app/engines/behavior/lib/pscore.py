@@ -114,7 +114,7 @@ def when_smooth(f: np.ndarray) -> np.ndarray:
     f'(s) = f(s-1) / 4 + f(s) / 2 + f(s+1) / 4 over the 96 slots of the day
     (a circle: 23:45 and 00:00 are neighbours; mass preserved) - a kernel of
     +-15 minutes on arrival times binned at 15 minutes. P03's HDR tables read
-    it (conformity._when_hdr): the HDR ordering of a near-flat stretch (a
+    it (when_hdr_table): the HDR ordering of a near-flat stretch (a
     24-hour machine source's slots) is the noise of a few learned rows, and a
     slot left empty between used slots is a sampling gap; an empty slot in
     an empty stretch keeps no mass.
@@ -130,6 +130,41 @@ def when_smooth(f: np.ndarray) -> np.ndarray:
     if f.size < 3:
         return f
     return 0.25 * np.roll(f, 1) + 0.5 * f + 0.25 * np.roll(f, -1)
+
+
+WHEN_TIE = 0.2                    # (round 12) slot densities within 20 % are tied in the HDR order
+
+
+def when_hdr_table(f: np.ndarray, tie: float = WHEN_TIE) -> np.ndarray:
+    """(round 12) Per-slot HDR p-values of a when density, read by P03:
+    the density smoothed over the adjacent slots (when_smooth), and slots
+    whose densities differ by less than `tie` (relative) count as tied:
+
+        p(s) = sum f[f < (1 - tie) f_s] + 0.5 sum f[(1 - tie) f_s <= f <= f_s / (1 - tie)]
+
+    (tie = 0: the mid-p HDR value of pmdl.hdr_p). The order of two slots
+    whose densities differ by a few per cent is not something the evidence
+    shows (a slot of a 24-hour source holds ~20-40 evidence units, a
+    relative standard error of 15-22 %): in a near-flat stretch the slot
+    that happened to receive the fewest learned rows was the HDR minimum.
+    Pack O seed 1 (round 11): the 24-hour monitor 192.168.9.9's own rows
+    scored p_when 3e-3 - 1e-2 at whichever night slot was lowest (a
+    conformity evidence CUSUM of fusion upgraded them to a MEDIUM incident on
+    day 6), and the root's thinnest monitor slot 22:45 put a PUB login at
+    the portal login node at 4.9e-4 (D4). Smoothed and tied: the monitor's
+    rows 3e-2 - 0.4, the 22:47 login 3.4e-2; A4's 03:05 login (an empty
+    slot in an empty stretch at the 综合部 node) 1.8e-4 -> 1.8e-4."""
+    g = when_smooth(f)
+    tot = float(g.sum())
+    if tot <= 0:
+        return np.ones_like(g)
+    g = g / tot
+    srt = np.sort(g)
+    cs = np.concatenate([[0.0], np.cumsum(srt)])
+    r = min(max(float(tie), 0.0), 0.99)
+    lo = np.searchsorted(srt, g * (1.0 - r), "left")
+    hi = np.searchsorted(srt, g / (1.0 - r), "right")
+    return np.minimum(1.0, cs[lo] + 0.5 * (cs[hi] - cs[lo]))
 
 
 EB_ALPHAS = tuple(float(2.0 ** k) for k in range(-2, 13))     # 0.25 .. 4096
@@ -205,8 +240,7 @@ def when_p(when: Any, daytype: int, minute: float, t: float, alpha_t: float = AL
         h = when.hist.sum(axis=0)
         if N < n_min:
             return NAN
-    f = when_smooth(when_density(h, N, alpha_t))
-    return pmdl.hdr_p(f, int(float(minute) // 15) % 96)
+    return float(when_hdr_table(when_density(h, N, alpha_t))[int(float(minute) // 15) % 96])
 
 
 # ================================================================ numeric

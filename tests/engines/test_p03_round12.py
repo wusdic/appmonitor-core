@@ -1,5 +1,6 @@
 """P03 round 12 (bounds owner): the when HDR tables read a slot density
-smoothed over the adjacent 15-minute slots (pscore.when_smooth).
+smoothed over the adjacent 15-minute slots (pscore.when_smooth), with slot
+densities within 20 % tied in the HDR order (pscore.when_hdr_table).
 
 Pack O seed 1, round 11 (D4): round 11's correct Bonferroni change left the
 24-hour monitor 192.168.9.9 learned less, so the portal root's non-workday
@@ -85,12 +86,17 @@ def test_a_slot_in_the_populations_evening_is_not_rare_whatever_the_machine_sour
         assert N >= 300
         assert cur[late] >= 1e-2, (w, cur[late])
         with monkeypatch.context() as m:                          # round 11: no smoothing
-            m.setattr(SC, "when_smooth", lambda f: np.asarray(f, dtype=np.float64))
+            m.setattr(SC, "when_hdr_table", lambda f: CF._hdr_table(np.asarray(f, dtype=np.float64)))
             raw, _, _ = _tables(w)
         assert raw[late] < 1e-3, (w, raw[late])                   # the D4 false alarm
-        # an empty slot in an empty stretch is not made more common (the young
-        # department node of test_p03_round3 keeps A4's 03:05 at <= 3e-4)
-        assert cur[night] <= raw[night] * 1.05, (w, cur[night], raw[night])
+        # the night stretch holds only the machine source's mass (through the
+        # prior): its slots are tied with each other instead of ordered by
+        # the noise of the source's rows, and stay well below the evening gap;
+        # A4's 03:05 at a young department node stays <= 3e-4
+        # (test_p03_round3::test_young_node_declares_an_empty_slot_rare...)
+        st = slice(int(60 // 15), int(6 * 60 // 15))
+        assert cur[st].max() - cur[st].min() < 0.1 * cur[st].max()
+        assert cur[night] < 1e-2 and cur[night] < cur[late] / 3, (w, cur[night], cur[late])
 
 
 def test_when_smooth_spreads_a_slot_over_its_neighbours_and_keeps_an_empty_stretch_empty():
@@ -104,3 +110,26 @@ def test_when_smooth_spreads_a_slot_over_its_neighbours_and_keeps_an_empty_stret
     h = np.zeros(96)
     h[95], h[0] = 1.0, 1.0
     assert SC.when_smooth(h)[1] > 0 and SC.when_smooth(h)[94] > 0  # the day is a circle
+
+
+def test_a_flat_24_hour_stretch_has_no_rare_slot_and_an_empty_one_stays_rare():
+    """A 24-hour machine source: every slot holds ~20 evidence units with
+    +-10 % noise. Without ties the slot that happened to receive the fewest
+    rows was the HDR minimum (pack O seed 1: the monitor 192.168.9.9's own
+    rows at p_when 3e-3 - 1e-2, upgraded to a MEDIUM incident by fusion's
+    evidence CUSUM on day 6)."""
+    rng = np.random.default_rng(5)
+    flat = 20.0 * (1.0 + 0.1 * rng.uniform(-1.0, 1.0, 96))
+    f = SC.when_density(flat, float(flat.sum()))
+    old = CF._hdr_table(f)
+    new = SC.when_hdr_table(f)
+    assert old.min() < 1e-2
+    assert new.min() > 0.05
+    # a login node: a day of 08:30-10:00 logins, the night empty
+    day = np.zeros(96)
+    day[34:40] = 60.0
+    g = SC.when_density(day, float(day.sum()))
+    assert SC.when_hdr_table(g)[12] < 1e-3                       # 03:00
+    assert SC.when_hdr_table(g)[37] > 0.3
+    # tie = 0 is the mid-p HDR table of the smoothed density
+    assert np.allclose(SC.when_hdr_table(f, tie=0.0), CF._hdr_table(SC.when_smooth(f)))
