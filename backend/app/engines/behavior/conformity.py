@@ -1196,6 +1196,14 @@ class _TreeCtx:
             self.info[("wds", id(nd), daytype)] = ds
         return h, float(N)
 
+    def _hist_scale(self, nd: Any) -> float:
+        """(round 12) The factor that brings a node's stored slot masses
+        (WhenSummary.hist, kept relative to the node's own rescale time) to
+        `now`: slot masses of different nodes are comparable only after it
+        (WhenSummary.mass applies the same factor to their sum)."""
+        L = getattr(nd.when, "_L", None)
+        return float(2.0 ** (-(float(self.now) - float(L)) / PS.H_M)) if L is not None else 1.0
+
     def _top_density(self, kind: Optional[int], tree: Any, nd: Any, daytype: int,
                      h: np.ndarray, N: float, flats: Sequence[Any] = ()) -> np.ndarray:
         """(round 12) The slot predictive at the TOP of a back-off chain (a
@@ -1222,12 +1230,10 @@ class _TreeCtx:
         ha = np.asarray(ha, dtype=np.float64)
         if flats and ha.sum() > 0:
             t = self.now
-            ex = sum(nd.when.mass(dd, t) for dd in (0, 1)) * ha / ha.sum()
+            ex = ha * self._hist_scale(nd)
             for c in flats:
                 hc, Nc = self._when_counts(c, daytype, kind, tree, both=True)
-                hc = np.asarray(hc, dtype=np.float64)
-                if hc.sum() > 0:
-                    ex = ex - sum(c.when.mass(dd, t) for dd in (0, 1)) * hc / hc.sum()
+                ex = ex - np.asarray(hc, dtype=np.float64) * self._hist_scale(c)
                 Na -= float(Nc)
             ha = np.maximum(ex, 0.0)
         if Na <= float(N) + 1e-9 or ha.sum() <= 0 or Na < SC.N_MIN:
@@ -1277,7 +1283,12 @@ class _TreeCtx:
         dsp = self.info.get(("wds", id(par), daytype))
         hp = np.asarray(hp, dtype=np.float64)
         if hp.sum() > 0 and dsp is not None:
-            ex = sum(par.when.mass(dd, t) for dd in dsp) * hp / hp.sum()
+            # rates per exposure in the same units at `now` (each node's hist is
+            # stored relative to its own rescale time): the parent's minus its
+            # flat children's. (A share x mass difference left a residue of
+            # the flat source's night - the nodes' mean exposures differ - that
+            # O-red's oa root read as a 5 % human night.)
+            ex = hp * self._hist_scale(par)
             Nx = float(Np)
             ok = True
             for c in flats:
@@ -1285,9 +1296,7 @@ class _TreeCtx:
                 if self.info.get(("wds", id(c), daytype)) != dsp:
                     ok = False                  # another day-type mix: not comparable
                     break
-                hc = np.asarray(hc, dtype=np.float64)
-                if hc.sum() > 0:
-                    ex = ex - sum(c.when.mass(dd, t) for dd in dsp) * hc / hc.sum()
+                ex = ex - np.asarray(hc, dtype=np.float64) * self._hist_scale(c)
                 Nx -= float(Nc)
             ex = np.maximum(ex, 0.0)
             if ok and Nx >= SC.N_MIN and ex.sum() > 0:

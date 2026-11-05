@@ -381,6 +381,7 @@ def test_a_young_day_type_borrows_the_other_day_types_shoulders(monkeypatch):
         for ip in OTHERS:
             for _ in range(3 if dt_ == 0 else 5):
                 _learn_dt(fx, routes, ip, LOGIN, d + (lo + (23 * 60 - lo) * rng.random()) * 60.0)
+        _learn_dt(fx, routes, OTHERS[0], LOGIN, d + (23 * 60 + 55) * 60.0)   # the node learned to midnight
         for s in range(96):
             _learn_dt(fx, routes, MONITOR, HEALTH, d + (15 * s + 7) * 60.0)
     assert sat is not None and sun is not None
@@ -400,6 +401,6 @@ def test_a_young_day_type_borrows_the_other_day_types_shoulders(monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(CF._TreeCtx, "_top_density", lambda self, kind, tree, nd, daytype, h, N, flats=(): SC.when_density(h, N))
         old = table()
-    assert old[early] < 1e-3, old[early]                       # the uniform top: the first weekend's gap is "rare"
-    assert cur[early] > 3e-3, (cur[early], old[early])
+    assert old[early] < 2.5e-3, old[early]                     # the uniform top: the first weekend's gap is "rare"
+    assert cur[early] > 0.05, (cur[early], old[early])
     assert cur[night] < 1e-3, cur[night]
