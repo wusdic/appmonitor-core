@@ -1664,12 +1664,12 @@ def _hdr_table(f: np.ndarray) -> np.ndarray:
 
 
 def _when_hdr(f: np.ndarray) -> np.ndarray:
-    """(round 12) The HDR table of a when density after pscore.when_fill: a
-    slot left empty between two used slots is no rarer than the thinner of
-    them (pack O seed 1, D4: a Saturday 22:47 PUB login between used 22:30
-    and 23:00 slots scored p_when 6e-4 at the portal login node, MEDIUM;
-    an empty slot in an empty stretch - A4's 03:05 - is unchanged)."""
-    return _hdr_table(SC.when_fill(f))
+    """(round 12) The HDR table of a when density smoothed over the adjacent
+    15-minute slots (pscore.when_smooth): pack O seed 1, D4 - a Saturday
+    22:47 PUB login scored p_when 4.9e-4 at the portal login node (MEDIUM)
+    because a 24-hour source's flat stretch at the root ordered 22:45 last;
+    an empty slot in an empty stretch (A4's 03:05) stays rare."""
+    return _hdr_table(SC.when_smooth(f))
 
 
 def _ref_record(nd: Any, name: str, attr: str) -> Optional[Mapping[str, Any]]:

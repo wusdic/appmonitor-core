@@ -109,20 +109,23 @@ def when_density(counts: np.ndarray, N: float, alpha_t: float = ALPHA_T) -> np.n
     return (share * N + alpha_t / c.size) / (N + alpha_t)
 
 
-def when_fill(f: np.ndarray) -> np.ndarray:
-    """(round 12) A slot inside a used interval is no rarer than the
-    interval's thinner edge: f'(s) = max(f(s), min(f(s-1), f(s+1))) over the
-    96 slots of the day (a circle: 23:45 and 00:00 are neighbours). A
-    15-minute slot left empty between two used slots is a sampling gap, not
-    a time the population avoids; a slot whose neighbours are empty (03:05
-    in the middle of the night) keeps its density. Read by the HDR tables of
-    P03 (conformity._when_hdr; unnormalised - the table normalises).
+def when_smooth(f: np.ndarray) -> np.ndarray:
+    """(round 12) A slot density smoothed over the adjacent 15-minute slots,
+    f'(s) = f(s-1) / 4 + f(s) / 2 + f(s+1) / 4 over the 96 slots of the day
+    (a circle: 23:45 and 00:00 are neighbours; mass preserved) - a kernel of
+    +-15 minutes on arrival times binned at 15 minutes. P03's HDR tables read
+    it (conformity._when_hdr): the HDR ordering of a near-flat stretch (a
+    24-hour machine source's slots) is the noise of a few learned rows, and a
+    slot left empty between used slots is a sampling gap; an empty slot in
+    an empty stretch keeps no mass.
 
-    Pack O seed 1, round 11 (D4): the PUB login 10.60.123.142 on Saturday
-    22:47 at the portal login node, whose own 22:45 slot was empty between
-    used 22:30 and 23:00 slots, and the root's 22:45 slot thinned by the
-    24-hour monitor's unlearned rows: p_when 6e-4 (MEDIUM) where the
-    population's evening law runs to 23:00."""
+    Pack O seed 1, round 11 (D4): the portal root's non-workday 22:45 slot
+    held 51.5 of mass against ~54 in the other monitor-only slots (the
+    24-hour monitor 192.168.9.9 learned a little less there), the lowest of
+    the stretch: root p 1.3e-3, and the login node (its own 22:45 slot empty
+    between a used 22:00 and 23:00) put the PUB login 10.60.123.142
+    (Saturday 22:47) at p_when 4.9e-4 - a MEDIUM incident. Smoothed: 5.7e-2;
+    A4's 03:05 login on the same run 1.8e-4 -> 1.5e-4."""
     f = np.asarray(f, dtype=np.float64)
     if f.size < 3:
         return f
@@ -202,7 +205,7 @@ def when_p(when: Any, daytype: int, minute: float, t: float, alpha_t: float = AL
         h = when.hist.sum(axis=0)
         if N < n_min:
             return NAN
-    f = when_fill(when_density(h, N, alpha_t))
+    f = when_smooth(when_density(h, N, alpha_t))
     return pmdl.hdr_p(f, int(float(minute) // 15) % 96)
 
 
