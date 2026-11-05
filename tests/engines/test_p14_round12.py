@@ -1,0 +1,69 @@
+"""P14 views, round 12 (views / groups / bindings owner)."""
+from __future__ import annotations
+
+from types import SimpleNamespace as NS
+
+from test_p14_round9 import _Lvl
+from test_p14_round11 import _Sigs
+
+from app.engines.behavior import views as VW
+
+DAY = 86400.0
+LOGIN = "POST oa /login"
+GA = ["192.168.1.21", "192.168.1.23", "10.168.7.121"]
+FIN = ["192.168.2.10", "192.168.2.11", "192.168.2.12"]
+
+
+def _fam_login(groups, readdr):
+    """O-real fam:1, day 35: the family login node, every address logging in."""
+    now = 35 * DAY
+    ip2g = {m: g for g, gr in groups.items() for m in gr["members"]}
+    item = f"fam:1|{LOGIN}"
+    ips = sorted({m for gr in groups.values() for m in gr["members"]} | set(GA) | set(FIN))
+    sigs = _Sigs({ip: ((9 * DAY) if ip == "192.168.2.11" else (now - 3600.0), {item: 1.0, "x": 1.0})
+                  for ip in ips})
+    cfg = {"who_group_names": [{"name": "综合部", "ips": list(GA)}, {"name": "财务部", "ips": list(FIN)}]}
+    c = NS(ip2g=ip2g, mode="grp", groups=groups, sigs=sigs, key="fam:1", config=cfg, readdr=readdr)
+    lv3 = [(f"grp:{g}", 3.0) for g in sorted(groups)]
+    lv0 = [(ip, 1.0) for ip in ips if ip != "192.168.2.11"]
+    nd = NS(ctx=[], who=NS(levels=[_Lvl(lv0), _Lvl([]), _Lvl([]), _Lvl(lv3)]))
+    return {p[0]: p[1] for p in VW.group_parts(c, nd, now, 0.0, LOGIN)}
+
+
+def test_a_moved_member_is_a_colleague_of_its_old_department_only():
+    """O-real seed 2 (round 11, §16.19.11 item 8): P11's G22 mixes 综合部's
+    approver 192.168.1.21 with 财务部's .2.10 / .2.12 and the moved clerk .2.51
+    (readdressed from the listed .2.11); T11-4 added .2.51 to every configured
+    综合部 part of the family login (who Jaccard 1.00 -> 0.75). The moved
+    clerk is 财务部's: 综合部's part names its three addresses, 财务部's the
+    clerk at the new address."""
+    groups = {"G22": {"name": "G22", "members": ["192.168.1.21", "192.168.2.10", "192.168.2.12",
+                                                 "192.168.2.51"]},
+              "G23": {"name": "G23", "members": ["10.168.7.121", "192.168.1.23"]}}
+    by = _fam_login(groups, {"192.168.2.11": "192.168.2.51"})
+    assert by["cfg:综合部"] == ["10.168.7.121", "192.168.1.21", "192.168.1.23"]
+    assert by["cfg:财务部"] == ["192.168.2.10", "192.168.2.12", "192.168.2.51"]
+    # seed 0's G18 (.21 / .2.12 / .2.51: one address of each department) likewise
+    groups = {"G18": {"name": "G18", "members": ["192.168.1.21", "192.168.2.12", "192.168.2.51"]},
+              "G19": {"name": "G19", "members": ["10.168.7.121", "192.168.1.23"]},
+              "G20": {"name": "G20", "members": ["192.168.2.10"]}}
+    by = _fam_login(groups, {"192.168.2.11": "192.168.2.51"})
+    assert "192.168.2.51" not in by["cfg:综合部"]
+    assert "192.168.2.51" in by["cfg:财务部"]
+
+
+def test_an_unlisted_colleague_follows_the_majority_of_its_group():
+    """Without a move, an unlisted address of a learned group is the colleague
+    of the department holding most (and at least half) of the group's
+    configured members; a group split evenly says nothing about it."""
+    groups = {"G22": {"name": "G22", "members": ["192.168.1.21", "192.168.2.10", "192.168.2.12",
+                                                 "192.168.2.77"]},
+              "G23": {"name": "G23", "members": ["10.168.7.121", "192.168.1.23"]}}
+    by = _fam_login(groups, {})
+    assert "192.168.2.77" not in by["cfg:综合部"] and "192.168.2.77" in by["cfg:财务部"]
+    groups = {"G18": {"name": "G18", "members": ["192.168.1.21", "192.168.2.12", "192.168.2.77"]},
+              "G19": {"name": "G19", "members": ["10.168.7.121", "192.168.1.23"]},
+              "G20": {"name": "G20", "members": ["192.168.2.10"]}}
+    by = _fam_login(groups, {})
+    assert all("192.168.2.77" not in m for m in by.values() if m is not None and m != groups["G18"]["members"])
+    assert "192.168.2.77" not in by.get("cfg:综合部", []) and "192.168.2.77" not in by.get("cfg:财务部", [])

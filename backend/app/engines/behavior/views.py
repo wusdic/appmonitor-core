@@ -1587,7 +1587,7 @@ def _config_dept_units(c: Any, nd: Any, t: float, seen: Set[str], lv0: Any, rout
         if not mem:
             continue
         if use_sig:
-            mem += _dept_colleagues(c, nd, t, mem, listed, route, sig_ctx)
+            mem += _dept_colleagues(c, nd, t, mem, listed, route, sig_ctx, name, cfg)
         gids = {c.ip2g.get(m) for m in mem}
         clean = None not in gids and all(
             str((c.groups.get(g) or {}).get("dept") or "") == name
@@ -1602,7 +1602,8 @@ def _config_dept_units(c: Any, nd: Any, t: float, seen: Set[str], lv0: Any, rout
 
 
 def _dept_colleagues(c: Any, nd: Any, t: float, mem: Sequence[str], listed: Set[str],
-                     route: Optional[str], sig_ctx: bool) -> List[str]:
+                     route: Optional[str], sig_ctx: bool, name: Optional[str] = None,
+                     cfg: Optional[Mapping[str, Sequence[str]]] = None) -> List[str]:
     """(round 11) A configured department's members at a node that its list
     does not hold: the other members of the learned groups (P11) of the
     department's members at the node that belong to no configured department,
@@ -1617,19 +1618,54 @@ def _dept_colleagues(c: Any, nd: Any, t: float, mem: Sequence[str], listed: Set[
     while the 财务部 part kept .10 / .11 / .12 (then .10 / .12) to day 35, so
     FIN.finance.login#0@1 (who .10 / .12 / .51, Jaccard >= 0.8) was never found.
     Bounded: <= MEMBERS_CHECKED signatures read per department; an address of
-    another configured department is that department's, never added."""
+    another configured department is that department's, never added.
+
+    (round 12) Whose colleague an unlisted address is. A learned group can mix
+    departments (O-real: the approver 192.168.1.21 of 综合部 shares G18 / G22
+    with 财务部's .2.12 / .2.10 and the moved clerk .2.51), and every
+    configured 综合部 part of the family login then named .2.51 (seed 2's who
+    Jaccard 1.00 -> 0.75). So
+      (a) an address P11 saw replace a listed address (its `readdressed` map,
+          old -> new) is a colleague of the OLD address's department only;
+      (b) any other unlisted address of a learned group g is a colleague of
+          the department only when the department holds at least half of g's
+          configured members and more of them than any other department (a
+          group split evenly between two departments says nothing about
+          whose its unlisted members are)."""
     sigs = getattr(c, "sigs", None)
     if sigs is None or route is None:
         return []
     have = set(mem)
+    dept_of: Dict[str, Set[str]] = {}
+    for dn, lst in sorted((cfg or {}).items()):
+        for ip in lst:
+            dept_of.setdefault(str(ip), set()).add(str(dn))
+    moved = {str(new): str(old) for old, new in sorted((getattr(c, "readdr", None) or {}).items())}
     gids = sorted({str(c.ip2g.get(m)) for m in mem if c.ip2g.get(m) is not None})
     cand: List[str] = []
     for g in gids:
-        for x in (c.groups.get(g) or {}).get("members") or []:
-            x = str(x)
-            if "/" in x or x in listed or x in have or x in cand:
+        gm = [str(x) for x in (c.groups.get(g) or {}).get("members") or [] if "/" not in str(x)]
+        tally: Dict[str, int] = {}
+        n_cfg = 0
+        for x in gm:
+            ds = dept_of.get(x)
+            if ds:
+                n_cfg += 1
+                for dn in ds:
+                    tally[dn] = tally.get(dn, 0) + 1
+        own = tally.get(str(name), 0) if name is not None else n_cfg
+        group_ok = name is None or (n_cfg > 0 and 2 * own >= n_cfg
+                                    and all(v < own for dn, v in tally.items() if dn != str(name)))
+        for x in gm:
+            if x in listed or x in have or x in cand:
                 continue
-            cand.append(x)
+            old = moved.get(x)
+            if old is not None and old in dept_of:
+                if name is None or str(name) in dept_of[old]:
+                    cand.append(x)                   # (a) the moved member's own department
+                continue
+            if group_ok:
+                cand.append(x)                       # (b) the group is this department's
     out: List[str] = []
     for x in sorted(cand, key=PR._ip_sort)[:CF.MEMBERS_CHECKED]:
         if (_current(c, x, t) and (not sig_ctx or _ctx_admits(nd, x, c.ip2g))

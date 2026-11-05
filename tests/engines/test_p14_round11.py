@@ -63,13 +63,17 @@ def test_a_configured_department_states_its_unlisted_colleague_at_the_node():
                   "192.168.2.77": (now - 3600.0, {ledger: 5.0})})
     cfg = {"who_group_names": [{"name": "财务部", "ips": ["192.168.2.10", "192.168.2.11", "192.168.2.12"]},
                                {"name": "综合部", "ips": ["192.168.1.21"]}]}
-    c = NS(ip2g=ip2g, mode="grp", groups=groups, sigs=sigs, key="finance", config=cfg)
+    # (round 12) P11 saw the clerk move (readdressed .11 -> .51): the colleague
+    # is 财务部's, not 综合部's, although G18 holds one address of each
+    c = NS(ip2g=ip2g, mode="grp", groups=groups, sigs=sigs, key="finance", config=cfg,
+           readdr={"192.168.2.11": "192.168.2.51"})
     # .51 is a suspect at the node (P04 keeps its rows out of the IP level)
     ips = [("192.168.2.12", 6.0), ("192.168.2.10", 5.0), ("192.168.2.11", 0.3)]
     nd = NS(ctx=[], who=NS(levels=[_Lvl(ips), _Lvl([]), _Lvl([]), _Lvl([("grp:G18", 6.0), ("grp:G59", 5.0)])]))
     parts = VW.group_parts(c, nd, now, 0.0, ROUTE)
     by = {p[0]: p for p in parts}
     assert by["cfg:财务部"][1] == ["192.168.2.10", "192.168.2.12", "192.168.2.51"]
+    assert all("192.168.2.51" not in p[1] for k, p in by.items() if k == "cfg:综合部")
     # never another configured department's address, nor one without the action
     assert all("192.168.1.21" not in by["cfg:财务部"][1] and "192.168.2.77" not in p[1] for p in parts)
 
