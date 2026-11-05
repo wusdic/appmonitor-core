@@ -4027,7 +4027,9 @@ def _note_born(nd: PN.Node, t: float) -> None:
     and GA.oa.approvals#2's closed set was missing on days 6-10."""
     tl = sorted(a for a, sm in nd.targets.items() if _has_rows(sm, t))
     if tl:
-        nd.meta["born_tl"] = tl
+        # bounded like the node's summaries (TG_HARD): a node born of a young
+        # node does not chain its parent's birth list into an unbounded one
+        nd.meta["born_tl"] = tl[:TG_HARD]
 
 
 def _mark_tgd(nd: PN.Node, a: str, day: Optional[int]) -> None:
