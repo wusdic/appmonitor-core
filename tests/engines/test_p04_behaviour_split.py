@@ -745,7 +745,9 @@ def test_hold_constraints_cover_every_part_of_the_statement():
                                    "body.keys": {"kind": "set", "required": ["username", "password"]}}},
            MP.PBIND: {"pairs": {"net.src->body.kv.username": {
                "fd": {"holds": True}, "table": {"192.168.1.21": {"bound": True, "top": "jack", "LB": 0.95}}}}}}
-    cons = PTE._hold_constraints(nd, 0.0, {}, fit)
+    # (round 12) the fitters' entries of the node's current summaries
+    summ = {"body.len": None, "body.kv.username": None, "body.keys": None}
+    cons = PTE._hold_constraints(nd, 0.0, summ, fit)
     assert {"body.len", "body.len#range", "body.kv.username#grammar", "body.keys",
             "bind:body.kv.username:192.168.1.21"} <= set(cons), sorted(cons)
     nd.ref = {"hold": cons}
