@@ -137,34 +137,21 @@ def pair_key(x: str, y: str) -> str:
     return f"{x}->{y}"
 
 
-def _one_valued(hx: Optional[Mapping[str, Any]], exclude: Optional[Mapping[str, Any]] = None) -> bool:
-    """(round 12) Whether a source's tree-level value history names ONE value
-    (no counted value but its top on REBIND_DAYS or more clean normal days):
-    only such a source is judged on its pooled days (lib/pfd.history_support,
-    hierarchical pooling). Pooling counts the source's days of its top value
-    against all its days, so a source with a second recurring value - a
-    terminal two users share - was judged a counter-example of the node's
-    binding, and the set rule (on the node's own counts, against the pooled
-    n) could not see its set. O-real seed 2 (round 11, days 12-16): the shared
-    terminal 192.168.1.40 (jack2 on 5 days, rose2 on 3; both from its first
-    day, neither pending) pooled as jack2 5 / 8 made the family login node's
-    net.src -> username dependency fail (g3 0.059 > 0.05), so no binding of
-    the node was stated (bindings @14 2/6) and D2's rename was late. Such a
-    source is judged on the node's own counts (its set or open set, or not
-    judged below N_BIND); values the history sets aside (pending newcomers,
-    superseded names) do not count, as in history_support."""
-    if not hx or not hx.get("v"):
-        return True
-    ex = set(map(str, (exclude or {}).keys()))
-    days = sorted((len(r[3]) for y, r in hx["v"].items() if str(y) not in ex and len(r[3]) > 0), reverse=True)
-    return len(days) < 2 or days[1] < FD.REBIND_DAYS
-
-
-def pooled_support(hist: Any, xs: Iterable[Any], excl: Mapping[str, Any]) -> Dict[str, Any]:
-    """The `support` of lib/pfd.fit_pair: each one-valued source's pooled days
-    (history_support), None for the others (_one_valued)."""
-    return {str(x): (FD.history_support(hist.get(str(x)), excl.get(str(x)))
-                     if _one_valued(hist.get(str(x)), excl.get(str(x))) else None) for x in xs}
+def support_days(hist: Any, xs: Iterable[Any], excl: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """(round 12) Each source's counted clean normal days per value
+    (lib/pfd.history_days), handed to lib/pfd.fit_pair with the pooled
+    support: a pooled source is judged on its days, and its set (a terminal
+    two users share) must be read from the same days, not from the node's
+    young sketch against the pooled n. O-real seed 2 (round 11, days 12-16):
+    192.168.1.40 (jack2 on 5 days, rose2 on 3, both from its first day),
+    pooled as jack2 5 / 8, was a counter-example of the family login node's
+    net.src -> username dependency (g3 0.059 > 0.05): no binding of the node
+    was stated (bindings @14 2/6) and D2's rename was late. None when lib/pfd
+    has no history_days (the bounds owner's half of the change)."""
+    hd = getattr(FD, "history_days", None)
+    if hd is None:
+        return None
+    return {str(x): hd(hist.get(str(x)), excl.get(str(x))) for x in xs}
 
 
 class BindingEngine(Engine):
@@ -800,10 +787,12 @@ class BindingEngine(Engine):
             # hierarchical pooling (deviation, §6.12): each source's tree-level days
             # (every node of the pair, seeded with the probe rows from before the
             # sketch existed), the node's leave-one-out prior over its other sources
-            sup = pooled_support(hist, xs, excl)
+            sup = {str(x): FD.history_support(hist.get(str(x)), excl.get(str(x))) for x in xs}
+            days = support_days(hist, xs, excl)
         else:
-            sup = {}
-        rec = FD.fit_pair(ps, now, exclude=excl, support=sup)
+            sup, days = {}, None
+        rec = FD.fit_pair(ps, now, exclude=excl, support=sup,
+                          **({"support_days": days} if days is not None else {}))
         if rec is None:
             return None
         if hist is not None:

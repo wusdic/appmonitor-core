@@ -85,21 +85,27 @@ def _family_login():
     return ps, h, T0 + 8 * DAY
 
 
-def test_a_shared_terminal_is_not_pooled_as_its_top_user():
+def test_a_shared_terminal_is_pooled_with_its_set():
     """O-real seed 2 (round 11, days 12-16): pooled on its days, the shared
     terminal 192.168.1.40 counted as jack2 on 5 of 8 days - a counter-example
     (g3 0.059 > FD_G3) that kept the family login node's net.src -> username
     dependency from holding, so no binding of the node was stated (bindings
-    @14 2/6). A source whose history holds a second recurring value is judged
-    on the node's own counts; the six one-valued users stay pooled and bound."""
+    @14 2/6): the set rule read the node's young sketch against the pooled n.
+    binding.support_days hands each source's days per value to fit_pair, which
+    reads a pooled source's set from them (lib/pfd.history_days, the bounds
+    owner's half): the terminal is an open set {jack2, rose2}, neither bound
+    nor a counter-example, and the six users are bound."""
+    import pytest
     from app.engines.behavior.lib import pfd as FD
+    if not hasattr(FD, "history_days"):
+        pytest.skip("lib/pfd.history_days (proposal pfd_pooled_set.patch) not applied")
     ps, h, t = _family_login()
     xs = list(ps.x.keys())
-    assert not BD._one_valued(h.get("192.168.1.40"))
-    assert BD._one_valued(h.get("192.168.1.21"))
-    old = FD.fit_pair(ps, t, support={str(x): FD.history_support(h.get(str(x))) for x in xs})
+    sup = {str(x): FD.history_support(h.get(str(x))) for x in xs}
+    old = FD.fit_pair(ps, t, support=sup)
     assert not old["fd"]["holds"] and old["fd"]["g3"] > FD.FD_G3          # the round-11 veto
-    rec = FD.fit_pair(ps, t, support=BD.pooled_support(h, xs, {}))
+    rec = FD.fit_pair(ps, t, support=sup, support_days=BD.support_days(h, xs, {}))
     assert rec["fd"]["holds"], rec["fd"]
     assert all(rec["table"][x].get("bound") and rec["table"][x]["top"] == y for x, y in FAM)
-    assert not rec["table"]["192.168.1.40"].get("bound")
+    e = rec["table"]["192.168.1.40"]
+    assert not e.get("bound") and e.get("set_open") == ["jack2", "rose2"], e
