@@ -109,6 +109,26 @@ def when_density(counts: np.ndarray, N: float, alpha_t: float = ALPHA_T) -> np.n
     return (share * N + alpha_t / c.size) / (N + alpha_t)
 
 
+def when_fill(f: np.ndarray) -> np.ndarray:
+    """(round 12) A slot inside a used interval is no rarer than the
+    interval's thinner edge: f'(s) = max(f(s), min(f(s-1), f(s+1))) over the
+    96 slots of the day (a circle: 23:45 and 00:00 are neighbours). A
+    15-minute slot left empty between two used slots is a sampling gap, not
+    a time the population avoids; a slot whose neighbours are empty (03:05
+    in the middle of the night) keeps its density. Read by the HDR tables of
+    P03 (conformity._when_hdr; unnormalised - the table normalises).
+
+    Pack O seed 1, round 11 (D4): the PUB login 10.60.123.142 on Saturday
+    22:47 at the portal login node, whose own 22:45 slot was empty between
+    used 22:30 and 23:00 slots, and the root's 22:45 slot thinned by the
+    24-hour monitor's unlearned rows: p_when 6e-4 (MEDIUM) where the
+    population's evening law runs to 23:00."""
+    f = np.asarray(f, dtype=np.float64)
+    if f.size < 3:
+        return f
+    return np.maximum(f, np.minimum(np.roll(f, 1), np.roll(f, -1)))
+
+
 EB_ALPHAS = tuple(float(2.0 ** k) for k in range(-2, 13))     # 0.25 .. 4096
 
 
@@ -182,7 +202,7 @@ def when_p(when: Any, daytype: int, minute: float, t: float, alpha_t: float = AL
         h = when.hist.sum(axis=0)
         if N < n_min:
             return NAN
-    f = when_density(h, N, alpha_t)
+    f = when_fill(when_density(h, N, alpha_t))
     return pmdl.hdr_p(f, int(float(minute) // 15) % 96)
 
 

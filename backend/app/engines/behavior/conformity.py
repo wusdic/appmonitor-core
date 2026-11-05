@@ -1239,7 +1239,7 @@ class _TreeCtx:
         if k in self.info:
             return self.info[k]
         h, N = self._when_counts(nd, daytype)
-        own = _hdr_table(SC.when_density(h, N)) if N > 0 and np.asarray(h).sum() > 0 else None
+        own = _when_hdr(SC.when_density(h, N)) if N > 0 and np.asarray(h).sum() > 0 else None
         par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
         pt = self.when_ptab(kind, tree, par, daytype) if par is not None else None
         if pt is None:
@@ -1248,7 +1248,7 @@ class _TreeCtx:
             out = pt
         else:
             f = self.when_pred(kind, tree, nd, daytype)
-            hier = _hdr_table(f) if f is not None else own
+            hier = _when_hdr(f) if f is not None else own
             # (round 7) a CONTENT split (an attribute that is neither a source
             # nor a time attribute) does not make a time sub-population: the
             # child's own slot counts are a sample of its parent's law, so a
@@ -1287,16 +1287,16 @@ class _TreeCtx:
         cur = None
         if N >= SC.N_MIN:
             cur = self.when_ptab(kind, tree, nd, daytype) if tree is not None \
-                else _hdr_table(SC.when_density(h, N))
+                else _when_hdr(SC.when_density(h, N))
         ref = None
         refw = ((nd.ref or {}).get("when") or {}).get("nwd" if daytype else "wd")
         if refw is not None and self.day_exposed(nd, d):
             Nd = nd.when.evidence(d, t)
             if Nd >= SC.N_MIN:
                 rc = np.asarray(refw, dtype=np.float64) * Nd
-                ref = _hdr_table(SC.when_density(rc, Nd))
+                ref = _when_hdr(SC.when_density(rc, Nd))
                 if prior is not None and pt is not None:
-                    ref = np.maximum(_hdr_table(SC.when_density_prior(rc, Nd, prior)),
+                    ref = np.maximum(_when_hdr(SC.when_density_prior(rc, Nd, prior)),
                                      pt if self.content_child(kind, tree, nd) else np.minimum(ref, pt))
         self.info[k] = (cur, ref)
         return cur, ref
@@ -1661,6 +1661,15 @@ def _hdr_table(f: np.ndarray) -> np.ndarray:
     lo = np.searchsorted(srt, f, "left")
     hi = np.searchsorted(srt, f, "right")
     return np.minimum(1.0, cs[lo] + 0.5 * (cs[hi] - cs[lo]))
+
+
+def _when_hdr(f: np.ndarray) -> np.ndarray:
+    """(round 12) The HDR table of a when density after pscore.when_fill: a
+    slot left empty between two used slots is no rarer than the thinner of
+    them (pack O seed 1, D4: a Saturday 22:47 PUB login between used 22:30
+    and 23:00 slots scored p_when 6e-4 at the portal login node, MEDIUM;
+    an empty slot in an empty stretch - A4's 03:05 - is unchanged)."""
+    return _hdr_table(SC.when_fill(f))
 
 
 def _ref_record(nd: Any, name: str, attr: str) -> Optional[Mapping[str, Any]]:
