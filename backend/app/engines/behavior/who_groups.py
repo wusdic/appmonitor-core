@@ -926,32 +926,94 @@ class WhoGroupsEngine(Engine):
 # ====================================================================== helpers
 PEEL_MIN = 3                # base communities of >= 3 members are checked member by member
 PEEL_EXACT = 16             # ... one at a time, leave-one-out, up to this size; one sampled pass above
+PEEL_NEAR = 10              # a member's nearest addresses outside its community whose communities it is compared with
+PEEL_MAX = 256              # members checked against other communities per run (bounded)
 
 
 def _peel(lab: np.ndarray, M: np.ndarray, rho: float, sample: int = 16,
           intra: Optional[Dict[int, float]] = None) -> np.ndarray:
-    """(round 12) A base community keeps a member only while the member is as
-    similar to the others as they are to each other: J(x, C - x) >= rho x
-    J(C - x, C - x), the bar of the join rule (_joins, _roles) and of the
-    merges (plouvain.merge_similar). The worst such member is peeled off, one
-    at a time, until every member passes; a peeled member is a singleton of
-    the run (a role, a join candidate, or ungrouped, as any other).
+    """(round 12) A base community keeps a member that is less similar to the
+    others than they are to each other (J(x, C - x) < rho x J(C - x, C - x),
+    the bar of the join rule and of the merges) only while no other community
+    is more similar to it: a member whose mean J to the community of one of
+    its PEEL_NEAR nearest outside addresses exceeds its J to its own is
+    peeled off (one at a time, the worst first; a peeled member is a
+    singleton of the run: a role, a join candidate, or ungrouped, as any
+    other). A member merely looser than a tight group (a sales member with a
+    young signature) stays: nothing else is closer.
     Why: the mutual-kNN graph links an address whose nearest neighbours fill
     their lists with each other (a 20-member department, a tight pair) to
     whatever few addresses list it back, and Louvain's local moves then put it
     into that community however weak the link. O-real seed 2 (round 11, day
     32): 综合部's approver 192.168.1.21 (J 0.45-0.47 to 综合部's reporters and
-    销售部, its LSH candidates) had mutual edges only to 财务部's clerks
-    .2.12 / .2.51 (J 0.31 / 0.28; they list few neighbours), and went into
-    财务部's group G22 (within 0.43; the clerks with each other 0.86, with the
-    approver .2.10 0.39-0.41) - so the configured 综合部 parts of the family
-    login named finance's addresses (who Jaccard 0.75) and 综合部's approver
-    was stated a finance colleague. Bounded: O(|C| x sample x K) per check.
-    `intra` (the communities' within-similarity, merge_similar) is updated for
-    the communities that lost members (the groups' cohesion, the join bar)."""
+    销售部, its nearest addresses) had mutual edges only to 财务部's clerks
+    .2.12 / .2.51 (J 0.31 / 0.28; they list few neighbours) and went into
+    财务部's group G22 (within 0.43; the clerks with each other 0.86), so the
+    configured 综合部 parts of the family login named finance's addresses (who
+    Jaccard 0.75) and 综合部's approver was stated a finance colleague.
+    Bounded: <= PEEL_MAX members compared with other communities per run,
+    O(n K) each; the within checks O(|C| x sample x K). `intra` (the
+    communities' within-similarity, merge_similar) is updated for the
+    communities that lost members (the groups' cohesion, the join bar)."""
     lab = np.asarray(lab, dtype=np.int64).copy()
     if lab.size == 0:
         return lab
+    members: Dict[int, List[int]] = {}
+    for i, c in enumerate(lab.tolist()):
+        members.setdefault(int(c), []).append(i)
+    nxt = int(lab.max()) + 1
+    budget = [PEEL_MAX]
+
+    def elsewhere(x: int, own: Sequence[int], jx: float) -> bool:
+        """Some community of x's nearest outside addresses is closer to x than its own."""
+        if budget[0] <= 0:
+            return False
+        budget[0] -= 1
+        jall = (M == M[x][None, :]).mean(axis=1)
+        mine = set(own) | {x}
+        order = [int(i) for i in np.argsort(-jall, kind="stable") if int(i) not in mine][:PEEL_NEAR]
+        for c2 in sorted({int(lab[i]) for i in order}):
+            m2 = [i for i in members.get(c2, ()) if int(lab[i]) == c2]
+            if not m2:
+                continue
+            if float(np.mean([jall[i] for i in LV._sample(m2, sample)])) > jx:
+                return True
+        return False
+
+    for c in sorted(members):
+        mem = list(members[c])
+        if len(mem) > PEEL_EXACT:
+            # a large community: one pass against a sample of its members (linear
+            # in its size; every member failing both tests leaves at once)
+            smp = LV._sample(mem, sample)
+            w = LV._mean_j(M, smp)
+            js = (M[mem][:, None, :] == M[smp][None, :, :]).mean(axis=2)
+            keep = []
+            for k, x in enumerate(mem):
+                row = [float(js[k, q]) for q, i in enumerate(smp) if i != x]
+                jx = sum(row) / len(row) if row else 1.0
+                if jx >= rho * w or not elsewhere(x, mem, jx):
+                    keep.append(x)
+                else:
+                    lab[x] = nxt
+                    nxt += 1
+            mem = keep
+        while PEEL_MIN <= len(mem) <= PEEL_EXACT:
+            fails = []
+            for x in mem:
+                rest = [i for i in mem if i != x]
+                jx, w = LV._mean_j(M, [x], rest), LV._mean_j(M, rest)
+                if jx < rho * w:
+                    fails.append((jx / w if w > 0 else math.inf, x, jx))
+            out = next((x for _, x, jx in sorted(fails) if elsewhere(x, mem, jx)), None)
+            if out is None:
+                break
+            mem.remove(out)
+            lab[out] = nxt
+            nxt += 1
+        if intra is not None and len(mem) < len(members[c]):
+            intra[c] = LV._mean_j(M, LV._sample(mem, sample))
+    return lab
     members: Dict[int, List[int]] = {}
     for i, c in enumerate(lab.tolist()):
         members.setdefault(int(c), []).append(i)
