@@ -264,6 +264,7 @@ MEMBER_EV = 3.0                 # a source recurring at an ANCESTOR population (
 CAL_TYPES = ("when", "content", "seq")
 DT_DATES = 40                   # local dates per day type remembered per tree (ConfState.day_seen; round 12: 8 -> 40, the when exposure)
 READDR_NOTES = 64               # (round 11) readdress candidates of the current local day remembered (ConfState.readdr_note)
+FLAT_SLOT = 0.5                 # (round 12) _flat_node: every smoothed slot >= half the median slot (a 24-hour source)
 EXPO_DATES = 1                  # complete dates of a day type before a node's own day-type table speaks
 INT_P = 1e-3                    # an hour count is a finding only at this tail (§6.16.4)
 E_MAX = 1.0                     # a node's routine: >= this many such scores per day
@@ -1191,7 +1192,71 @@ class _TreeCtx:
             E = e if E is None else E + e
         if E is not None and bool((E > 0).all()):
             h = np.asarray(h, dtype=np.float64) / E
+        self.info[("wds", id(nd), daytype)] = ds
         return h, float(N)
+
+    def _flat_node(self, kind: int, tree: Any, nd: Any, daytype: int) -> bool:
+        """(round 12) A node whose arrival rate is flat over the day (every
+        smoothed slot >= FLAT_SLOT x the median slot, >= N_MIN evidence): a
+        24-hour machine source (a health monitor), not a time-of-day
+        population. Per node and batch."""
+        k = ("wf", kind, nd.id, daytype)
+        r = self.info.get(k)
+        if r is None:
+            h, N = self._when_counts(nd, daytype, kind, tree)
+            g = SC.when_smooth(np.asarray(h, dtype=np.float64))
+            r = bool(N >= SC.N_MIN and g.min() > 0 and g.min() >= FLAT_SLOT * float(np.median(g)))
+            self.info[k] = r
+        return r
+
+    def _child_prior(self, kind: int, tree: Any, par: Any, nd: Any, daytype: int) -> Optional[np.ndarray]:
+        """(round 12) The slot prior of a child `nd` of `par` (when_pred's
+        hierarchical back-off): the parent's predictive WITHOUT the mass of
+        the child's flat siblings (_flat_node: 24-hour machine sources). A
+        flat source says nothing about when a sibling population acts, and
+        as part of the prior it gave every population of the tree a night
+        of its own: pack O seed 1 / O-red, the oa and portal roots' nights
+        are the monitor 192.168.9.9's; once the slot masses are read per
+        exposure that night is flat, and O-red's A4 (a 03:05 login of the
+        综合部 approver) read p_when 2e-3 at the login route node through the
+        prior (the round-11 code ordered the flat night by the partial-day
+        artifact and read 2.8e-4). Without flat siblings this is
+        when_pred(par)."""
+        base = self.when_pred(kind, tree, par, daytype)
+        if base is None or tree is None:
+            return base
+        flats = [tree.nodes[c] for c in tree.children(par.id)
+                 if c != nd.id and c in tree.nodes and self._flat_node(kind, tree, tree.nodes[c], daytype)]
+        if not flats:
+            return base
+        k = ("wpx", kind, par.id, tuple(sorted(int(c.id) for c in flats)), daytype)
+        if k in self.info:
+            return self.info[k]
+        t = self.now
+        out = base
+        hp, Np = self._when_counts(par, daytype, kind, tree)
+        dsp = self.info.get(("wds", id(par), daytype))
+        hp = np.asarray(hp, dtype=np.float64)
+        if hp.sum() > 0 and dsp is not None:
+            ex = sum(par.when.mass(dd, t) for dd in dsp) * hp / hp.sum()
+            Nx = float(Np)
+            ok = True
+            for c in flats:
+                hc, Nc = self._when_counts(c, daytype, kind, tree)
+                if self.info.get(("wds", id(c), daytype)) != dsp:
+                    ok = False                  # another day-type mix: not comparable
+                    break
+                hc = np.asarray(hc, dtype=np.float64)
+                if hc.sum() > 0:
+                    ex = ex - sum(c.when.mass(dd, t) for dd in dsp) * hc / hc.sum()
+                Nx -= float(Nc)
+            ex = np.maximum(ex, 0.0)
+            if ok and Nx >= SC.N_MIN and ex.sum() > 0:
+                gpar = tree.nodes.get(par.parent) if par.parent is not None else None
+                gp = self._child_prior(kind, tree, gpar, par, daytype) if gpar is not None else None
+                out = SC.when_density_prior(ex, Nx, gp) if gp is not None else SC.when_density(ex, Nx)
+        self.info[k] = out
+        return out
 
     def _when_expo(self, kind: Optional[int], nd: Any, d: int) -> Optional[np.ndarray]:
         """(round 12) Per-slot exposure of a node's day type d at H_m:
@@ -1317,7 +1382,7 @@ class _TreeCtx:
         if k in self.info:
             return self.info[k]
         par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
-        prior = self.when_pred(kind, tree, par, daytype) if par is not None else None
+        prior = self._child_prior(kind, tree, par, nd, daytype) if par is not None else None
         h, N = self._when_counts(nd, daytype, kind, tree)
         if prior is None:
             f = SC.when_density(h, N) if N > 0 and np.asarray(h).sum() > 0 else None
@@ -1395,7 +1460,7 @@ class _TreeCtx:
         d = 1 if daytype else 0
         h, N = self._when_counts(nd, daytype, kind, tree)
         par = tree.nodes.get(nd.parent) if (tree is not None and nd.parent is not None) else None
-        prior = self.when_pred(kind, tree, par, daytype) if par is not None else None
+        prior = self._child_prior(kind, tree, par, nd, daytype) if par is not None else None
         pt = self.when_ptab(kind, tree, par, daytype) if par is not None else None
         cur = None
         if N >= SC.N_MIN:
