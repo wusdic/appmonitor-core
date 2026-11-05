@@ -1344,6 +1344,29 @@ class _TreeCtx:
         s_ = out.sum()
         return out / s_ if s_ > 0 else refw
 
+    def when_anchor(self, kind: int, tree: Any, nd: Any, daytype: int, slot: int,
+                    p_cur: float, p_ref: float) -> float:
+        """(round 12) p_when of a slot from the node's two anchors (current
+        table, reference table): SC.dual_anchor's min(1, 2 min(p_cur, p_ref))
+        - a Bonferroni factor for taking the smaller of two looks - unless
+        BOTH anchors are the parent's backed-off value at the slot
+        (when_ptab: p = max(p_hier, min(p_own, p_parent)) with p_parent the
+        larger term in both): then neither the node's current nor its
+        reference law speaks at the slot, the parent's one test does, and
+        min(p, p) = p needs no factor (P(min <= x) = x).
+        O-red seed 0, A4 (a 03:05 login of the 综合部 approver): the young
+        综合部 login node's current and reference tables both read the route
+        node's 6.2e-4 at 03:00, and the factor reported 1.25e-3 - over the
+        1e-3 finding bar once the route node's night was read per exposure
+        (round 11 read 2.8e-4 there from the partial-day artifact)."""
+        if tree is not None and not _nan(p_ref) and not _nan(p_cur) and p_cur == p_ref \
+                and nd.parent is not None:
+            par = tree.nodes.get(nd.parent)
+            pt = self.when_ptab(kind, tree, par, daytype) if par is not None else None
+            if pt is not None and float(pt[slot]) == float(p_cur):
+                return float(p_cur)
+        return SC.dual_anchor(p_cur, p_ref)
+
     def day_exposed(self, nd: Any, d: int) -> bool:
         """(round 7) Whether the node has lived through a COMPLETE local date
         of day type d (EXPO_DATES, after its creation date): before that its
@@ -3030,7 +3053,7 @@ class ConformityEngine(Engine):
                     p_when = max(p_cur, p_ref) if not _nan(p_ref) else p_cur
                     cap_low.add("when")
                 else:
-                    p_when = SC.dual_anchor(p_cur, p_ref)
+                    p_when = tc.when_anchor(kind, tree, nd, daytype, slot, p_cur, p_ref)
                 wins = tc.node_info(kind, tree, nd.id).wins
                 if wins:
                     iv = wins.get("nonworkday" if daytype else "workday") or []

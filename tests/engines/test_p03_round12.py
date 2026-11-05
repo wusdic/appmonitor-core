@@ -23,6 +23,7 @@ from app.engines.behavior import conformity as CF
 from app.engines.behavior.lib import m_ptree as MP
 from app.engines.behavior.lib import pnode as PN
 from app.engines.behavior.lib import pscore as SC
+from app.models.schema import Severity
 
 from test_p03_conformity import CFG, GA, LOGIN, TZ, Fx, local_minute, workdays  # noqa: F401
 
@@ -308,3 +309,29 @@ def test_a_flat_sibling_is_left_out_of_a_populations_prior(monkeypatch):
         p_with = tc.when_table(0, login, 0, tr)[0][slot]
     assert p < 5e-4 and p_with > 2 * p, (p, p_with)
     assert tc.when_table(0, login, 0, tr)[0][int(9 * 4)] > 0.2
+
+
+def test_two_anchors_that_both_read_the_parents_value_are_one_test():
+    """O-red seed 0, A4: the young 综合部 login node's current AND reference
+    when tables both back off to the route node's value at 03:00 (6.2e-4 per
+    exposure); the dual anchor's factor 2 (a min over two looks) reported
+    1.25e-3, over the 1e-3 finding bar. Both anchors are the parent's one
+    test: p_when is that value. Two anchors that differ keep the factor."""
+    from test_p03_round3 import _young_department_node
+    fx, tr, route_nd, child, days = _young_department_node()
+    h = child.when.hist[0]
+    child.ref = {"t": days[45], "when": {"wd": (h / h.sum()).tolist(), "nwd": None}}
+    t = days[47] + 3 * 3600 + 5 * 60                              # 03:05
+    tc = CF._TreeCtx(fx.eng, fx.st, "oa", "oa", CFG, t)
+    slot = int(local_minute(t) // 15)
+    cur, ref = tc.when_table(0, child, 0, tr)
+    pt = tc.when_ptab(0, tr, route_nd, 0)
+    assert cur[slot] == ref[slot] == pt[slot]                     # both anchors back off
+    assert tc.when_anchor(0, tr, child, 0, slot, float(cur[slot]), float(ref[slot])) == float(pt[slot])
+    # anchors of the node's own (different values, or not the parent's) keep the factor
+    assert tc.when_anchor(0, tr, child, 0, slot, 1e-3, 2e-3) == 2e-3
+    assert tc.when_anchor(0, tr, child, 0, slot, 3e-3, 3e-3) == 6e-3
+    assert tc.when_anchor(0, tr, child, 0, slot, 1e-3, float("nan")) == 1e-3
+    b, asg = fx.score("oa", [(t, "10.168.7.121", {"http.route": LOGIN})])
+    w = [e for e in fx.violations("10.168.7.121") if e.extra["type"] == "when"]
+    assert w and w[0].severity == Severity.MEDIUM
