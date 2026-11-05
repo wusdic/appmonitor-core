@@ -1233,7 +1233,11 @@ class _TreeCtx:
                 continue
             t0 = float(D) * DAY - float(self.tz)
             w = np.exp2((t0 + _SLOT_MID - now) / PS.H_M)
-            if D == today:
+            if t0 + DAY > L:
+                # a date the learned time has not passed: only its learned
+                # slots (a tick's `now` is its END: the last tick of a date
+                # runs at the next date's 00:00, with that date's 23:00 -
+                # 24:00 rows still unlearned)
                 w = w * np.clip((L - (t0 + _SLOT_START)) / 900.0, 0.0, 1.0)
             E += w
         return E if bool((E > 0).any()) else None

@@ -252,3 +252,17 @@ def test_the_exposure_follows_the_nodes_own_learned_time():
     assert h.max() / h.min() < 1.02, (h.min(), h.max())
     cur, _ = tc2.when_table(0, nd, 0, tr)
     assert cur[95] > 0.3
+
+
+def test_the_last_tick_of_a_date_runs_at_the_next_midnight():
+    """A tick's `now` is its end: the 23:00 - 24:00 rows are scored at the
+    next date's 00:00 while still unlearned (pack O seed 1: the monitor's
+    23:45 rows at p_when 2e-3 - 1.6e-2 on days 4, 5 and 7)."""
+    fx, tr, nd, tc, st = _monitor_today(3, 23.0)
+    d = workdays(4)[3]
+    tc2 = CF._TreeCtx(fx.eng, fx.st, "oa", "oa", CFG, d + 86400.0)
+    tc2.st = st
+    h, _ = tc2._when_counts(nd, 0, 0, tr)
+    assert h.max() / h.min() < 1.02, (h.min(), h.max())
+    cur, _ = tc2.when_table(0, nd, 0, tr)
+    assert cur[95] > 0.3
