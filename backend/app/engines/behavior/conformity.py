@@ -1156,7 +1156,7 @@ class _TreeCtx:
         return r
 
     def _when_counts(self, nd: Any, daytype: int, kind: Optional[int] = None,
-                     tree: Any = None) -> Tuple[np.ndarray, float]:
+                     tree: Any = None, both: bool = False) -> Tuple[np.ndarray, float]:
         """(slot mass, evidence) of a node for a day type, all day types when
         the day type has < N_MIN evidence (pscore.when_p's back-off).
 
@@ -1176,7 +1176,7 @@ class _TreeCtx:
         h = nd.when.hist[d]
         ds: Tuple[int, ...] = (d,)
         Ed = self._when_expo(kind, nd, d)
-        if N < SC.N_MIN or not self.day_exposed(nd, d) or (Ed is not None and bool((Ed <= 0).any())):
+        if both or N < SC.N_MIN or not self.day_exposed(nd, d) or (Ed is not None and bool((Ed <= 0).any())):
             # (round 12) a slot no date of the day type has reached yet is
             # unknown, not empty: the day type backs off as before a
             # complete date (day_exposed)
@@ -1192,8 +1192,47 @@ class _TreeCtx:
             E = e if E is None else E + e
         if E is not None and bool((E > 0).all()):
             h = np.asarray(h, dtype=np.float64) / E
-        self.info[("wds", id(nd), daytype)] = ds
+        if not both:
+            self.info[("wds", id(nd), daytype)] = ds
         return h, float(N)
+
+    def _top_density(self, kind: Optional[int], tree: Any, nd: Any, daytype: int,
+                     h: np.ndarray, N: float, flats: Sequence[Any] = ()) -> np.ndarray:
+        """(round 12) The slot predictive at the TOP of a back-off chain (a
+        root, or a root without its flat children): a day type's counts under
+        the node's ALL-day-type law as a Dirichlet prior (pscore.when_density_
+        prior, empirical-Bayes strength) instead of the uniform alpha_t / 96 -
+        the day type is one more split level above the root ("every day" ->
+        "a workday / a non-workday"). Where the day type keeps the other's
+        law (a portal used 07:00-23:00 on every day) its first dates borrow
+        the other day type's shoulders; where it differs (an office system's
+        empty weekends) the strength is small and its own counts speak.
+        Pack O seed 0, day 7: the first Sunday 07:59 portal login read p_when
+        3.5e-4 (MEDIUM) at the login node once the 24-hour monitor was left
+        out of the prior (_child_prior): the root's non-workday humans had
+        one weekend, none of it at 07:45, and the uniform prior gave the
+        slot ~1e-3 / 96 (round 11 read 2.1e-2 there through the monitor's
+        flat mass). Unchanged when the day type's counts already back off
+        to all day types (_when_counts)."""
+        ds = self.info.get(("wds", id(nd), daytype))
+        d = 1 if daytype else 0
+        if ds != (d,):
+            return SC.when_density(h, N)
+        ha, Na = self._when_counts(nd, daytype, kind, tree, both=True)
+        ha = np.asarray(ha, dtype=np.float64)
+        if flats and ha.sum() > 0:
+            t = self.now
+            ex = sum(nd.when.mass(dd, t) for dd in (0, 1)) * ha / ha.sum()
+            for c in flats:
+                hc, Nc = self._when_counts(c, daytype, kind, tree, both=True)
+                hc = np.asarray(hc, dtype=np.float64)
+                if hc.sum() > 0:
+                    ex = ex - sum(c.when.mass(dd, t) for dd in (0, 1)) * hc / hc.sum()
+                Na -= float(Nc)
+            ha = np.maximum(ex, 0.0)
+        if Na <= float(N) + 1e-9 or ha.sum() <= 0 or Na < SC.N_MIN:
+            return SC.when_density(h, N)
+        return SC.when_density_prior(h, N, SC.when_density(ha, Na))
 
     def _flat_node(self, kind: int, tree: Any, nd: Any, daytype: int) -> bool:
         """(round 12) A node whose arrival rate is flat over the day (every
@@ -1254,7 +1293,8 @@ class _TreeCtx:
             if ok and Nx >= SC.N_MIN and ex.sum() > 0:
                 gpar = tree.nodes.get(par.parent) if par.parent is not None else None
                 gp = self._child_prior(kind, tree, gpar, par, daytype) if gpar is not None else None
-                out = SC.when_density_prior(ex, Nx, gp) if gp is not None else SC.when_density(ex, Nx)
+                out = SC.when_density_prior(ex, Nx, gp) if gp is not None \
+                    else self._top_density(kind, tree, par, daytype, ex, Nx, flats)
         self.info[k] = out
         return out
 
@@ -1408,7 +1448,7 @@ class _TreeCtx:
         prior = self._child_prior(kind, tree, par, nd, daytype) if par is not None else None
         h, N = self._when_counts(nd, daytype, kind, tree)
         if prior is None:
-            f = SC.when_density(h, N) if N > 0 and np.asarray(h).sum() > 0 else None
+            f = self._top_density(kind, tree, nd, daytype, h, N) if N > 0 and np.asarray(h).sum() > 0 else None
         else:
             f = SC.when_density_prior(h, N, prior)
         self.info[k] = f

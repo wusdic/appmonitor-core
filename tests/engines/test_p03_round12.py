@@ -25,7 +25,7 @@ from app.engines.behavior.lib import pnode as PN
 from app.engines.behavior.lib import pscore as SC
 from app.models.schema import Severity
 
-from test_p03_conformity import CFG, GA, LOGIN, TZ, Fx, local_minute, workdays  # noqa: F401
+from test_p03_conformity import CFG, GA, LOGIN, T0, TZ, Fx, local_minute, workdays  # noqa: F401
 
 OTHERS = [f"10.60.{i}.{i + 10}" for i in range(1, 13)]
 MONITOR = "192.168.9.9"
@@ -335,3 +335,71 @@ def test_two_anchors_that_both_read_the_parents_value_are_one_test():
     b, asg = fx.score("oa", [(t, "10.168.7.121", {"http.route": LOGIN})])
     w = [e for e in fx.violations("10.168.7.121") if e.extra["type"] == "when"]
     assert w and w[0].severity == Severity.MEDIUM
+
+
+def _learn_dt(fx: Fx, routes, ip: str, route: str, ts: float, w: float = 1.0) -> None:
+    tr = fx.tree("oa", routes)
+    hier = MP.hierarchies(fx.st, "oa", CFG)
+    keys = [hier.gen("net.src", l, ip) for l in range(PN.WHO_LEVELS)]
+    day = int((ts + 8 * 3600) // 86400.0)
+    import datetime as _dt
+    wd = 0 if _dt.datetime.fromtimestamp(ts, TZ).weekday() < 5 else 1
+    attrs = {"http.route": route, "net.src": ip}
+    for nid in tr.route(lambda a: attrs.get(a), hier, (), ts):
+        tr.nodes[nid].update_core(ts, w, w, keys, ip, wd, local_minute(ts), day)
+    for nd in tr.nodes.values():
+        if nd.state == "candidate" and nd.n_c(ts) >= 1:
+            nd.state = "confirmed"
+
+
+def test_a_young_day_type_borrows_the_other_day_types_shoulders(monkeypatch):
+    """Pack O seed 0, day 7: a portal used 07:00-23:00 on every day; on the
+    first weekend nobody logged in before 08:00, and once the 24-hour
+    monitor (a flat sibling) was left out of the login node's prior, the
+    first Sunday's 07:59 login read p_when 3.5e-4 (MEDIUM). The top of the
+    back-off chain now puts the day type's counts under the node's
+    all-day-type law (empirical-Bayes strength): 07:45 keeps the workdays'
+    shoulder; a 03:05 slot no day type ever used stays rare."""
+    import datetime as _dt
+    fx = Fx()
+    routes = [LOGIN, HEALTH]
+    rng = np.random.default_rng(5)
+    st = CF.ConfState()
+    t0 = T0                                                    # Tuesday
+    sat = sun = None
+    for k in range(12):
+        d = t0 + k * 86400.0
+        wdn = _dt.datetime.fromtimestamp(d, TZ).weekday()
+        dt_ = 0 if wdn < 5 else 1
+        st.day_seen("oa", dt_, int((d + 8 * 3600) // 86400.0))
+        if wdn == 6:
+            sun = d
+            break
+        if wdn == 5:
+            sat = d
+        lo = 7 * 60 if dt_ == 0 else 8 * 60                    # the first weekend: none before 08:00
+        for ip in OTHERS:
+            for _ in range(3 if dt_ == 0 else 5):
+                _learn_dt(fx, routes, ip, LOGIN, d + (lo + (23 * 60 - lo) * rng.random()) * 60.0)
+        for s in range(96):
+            _learn_dt(fx, routes, MONITOR, HEALTH, d + (15 * s + 7) * 60.0)
+    assert sat is not None and sun is not None
+    tr = fx.tree("oa", routes)
+    for nd in tr.nodes.values():
+        nd.state = "stable"
+    login = fx.node("oa", LOGIN)
+    t = sun + 7 * 3600 + 50 * 60                               # Sunday 07:50
+    early, night = int((7 * 60 + 50) // 15), int((3 * 60 + 5) // 15)
+
+    def table():
+        tc = CF._TreeCtx(fx.eng, fx.st, "oa", "oa", CFG, t)
+        tc.st = st
+        assert tc._flat_node(0, tr, fx.node("oa", HEALTH), 1)
+        return tc.when_table(0, login, 1, tr)[0]
+    cur = table()
+    with monkeypatch.context() as m:
+        m.setattr(CF._TreeCtx, "_top_density", lambda self, kind, tree, nd, daytype, h, N, flats=(): SC.when_density(h, N))
+        old = table()
+    assert old[early] < 1e-3, old[early]                       # the uniform top: the first weekend's gap is "rare"
+    assert cur[early] > 3e-3, (cur[early], old[early])
+    assert cur[night] < 1e-3, cur[night]
