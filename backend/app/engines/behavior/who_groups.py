@@ -654,6 +654,8 @@ class WhoGroupsEngine(Engine):
         adj = {(int(lab_u[a]), int(lab_u[b])) for (a, b) in edges if lab_u[a] != lab_u[b]}
         lab_u, intra = LV.merge_similar(lab_u, U, self.rho, adj, mult=cnt)
         lab = lab_u[inv] if n else np.zeros(0, dtype=np.int64)
+        if n:
+            lab = _peel(lab, M, self.rho, intra=intra)
         levels = [lv[inv] for lv in levels_u] if n else []
         # re-addressed pools (DHCP / VPN): ephemeral addresses in one pure prefix
         active = LV.ActiveIndex(k for k in sigs.keys() if "/" not in str(k))
@@ -922,6 +924,70 @@ class WhoGroupsEngine(Engine):
 
 
 # ====================================================================== helpers
+PEEL_MIN = 3                # base communities of >= 3 members are checked member by member
+PEEL_EXACT = 16             # ... leave-one-out exactly up to this size, on member samples above
+
+
+def _peel(lab: np.ndarray, M: np.ndarray, rho: float, sample: int = 16,
+          intra: Optional[Dict[int, float]] = None) -> np.ndarray:
+    """(round 12) A base community keeps a member only while the member is as
+    similar to the others as they are to each other: J(x, C - x) >= rho x
+    J(C - x, C - x), the bar of the join rule (_joins, _roles) and of the
+    merges (plouvain.merge_similar). The worst such member is peeled off, one
+    at a time, until every member passes; a peeled member is a singleton of
+    the run (a role, a join candidate, or ungrouped, as any other).
+    Why: the mutual-kNN graph links an address whose nearest neighbours fill
+    their lists with each other (a 20-member department, a tight pair) to
+    whatever few addresses list it back, and Louvain's local moves then put it
+    into that community however weak the link. O-real seed 2 (round 11, day
+    32): 综合部's approver 192.168.1.21 (J 0.45-0.47 to 综合部's reporters and
+    销售部, its LSH candidates) had mutual edges only to 财务部's clerks
+    .2.12 / .2.51 (J 0.31 / 0.28; they list few neighbours), and went into
+    财务部's group G22 (within 0.43; the clerks with each other 0.86, with the
+    approver .2.10 0.39-0.41) - so the configured 综合部 parts of the family
+    login named finance's addresses (who Jaccard 0.75) and 综合部's approver
+    was stated a finance colleague. Bounded: O(|C| x sample x K) per check.
+    `intra` (the communities' within-similarity, merge_similar) is updated for
+    the communities that lost members (the groups' cohesion, the join bar)."""
+    lab = np.asarray(lab, dtype=np.int64).copy()
+    if lab.size == 0:
+        return lab
+    members: Dict[int, List[int]] = {}
+    for i, c in enumerate(lab.tolist()):
+        members.setdefault(int(c), []).append(i)
+    nxt = int(lab.max()) + 1
+    for c in sorted(members):
+        mem = list(members[c])
+        while len(mem) >= PEEL_MIN:
+            worst = None
+            if len(mem) <= PEEL_EXACT:
+                for x in mem:
+                    rest = [i for i in mem if i != x]
+                    jx, w = LV._mean_j(M, [x], rest), LV._mean_j(M, rest)
+                    r = jx / w if w > 0 else math.inf
+                    if worst is None or r < worst[0]:
+                        worst = (r, x, jx, w)
+            else:
+                smp = LV._sample(mem, sample)
+                w = LV._mean_j(M, smp)
+                js = (M[mem][:, None, :] == M[smp][None, :, :]).mean(axis=2)
+                for k, x in enumerate(mem):
+                    row = [float(js[k, q]) for q, i in enumerate(smp) if i != x]
+                    jx = sum(row) / len(row) if row else 1.0
+                    r = jx / w if w > 0 else math.inf
+                    if worst is None or r < worst[0]:
+                        worst = (r, x, jx, w)
+            _, x, jx, w = worst
+            if jx >= rho * w:
+                break
+            mem.remove(x)
+            lab[x] = nxt
+            nxt += 1
+        if intra is not None and len(mem) < len(members[c]):
+            intra[c] = LV._mean_j(M, LV._sample(mem, sample))
+    return lab
+
+
 def _trust(store: Any, s: str, ip: str, at: float,
            cache: Dict[Tuple[str, str, float], Tuple[float, bool]]) -> Tuple[float, bool]:
     k = (s, ip, at)
