@@ -1206,15 +1206,12 @@ class _TreeCtx:
         rate per date. None without the tracker (a tree context outside a
         run: the slot masses are read as they are). Per tree, day type and
         batch."""
-        st = getattr(self, "st", None)
-        if st is None:
+        if getattr(self, "st", None) is None:
             return None
         k = ("wx", kind, int(d))
         if k in self.info:
             return self.info[k]
-        lst = (getattr(st, "dt_dates", None) or {}).get(self.key, {}).get(int(d)) or ()
         now = float(self.now)
-        today = int((now + self.tz) // DAY)
         L = now
         if tree is not None:
             root = tree.nodes.get(tree.root)
@@ -1223,6 +1220,15 @@ class _TreeCtx:
             # learned whole (its later rows belong to the next tick)
             L = min(now, (math.floor((float(ls) + self.tz) / 900.0) + 1.0) * 900.0 - self.tz) \
                 if ls is not None else -math.inf
+        out = self._expo_at(int(d), now, L)
+        self.info[k] = out
+        return out
+
+    def _expo_at(self, d: int, now: float, L: float) -> Optional[np.ndarray]:
+        """_when_expo's sum at time `now`, the current date learned up to `L`."""
+        st = getattr(self, "st", None)
+        lst = (getattr(st, "dt_dates", None) or {}).get(self.key, {}).get(int(d)) or ()
+        today = int((now + self.tz) // DAY)
         E = np.zeros(96)
         for D in lst:
             if D > today:
@@ -1232,9 +1238,34 @@ class _TreeCtx:
             if D == today:
                 w = w * np.clip((L - (t0 + _SLOT_START)) / 900.0, 0.0, 1.0)
             E += w
-        out = E if bool((E > 0).any()) else None
-        self.info[k] = out
-        return out
+        return E if bool((E > 0).any()) else None
+
+    def _ref_when(self, nd: Any, d: int) -> Optional[np.ndarray]:
+        """(round 12) The reference snapshot's slot shares of day type d read
+        per unit of exposure at the snapshot's time (pattern_tree stores
+        WhenSummary.density at ref['t'], mid-day: the slots still ahead of
+        that time held one date less, frozen into the reference)."""
+        ref = nd.ref or {}
+        refw = (ref.get("when") or {}).get("nwd" if d else "wd")
+        if refw is None:
+            return None
+        rt = ref.get("t")
+        if rt is None or getattr(self, "st", None) is None:
+            return refw
+        k = ("wr", int(d), float(rt))
+        E = self.info.get(k)
+        if E is None and k not in self.info:
+            E = self.info[k] = self._expo_at(int(d), float(rt), float(rt))
+        if E is None:
+            return refw
+        r = np.asarray(refw, dtype=np.float64)
+        pos = E > 0
+        if not bool(pos.any()) or bool((r[~pos] > 0).any()):
+            return refw
+        out = np.zeros_like(r)
+        out[pos] = r[pos] / E[pos]
+        s_ = out.sum()
+        return out / s_ if s_ > 0 else refw
 
     def day_exposed(self, nd: Any, d: int) -> bool:
         """(round 7) Whether the node has lived through a COMPLETE local date
@@ -1359,7 +1390,7 @@ class _TreeCtx:
             cur = self.when_ptab(kind, tree, nd, daytype) if tree is not None \
                 else _when_hdr(SC.when_density(h, N))
         ref = None
-        refw = ((nd.ref or {}).get("when") or {}).get("nwd" if daytype else "wd")
+        refw = self._ref_when(nd, d)
         if refw is not None and self.day_exposed(nd, d):
             Nd = nd.when.evidence(d, t)
             if Nd >= SC.N_MIN:

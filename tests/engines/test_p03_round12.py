@@ -205,3 +205,18 @@ def test_exposure_keeps_an_unused_slot_of_a_day_population_rare():
     cur, _ = tc.when_table(0, fx.node("oa", LOGIN), 0, tr)
     assert cur[int((3 * 60 + 5) // 15)] < 1e-3
     assert cur[int((9 * 60) // 15)] > 0.2
+
+
+def test_a_mid_day_reference_snapshot_is_read_per_unit_of_exposure():
+    """pattern_tree freezes WhenSummary.density into the node's reference at
+    the snapshot time (mid-day): the slots after it held one date less. P03
+    reads the reference per unit of exposure at that time."""
+    fx, tr, nd, tc, st = _monitor_today(2, 12.0)
+    t_ref = tc.now - 1800.0
+    dens = nd.when.density(0)
+    nd.ref = {"t": t_ref, "when": {"wd": dens.astype(np.float32), "nwd": nd.when.density(1)}}
+    assert dens.max() / dens[dens > 0].min() > 1.3
+    tc.st = st
+    r = tc._ref_when(nd, 0)
+    assert r.max() / r.min() < 1.02
+    assert abs(r.sum() - 1.0) < 1e-9
