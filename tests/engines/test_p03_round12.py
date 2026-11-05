@@ -236,3 +236,19 @@ def test_a_reference_taken_before_a_complete_date_of_the_day_type_does_not_speak
         nd.ref = {"t": days[k] + 60.0, "when": {"wd": nd.when.density(0).astype(np.float32),
                                                  "nwd": nd.when.density(1)}}
         assert (tc._ref_when(nd, 0) is not None) == ok, k
+
+
+def test_the_exposure_follows_the_nodes_own_learned_time():
+    """A route's rows can be learned a tick after the tree's other rows
+    (pack O seed 1: the monitor's 22:45 - 23:45 rows unlearned at 23:45 while
+    the root had other sources' rows to 23:44): the current date's exposure
+    is the node's own."""
+    fx, tr, nd, tc, st = _monitor_today(3, 22.75)
+    d = workdays(4)[3]
+    _learn(fx, [LOGIN, HEALTH], OTHERS[0], LOGIN, d + 23.7 * 3600.0)     # the root learned to 23:42
+    tc2 = CF._TreeCtx(fx.eng, fx.st, "oa", "oa", CFG, d + 23.75 * 3600.0)
+    tc2.st = st
+    h, _ = tc2._when_counts(nd, 0, 0, tr)
+    assert h.max() / h.min() < 1.02, (h.min(), h.max())
+    cur, _ = tc2.when_table(0, nd, 0, tr)
+    assert cur[95] > 0.3

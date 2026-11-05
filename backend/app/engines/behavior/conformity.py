@@ -1174,52 +1174,50 @@ class _TreeCtx:
         N = nd.when.evidence(d, t)
         h = nd.when.hist[d]
         ds: Tuple[int, ...] = (d,)
-        if N < SC.N_MIN or not self.day_exposed(nd, d):
+        Ed = self._when_expo(kind, nd, d)
+        if N < SC.N_MIN or not self.day_exposed(nd, d) or (Ed is not None and bool((Ed <= 0).any())):
+            # (round 12) a slot no date of the day type has reached yet is
+            # unknown, not empty: the day type backs off as before a
+            # complete date (day_exposed)
             N = nd.when.evidence(0, t) + nd.when.evidence(1, t)
             h = nd.when.hist.sum(axis=0)
             ds = (0, 1)
         E = None
         for dd in ds:
-            e = self._when_expo(kind, tree, dd)
+            e = Ed if dd == d else self._when_expo(kind, nd, dd)
             if e is None:
                 E = None
                 break
             E = e if E is None else E + e
-        if E is not None:
-            h = np.asarray(h, dtype=np.float64)
-            pos = E > 0
-            if bool(pos.any()) and not bool((h[~pos] > 0).any()):
-                hc = np.zeros_like(h)
-                hc[pos] = h[pos] / E[pos]
-                h = hc
+        if E is not None and bool((E > 0).all()):
+            h = np.asarray(h, dtype=np.float64) / E
         return h, float(N)
 
-    def _when_expo(self, kind: Optional[int], tree: Any, d: int) -> Optional[np.ndarray]:
-        """(round 12) Per-slot exposure of a tree's day type d at H_m:
-        E(s) = sum over the remembered local dates D of day type d
+    def _when_expo(self, kind: Optional[int], nd: Any, d: int) -> Optional[np.ndarray]:
+        """(round 12) Per-slot exposure of a node's day type d at H_m:
+        E(s) = sum over the tree's remembered local dates D of day type d
         (ConfState.day_seen, DT_DATES) of 2^-((now - t_D,s) / H_m), t_D,s the
-        middle of slot s on date D - weighted by the share of the slot the
-        tree has LEARNED on the current date (through the end of the slot of
-        its root's last learned row; the batch being scored is learned after
-        it). The same decay as the
+        middle of slot s on date D - on the current date only the share of
+        the slot the NODE has learned (through the end of the slot of its
+        last learned row: the batch being scored is learned after it, and a
+        route's waiting rows a tick later still - pack O seed 1, the
+        monitor's 22:45 - 23:45 rows were unlearned at 23:45 while the root
+        had learned other sources' rows to 23:44). The same decay as the
         slot masses (pnode.WhenSummary), so h(s) / E(s) is a recency-weighted
         rate per date. None without the tracker (a tree context outside a
-        run: the slot masses are read as they are). Per tree, day type and
+        run: the slot masses are read as they are). Per node, day type and
         batch."""
-        if getattr(self, "st", None) is None:
+        if getattr(self, "st", None) is None or nd is None:
             return None
-        k = ("wx", kind, int(d))
+        k = ("wx", kind, nd.id, int(d))
         if k in self.info:
             return self.info[k]
         now = float(self.now)
-        L = now
-        if tree is not None:
-            root = tree.nodes.get(tree.root)
-            ls = getattr(root, "last_seen", None) if root is not None else None
-            # ticks end on slot boundaries: the slot of the last learned row is
-            # learned whole (its later rows belong to the next tick)
-            L = min(now, (math.floor((float(ls) + self.tz) / 900.0) + 1.0) * 900.0 - self.tz) \
-                if ls is not None else -math.inf
+        ls = getattr(nd, "last_seen", None)
+        # ticks end on slot boundaries: the slot of the last learned row is
+        # learned whole (its later rows belong to a later tick)
+        L = min(now, (math.floor((float(ls) + self.tz) / 900.0) + 1.0) * 900.0 - self.tz) \
+            if ls is not None else -math.inf
         out = self._expo_at(int(d), now, L)
         self.info[k] = out
         return out
