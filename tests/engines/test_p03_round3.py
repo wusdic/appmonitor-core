@@ -127,9 +127,9 @@ def test_slot_its_parent_has_seen_keeps_the_young_nodes_own_floor():
     tc = CF._TreeCtx(fx.eng, fx.st, "oa", "oa", CFG, days[46])
     cur, _ = tc.when_table(0, child, 0, tr)
     h, N = tc._when_counts(child, 0)
-    own = CF._hdr_table(SC.when_density(h, N))
+    own = CF._when_hdr(SC.when_density(h, N))
     late = int((22 * 60 + 45) // 15)
-    hier = CF._hdr_table(tc.when_pred(0, tr, child, 0))
+    hier = CF._when_hdr(tc.when_pred(0, tr, child, 0))
     pt = tc.when_ptab(0, tr, route_nd, 0)
     assert pt[late] >= own[late]                           # the route does not find 22:45 rare
     assert hier[late] < own[late]                          # the prior alone would call it rarer

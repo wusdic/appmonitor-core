@@ -126,7 +126,7 @@ def when_fill(f: np.ndarray) -> np.ndarray:
     f = np.asarray(f, dtype=np.float64)
     if f.size < 3:
         return f
-    return np.maximum(f, np.minimum(np.roll(f, 1), np.roll(f, -1)))
+    return 0.25 * np.roll(f, 1) + 0.5 * f + 0.25 * np.roll(f, -1)
 
 
 EB_ALPHAS = tuple(float(2.0 ** k) for k in range(-2, 13))     # 0.25 .. 4096
