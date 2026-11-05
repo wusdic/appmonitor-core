@@ -562,6 +562,18 @@ def history_support(hx: Optional[Mapping[str, Any]], exclude: Optional[Mapping[s
     return top, float(days[top]), float(sum(days.values()))
 
 
+def history_days(hx: Optional[Mapping[str, Any]], exclude: Optional[Mapping[str, Any]] = None
+                 ) -> Dict[str, float]:
+    """(round 12) The counted clean normal days of each value of one source
+    (the unit of history_support; the same values excluded): fit_pair reads a
+    pooled source's set from them."""
+    if not hx or not hx.get("v"):
+        return {}
+    ex = set(map(str, (exclude or {}).keys()))
+    return {str(y): float(len(r[3])) for y, r in sorted(hx["v"].items(), key=lambda kv: str(kv[0]))
+            if y not in ex and len(r[3]) > 0}
+
+
 MULTI_TOP = 0.5           # a multi-user source's top value holds at most this share ...
 MULTI_K = SET_K + 1       # ... over more distinct values than a set binding may hold
 
@@ -580,7 +592,8 @@ def multi_source(c: Mapping[str, Any], k: float, n: float, n_bind: float = N_BIN
 def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any]]] = None,
              n_bind: float = N_BIND, lb_bind: float = LB_BIND,
              exclude: Optional[Mapping[str, Any]] = None,
-             support: Optional[Mapping[str, Tuple[str, float, float]]] = None
+             support: Optional[Mapping[str, Tuple[str, float, float]]] = None,
+             support_days: Optional[Mapping[str, Mapping[str, float]]] = None
              ) -> Optional[Dict[str, Any]]:
     """Fitted binding of one node pair (§6.12). None without tracked x.
     `exclude` {str(x): {str(y): reason}}: values kept out of x's counts
@@ -608,6 +621,7 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
         return None
     tops = {}
     pooled = set()
+    pdist: Dict[Any, Tuple[Dict[str, float], float]] = {}
     for x, c in heavy.items():
         y, k = max(c["y"].items(), key=lambda kv: (kv[1], str(kv[0])))
         tops[x] = (y, min(k, c["n"]))
@@ -617,6 +631,16 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
             heavy[x] = dict(c, n=float(sx[2]))
             tops[x] = (y, float(min(sx[1], sx[2])))
             pooled.add(x)
+            # (round 12) a pooled source's values are its days too: the set rule
+            # below reads them, not the node's young sketch against the pooled n
+            # (O-real seed 2: the shared terminal 192.168.1.40, jack2 on 5 days
+            # and rose2 on 3, was judged jack2 5 / 8 - a counter-example of the
+            # family login node's binding, g3 0.059)
+            dd = (support_days or {}).get(_jx(x))
+            if dd and len(dd) >= 2:
+                n1 = sum(1 for v in dd.values() if float(v) <= 1.0)
+                pdist[x] = ({k: float(v) for k, v in dd.items()},
+                            min(1.0, (n1 + 0.5) / (float(sx[2]) + 1.0)))
     table: Dict[str, Dict[str, Any]] = {}
     per = [x for x in heavy if not is_shared(x)]
     ks = {x: tops[x][1] for x in per}
@@ -654,6 +678,8 @@ def fit_pair(ps: Any, t: float, seg: Optional[Mapping[Hashable, Mapping[str, Any
                 ent["bound"] = True
                 bound_mass += c["mass"]
         if not ent.get("bound"):
+            if x in pdist:
+                c = dict(c, y=pdist[x][0], U=pdist[x][1])
             ys = sorted(c["y"].items(), key=lambda kv: -kv[1])
             acc, sset, sev = 0.0, [], {}
             for yy, e in ys:

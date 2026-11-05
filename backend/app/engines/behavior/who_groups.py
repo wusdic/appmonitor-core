@@ -1014,45 +1014,6 @@ def _peel(lab: np.ndarray, M: np.ndarray, rho: float, sample: int = 16,
         if intra is not None and len(mem) < len(members[c]):
             intra[c] = LV._mean_j(M, LV._sample(mem, sample))
     return lab
-    members: Dict[int, List[int]] = {}
-    for i, c in enumerate(lab.tolist()):
-        members.setdefault(int(c), []).append(i)
-    nxt = int(lab.max()) + 1
-    for c in sorted(members):
-        mem = list(members[c])
-        if len(mem) > PEEL_EXACT:
-            # a large community: one pass against a sample of its members (linear
-            # in its size; every member failing the bar leaves at once)
-            smp = LV._sample(mem, sample)
-            w = LV._mean_j(M, smp)
-            js = (M[mem][:, None, :] == M[smp][None, :, :]).mean(axis=2)
-            keep = []
-            for k, x in enumerate(mem):
-                row = [float(js[k, q]) for q, i in enumerate(smp) if i != x]
-                jx = sum(row) / len(row) if row else 1.0
-                if jx >= rho * w:
-                    keep.append(x)
-                else:
-                    lab[x] = nxt
-                    nxt += 1
-            mem = keep
-        while PEEL_MIN <= len(mem) <= PEEL_EXACT:
-            worst = None
-            for x in mem:
-                rest = [i for i in mem if i != x]
-                jx, w = LV._mean_j(M, [x], rest), LV._mean_j(M, rest)
-                r = jx / w if w > 0 else math.inf
-                if worst is None or r < worst[0]:
-                    worst = (r, x, jx, w)
-            _, x, jx, w = worst
-            if jx >= rho * w:
-                break
-            mem.remove(x)
-            lab[x] = nxt
-            nxt += 1
-        if intra is not None and len(mem) < len(members[c]):
-            intra[c] = LV._mean_j(M, LV._sample(mem, sample))
-    return lab
 
 
 def _trust(store: Any, s: str, ip: str, at: float,
