@@ -210,6 +210,7 @@ EXC_SAVE_BITS = 2.0
 EXC_N_CONF = 10.0
 PRUNE_RUNS = 3
 TG_STALE_DAYS = 2                # (round 11) a target summary unlearned this many days of the node's rows is dropped
+RATE_ATTR = "rate.ip_h"             # P06's per-source hourly rate entry (content_bounds.RATE_ATTR): no node summary
 BORN_DAYS = TG_STALE_DAYS        # (round 12) days a new node learns its birth summaries without a P05 list of its own
 PRUNE_MIN_AGE = 7 * DAY        # a split's children have this long before it can be pruned
 TAU_MERGE = 0.02
@@ -1355,10 +1356,29 @@ class PatternTreeEngine(Engine):
         (_inherit_source_extremes, before the attribute is one of the child's
         targets) has no rows and is kept for when it becomes one. The number of
         summaries stays bounded (M_T + 4) as before."""
-        if nd.meta.get("born_tl") is not None and (_overrides_of(sel, kind).get(nd.id) is not None
-                                                   or t - float(nd.created) >= BORN_DAYS * DAY):
-            nd.meta.pop("born_tl", None)            # P05 lists the node, or it is no longer new
+        born_end: List[str] = []
+        born = nd.meta.get("born_tl")
+        if born is not None:
+            ranked = _overrides_of(sel, kind).get(nd.id) is not None
+            if ranked or t - float(nd.created) >= BORN_DAYS * DAY:
+                nd.meta.pop("born_tl", None)        # P05 lists the node, or it is no longer new
+                if ranked:
+                    # (round 12) P05 has ranked the node and left these birth
+                    # summaries out: no list of the node or its ancestors ever
+                    # had them, they were learned only as birth summaries, and
+                    # kept to TG_STALE_DAYS they are stated, held-out tested and
+                    # fail on the node's own rows (pack O seed 0: mail's 研发
+                    # node p:mail:0:3, born on day 3, kept net.pkts_down /
+                    # net.pkts_up to day 7 after P05 listed it on day 4 without
+                    # them; their band, fitted to the parent's replayed rows,
+                    # failed the node's first held-out test: stated 0.33
+                    # against code11's 0.67 on days 6-7, held 1.0)
+                    anc = set(self._inherited_list(tr, nd, kind, sel))
+                    born_end = [a for a in born if a not in anc]
         keep = set(self._targets_of(lc, tr, nd, kind, sel))
+        for a in born_end:
+            if a in nd.targets and a not in keep:
+                _forget_target(nd, a)
         td = nd.meta.get("tgd") or {}
         if nd.last_seen is not None:
             d_last = _local_day(float(nd.last_seen), lc.off)
@@ -1372,6 +1392,22 @@ class PatternTreeEngine(Engine):
         if td:
             for a in [a for a in td if a not in nd.targets]:
                 del td[a]
+
+    @staticmethod
+    def _inherited_list(tr: PT.Tree, nd: PN.Node, kind: int, sel: Mapping[str, Any]) -> List[str]:
+        """The list a node without its own P05 list learns under: its nearest
+        ancestor's override, else the system list (_targets_of's base)."""
+        ovs = _overrides_of(sel, kind)
+        ov = None
+        cur = tr.nodes.get(nd.parent) if nd.parent is not None else None
+        while cur is not None:
+            ov = ovs.get(cur.id)
+            if ov is not None:
+                break
+            cur = tr.nodes.get(cur.parent) if cur.parent is not None else None
+        else:
+            ov = None
+        return list(ov) if ov else list((sel.get("targets_sys") or {}).get(kind) or [])[:M_T]
 
     def _targets_of(self, lc: _LC, tr: PT.Tree, nd: PN.Node, kind: int, sel: Mapping[str, Any]) -> List[str]:
         own = nd.meta.get("targets")
@@ -4569,8 +4605,19 @@ def _hold_constraints(nd: PN.Node, t: float, targets: Mapping[str, Any],
                 acc += float(h[j])
         if keep:
             out["when"] = ("slots", frozenset(keep), HOLD_WHEN_COVER, frozenset(dts))
+    # (round 12) a fitter's entry of an attribute the node no longer
+    # summarises (a summary dropped since the fitters' last run: the bounded
+    # cap, TG_STALE_DAYS, the end of the birth list) is stale: the fitters
+    # refit hourly from the node's summaries and P14 states no part of it
+    # once they have; checked all day long against the reference, it failed
+    # the node's held-out test on a band no statement made that day (pack O
+    # seed 0: mail's 研发 node p:mail:0:3, its birth summary net.pkts_down
+    # dropped at midnight of day 5, checked on day 5 from the evening fit of
+    # day 4, failed the node's first test: stated 0.33, held 1.0)
     pb = fit.get(MP.PBOUNDS)
     for a, e in ((pb or {}).get("attrs") or {}).items() if isinstance(pb, Mapping) else ():
+        if a not in targets and a != RATE_ATTR:
+            continue
         if isinstance(e, Mapping) and e.get("band90") and a not in ("who", "when") \
                 and not str(a).startswith(skip):
             try:
@@ -4590,7 +4637,7 @@ def _hold_constraints(nd: PN.Node, t: float, targets: Mapping[str, Any],
                 out[a + "#range"] = ("range", rlo, rhi, min(1.0, max(0.0, 1.0 - cvf)))
     pg = fit.get(MP.PGRAMMAR)
     for a, e in ((pg or {}).get("attrs") or {}).items() if isinstance(pg, Mapping) else ():
-        if not isinstance(e, Mapping) or a in ("who", "when") or str(a).startswith(skip):
+        if not isinstance(e, Mapping) or a in ("who", "when") or str(a).startswith(skip) or a not in targets:
             continue
         # (M43) every part the statement states is checked: P07's grammar
         # (nominal c_g (1 - U_s)), required keys (0.99) and closed sets (1 - U)
