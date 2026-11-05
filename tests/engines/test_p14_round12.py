@@ -67,3 +67,28 @@ def test_an_unlisted_colleague_follows_the_majority_of_its_group():
     by = _fam_login(groups, {})
     assert all("192.168.2.77" not in m for m in by.values() if m is not None and m != groups["G18"]["members"])
     assert "192.168.2.77" not in by.get("cfg:综合部", []) and "192.168.2.77" not in by.get("cfg:财务部", [])
+
+
+def test_a_prefix_who_lists_every_seen_prefix_that_fits():
+    """O60 seed 0 (round 11, day 7): GET /docs (25 sources, too many to list)
+    was stated from three /24s - the heavy set stops at 90 % of the mass - and
+    left out 10.168.7.0/24 (综合部's 10.168.7.121) at a stated who of 0.96;
+    the address's docs rows were more of the held-out events than the decayed
+    summary's share, and the claim failed on who alone. Every prefix the node
+    has seen is listed when they all fit in PREFIX_MAX; the stated unseen mass
+    is then the level's own."""
+    from app.engines.behavior.lib import pnode as PN
+    from app.engines.behavior.lib import prender as PR
+    w = PN.WhoSummary()
+    t = 0.0
+    srcs = ([f"192.168.3.{20 + i}" for i in range(20)] + ["192.168.1.21", "192.168.1.23"]
+            + ["192.168.2.10", "192.168.2.11", "192.168.2.12", "10.168.7.121"])
+    for d in range(10):
+        for j, ip in enumerate(srcs):
+            t = d * DAY + 30.0 * j
+            p24 = ip.rsplit(".", 1)[0] + ".0/24"
+            w.update([ip, p24, None, None, None], ip, t, 1.0, 1.0)
+    ev, zh, en, c = PR.who_block(w, t + 60.0, 10, {}, {})
+    assert ev["level"] == "prefix"
+    assert set(ev["items"]) == {"192.168.3.0/24", "192.168.1.0/24", "192.168.2.0/24", "10.168.7.0/24"}
+    assert ev["U"] < 0.02
