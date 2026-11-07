@@ -1579,7 +1579,10 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
         prec_all.append(bool(h["ok"]))            # no held-out event of its context: false
         if not h["ok"]:
             failed.append([str(s.pattern_id), round(float(s.confidence), 4) if math.isfinite(s.confidence)
-                           else None, int(bool(ob))])
+                           else None, int(bool(ob)),
+                           # the failed constraints [name, nominal, held] ([] = no held-out event)
+                           [[str(c[0]), round(float(c[1]), 4), round(float(c[2]), 4)]
+                            for c in h.get("constraints") or [] if not c[3]]])
         if ob:
             prec_hits.append(bool(h["ok"]))
         if math.isfinite(s.confidence):

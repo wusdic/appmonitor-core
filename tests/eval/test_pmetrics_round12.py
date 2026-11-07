@@ -43,6 +43,9 @@ def test_failed_claims_keep_their_pattern_id(org_run):
     r = M.pg1_snapshot(snap, pt, ipc, 13, 0, precision_n=100)
     assert len(r["failed"]) == r["n_precision_all"] - round(r["precision_all"] * r["n_precision_all"])
     assert "p:oa:0:999" in {f[0] for f in r["failed"]}
+    # each entry names the constraints that failed (none: no held-out event of its context)
+    f999 = next(f for f in r["failed"] if f[0] == "p:oa:0:999")
+    assert f999[3] == [] and all(len(c) == 3 and c[2] < c[1] for f in r["failed"] for c in f[3])
     assert "p:oa:0:999" not in {f[0] for f in base["failed"]}
     # information only: every other figure is unchanged by the list
     assert r["n_precision_all"] == base["n_precision_all"] + 1
