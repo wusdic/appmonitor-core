@@ -1,0 +1,802 @@
+{
+ "pack": "E",
+ "seed": 0,
+ "dt": 60.0,
+ "scenario_window": [
+  1741622400.0,
+  1741708800.0
+ ],
+ "disabled_engines": [],
+ "labels_added": 0,
+ "aborted": null,
+ "scenarios": [
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000010"
+   ],
+   "t_detect_open": 1741664460.0,
+   "ttd_s_open": 6060.0,
+   "ttd_ticks_open": 102,
+   "t_detect": 1741664460.0,
+   "ttd_s": 6060.0,
+   "ttd_ticks": 102,
+   "tp_incident": "inc0000010",
+   "matched": [
+    "B08 novelty",
+    "B16 identity (identity_mismatch)",
+    "volume",
+    "categorical",
+    "c2"
+   ],
+   "detected_by": "open",
+   "notifications": 4,
+   "tp_incidents": [
+    "inc0000010"
+   ],
+   "within_deadline_open": false,
+   "scenario_id": "T1'",
+   "base": "T1",
+   "pack": "E",
+   "seed": 0,
+   "label": "malicious",
+   "system": "api-gateway",
+   "entities": [
+    "api-gateway|10.40.4.52"
+   ],
+   "t_start": 1741658400.0,
+   "t_end": 1741708800.0,
+   "required_severity": "high",
+   "deadline_s": 1800.0,
+   "within_deadline": false,
+   "dt": 60.0,
+   "loudness": "loud",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000004"
+   ],
+   "t_detect_open": 1741636500.0,
+   "ttd_s_open": 6900.0,
+   "ttd_ticks_open": 116,
+   "t_detect": 1741636500.0,
+   "ttd_s": 6900.0,
+   "ttd_ticks": 116,
+   "tp_incident": "inc0000004",
+   "matched": [
+    "B07 offhours",
+    "temporal"
+   ],
+   "detected_by": "open",
+   "notifications": 4,
+   "tp_incidents": [
+    "inc0000004"
+   ],
+   "within_deadline_open": false,
+   "scenario_id": "T5'",
+   "base": "T5",
+   "pack": "E",
+   "seed": 0,
+   "label": "malicious",
+   "system": "oa-portal",
+   "entities": [
+    "oa-portal|10.30.2.22"
+   ],
+   "t_start": 1741629600.0,
+   "t_end": 1741636800.0,
+   "required_severity": "medium",
+   "deadline_s": 3600.0,
+   "within_deadline": false,
+   "dt": 60.0,
+   "loudness": "subtle",
+   "incidents_per_episode": 1.0
+  },
+  {
+   "detected": true,
+   "detected_open": true,
+   "detected_escalation": false,
+   "n_incidents": 1,
+   "max_severity": "critical",
+   "incident_ids": [
+    "inc0000015"
+   ],
+   "t_detect_open": 1741680000.0,
+   "ttd_s_open": 3600.0,
+   "ttd_ticks_open": 61,
+   "t_detect": 1741680000.0,
+   "ttd_s": 3600.0,
+   "ttd_ticks": 61,
+   "tp_incident": "inc0000015",
+   "matched": [
+    "B04 marg_shape"
+   ],
+   "detected_by": "open",
+   "notifications": 4,
+   "tp_incidents": [
+    "inc0000015"
+   ],
+   "within_deadline_open": false,
+   "scenario_id": "T12'",
+   "base": "T12",
+   "pack": "E",
+   "seed": 0,
+   "label": "malicious",
+   "system": "oa-portal",
+   "entities": [
+    "oa-portal|10.30.2.25"
+   ],
+   "t_start": 1741676400.0,
+   "t_end": 1741698000.0,
+   "required_severity": "medium",
+   "deadline_s": 2700.0,
+   "within_deadline": false,
+   "dt": 60.0,
+   "loudness": "loud",
+   "incidents_per_episode": 1.0
+  }
+ ],
+ "legit": [
+  {
+   "scenario_id": "L7",
+   "base": "L7",
+   "pack": "E",
+   "seed": 0,
+   "label": "legit_change",
+   "entities": [
+    "oa-portal|10.30.2.50"
+   ],
+   "t_start": 1741622400.0,
+   "t_end": 1741708800.0,
+   "max_severity": null,
+   "allowed": "info",
+   "n_incidents": 0,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": null,
+   "max_risk": 48.07370376586914,
+   "sev_ok": true,
+   "risk_ok": false,
+   "member_ok": true,
+   "ok": false
+  },
+  {
+   "scenario_id": "L11",
+   "base": "L11",
+   "pack": "E",
+   "seed": 0,
+   "label": "legit_change",
+   "entities": [],
+   "t_start": 1741622400.0,
+   "t_end": 1741708800.0,
+   "max_severity": null,
+   "allowed": "info",
+   "n_incidents": 0,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": null,
+   "max_risk": null,
+   "sev_ok": true,
+   "risk_ok": true,
+   "member_ok": true,
+   "ok": true
+  },
+  {
+   "scenario_id": "L15",
+   "base": "L15",
+   "pack": "E",
+   "seed": 0,
+   "label": "legit_change",
+   "entities": [
+    "erp-prod|10.20.9.9",
+    "oa-portal|10.30.9.9",
+    "api-gateway|10.40.9.9",
+    "erp-prod|10.20.9.5",
+    "api-gateway|10.40.9.6"
+   ],
+   "t_start": 1741622400.0,
+   "t_end": 1741708800.0,
+   "max_severity": "critical",
+   "allowed": "info",
+   "n_incidents": 4,
+   "n_class_incidents": 0,
+   "class_max_severity": null,
+   "member_max_severity": "critical",
+   "max_risk": 99.7874526977539,
+   "sev_ok": false,
+   "risk_ok": false,
+   "member_ok": true,
+   "ok": false
+  }
+ ],
+ "far": {
+  "entity_days": 28.0,
+  "n_control": 28,
+  "dt": 60.0,
+  "n_low": 6,
+  "n_medium": 1,
+  "n_high": 0,
+  "n_reopened": 0,
+  "n_low_notified": 6,
+  "n_critical": 0,
+  "far_low": 0.21428571428571427,
+  "far_medium": 0.03571428571428571,
+  "groups": {
+   "bursty": {
+    "n_low": 5,
+    "days": 15.0
+   },
+   "steady": {
+    "n_low": 1,
+    "days": 13.0
+   }
+  },
+  "false_alarms": [
+   {
+    "id": "inc0000008",
+    "entity": "erp-prod|10.20.1.21",
+    "opened": 1741656720.0,
+    "severity": "low",
+    "axes": [
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000009",
+    "entity": "erp-prod|10.20.1.11",
+    "opened": 1741659060.0,
+    "severity": "low",
+    "axes": [
+     "categorical",
+     "shape"
+    ]
+   },
+   {
+    "id": "inc0000011",
+    "entity": "erp-prod|10.20.1.18",
+    "opened": 1741662300.0,
+    "severity": "low",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000012",
+    "entity": "oa-portal|10.30.2.23",
+    "opened": 1741663440.0,
+    "severity": "low",
+    "axes": [
+     "temporal"
+    ]
+   },
+   {
+    "id": "inc0000013",
+    "entity": "erp-prod|10.20.1.15",
+    "opened": 1741669260.0,
+    "severity": "low",
+    "axes": [
+     "shape",
+     "volume"
+    ]
+   },
+   {
+    "id": "inc0000014",
+    "entity": "erp-prod|10.20.4.30",
+    "opened": 1741679100.0,
+    "severity": "medium",
+    "axes": [
+     "app_error"
+    ]
+   }
+  ]
+ },
+ "range": {
+  "range": {
+   "precision": 0.0972065991751031,
+   "recall": 0.8653439153439154,
+   "f1": 0.17477968762913856
+  },
+  "point_adjusted": {
+   "precision": 0.21952290355627105,
+   "recall": 1.0,
+   "f1": 0.360014400576023
+  },
+  "n_real": 3,
+  "n_pred": 21
+ },
+ "calibration": {
+  "ks": {
+   "marg_int": {
+    "D": 0.06991973180378508,
+    "D_two": 0.2264150943396226,
+    "n": 477
+   },
+   "marg_shape": {
+    "D": 0.04494900535987356,
+    "D_two": 0.04494900535987356,
+    "n": 477
+   },
+   "peer": {
+    "D": 0.05300986616866399,
+    "D_two": 0.05300986616866399,
+    "n": 477
+   },
+   "t2": {
+    "D": 0.016884136013686657,
+    "D_two": 0.11866818155561176,
+    "n": 448
+   },
+   "spe": {
+    "D": 0.023847508072101273,
+    "D_two": 0.16695011337868482,
+    "n": 441
+   },
+   "offhours": {
+    "D": 0.0,
+    "D_two": 0.9776977739636861,
+    "n": 40320
+   },
+   "silence": {
+    "D": 0.0,
+    "D_two": 1.0,
+    "n": 18610
+   },
+   "novelty": {
+    "D": 0.0,
+    "D_two": 0.9985911387485426,
+    "n": 20584
+   },
+   "novelty_rate": {
+    "D": 0.0,
+    "D_two": 0.9863972017100661,
+    "n": 20584
+   },
+   "jsd": {
+    "D": 0.009175526328328854,
+    "D_two": 0.08775510204081632,
+    "n": 4655
+   },
+   "client": {
+    "D": 3.467218460363923e-05,
+    "D_two": 0.32339229154144766,
+    "n": 13808
+   },
+   "seq": {
+    "D": 0.0,
+    "D_two": 0.5458979215577004,
+    "n": 20583
+   },
+   "dwell": {
+    "D": 0.0,
+    "D_two": 0.434395076640097,
+    "n": 13808
+   },
+   "timing": {
+    "D": 0.0012119954648198668,
+    "D_two": 0.2992390622095847,
+    "n": 32548
+   },
+   "beacon": {
+    "D": 0.0,
+    "D_two": 1.0,
+    "n": 13808
+   },
+   "budget_vol": {
+    "D": 0.02373578635662236,
+    "D_two": 0.7374666566948371,
+    "n": 40113
+   },
+   "budget_exfil": {
+    "D": 0.0,
+    "D_two": 1.0,
+    "n": 39912
+   },
+   "budget_breadth": {
+    "D": 0.022793078487269774,
+    "D_two": 0.7556381535988749,
+    "n": 39818
+   },
+   "cusum": {
+    "D": 0.002293946831614029,
+    "D_two": 0.8406708595387841,
+    "n": 477
+   },
+   "mcusum": {
+    "D": 0.0,
+    "D_two": 0.5408805031446541,
+    "n": 477
+   },
+   "bocpd": {
+    "D": 0.01787487534606981,
+    "D_two": 0.8280922431865828,
+    "n": 477
+   },
+   "identity": {
+    "D": 0.02103909169103116,
+    "D_two": 0.1089331646385433,
+    "n": 477
+   },
+   "cross_system": {
+    "D": 0.0,
+    "D_two": 1.0,
+    "n": 477
+   },
+   "marg_int_q": {
+    "D": 0.07325807760614866,
+    "D_two": 0.07626140828526351,
+    "n": 1744
+   },
+   "marg_shape_q": {
+    "D": 0.12313101488515876,
+    "D_two": 0.12313101488515876,
+    "n": 1744
+   },
+   "t2_q": {
+    "D": 0.010181591666619715,
+    "D_two": 0.11366445482324028,
+    "n": 1744
+   },
+   "spe_q": {
+    "D": 0.003861580761747623,
+    "D_two": 0.09466039040766727,
+    "n": 1744
+   }
+  },
+  "exceedance": {
+   "0.03": {
+    "n": 40320,
+    "k": 1,
+    "expected": 0.84
+   },
+   "0.003": {
+    "n": 40320,
+    "k": 1,
+    "expected": 0.084
+   }
+  },
+  "exceedance_tau": {
+   "h": {
+    "0.03": {
+     "n": 672,
+     "k": 0,
+     "expected": 0.42
+    },
+    "0.003": {
+     "n": 672,
+     "k": 0,
+     "expected": 0.042
+    }
+   },
+   "q": {
+    "0.03": {
+     "n": 2016,
+     "k": 1,
+     "expected": 0.21
+    },
+    "0.003": {
+     "n": 2016,
+     "k": 1,
+     "expected": 0.021
+    }
+   },
+   "t": {
+    "0.03": {
+     "n": 37632,
+     "k": 0,
+     "expected": 0.21000000000000002
+    },
+    "0.003": {
+     "n": 37632,
+     "k": 0,
+     "expected": 0.021
+    }
+   }
+  },
+  "cc": 60,
+  "dt": 60.0,
+  "entity_days": 28.0,
+  "evidence_cusum_alarms": 0,
+  "single_tick_alarms": 1,
+  "acc_path_alarms": {
+   "rhythm": 0,
+   "temporal_categorical": 0,
+   "budget": 0,
+   "change": 0
+  },
+  "acat_ticks": 0,
+  "acat_incident_ticks": 0
+ },
+ "poisoning": {
+  "scenarios": [
+   {
+    "scenario_id": "T1'",
+    "base": "T1",
+    "control_bumps": 0
+   },
+   {
+    "scenario_id": "T5'",
+    "base": "T5",
+    "control_bumps": 0,
+    "current_shift": 0.0,
+    "reference_shift": 0.0,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.6999999985098839,
+    "null_ks_two": 0.6999999985098839
+   },
+   {
+    "scenario_id": "T12'",
+    "base": "T12",
+    "control_bumps": 0,
+    "current_shift": 1.822979703697967e-08,
+    "reference_shift": 0.015139473029597516,
+    "current_ok": true,
+    "reference_ok": true,
+    "golden_ok": true,
+    "closed_ok": false,
+    "null_ks": 0.5202337384223938,
+    "null_ks_two": 0.5202337384223938
+   }
+  ],
+  "accepts": [],
+  "long_drift": []
+ },
+ "identification": {
+  "n_individuated": 12,
+  "window_top1": 1.0,
+  "window_top1_mean": 1.0,
+  "tick_top1": null,
+  "eer_frac_ok": 0.9166666666666666,
+  "spearman": 0.5351782057853505,
+  "twins_ok": false,
+  "t9": [],
+  "t9b": [],
+  "l6": [],
+  "t19": []
+ },
+ "classes": {
+  "n": 37,
+  "ari": 0.796936773957497,
+  "noise_frac": 0.08108108108108109,
+  "sub_purity": 0.972972972972973,
+  "refit_ari_min": 0.9935540693566651,
+  "refit_ari_median": 1.0,
+  "id_churn": 0,
+  "l8": []
+ },
+ "explanation": {
+  "hit3": [
+   true,
+   true,
+   true
+  ],
+  "cf_valid": [
+   true,
+   true,
+   true
+  ],
+  "natural_range": [
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true,
+   true
+  ],
+  "hit3_excluded": 0
+ },
+ "portrait": {
+  "jaccard": [
+   0.5,
+   0.7,
+   1.0,
+   1.0,
+   0.6363636363636364,
+   0.5555555555555556,
+   0.9166666666666666,
+   0.5,
+   1.0,
+   0.9,
+   1.0,
+   0.36363636363636365,
+   1.0,
+   1.0,
+   1.0
+  ],
+  "template_recall": [
+   1.0,
+   1.0,
+   0.8,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   0.8,
+   1.0,
+   0.8,
+   0.8,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0
+  ],
+  "coverage": 0.6135381482217366,
+  "n_coverage": 80528,
+  "coverage_grain": {
+   "h": 0.9336538461538462,
+   "q": 0.9356913183279743
+  },
+  "n_coverage_grain": {
+   "h": 1040,
+   "q": 3732
+  },
+  "class_portraits": [
+   true,
+   true,
+   true,
+   true,
+   true
+  ]
+ },
+ "robustness": {
+  "exceptions": 0,
+  "exception_heads": [],
+  "stale": 0,
+  "stale_heads": [],
+  "pipeline_degraded": 0,
+  "aborted": null,
+  "ablated": false
+ },
+ "cpu_mem": {
+  "wall_s": 869.5275761749981,
+  "n_ticks": 2112,
+  "n_entities": 37,
+  "pipeline_s": 833.4163935498729,
+  "lib3_s": 529.1557194547204,
+  "gen_s": 7.502573436013336,
+  "collect_s": 26.2063544131488,
+  "lib3_p95_ms": 291.4540973079056,
+  "lib3_p95_ms_at35": 275.6998217777485,
+  "layers_ms_mean": {
+   "raw": 7.596354805991378,
+   "derived": 123.73027339529327,
+   "behavior": 250.54721565090927,
+   "signature": 12.11068757004341
+  },
+  "engine_ms_mean": {
+   "raw.l2l3": 0.5523953817954118,
+   "raw.l4flow": 1.257988828939922,
+   "raw.http": 1.2542853958297973,
+   "raw.tls": 0.7233774467004519,
+   "raw.dns": 0.3160382414308983,
+   "raw.active_probe": 0.06949852182261759,
+   "raw.action_token": 2.419600480461888,
+   "raw.client_stack": 1.0031705109374316,
+   "derived.aggregation": 64.89790894136284,
+   "derived.periodicity": 4.128139596883997,
+   "derived.trend": 46.860754519701004,
+   "derived.ratio": 1.6386427467011593,
+   "derived.entropy": 1.1500274765474552,
+   "derived.graph": 0.654474100069792,
+   "derived.session": 4.400325968692249,
+   "behavior.feature_vector": 22.630139661106195,
+   "behavior.peer_group": 1.4432316626506774,
+   "behavior.baseline": 8.428934485961994,
+   "behavior.likelihood": 12.679297680515887,
+   "behavior.common_mode": 1.6434039865844445,
+   "behavior.multivariate": 16.684029335563537,
+   "behavior.rhythm": 10.13704323238044,
+   "behavior.novelty": 11.212245477194136,
+   "behavior.client_identity": 5.087374024262482,
+   "behavior.sequence": 19.75341491468928,
+   "behavior.timing": 16.170381245175093,
+   "behavior.beacon": 0.876897582248079,
+   "behavior.budget": 25.216574507906582,
+   "behavior.changepoint": 2.509617807077258,
+   "behavior.identity_model": 2.8844624927477334,
+   "behavior.attribution": 4.791772915728595,
+   "behavior.entity_link": 0.9421558724839777,
+   "behavior.class_monitor": 3.5791544442410776,
+   "behavior.cross_system": 0.9488809968020315,
+   "behavior.feedback": 0.17382304555609485,
+   "behavior.calibration": 30.616668066404987,
+   "behavior.fusion": 23.730658811940387,
+   "behavior.risk": 4.658604117787697,
+   "behavior.incident": 0.9449248745381325,
+   "behavior.governor": 9.36640315785101,
+   "behavior.explain": 0.30442360459401796,
+   "behavior.portrait": 13.132697691583555,
+   "signature.rule_match": 10.649019658565521,
+   "signature.correlation": 1.461667916871551
+  },
+  "engine_ms_p95": {
+   "raw.l2l3": 1.1810493707656857,
+   "raw.l4flow": 2.5284380912780757,
+   "raw.http": 2.3787066459655746,
+   "raw.tls": 1.5238477945327755,
+   "raw.dns": 0.9171795785427083,
+   "raw.active_probe": 0.15470214635133742,
+   "raw.action_token": 6.140008807182307,
+   "raw.client_stack": 2.129514241218567,
+   "derived.aggregation": 112.5017295837402,
+   "derived.periodicity": 5.815374946594238,
+   "derived.trend": 93.36013069152831,
+   "derived.ratio": 3.098814570903777,
+   "derived.entropy": 2.3443769335746762,
+   "derived.graph": 1.1348277986049649,
+   "derived.session": 6.185766053199767,
+   "behavior.feature_vector": 33.77598628997799,
+   "behavior.peer_group": 3.9343306064605703,
+   "behavior.baseline": 43.00831146240232,
+   "behavior.likelihood": 49.10213222503654,
+   "behavior.common_mode": 6.58767774105072,
+   "behavior.multivariate": 81.77773513793944,
+   "behavior.rhythm": 15.194546413421625,
+   "behavior.novelty": 17.876608467102045,
+   "behavior.client_identity": 7.270860505104063,
+   "behavior.sequence": 51.85743541717529,
+   "behavior.timing": 26.164411926269523,
+   "behavior.beacon": 1.3425732970237731,
+   "behavior.budget": 38.075251007080055,
+   "behavior.changepoint": 24.275044345855687,
+   "behavior.identity_model": 24.48430757522582,
+   "behavior.attribution": 35.26643867492667,
+   "behavior.entity_link": 8.067475128173799,
+   "behavior.class_monitor": 8.197165203094478,
+   "behavior.cross_system": 3.422421324253082,
+   "behavior.feedback": 0.5167392432689666,
+   "behavior.calibration": 44.040320205688474,
+   "behavior.fusion": 124.04913558959957,
+   "behavior.risk": 6.145114398002624,
+   "behavior.incident": 1.7372063994407647,
+   "behavior.governor": 13.398255205154415,
+   "behavior.explain": 0.06789040230214595,
+   "behavior.portrait": 62.615252685546814,
+   "signature.rule_match": 18.379923915863035,
+   "signature.correlation": 2.2975863218307486
+  },
+  "bytes_per_entity": 14359042.405405406,
+  "bytes_per_entity_8d": 72851988.35135135
+ },
+ "variant": "full",
+ "job_s": 869.816467597997
+}
