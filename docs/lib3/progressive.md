@@ -8883,22 +8883,22 @@ The three were cut off by the account's spend limit before they reported; the le
 | pack O seed 1 D4 passes (D4 5/5) | 5/5 | 5/5 | 5/5 | 4/5 | **5/5** (seed 1 PPPPP) | ✓ |
 | pack O FAR ≥ MEDIUM ≤ 0.0007 on every seed | 0.0009 max | 0.0009 max | 0.0007 max | 0.0009 max | **0.0007 max** (seeds 1 / 3: 0.0009 → 0.0005 / 0.0007) | ✓ |
 | pack O FAR ≥ LOW median ≤ 0.0011 | 0.0013 | 0.0013 | 0.0011 | 0.0013 | **0.0014** [0.0009–0.0022] | ✗ (16.20.11 item 3) |
-| pack O precision @14 median ≥ 0.967 | 0.955 | 0.941 | 0.967 | 0.956 | **0.950** [0.940–1.000]; pooled 277 / 287 = **0.965** (r11 0.962) | ✗ on the median (item 2) |
+| pack O precision @14 median ≥ 0.967 | 0.955 | 0.941 | 0.967 | 0.956 | **0.950** [0.940–1.000]; pooled 277 / 287 = **0.965** (r11 0.962) | ✗ on the median (16.20.11 item 1) |
 | O-red precision @21 ≥ 0.954 | 0.938 | 0.952 | 0.954 | 0.938 | **0.955** | ✓ |
 | O-real seed 0 recall @35 ≥ 0.709 (late GA rows back) | 0.633 | 0.633 | 0.709 | 0.696 | **0.759** (GA.oa.documents back on days 33–35) | ✓ |
 | O-real seed 2: 综合部 who clause back, checklist ≥ 6 (stretch ≥ 7) | 7 | 5 | 6 | 5 | **8/10** (who Jaccard 1.00) | ✓ (both) |
-| O-real seed 2 FAR ≤ 0.0017 / 0.0009 | 0.0018 / 0.0010 | 0.0017 / 0.0009 | 0.0017 / 0.0009 | 0.0022 / 0.0010 | **0.0021** / 0.0007 | ✗ on ≥ LOW (item 6) |
-| O-real seed 2 R11 passes | | | ✓ | ✗ | ✗ (portal growth 0.143, unchanged) | ✗ (item 6) |
+| O-real seed 2 FAR ≤ 0.0017 / 0.0009 | 0.0018 / 0.0010 | 0.0017 / 0.0009 | 0.0017 / 0.0009 | 0.0022 / 0.0010 | **0.0021** / 0.0007 | ✗ on ≥ LOW (16.20.11 item 6) |
+| O-real seed 2 R11 passes | | | ✓ | ✗ | ✗ (portal growth 0.143, unchanged) | ✗ (16.20.11 item 6) |
 | pack O seed 0 day 21: the four reverse clauses `username=X 只来自 <IP>` | ✓ | ✓ | ✓ | ✗ | **✓** (all four back) | ✓ |
-| pack O CE median ≤ 0.059 (stretch 0.053) | 0.059 | 0.053 | 0.071 | 0.060 | **0.066** [0.047–0.080] | ✗ (item 4) |
-| pack O precision @21 median ≥ 0.975 without losing recall | 0.985 | 0.958 | 0.971 | 0.968 | **0.973** [0.935–1.000]; pooled 325 / 334 = 0.973 (r11 0.979); recall unchanged | ✗ (item 2) |
+| pack O CE median ≤ 0.059 (stretch 0.053) | 0.059 | 0.053 | 0.071 | 0.060 | **0.066** [0.047–0.080] | ✗ (16.20.11 item 2) |
+| pack O precision @21 median ≥ 0.975 without losing recall | 0.985 | 0.958 | 0.971 | 0.968 | **0.973** [0.935–1.000]; pooled 325 / 334 = 0.973 (r11 0.979); recall unchanged | ✗ (16.20.11 item 1) |
 | O-real seed 2 D2 passes | ✓ | ✓ | ✗ | ✗ | **✓** (D FPPPF) | ✓ |
 | O-real seed 2 bindings @14 ≥ 3/6 | 3/6 | 3/6 | 0/6 | 2/6 | **5/6** | ✓ |
-| O60 precision @7 ≥ 0.967 | 1.000 | 0.967 | 0.867 | 0.900 | **0.933** | ✗ (item 7) |
+| O60 precision @7 ≥ 0.967 | 1.000 | 0.967 | 0.867 | 0.900 | **0.933** | ✗ (16.20.11 item 8) |
 | pack O seed 3 GA.oa.approvals#2 on days 6–10 | ✓ | ✓ | ✗ | ✗ | **✓** (found days 6–10) | ✓ |
 | keep: finance's post-move login rows on days 17–35 of every O-real seed | | | ✗ | ✓ | ✓ (FIN.finance.login#0 / #1@1 days 17–35 on seeds 0, 1, 2) | ✓ |
 | keep: R3 on O-real seeds 0 and 2 | | | | ✓ | ✓ | ✓ |
-| keep: O-real seed 1 recall @35 ≥ 0.722 | 0.722 | 0.646 | 0.709 | 0.734 | **0.709** | ✗ (item 5) |
+| keep: O-real seed 1 recall @35 ≥ 0.722 | 0.722 | 0.646 | 0.709 | 0.734 | **0.709** | ✗ (16.20.11 item 5) |
 | keep: O60 day-8 agreement ≤ 0.05 | 0.047 | 0.047 | 0.077 | 0.047 | 0.047 | ✓ |
 | keep: pack O checklist 47/50, anomalies 50/50, sign test 5/5 | 47, 50, 4/5 | 47, 50, 5/5 | 46, 50, 5/5 | 47, 50, 5/5 | 47, 50, 5/5 | ✓ |
 | keep: O-red FAR ≥ MEDIUM 0.0002, A4, D1–D5, precision @14 0.982 | | | all | all | 0.0002, A4, PPPPP, **1.000** | ✓ |
