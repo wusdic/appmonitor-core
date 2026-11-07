@@ -1968,7 +1968,7 @@ attributed to an owner by bisection on the owners' clean snapshots (`fin5`, `t5`
 Chinese narrative: design doc §3.0 (status per requirement sentence), §3.3 (the changes in place, numbered T11-1 – T11-6
 (tree; T11-5 / T11-6 reverted), B11-1 – B11-4 (bounds / conformity), EV11-1 / EV11-2), §3.4, §3.5 (PG9, packs A / E),
 §3.6 (O-real, with the finance rows after R3's move), §3.7 (cost, PG4), §3.8.0 – §3.8.0c (round 11, with the example
-verbatim in both views on pack O days 11 / 14 / 21 and O-real day 35; round 10 kept as §3.8.0d with the example condensed
+verbatim in both views on pack O days 11 / 14 / 21 and O-real day 35; since round 12: §3.8.0d with the example condensed into §3.8.0d-1, round 10 §3.8.0e; at the time of round 11: round 10 kept as §3.8.0d with the example condensed
 into §3.8.0d-1; the older rounds moved one letter on: round 9 §3.8.0e … round 2 §3.8.0l), §3.10.2, §3.11, §3.12.1.
 A third focused round: two owners fixed the regressions listed after round 10, concurrently and with strict file ownership on
 top of d0e44c0 (tree: P04, P14 — `pattern_tree.py`, `views.py`; bounds / conformity: P09, P08, P03 — `lib/pwindows.py`,
@@ -2047,3 +2047,88 @@ round's bar was "keep every round-10 gain and recover round 10's regressions"; i
 6. Unchanged from round 10: PG9 gate 3 (B24 bounded / full equivalence), O60 precision @ 7 (two non-window claims),
    OI8-b / OI8-c / OI8-d / OI8-i / OI8-f / OI8-h, O-real seed 1's A5, the family login split (F1 – F4), EV8-3, OC8-4 latency
    budgets, OI-H1 / OI-H2.
+
+## 24. Progressive profile core, round 12 (2026-11-07)
+
+Full record: `progressive.md` §16.20 (the owners' changes, the evaluator's EV12-1, EV12-2 and item 0, results on the final code
+`code12` = `code11` + the learning owner's `pattern_tree.py` (variant B3), the views owner's `views.py`, `binding.py`,
+`who_groups.py`, `lib/prender.py` (v8), the bounds owner's `conformity.py`, `lib/pscore.py`, `lib/pfd.py` (b10, with the views
+owner's two `pfd` patches) + the evaluator's `system_profile.py` (EV12-1) and `eval/pmetrics.py` (item 0) — md5 of the ten
+files in `reports/progressive/round12_diag/code12_owned_files.md5`, the backend of checkpoint 48abc4f onwards; against rounds
+11, 10, 9 and 8 on the same scorer; determinism, cost, PG4, PG9, packs A / E, O-real on 3 seeds, O-red, O60; every regression
+attributed by bisection on `code11` + the named owners' files (`bis_LV`, `bis_VB`, `bis_V`, `bis_L`) and the owners' own runs,
+key metrics in `round12_diag/bisect12.json`; open issues); as-built rows: `engines.md` ("As built, round 12"); Chinese
+narrative: design doc §3.0, §3.3 (the changes in place, numbered L12-1 – L12-3 (learning), V12-1 – V12-5 (views), B12-1 –
+B12-2 (bounds / conformity), EV12-1 / EV12-2 / item 0), §3.4, §3.5, §3.6, §3.7, §3.8.0 – §3.8.0c (round 12, with the example
+verbatim in both views on pack O days 11 / 14 / 21 and O-real day 35; round 11 kept as §3.8.0d with the example condensed
+into §3.8.0d-1; the older rounds moved one letter on: round 10 §3.8.0e … round 2 §3.8.0m), §3.10.2, §3.11, §3.12.1.
+A fourth focused round: three owners fixed the regressions listed after round 11, concurrently and with strict file
+ownership on top of 8d6fbd6 (learning: P04 — `pattern_tree.py`; views: P08, P11, P14 — `binding.py`, `who_groups.py`,
+`views.py`, `lib/prender.py`; bounds / conformity: P03 and P08's fitter — `conformity.py`, `lib/pscore.py`, `lib/pfd.py`);
+every evaluation snapshot was built as `code11` plus only the owner's files. The three were cut off by the account's spend
+limit before they reported; the lead's `prog12/fix_reports.md` and their logs are the record, and the working tree at
+c6453a4 held their final files. The evaluator applied the learning owner's P12 patch (EV12-1), kept B3 over the staged B6 on
+measurement (EV12-2), added two information-only lists to the scorer (item 0) and measured `code12`. The round's bar was
+"keep every round-11 gain and recover round 11's regressions"; it was met in part.
+
+### 24.1 What changed in the integrated system
+
+- **Learning (L12-1 – L12-3).** A node P05 has not ranked yet keeps learning the summaries it was born with (born_tl,
+  `BORN_DAYS` 2); they are forgotten when P05 ranks it unless on its own / inherited list; the held-out test checks only
+  attributes the node still summarises (`_hold_constraints`). Pack O seed 3's GA.oa.approvals#2 found on days 6–10.
+- **Views (V12-1 – V12-5).** `views._dept_colleagues`: a readdressed address joins only its old address's department, a
+  learned group adds members only by majority (T11-4's defect fixed); `who_groups._peel` / `_left_members`; `prender.who_block`
+  lists every fitting prefix; `views._inherited_bind`; `binding.BindingEngine._allocate`'s budget tiers (the four reverse
+  clauses back).
+- **Bounds / conformity (B12-1 – B12-2).** P03's when scoring per slot exposure with kernel smoothing, flat children left out
+  of the prior and a per-day-type back-off top (pack O seed 1's D4); `pfd.history_days` / `fit_pair(support_days=…)` and the
+  evicted evidence kept in U (O-real seed 2's bindings @ 14 and D2).
+- **Evaluator.** EV12-1 (`system_profile._constant_pair`: a one-source one-value pair is constant, so P12 no longer measures
+  P08 at 0 bits — the root cause of the FIN.finance.login#0 loss that made EV11-2 revert T11-5 / T11-6); EV12-2 (B3 kept: B6
+  loses GA.oa.report#1 on pack O seed 0 and adds three MEDIUM incidents on O-red); item 0 (`pg1[day].failed`,
+  `pg6.far.incidents`; no figure changes).
+- **Tried and not adopted:** B6, B5, T11-5 / T11-6 with born_tl (O-real seed 2 FAR 0.0041 / 0.0028: crm-03 judges a
+  group-level `http.ua` binding), the P12 proposal v1 (superseded by `sp2`), not pooling the shared terminal (binds .40 to
+  jack2, wrong), the first `_peel` (peeled a young sales member; O60 crm who claims failed).
+
+### 24.2 Results (all measured; `reports/progressive/`)
+
+- Pack O, seeds 0–4, 21 days (round 12 against round 11 as published): PG1 recall @ 14 0.895 [0.816–0.947] (unchanged),
+  @ 21 0.905; headline precision @ 14 **0.950** [0.940–1.000] (0.956; pooled 277 / 287 = **0.965**, round 11 0.962), @ 21
+  **0.973** [0.935–1.000] (0.968; pooled 325 / 334 = 0.973, round 11 0.979), @ 7 **0.968** (0.938); calibration error
+  **0.066** [0.047–0.080] (0.060; stated 0.947, held 0.948); PG2 sign test 5/5; FAR ≥ MEDIUM 0.0005 [0.0004–**0.0007**]
+  (max 0.0009 in round 11), ≥ LOW 0.0014 (0.0013); anomalies 50 / 50; D1 3/5, D2 5/5, D3 5/5, **D4 5/5**, D5 4/5;
+  GA + FIN 6 bindings at day 14 5/5; checklist 47 / 50 (identical to round 11 clause by clause). Gates passing: PG3, PG6, PG7
+  (PG5's D4 check passes again).
+- O-red seed 0: FAR ≥ LOW / MEDIUM 0.0009 / 0.0002, D1 – D5 all pass, A4 detected (10 / 10), precision @ 14 / @ 21 **1.000 /
+  0.955** (0.982 / 0.938); recall @ 21 0.886 → 0.864 (GA.oa.approvals#2@1 on days 20–21, B3).
+- O-real seeds 0–2, 35 days: recall @ 35 **0.759** / 0.709 / 0.709 (0.696 / 0.734 / 0.671); checklist **9 / 7 / 8** (7 / 7 /
+  5); bindings @ 14 5 / 5 / **5** (5 / 5 / 2); seed 2's D2 passes; finance's login rows after the move found on days 17–35 on
+  every seed; R3 passes on seeds 0 and 2; R items 4 / 4 / 4 (5 / 4 / 4: seed 0 loses R4); CE 0.097 / 0.099 / 0.104 (0.075 /
+  0.092 / 0.100); seed 1 loses the moved clerk's OA rows on days 29–35 (views files).
+- O60: day-8 agreement 0.047 (kept); precision @ 7 0.933 (0.900; target 0.967).
+- PG4 (`reports/progressive/scale_r12/`, thread CPU, host ~0.94× as loaded as round 11's): memory slope vs attributes 0.139,
+  CPU / event slope vs attributes 0.167 — both pass; largest tree 11.4 MB; vs IPs 0.034 / −0.065, vs systems 0.240;
+  scoring / learning p95 835 / 1 408 µs (budgets 100 / 250 µs not met). P-core per pack O run 1.03× round 11 at equal load
+  (P03 1.27×).
+- PG9 (`reports/progressive/pg9_r12/pg9.json`): still fails only on pack A bounded's gate 3 (8 against 7); lib-3 CPU p95
+  bounded / full 0.84 (A), 0.88 (E), 0.445 at the 1 000-IP / 84 h point. The four pair runs and packs A / E full mode with
+  `scripts/evaluate.py` equal round 11 in every non-timing leaf (`reports/progressive/round12_diag/{A,E}_0_full.json`).
+- Determinism: pack O seed 0 under `PYTHONHASHSEED` 0 and 1 — 0 differences in 18 025 score and example leaves. Full suite
+  on the final tree: 3 517 passed, 4 skipped, 0 failed (+36 tests).
+
+### 24.3 Open (ordered by impact; details in design doc §3.11 and `progressive.md` §16.20.11 – §16.20.12)
+
+1. The lead's decision on round 12 (bar met in part); item 1b (CE 0.066 from held-out tests of summaries the scorer does not
+   judge); B6 against O-red's GA.oa.approvals#2@1.
+2. P09's window coverage stated above held-out on broad laws (the main precision limiter; proposal: state a cross-validated
+   window's coverage as the CV estimate's lower bound) and configured-department parts stating the node's window for a
+   subset of its sources (proposal: the part's own window, or none below `min_points`).
+3. O-real seed 1's moved-clerk OA rows (recall @ 35 0.709 < 0.722; proposal: a readdressed address joins its old
+   department in every part, independent of the learned-group bar); R4 on O-real seed 0 (a when-window knife edge).
+4. Pack O FAR ≥ LOW (crm single-tick LOW alarms on empty evening slots; median 0.0014 against 0.0011); O60 precision @ 7.
+5. T11-5 / T11-6 (lead decision a): `pfd.fit_pair` should leave a group-level source unjudged until every member has
+   `n_bind` observations at the node, then re-measure on pack O seeds 0–3 and O-real seed 2.
+6. Unchanged: PG11 R11 (lead decision 3), PG9 gate 3, O-real seed 1's A5 and the O-real FAR ≥ LOW 0.0021 on seeds 1 / 2,
+   OI8-b / OI8-c / OI8-d / OI8-i / OI8-f / OI8-h, the family login split (F1 – F4), EV8-3, OC8-4 latency budgets,
+   OI-H1 / OI-H2.
