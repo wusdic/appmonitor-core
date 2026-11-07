@@ -8958,7 +8958,7 @@ Three owners worked concurrently on `code11`, each building its eval snapshots a
 
 The three edited existing tests (lead decision c) are adaptations, not loosening: `test_p03_round3.py` compares the engine's own (now smoothed) when tables through `_when_hdr` with unchanged assertions; `test_p04_behaviour_split.py` passes the node's summaries to `_hold_constraints`' new argument with the assertion unchanged; `test_p14_round11.py` adds the readdress map the round-12 rule needs and a new assertion (the moved clerk is not 综合部's). The full suite on the final tree: **3 517 passed, 4 skipped, 0 failed** (3 481 / 4 / 0 in round 11; +36 new tests).
 
-No other cross-owner proposal was outstanding: the views owner's two `pfd` patches were adopted by the bounds owner during the round; the learning owner's first P12 proposal (`sp`, v1) was withdrawn by its owner (it raised O-real seed 2's FAR to 0.0041 / 0.0028).
+No other cross-owner proposal was outstanding: the views owner's two `pfd` patches were adopted by the bounds owner during the round; the learning owner's first P12 proposal (`sp`, v1: leave P08's gain unmeasured while a dependency is pending) was superseded by its own `sp2` once the root cause was traced. The O-real seed 2 FAR rise (0.0041 / 0.0028) first blamed on v1 was later corrected by the learning owner (`learn.LOG.md`, 17:20Z): it comes with T11-5 / T11-6 and born_tl together (`code_Bs` = born_tl + `sp2` and `bis_c11t7` = T11-5 / T11-6 alone both keep round 11's FAR).
 
 #### 16.20.4 Pack O against rounds 11, 10, 9 and 8 (5 seeds)
 
