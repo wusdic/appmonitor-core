@@ -1377,7 +1377,15 @@ def _constant_pair(rec: Mapping[str, Any]) -> bool:
     'net.src -> body.fmt' record, judged with gain 0, switched P08 off on day
     10 while the three users' user-name pair was still gathering n_bind)."""
     tops = _pair_tops(rec)
-    return len(tops) >= 2 and len(set(tops)) == 1
+    # (round 12) one source with one value binds nothing either: its gain of 0
+    # is no measurement of P08. Pack O seed 0, finance: the one-source
+    # 'net.src -> body.fmt' records of the young voucher / approval nodes
+    # (form, judged 1) made P08 measured at 0 bits for ~200 us/event from day
+    # 4-5, P12's hedge sat at on 0.498 / off 0.502 by day 9 and one more such
+    # day (a P04 change that let a young node learn one more row by day 3)
+    # switched P08 off on day 10, before the users' username pair reached
+    # n_bind: FIN.finance.login#0's bindings were never stated (days 11-21)
+    return len(tops) >= 1 and len(set(tops)) == 1
 
 
 def bindings_pending(model: Any) -> bool:

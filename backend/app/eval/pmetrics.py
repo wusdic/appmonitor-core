@@ -1557,6 +1557,9 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
     valid = pt.valid_at_day(day)
     prec_hits, prec_all, conf, obs = [], [], [], []
     calib: List[List[Any]] = []
+    # (round 12, §16.19.12 item 14) every failed claim's statement, so a
+    # precision regression traces to a statement without re-running
+    failed: List[List[Any]] = []
     unjudged = dups = 0
     seen: Set[str] = set()
     for s in stmts:
@@ -1574,6 +1577,9 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
         h = holdout_check(s, valid, pt, _stream(seed, day, 2, claim), precision_n, day)
         ob = claim_observable(s, h, pt, day)
         prec_all.append(bool(h["ok"]))            # no held-out event of its context: false
+        if not h["ok"]:
+            failed.append([str(s.pattern_id), round(float(s.confidence), 4) if math.isfinite(s.confidence)
+                           else None, int(bool(ob))])
         if ob:
             prec_hits.append(bool(h["ok"]))
         if math.isfinite(s.confidence):
@@ -1599,7 +1605,7 @@ def pg1_snapshot(snap: Mapping[str, Any], pt: PTruth, ip_classes: Mapping[str, L
         "precision_all": float(np.mean(prec_all)) if prec_all else None,
         "n_precision_all": len(prec_all), "n_unobservable": len(prec_all) - len(prec_hits),
         "n_unjudged": unjudged, "n_duplicate": dups,
-        "ece": ece(conf, obs), "calib": calib,
+        "ece": ece(conf, obs), "calib": calib, "failed": failed,
         "mean_depth": float(np.mean(depths)) if depths else None,
         "stmt_depth": stmt_depth,
         "per_pattern": {k: {"recovered": v["recovered"], "components": v["components"],
@@ -2323,6 +2329,7 @@ def pg6_far(run: Any, pt: PTruth) -> Dict[str, Any]:
                 days_of.setdefault((s, ip), set()).add(iso)
                 ed += 1
     low = med = 0
+    counted: List[Tuple[Mapping[str, Any], int]] = []
     for inc in getattr(run, "incidents", None) or []:
         k = (inc.get("system"), inc.get("entity"))
         if k not in days_of:
@@ -2331,6 +2338,8 @@ def pg6_far(run: Any, pt: PTruth) -> Dict[str, Any]:
                  [sev_rank(inc.get("severity"))])
         low += mx >= SEV_RANK["low"]
         med += mx >= SEV_RANK["medium"]
+        if mx >= SEV_RANK["low"]:
+            counted.append((inc, mx))
     pv_low = sum(1 for e in _pv(run) if (e.get("system"), e.get("entity")) in days_of
                  and sev_rank(e.get("severity")) >= SEV_RANK["low"])
     ks = ks_two = None
@@ -2348,8 +2357,35 @@ def pg6_far(run: Any, pt: PTruth) -> Dict[str, Any]:
             ks, _ = ks_uniform(np.concatenate(vals), side="upper")
             ks_two, _ = ks_uniform(np.concatenate(vals))
     return {"entity_days": ed, "ks_conf_two": ks_two, "inc_low": low, "inc_medium": med, "pv_low": pv_low,
+            "incidents": _far_incident_list(run, pt, counted),
             "far_low": low / ed if ed else None, "far_medium": med / ed if ed else None,
             "pv_far_low": pv_low / ed if ed else None, "ks_conf": ks}
+
+
+def _far_incident_list(run: Any, pt: PTruth, counted: Sequence[Tuple[Mapping[str, Any], int]]
+                       ) -> List[Dict[str, Any]]:
+    """(round 12, §16.19.12 item 14) the incidents PG6's FAR counts: entity,
+    day, severity and the constraint kinds (the merged pattern_violation
+    events' types and flags) with their statements, so a FAR regression
+    traces to a constraint without re-running. Information only."""
+    names = {v: k for k, v in SEV_RANK.items()}
+    evs: Dict[str, List[Mapping[str, Any]]] = {}
+    for e in getattr(run, "events", None) or []:
+        if e.get("incident_id"):
+            evs.setdefault(str(e["incident_id"]), []).append(e)
+    out = []
+    for inc, mx in counted:
+        es = evs.get(str(inc.get("id")), [])
+        cons = sorted({_ev_type(e) for e in es if _ev_type(e)} | {f for e in es for f in _ev_flags(e)})
+        pids = sorted({str((e.get("extra") or {}).get("pattern_id")) for e in es
+                       if (e.get("extra") or {}).get("pattern_id")})
+        opened = _f(inc.get("opened"))
+        out.append({"id": str(inc.get("id") or ""), "system": inc.get("system"), "entity": inc.get("entity"),
+                    "day": pt.day_of_ts(opened) if math.isfinite(opened) and pt.day_start else None,
+                    "severity": names.get(mx, str(mx)), "kinds": sorted(map(str, inc.get("kinds") or [])),
+                    "constraints": cons, "pattern_ids": pids[:8]})
+    out.sort(key=lambda d: (d["day"] if d["day"] is not None else -1, str(d["system"]), str(d["entity"]), d["id"]))
+    return out
 
 
 # --------------------------------------------------------------------------- #
