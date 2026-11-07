@@ -9191,6 +9191,8 @@ The scorer's new lists (item 0) name every failed claim's statement and failed c
 10. PG11 R11's growth measure is unchanged (lead decision 3: the dumps of the post-scanner portal splits did not finish).
 11. O-real seed 1's A5 (rounds 8–12) and the O-real FAR ≥ LOW on seeds 1 / 2 (0.0021) remain from earlier rounds.
 
+*Docs pass (2026-11-07).* Every number of §16.20 was recomputed from the installed JSONs (`reports/progressive/runs/`, `round11/`, `round12_diag/`, `pg9_r12/`, `scale_r12/`; the docs owner's scripts in `scratchpad/prog12/docs/`). Corrected: the bar table's R11 / R3 rows for rounds 8–10; regression 5, 16.20.9 and 16.20.11 item 5 (O-real seed 1 loses FIN.oa.login#1@1 on days 29–35 but #0@1 and documents#0@1 only on days 34–35; O-real seed 0 finds FIN.oa.login#1@1 on 18 of the 19 days 17–35, not "days 17–19"); 16.20.10 (round 11's O-real login was stated by learned-group parts G19 / G18 at node 13, not by a configured-department part naming .51; the report statement also drops `dept=`'s grammar; the finance approval's upload band n 46 → 54; the family node's 139 observations); 16.20.11 items 1 and 4 (the merged tree's seed-4 day-14 failure set; which approve node fails on which seed); 16.20.2's test count (`test_p03_round12.py` has 12 tests); 16.20.3's attribution of the O-real seed 2 FAR rise to the P12 proposal v1 (the learning owner corrected it to T11-5 / T11-6 with born_tl). The other learned-statement claims ("round 11's node with three differences", the department view, the finance approval window, the checklist identical clause by clause) hold.
+
 ## Appendix A. Review changes (adversarial review, 2026-09-29)
 
 The first draft was reviewed sentence by sentence against the user requirement (§3) and
